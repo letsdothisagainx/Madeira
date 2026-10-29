@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Expose failing host-check output in Actions annotations as well as logs."""
+import os
 import subprocess
 from pathlib import Path
 
@@ -12,7 +13,8 @@ commands = [
     ['bash', 'madeira-dock/tools/check.sh'],
 ]
 for command in commands:
-    result = subprocess.run(command, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    result = subprocess.run(command, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                            env=dict(os.environ, PYTHONUNBUFFERED="1"))
     print(result.stdout, end='', flush=True)
     if result.returncode:
         message = result.stdout[-6000:].replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
