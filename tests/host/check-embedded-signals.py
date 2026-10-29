@@ -19,6 +19,7 @@ def function(text, name):
 init = function((root / 'wine/server/signal.c').read_text(), 'void init_signals(void)')
 stubs = r'''
 #include <assert.h>
+#include <errno.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <sys/wait.h>
@@ -56,7 +57,11 @@ int main(void) {
     assert(sigaction(SIGSEGV, NULL, &result) == 0 && result.sa_handler == SIG_DFL);
     pid_t child = fork(); assert(child >= 0);
     if (!child) { struct rlimit r = {0,0}; setrlimit(RLIMIT_CORE, &r); raise(SIGSEGV); _exit(99); }
-    int status; assert(waitpid(child, &status, 0) == child);
+    int status;
+    pid_t waited;
+    /* Darwin can deliver SIGCHLD before waitpid returns the child status. */
+    do { waited = waitpid(child, &status, 0); } while (waited == -1 && errno == EINTR);
+    assert(waited == child);
     assert(WIFSIGNALED(status) && WTERMSIG(status) == SIGSEGV);
 #else
     assert(result.sa_handler == do_sigsegv);
