@@ -494,15 +494,16 @@ enum MadeiraDock {
     /// madeira-bcd: `host` false runs only the installers; the session ends after them
     /// (DockInstallers.installsOnly).
     static func launchArguments(width: Int, height: Int, installers: String? = nil, host: Bool = true) -> String {
+        let service = "C:\\windows\\system32\\madeira-steam-service.exe"
         guard let installers else {
-            // Opt in per Dock launch. No prerequisite installers, no Valve file changes.
+            // Optional legacy SCM preflight; the shared helper prepares Valve's service.
             if SteamSignIn.flag("MADEIRA_DOCK_START_SERVICES", default: false) {
-                return "/desktop=madeira,\(width)x\(height) C:\\windows\\system32\\cmd.exe /c \(executable) --start-services & \(executable)"
+                return "/desktop=madeira,\(width)x\(height) C:\\windows\\system32\\cmd.exe /c \(executable) --start-services & \(service) && \(executable)"
             }
-            return "/desktop=madeira,\(width)x\(height) \(executable)"
+            return "/desktop=madeira,\(width)x\(height) C:\\windows\\system32\\cmd.exe /c \(service) && \(executable)"
         }
         guard host else { return "/desktop=madeira,\(width)x\(height) C:\\windows\\system32\\cmd.exe /c call \(installers)" }
-        return "/desktop=madeira,\(width)x\(height) C:\\windows\\system32\\cmd.exe /c call \(installers) & \(executable)"
+        return "/desktop=madeira,\(width)x\(height) C:\\windows\\system32\\cmd.exe /c call \(installers) & \(service) && \(executable)"
     }
 
 

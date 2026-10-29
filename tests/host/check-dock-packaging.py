@@ -28,7 +28,7 @@ printf fixture > "$TEST_APP/Madeira"
 printf fixture > "$TEST_APP/prefix-template.tar.gz"
 printf fixture > "$TEST_APP/arm64ec-windows/xtajit64.dll"
 printf fixture > "$TEST_APP/x86_64-vcruntime/vcruntime140.dll"
-for resource in dockhost.exe dock-notices.txt; do
+for resource in dockhost.exe dock-notices.txt madeira-steam-service.exe; do
   if [ "${OMIT_RESOURCE:-}" != "$resource" ]; then cp "$ROOT/app/Madeira/arm64ec-windows/$resource" "$TEST_APP/arm64ec-windows/"; fi
 done
 ''',
@@ -42,10 +42,10 @@ done
         return subprocess.run(['bash',str(package)],env=dict(env,**(extra or {})),capture_output=True,text=True)
     result=run(); assert result.returncode == 0, result.stdout+result.stderr
     with zipfile.ZipFile(t/'dist/Madeira.ipa') as archive:
-        for resource in ['dockhost.exe','dock-notices.txt']:
+        for resource in ['dockhost.exe','dock-notices.txt','madeira-steam-service.exe']:
             assert archive.read('Payload/Madeira.app/arm64ec-windows/'+resource) == b'fixture'
-    print('PASS final ZIP includes staged Dock executable and license notices')
-    for resource in ['dockhost.exe','dock-notices.txt']:
+    print('PASS final ZIP includes Dock, service helper and license notices')
+    for resource in ['dockhost.exe','dock-notices.txt','madeira-steam-service.exe']:
         result=run({'OMIT_RESOURCE':resource})
         assert result.returncode != 0 and 'required bundle resource missing' in result.stderr, result.stderr
         p=t/'app/Madeira/arm64ec-windows'/resource; p.write_bytes(b'')

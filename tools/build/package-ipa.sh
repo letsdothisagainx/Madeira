@@ -13,6 +13,7 @@ required=(
   "$ROOT/FEX/build-ios/FEXCore/Source/libFEXCore_Base.a"
   "$ROOT/FEX/build-ios/External/fmt/libfmt.a"
   "$ROOT/FEX/build-ios/External/cephes/libcephes_128bit.a"
+  "$ROOT/app/Madeira/arm64ec-windows/madeira-steam-service.exe"
   "$ROOT/app/Madeira/arm64ec-windows/dockhost.exe"
   "$ROOT/app/Madeira/arm64ec-windows/dock-notices.txt"
   "$ROOT/app/Madeira/libwineserver.a"
@@ -51,6 +52,7 @@ codesign --force --sign - \
   "$APP"
 
 bundle_required=(
+  "$APP/arm64ec-windows/madeira-steam-service.exe"
   "$APP/arm64ec-windows/dockhost.exe"
   "$APP/arm64ec-windows/dock-notices.txt"
   "$APP/Madeira"
@@ -77,6 +79,6 @@ rm -rf "$DIST/Payload"
 [[ -s "$DIST/Madeira.ipa" ]] || { echo "ERROR: failed to create IPA" >&2; exit 1; }
 unzip -tq "$DIST/Madeira.ipa" >/dev/null
 
-for resource in dockhost.exe dock-notices.txt; do
+for resource in dockhost.exe dock-notices.txt madeira-steam-service.exe; do
   unzip -p "$DIST/Madeira.ipa" "Payload/Madeira.app/arm64ec-windows/$resource" | cmp - "$APP/arm64ec-windows/$resource"
 done

@@ -5,6 +5,8 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[2]
 commands = [
+    ['python3', 'tests/host/check-steam-service.py'],
+    ['python3', 'tests/host/check-dock-contract.py'],
     ['python3', 'tests/host/check-embedded-signals.py'],
     ['python3', 'tests/host/check-dock-packaging.py'],
     ['bash', 'madeira-dock/tools/check.sh'],
