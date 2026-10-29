@@ -94,7 +94,7 @@ static uint32_t install_service(void)
     swprintf(path, 32768, L"%ls\\bin\\SteamService.exe", root);
     DWORD type;
     if (!GetBinaryTypeW(path, &type)) { DWORD error = last_error(); event("installer-inspect-error", error); return error; }
-    event("installer-binary-type", type); /* 0=x86, 6=x64; Wine handles WoW64. */
+    event("installer-binary-type", type); /* 0=32-bit, 6=64-bit; CPU selection remains the Windows loader's job. */
     if (type != SCS_32BIT_BINARY && type != SCS_64BIT_BINARY) return ERROR_BAD_EXE_FORMAT;
     swprintf(command, 32768, L"\"%ls\" /install", path);
     STARTUPINFOW si = {0}; PROCESS_INFORMATION pi = {0}; si.cb = sizeof(si);

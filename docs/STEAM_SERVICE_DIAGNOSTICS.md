@@ -61,7 +61,7 @@ retrying so a second launch does not overlap that outstanding installer.
 ## Numeric diagnostics
 
 `[steam-service]` records SCM readiness, installer inspection/spawn/exit results,
-installer binary type (0=x86, 6=x64), registration visibility in both registry
+installer binary type (0=32-bit, 6=64-bit; this API does not identify the CPU), registration visibility in both registry
 views, the existing WOW64 marker, ImagePath presence, service type/start mode,
 and real SCM service state. It logs no paths, usernames, account identifiers,
 credentials, or pipe names. Result 0 means SCM reported SERVICE_RUNNING.
