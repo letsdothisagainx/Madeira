@@ -210,6 +210,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+      - name: Check embedded signal ownership and Dock packaging
+        run: |
+          python3 tests/host/check-embedded-signals.py
+          python3 tests/host/check-dock-packaging.py
+          bash madeira-dock/tools/check.sh
       - id: sdk
         run: bash tools/build/ci-input-key.sh
       - id: cache-llvm

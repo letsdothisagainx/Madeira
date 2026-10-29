@@ -93,6 +93,7 @@ ar() { touch "$2"; }
         'brew': 'if [ "$1" = --prefix ]; then echo "$TEST_TOOLS"; fi',
         'git': 'exit 0',
         'xcodebuild': 'exit 0',
+        'xcrun': 'exit 0',
         'rustup': 'test "$*" = "target add aarch64-apple-ios"\ntouch "$TRACE.target"',
         'cargo': 'test -f "$TRACE.target"\nmkdir -p target/aarch64-apple-ios/release\necho archive > target/aarch64-apple-ios/release/libmadeira_rppairing.a',
     }

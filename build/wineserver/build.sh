@@ -56,6 +56,7 @@ PATCHED_FILES=(
     "mach_ios:mach_ios.c:mach.o"
     "unicode_ios:unicode_ios.c:unicode.o"
     "fd_ios:fd_ios.c:fd.o"
+    "signal_ios:signal_ios.c:signal.o"
     # ml574: object.c must appear in BOTH lists — SOURCES compiles it,
     # REPLACEMENTS inserts it into the prebuilt base archive. An entry in
     # only the first compiles, prints OK, and is silently discarded.
@@ -182,6 +183,7 @@ REPLACEMENTS=(
     "mach_ios.o:mach.o"
     "unicode_ios.o:unicode.o"
     "fd_ios.o:fd.o"
+    "signal_ios.o:signal.o"
     "process_ios.o:process.o"
     "wineserver_ios_kill.o:wineserver_ios_kill.o"
     "window.o:window.o"

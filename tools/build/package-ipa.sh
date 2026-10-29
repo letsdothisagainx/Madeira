@@ -13,6 +13,8 @@ required=(
   "$ROOT/FEX/build-ios/FEXCore/Source/libFEXCore_Base.a"
   "$ROOT/FEX/build-ios/External/fmt/libfmt.a"
   "$ROOT/FEX/build-ios/External/cephes/libcephes_128bit.a"
+  "$ROOT/app/Madeira/arm64ec-windows/dockhost.exe"
+  "$ROOT/app/Madeira/arm64ec-windows/dock-notices.txt"
   "$ROOT/app/Madeira/libwineserver.a"
   "$ROOT/app/Madeira/libntdll_unix.a"
   "$ROOT/app/Madeira/libwin32u_unix.a"
@@ -20,7 +22,7 @@ required=(
   "$ROOT/app/Madeira/libmadeira_rppairing.a"
 )
 for path in "${required[@]}"; do
-  [[ -f "$path" ]] || { echo "ERROR: required build artifact missing: $path" >&2; exit 1; }
+  [[ -s "$path" ]] || { echo "ERROR: required build artifact missing: $path" >&2; exit 1; }
 done
 
 rm -rf "$DERIVED" "$DIST/Payload"
@@ -49,13 +51,15 @@ codesign --force --sign - \
   "$APP"
 
 bundle_required=(
+  "$APP/arm64ec-windows/dockhost.exe"
+  "$APP/arm64ec-windows/dock-notices.txt"
   "$APP/Madeira"
   "$APP/prefix-template.tar.gz"
   "$APP/arm64ec-windows/xtajit64.dll"
   "$APP/x86_64-vcruntime/vcruntime140.dll"
 )
 for path in "${bundle_required[@]}"; do
-  [[ -e "$path" ]] || { echo "ERROR: required bundle resource missing: $path" >&2; exit 1; }
+  [[ -s "$path" ]] || { echo "ERROR: required bundle resource missing: $path" >&2; exit 1; }
 done
 codesign -d --entitlements :- "$APP" 2>/dev/null | grep -q 'com.apple.security.cs.allow-jit' || {
   echo "ERROR: packaged app is missing the allow-jit entitlement" >&2
@@ -72,3 +76,7 @@ rm -f "$DIST/Madeira.ipa"
 rm -rf "$DIST/Payload"
 [[ -s "$DIST/Madeira.ipa" ]] || { echo "ERROR: failed to create IPA" >&2; exit 1; }
 unzip -tq "$DIST/Madeira.ipa" >/dev/null
+
+for resource in dockhost.exe dock-notices.txt; do
+  unzip -p "$DIST/Madeira.ipa" "Payload/Madeira.app/arm64ec-windows/$resource" | cmp - "$APP/arm64ec-windows/$resource"
+done
