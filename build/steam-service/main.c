@@ -69,9 +69,17 @@ static void registry_diagnostics(void)
             KEY_QUERY_VALUE | (i ? KEY_WOW64_32KEY : KEY_WOW64_64KEY), &key);
         event(i ? "registry32" : "registry64", (DWORD)status);
         if (!status) {
-            DWORD type, kind, size = sizeof(type);
-            if (RegQueryValueExW(key, L"WOW64", NULL, &kind, (BYTE *)&type, &size) == ERROR_SUCCESS && kind == REG_DWORD && size == sizeof(type))
-                event("registration-wow64", type);
+            static const wchar_t *values[] = {L"Type", L"Start", L"WOW64"};
+            static const char *labels[] = {"registry-type", "registry-start", "registration-wow64"};
+            for (unsigned j = 0; j < 3; j++) {
+                DWORD value, kind, size = sizeof(value);
+                if (RegQueryValueExW(key, values[j], NULL, &kind, (BYTE *)&value, &size) == ERROR_SUCCESS &&
+                    kind == REG_DWORD && size == sizeof(value)) event(labels[j], value);
+            }
+            DWORD kind, bytes = 0;
+            LSTATUS image = RegQueryValueExW(key, L"ImagePath", NULL, &kind, NULL, &bytes);
+            event("registry-image-query", (DWORD)image);
+            if (!image) { event("registry-image-kind", kind); event("registry-image-bytes", bytes); }
             RegCloseKey(key);
         }
     }
