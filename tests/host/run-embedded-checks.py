@@ -17,6 +17,9 @@ for command in commands:
                             env=dict(os.environ, PYTHONUNBUFFERED="1"))
     print(result.stdout, end='', flush=True)
     if result.returncode:
-        message = result.stdout[-1600:].replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+        failures = [line for line in result.stdout.splitlines()
+                    if line.startswith(('FAIL:', 'Assertion failed:', 'error:')) or ': error:' in line]
+        detail = '\n'.join(failures)[-1600:] if failures else result.stdout[-1600:]
+        message = detail.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
         print('::error title=Host check failed::' + ' '.join(command) + ': ' + message, flush=True)
         raise SystemExit(result.returncode if result.returncode > 0 else 128-result.returncode)
