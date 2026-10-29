@@ -494,10 +494,17 @@ enum MadeiraDock {
     /// madeira-bcd: `host` false runs only the installers; the session ends after them
     /// (DockInstallers.installsOnly).
     static func launchArguments(width: Int, height: Int, installers: String? = nil, host: Bool = true) -> String {
-        guard let installers else { return "/desktop=madeira,\(width)x\(height) \(executable)" }
+        guard let installers else {
+            // Opt in per Dock launch. No prerequisite installers, no Valve file changes.
+            if SteamSignIn.flag("MADEIRA_DOCK_START_SERVICES", default: false) {
+                return "/desktop=madeira,\(width)x\(height) C:\\windows\\system32\\cmd.exe /c \(executable) --start-services & \(executable)"
+            }
+            return "/desktop=madeira,\(width)x\(height) \(executable)"
+        }
         guard host else { return "/desktop=madeira,\(width)x\(height) C:\\windows\\system32\\cmd.exe /c call \(installers)" }
         return "/desktop=madeira,\(width)x\(height) C:\\windows\\system32\\cmd.exe /c call \(installers) & \(executable)"
     }
+
 
     /// Set on the main actor right before a Dock launch; read (and cleared) once by the
     /// launch worker, so only that launch sees it.
