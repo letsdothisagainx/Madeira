@@ -106,6 +106,8 @@ enum SteamSignIn {
     static func flag(_ name: String, default fallback: Bool) -> Bool { getenv(name).map { String(cString: $0) != "0" } ?? fallback }
 }
 enum SteamLog { static func event(_ m: String) {}; static func trace(_ m: @autoclosure () -> String) {} }
+// Headless fixture: no user-selected external volumes are mounted.
+enum ExternalDrives { static var steamLibraries: [String] { [] } }
 enum SteamRuntimeFiles {
     static let relativeRoot = "Program Files (x86)/Steam"
     static let windowsRoot = "C:\\Program Files (x86)\\Steam"
