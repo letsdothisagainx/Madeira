@@ -380,7 +380,7 @@ jobs:
 
   inspect-native:
     if: inputs.inspect_native_run_id != ''
-    runs-on: ubuntu-latest
+    runs-on: xcode-27
     permissions:
       contents: read
       actions: read
