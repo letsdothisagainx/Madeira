@@ -3,7 +3,7 @@
 # Madeira Converter Exception: see LICENSE-EXCEPTION.md
 """The [fault-stuck] loop breaker counts per thread (build/ntdll-unix/signal_arm64_ios.c).
 
-The Mach exception handler diverts a thread to abort_thread when the same (page, pc,
+The Mach exception handler diverts a thread to ios_stop_faulting_process when the same (page, pc,
 address) fault is declined 50 times in a row. That count was one app-wide counter, never
 restarted when the exception reached the guest: 25 threads each faulting once at the same
 instruction (each fault is declined from the thread port and then the task port) were
@@ -154,7 +154,16 @@ static int mach_vm_region( mach_port_t task, mach_vm_address_t *a, mach_vm_size_
 {
     return 1;   /* no region: the map dump stops at once */
 }
-void abort_thread( int status ) { }
+void ios_stop_faulting_process( int status ) { }
+#define STATUS_ACCESS_VIOLATION 0xc0000005u
+static int registered_thread = 1;
+static int ios_thread_is_registered(thread_t t) { return registered_thread; }
+static int ios_redirect_process_failure(arm_thread_state64_t *s,unsigned status) {
+    s->__pc = (uint64_t)(uintptr_t)ios_stop_faulting_process;
+    s->__sp = (s->__sp-0x100)&~15ull;
+    s->__x[0] = status;
+    return 1;
+}
 '''
 
 harness_main = r'''
@@ -217,9 +226,9 @@ int main( void )
     bad |= check( !diverted, "a thread re-faulting with no delivery: not diverted after 50 declines" );
     set_state_calls = 0;
     decline( stuck, addr, pc );
-    bad |= check( diverted == 1 && set_state_calls == 1 && last_set.__pc == (uint64_t)(uintptr_t)abort_thread
-                  && last_set.__x[0] == 1 && !(last_set.__sp & 0xf),
-                  "... diverted to abort_thread(1) on the 51st, with an aligned stack" );
+    bad |= check( diverted == 1 && set_state_calls == 1 && last_set.__pc == (uint64_t)(uintptr_t)ios_stop_faulting_process
+                  && last_set.__x[0] == STATUS_ACCESS_VIOLATION && !(last_set.__sp & 0xf),
+                  "... diverted to owner termination with STATUS_ACCESS_VIOLATION on the 51st, with an aligned stack" );
 
     diverted = 0;
     stuck = 0x50003;
@@ -246,6 +255,10 @@ int main( void )
     bad |= check( !diverted, "same page and pc, addresses advancing, no delivery: not diverted after 20000" );
     decline( t, addr + 16, pc );
     bad |= check( diverted == 1, "... the storm ceiling diverts on the next one" );
+    registered_thread = 0;
+    diverted = 0;
+    for (i = 0; i < 200; i++) decline( 0x80003, addr, pc );
+    bad |= check( !diverted, "native thread without registered Wine ownership is never terminated by the guard" );
     return bad;
 }
 '''
