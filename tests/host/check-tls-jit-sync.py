@@ -19,6 +19,7 @@ code=r'''
 #include <string.h>
 #include <stdio.h>
 typedef uint32_t ULONG, NTSTATUS;
+typedef uintptr_t ULONG_PTR;
 #define STATUS_SUCCESS 0
 #define STATUS_INVALID_PARAMETER 1
 #define STATUS_UNSUCCESSFUL 2
@@ -31,7 +32,7 @@ FUNCTION
 int main(void) {
     struct ios_sync_pe_write_params p={&original,sizeof(ULONG),99};
     assert(unixcall_ios_sync_pe_write(NULL)==STATUS_INVALID_PARAMETER);
-    p.size=8; assert(unixcall_ios_sync_pe_write(&p)==STATUS_INVALID_PARAMETER && !calls);
+    p.size=3; assert(unixcall_ios_sync_pe_write(&p)==STATUS_INVALID_PARAMETER && !calls);
     p.size=4; p.address=NULL; assert(unixcall_ios_sync_pe_write(&p)==STATUS_INVALID_PARAMETER);
     p.address=&original; copied=0;
     assert(!unixcall_ios_sync_pe_write(&p) && !p.synced && !calls);
