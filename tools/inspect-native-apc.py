@@ -54,10 +54,18 @@ def inspect(path, offset):
         raise ValueError('APC instruction range is not file-backed')
     lines = [f'UUID={image_uuid}', f'SHA256={hashlib.sha256(data).hexdigest()}',
              f'invoke_system_apc={address:#x} target=+{offset:#x} ({target:#x})']
-    for insn in Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN).disasm(raw, start):
-        mark = 'FAULT-OFFSET' if insn.address == target else ''
-        lines.append(f'+{insn.address - address:04x} {insn.bytes.hex()} '
-                     f'{insn.mnemonic} {insn.op_str} {mark}'.rstrip())
+    decoder = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
+    for pos in range(0, len(raw), 4):
+        pc, word = start + pos, raw[pos:pos + 4]
+        insn = next(decoder.disasm(word, pc, count=1), None)
+        operation = f'{insn.mnemonic} {insn.op_str}' if insn else f'.inst {int.from_bytes(word, "little"):#010x}'
+        if insn and insn.mnemonic in ('bl', 'b') and insn.op_str.startswith('#0x'):
+            destination = int(insn.op_str[1:], 16)
+            matched = [name for name, value in names.items() if value == destination]
+            if matched:
+                operation += ' (' + ','.join(matched) + ')'
+        mark = 'FAULT-OFFSET' if pc == target else ''
+        lines.append(f'+{pc - address:04x} {word.hex()} {operation} {mark}'.rstrip())
     return image_uuid, lines
 
 
