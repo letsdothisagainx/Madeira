@@ -3378,6 +3378,7 @@ static NTSTATUS invoke_user_apc( CONTEXT *context, const struct user_apc *apc, N
  *              invoke_system_apc
  */
 #ifdef WINE_IOS
+extern void ios_complete_io_status( client_ptr_t, NTSTATUS, ULONG_PTR, BOOL );
 void ios_trace_iosb_registration( IO_STATUS_BLOCK *io, client_ptr_t target, const char *api )
 {
     static unsigned int ordinary, low;
@@ -3390,10 +3391,11 @@ void ios_trace_iosb_registration( IO_STATUS_BLOCK *io, client_ptr_t target, cons
     saved_errno = errno;
     teb = NtCurrentTeb();
     dprintf( 2, "[iosb-register] api=%s pid=%04x tid=%04x teb=%p peb=%p window=%p wow=%u "
-                "native-iosb=%p target=%p\n", api,
+                "native-iosb=%p target=%p layout=%s\n", api,
              teb ? (unsigned)(ULONG_PTR)teb->ClientId.UniqueProcess : 0,
              teb ? (unsigned)(ULONG_PTR)teb->ClientId.UniqueThread : 0, teb, teb ? teb->Peb : NULL,
-             (void *)ios_wow_host_base(), (unsigned)in_wow64_call(), io, wine_server_get_ptr( target ) );
+             (void *)ios_wow_host_base(), (unsigned)in_wow64_call(), io, wine_server_get_ptr( target ),
+             !target ? "none" : target == wine_server_client_ptr(io) ? "native64" : "guest32-proxy" );
     errno = saved_errno;
 }
 
@@ -3406,6 +3408,7 @@ static BOOL ios_trace_async_apc( const union apc_call *call, const char *phase )
     static unsigned int ordinary, low;
     TEB *teb;
     BOOL wow;
+    struct async_fileio *user = wine_server_get_ptr( call->async_io.user );
     ULONG_PTR window;
     unsigned int ticket;
     int saved_errno;
@@ -3419,12 +3422,13 @@ static BOOL ios_trace_async_apc( const union apc_call *call, const char *phase )
     window = ios_wow_host_base();
     wow = in_wow64_call();
     dprintf( 2, "[async-apc] phase=%s pid=%04x tid=%04x teb=%p peb=%p window=%p "
-                "wow=%u user=%p iosb=%p status=%08x bytes=%u cpu-area=%p tls14=%p\n",
+                "wow=%u user=%p iosb=%p status=%08x bytes=%u cpu-area=%p tls14=%p layout=%s\n",
              phase, teb ? (unsigned)(ULONG_PTR)teb->ClientId.UniqueProcess : 0,
              teb ? (unsigned)(ULONG_PTR)teb->ClientId.UniqueThread : 0, teb, teb ? teb->Peb : NULL,
              (void *)window, (unsigned)wow, wine_server_get_ptr( call->async_io.user ),
              wine_server_get_ptr( call->async_io.sb ), call->async_io.status, call->async_io.result,
-             teb ? teb->TlsSlots[WOW64_TLS_CPURESERVED] : NULL, teb ? teb->TlsSlots[14] : NULL );
+             teb ? teb->TlsSlots[WOW64_TLS_CPURESERVED] : NULL, teb ? teb->TlsSlots[14] : NULL,
+             !user ? "none" : user->iosb32 ? "guest32" : "native64" );
     errno = saved_errno;
     return TRUE;
 }
@@ -3448,6 +3452,9 @@ static void invoke_system_apc( const union apc_call *call, union apc_result *res
 #ifdef WINE_IOS
         BOOL traced = ios_trace_async_apc( call, "before-callback" );
 #endif
+        /* The callback may release user. Preserve the submitted layout now;
+         * process bitness and the current syscall scope cannot identify it. */
+        BOOL iosb32 = user->iosb32;
 
         result->type = call->type;
         status = call->async_io.status;
@@ -3456,7 +3463,7 @@ static void invoke_system_apc( const union apc_call *call, union apc_result *res
             result->async_io.status = status;
             result->async_io.total = info;
             /* the server will pass us NULL if a call failed synchronously */
-            set_async_iosb( call->async_io.sb, result->async_io.status, info );
+            ios_complete_io_status( call->async_io.sb, result->async_io.status, info, iosb32 );
         }
         else result->async_io.status = STATUS_PENDING; /* restart it */
 #ifdef WINE_IOS

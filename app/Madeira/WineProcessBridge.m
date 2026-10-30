@@ -1,4 +1,5 @@
 #include "steam_client_identity.h"
+#include "steam_dependency_probe.h"
 // WineProcessBridge.m - Initialize Wine's ntdll Unix-side on iOS
 // This calls __wine_main() to bootstrap the Wine process, connecting
 // to the already-running wineserver thread.
@@ -2374,6 +2375,22 @@ static void *wine_process_thread(void *arg) {
             strlen(launch_workdir) < sizeof(workdir) - 2)
             snprintf(workdir, sizeof(workdir), "%s", launch_workdir);
         unsetenv("MADEIRA_WORKDIR");
+        /* Probe only the standalone client's own installation. Do not scan
+         * steamapps, load DLLs, or change Wine's genuine loader search path. */
+        if (madeira_is_steam_client_image(madeira_exe) &&
+            (madeira_exe[0] == 'C' || madeira_exe[0] == 'c') && madeira_exe[1] == ':' &&
+            madeira_exe[2] == '\\') {
+            const char *last = strrchr(madeira_exe + 3, '\\');
+            if (last) {
+                char steam_root[2048];
+                int n = snprintf(steam_root, sizeof(steam_root), "%s/drive_c/%.*s", g_prefix_path,
+                                 (int)(last - madeira_exe - 3), madeira_exe + 3);
+                if (n > 0 && n < sizeof(steam_root)) {
+                    for (char *p = steam_root; *p; p++) if (*p == '\\') *p = '/';
+                    madeira_steam_probe_dependencies(steam_root);
+                }
+            }
+        }
         /* ml1163: a typed folder may end in '\\'; MADEIRA_INITIAL_CWD gets exactly one. */
         for (size_t n = strlen(workdir); n > 3 && workdir[n - 1] == '\\'; n--) workdir[n - 1] = 0;
         if (workdir[0]) {
