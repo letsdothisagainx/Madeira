@@ -13,6 +13,7 @@ block = source[start:end]
 code = r'''
 #define _POSIX_C_SOURCE 200809L
 #include <assert.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,7 +23,7 @@ typedef unsigned short WCHAR;
 typedef struct { WCHAR *Buffer; unsigned short Length, MaximumLength; } STRING;
 typedef struct { STRING ImagePathName, CommandLine; } PARAMS;
 #define STATUS_ACCESS_DENIED 0xc0000022u
-static int capture(int fd,const char *format,...) { (void)fd; (void)format; return 0; }
+static int capture(int fd,const char *format,...) { (void)fd; (void)format; errno=EIO; return 0; }
 #define dprintf capture
 static unsigned apply(PARAMS *params) { BLOCK return 0; }
 static WCHAR *wide(const char *s) {
@@ -39,7 +40,9 @@ static void check(const char *image,const char *command,const char *policy,int c
     if(policy) setenv("MADEIRA_STEAM_CEF_POLICY",policy,1); else unsetenv("MADEIRA_STEAM_CEF_POLICY");
     WCHAR *i=wide(image),*c=wide(command); size_t n=strlen(command);
     PARAMS p={{i,strlen(image)*2,strlen(image)*2+2},{c,n*2,n*2+2}};
+    errno=EAGAIN;
     assert(apply(&p)==status);
+    if(policy && !strcmp(policy,"valve")) assert(errno==EAGAIN);
     if(changed) {
         assert(p.CommandLine.Buffer!=c);
         assert(has(p.CommandLine.Buffer,"--single-process"));
