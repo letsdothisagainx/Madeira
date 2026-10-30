@@ -145,6 +145,10 @@ int main(void) {
     assert(((struct async_fileio *)(uintptr_t)delayed.user)->iosb32);
     assert(delayed.iosb==(uintptr_t)&guest.io);
     assert(!control(MADEIRA_IO_ENTER,&inner));
+    IO_STATUS_BLOCK failed={.Status=(NTSTATUS)0xc0000003,.Information=0};
+    IO_STATUS_BLOCK32 error_out={.Status=STATUS_PENDING,.Information=99};
+    put_iosb(&error_out,&failed); // real PE validation can fail before iosb_32to64
+    assert((unsigned)error_out.Status==0xc0000003u && error_out.Information==0);
     assert(iosb_client_ptr(&wrapper)==(uintptr_t)&guest.io); // nested native callback keeps outer provenance
     native.Pointer=(void *)0x10000; dispatch(queued(&native));
     assert(native.Information==54);

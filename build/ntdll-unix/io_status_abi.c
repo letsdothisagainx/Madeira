@@ -65,7 +65,12 @@ NTSTATUS ios_io_status_control( HANDLE thread, const void *data, ULONG size )
         io_scope->guest_iosb = control->guest_iosb;
         return STATUS_SUCCESS;
     case MADEIRA_IO_UNBIND:
-        if (!io_scope || io_scope->native_iosb != control->native_iosb) return STATUS_INVALID_PARAMETER;
+        if (!io_scope || !control->native_iosb) return STATUS_INVALID_PARAMETER;
+        /* Some PE validation failures call put_iosb without issuing native
+         * I/O or binding a proxy. Preserve their real status and leave an
+         * outer scope's binding alone. */
+        if (!io_scope->native_iosb) return STATUS_SUCCESS;
+        if (io_scope->native_iosb != control->native_iosb) return STATUS_INVALID_PARAMETER;
         io_scope->native_iosb = io_scope->guest_iosb = NULL;
         return STATUS_SUCCESS;
     default:

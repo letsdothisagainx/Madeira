@@ -1747,7 +1747,11 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
         int is_helper = madeira_cef_image( ip, ip_len );
         int compat = madeira_cef_compat_options( getenv( "MADEIRA_STEAM_CEF_POLICY" ) );
         if (is_helper && !compat)
+        {
+            int saved_errno = errno;
             dprintf( 2, "[steam-cef] policy=valve; command line and child creation unchanged\n" );
+            errno = saved_errno;
+        }
         if (is_helper && compat)
         {
             const WCHAR *cl = params->CommandLine.Buffer;
