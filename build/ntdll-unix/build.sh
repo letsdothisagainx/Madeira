@@ -157,12 +157,32 @@ compile_unixlib "$CRYPTO_DIR/crypt32_unixlib_ios.c" "crypt32_unixlib" "crypt32" 
     -I"$WINE_SRC/dlls/crypt32" -I"$GNUTLS_PREFIX/include" \
     -include "$CRYPTO_DIR/ios_gnutls_shim.h" \
     "${GNUTLS_DEFS[@]}"
-# OpenGL: opengl32's unix side (wrappers + generated thunks). It dispatches to
-# win32u's WGL layer, whose iOS driver is build/win32u-unix/opengl_ios.c.
-compile_unixlib "$WINE_SRC/dlls/opengl32/unix_wgl.c" "opengl32_wgl" "opengl32" \
+# OpenGL's pinned Unix thunks still assume guest pointers are host pointers.
+# Stage the existing reviewed overlay, including generated pointer thunks,
+# without modifying the submodule or downloading a registry at build time.
+OPENGL_STAGE="$(mktemp -d)"
+trap 'rm -rf "$OPENGL_STAGE"' EXIT
+python3 "$REPO_ROOT/tools/build/stage-opengl-wow64.py" "$OPENGL_STAGE"
+OPENGL_FAILED_BEFORE=$FAILED
+compile_unixlib "$OPENGL_STAGE/dlls/opengl32/unix_wgl.c" "opengl32_wgl" "opengl32" \
     -I"$WINE_SRC/dlls/opengl32"
-compile_unixlib "$WINE_SRC/dlls/opengl32/unix_thunks.c" "opengl32_thunks" "opengl32" \
+compile_unixlib "$OPENGL_STAGE/dlls/opengl32/unix_thunks.c" "opengl32_thunks" "opengl32" \
     -I"$WINE_SRC/dlls/opengl32"
+if [ "$FAILED" -ne "$OPENGL_FAILED_BEFORE" ]; then
+    # Never ship an old object left from a previous build after an overlay
+    # compile failure. Keep the actionable diagnostics in Actions annotations.
+    python3 - "$OBJ_DIR/opengl32_wgl.err" "$OBJ_DIR/opengl32_thunks.err" <<'PYCODE'
+import sys
+from pathlib import Path
+for path in sys.argv[1:]:
+    lines=Path(path).read_text(errors='replace').splitlines()
+    for line in [s for s in lines if 'error:' in s][:8]:
+        print('::error::'+line.replace('%','%25').replace('\r','%0D'))
+PYCODE
+    exit 1
+fi
+rm -rf "$OPENGL_STAGE"
+trap - EXIT
 # Vulkan: winevulkan's unix side (instance/device wrappers + generated thunks).
 # It dispatches to win32u's Vulkan layer (build/win32u-unix/vulkan_ios.c), which
 # loads the session's Vulkan library (MADEIRA_VULKAN_LIBRARY; off by default).

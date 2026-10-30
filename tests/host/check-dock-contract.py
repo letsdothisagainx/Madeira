@@ -72,7 +72,7 @@ flag = bridge.index('const char *dock_session = getenv("MADEIRA_DOCK_SESSION");'
 require(bridge.index('unsetenv("SteamAppId");', flag) < bridge.index('} else if (direct_app', flag) <
         bridge.index('setenv("SteamAppId",  direct_app, 1);', flag) < bridge.index('} else {', flag) <
         bridge.index('setenv("SteamAppId",  "356400", 1);', flag),
-        "the bridge clears the fixed Steam identity only for a Dock session (a direct start publishes its game's own)")
+        "the bridge clears the fixed Steam identity for Dock or standalone Steam (a direct game publishes its own)")
 require(content.count('setenv("MADEIRA_DOCK_SESSION", "1", 1)') == 1 and
         'if dockLaunch.dock && SteamSignIn.flag("MADEIRA_DOCK_CLEAR_STEAM_ID", default: true) {' in content and
         'unsetenv("MADEIRA_DOCK_SESSION")' in content,

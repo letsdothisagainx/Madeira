@@ -4,7 +4,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WINE="$ROOT/wine"
 # Keep the published Wine pin: apply a reviewed, versioned loader overlay only
 # during the PE build, then restore the exact original source even on failure.
-for file in dlls/ntdll/loader.c dlls/sechost/Makefile.in; do
+for file in dlls/ntdll/loader.c dlls/ntdll/unixlib.h dlls/sechost/Makefile.in; do
   git -C "$WINE" diff --quiet HEAD -- "$file" || {
     echo "Refusing to overwrite local Wine changes: $file" >&2; exit 1;
   }
@@ -13,8 +13,10 @@ HEADER="$WINE/dlls/ntdll/madeira_scm_aux_slot.h"
 [[ ! -e "$HEADER" ]] || { echo "Refusing to overwrite $HEADER" >&2; exit 1; }
 TMP="$(mktemp -d)"
 cp "$WINE/dlls/ntdll/loader.c" "$TMP/loader.c"
+cp "$WINE/dlls/ntdll/unixlib.h" "$TMP/unixlib.h"
 cleanup() {
   cp "$TMP/loader.c" "$WINE/dlls/ntdll/loader.c"
+  cp "$TMP/unixlib.h" "$WINE/dlls/ntdll/unixlib.h"
   rm -f "$HEADER"
   rm -rf "$TMP"
 }

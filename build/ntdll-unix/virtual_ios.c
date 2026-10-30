@@ -6927,14 +6927,17 @@ int ios_image_section_describe( unsigned long long va, char *buf, size_t len, un
  * reading the image's initial zero index from the pool copy. That selects
  * TLS[0] instead of this DLL's slot, so a thread_local pointer can become
  * arbitrary bytes from the main EXE's TLS template. Keep the Unix call narrow:
- * it copies only the loader's four-byte index, and verifies the executable
- * copy before the newly loaded DLL is allowed to run. */
+ * it copies only one DWORD index or one native auxiliary-IAT pointer, and
+ * verifies the executable copy before the newly loaded DLL may run. Pointer
+ * writes use the writable JIT alias too: AuxiliaryIAT lives in read-only
+ * .rdata, so a store through the executable view would fault. */
 NTSTATUS unixcall_ios_sync_pe_write(void *args)
 {
     struct ios_sync_pe_write_params *p = args;
     void *copy;
 
-    if (!p || !p->address || p->size != sizeof(ULONG)) return STATUS_INVALID_PARAMETER;
+    if (!p || !p->address || (p->size != sizeof(ULONG) && p->size != sizeof(ULONG_PTR)))
+        return STATUS_INVALID_PARAMETER;
     p->synced = 0;
     copy = ios_jit_translate_addr(p->address);
     if (copy == p->address) return STATUS_SUCCESS; /* image not copied yet */
@@ -10255,6 +10258,44 @@ ULONG_PTR ios_wow_base(void)
 {
     struct ios_wow_window *slot = ios_wow_slot_current();
     return slot ? slot->base : 0;
+}
+
+/* Observer for OpenGL's WoW64 attach boundary, on the calling Wine thread.
+ * No allocation, remap, fallback TEB or exception repair: invalid memory still
+ * follows the normal fault path. Only mapping/TEB metadata is reported. */
+void ios_wow_gl_attach_trace( void *arg, void *resolved, NTSTATUS status )
+{
+    static unsigned int enters, leaves;
+    unsigned int ticket = status == STATUS_PENDING
+        ? __atomic_fetch_add( &enters, 1, __ATOMIC_RELAXED )
+        : __atomic_fetch_add( &leaves, 1, __ATOMIC_RELAXED );
+    ULONG_PTR base, host;
+    mach_vm_address_t region;
+    mach_vm_size_t length = 0, got = 0;
+    vm_region_submap_short_info_data_64_t info;
+    mach_msg_type_number_t count = VM_REGION_SUBMAP_SHORT_INFO_COUNT_64;
+    natural_t depth = 0;
+    int mapped = 0, readable = 0;
+    LONG offset = 0;
+
+    if (ticket >= 8) return;
+    base = ios_wow_base();
+    host = (ULONG)(ULONG_PTR)arg ? base + (ULONG)(ULONG_PTR)arg : 0;
+    region = host;
+    memset( &info, 0, sizeof(info) );
+    if (host && mach_vm_region_recurse( mach_task_self(), &region, &length, &depth,
+                                       (vm_region_recurse_info_t)&info, &count ) == KERN_SUCCESS)
+        mapped = region <= host && length > host - region &&
+                 length - (host - region) >= offsetof(TEB32, WowTebOffset) + sizeof(offset);
+    if (mapped && (info.protection & VM_PROT_READ))
+        readable = mach_vm_read_overwrite( mach_task_self(), host + offsetof(TEB32, WowTebOffset),
+                                          sizeof(offset), (mach_vm_address_t)&offset, &got ) == KERN_SUCCESS &&
+                   got == sizeof(offset);
+    dprintf( 2, "[wow-gl-attach] phase=%s arg=%p base=%p host32=%p owner=%p current=%p "
+                 "mapped=%d offset-read=%d offset=%ld resolved=%p status=%08x\n",
+             status == STATUS_PENDING ? "enter" : "leave", arg, (void *)base, (void *)host,
+             ios_jit_current_peb(), NtCurrentTeb(), mapped, readable, (long)offset, resolved,
+             (unsigned int)status );
 }
 
 int ios_wow_in_window( const void *addr )

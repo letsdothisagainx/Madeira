@@ -364,3 +364,10 @@ jobs:
           test -s "$farm/dock-notices.txt"
           python3 tools/check-scm-rpc-image.py "$farm/sechost.dll" "$farm/ntdll.dll"
           "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-scm-rpc-abi.py --producer "$farm/sechost.dll" --runtime "$farm/rpcrt4.dll"
+          unzip -q scm-ipa/Madeira.ipa 'Payload/Madeira.app/i386-windows/madeira-wow64-*' 'Payload/Madeira.app/Madeira.debug.dylib' -d scm-ipa
+          "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-wow64-probe-image.py scm-ipa/Payload/Madeira.app/i386-windows
+          python3 - <<'PY'
+          from pathlib import Path
+          assert b'[wow-gl-attach] phase=' in Path('scm-ipa/Payload/Madeira.app/Madeira.debug.dylib').read_bytes(), 'missing native attach diagnostics'
+          print('PASS native attach diagnostics included in IPA')
+          PY
