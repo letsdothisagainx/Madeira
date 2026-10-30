@@ -51,8 +51,7 @@ known corrupt path. Page protection is restored. It does not rewrite the public
 x64 export or retain pointers across unloads. A bounded [scm-rpc-bind] marker
 records this genuine binding, without argument contents. ntdll is rebuilt with
 this overlay, and the pinned Wine checkout is restored even on build failure.
-The call preserves x4/x5 and the real argument window. This
-avoids the corrupt lazy ABI detour at its producer/linkage boundary; it is not
+The call preserves x4/x5 and the real argument window. This avoids the corrupt lazy ABI detour at its producer/linkage boundary; it is not
 a general repair of every FEX varargs transition to genuinely x64 code.
 
 A PE gate rejects a producer that still delay-loads rpcrt4 or lacks the normal
@@ -65,14 +64,21 @@ pipe or signature is fabricated. Valve binaries are unchanged.
 The test executes actual DLL ARM64 instructions with Unicorn. Its negative
 fixture executes the build-10 compiled exit thunk and reproduces the wrong
 (pointer, 0x10) x64 stack slots. Its positive path executes the real generated
-SCM stub and native NdrClientCall2 entry with the patched loader's native auxiliary-IAT
-binding modeled explicitly. A separate host test compiles the shared RVA
-validation used by the loader and checks bounds/alignment/overflow failures. It checks masks 1, 0x10, 0xf003f and 0x12345678,
+SCM stub and native NdrClientCall2 entry with the patched loader's native
+auxiliary-IAT binding modeled explicitly. A separate host test compiles the
+shared RVA validation used by the loader and checks bounds/alignment/overflow
+failures. The machine-code test checks masks 1, 0x10, 0xf003f and 0x12345678,
 all four RPC argument positions, the output-address canary, NDR procedure 15,
 all five format offsets, and the scalar's 32-bit width (padding is unspecified).
 Execution stops at NdrpClientCall2; no server response is synthesized. This is
 machine-code/ABI regression evidence, not an end-to-end iPhone/FEX/SCM run.
 CI repeats it against the newly built sechost from the actual IPA on Linux.
+
+Both patched ntdll and eager-importing sechost compiled successfully on Linux
+using the 20260421 LLVM-MinGW release. The image gates and ABI regression also
+passed against that newly built sechost and the shipped rpcrt4. Dock, the real
+service helper and the minimal probe cross-compiled with the same toolchain.
+This does not substitute for a macOS IPA build or execution on the device.
 
 The separately packaged x64 `madeira-scm-probe.exe` calls only the real
 OpenSCManagerW(NULL,NULL,SC_MANAGER_CONNECT), reporting before/after results.
