@@ -93,6 +93,8 @@
 # include <sys/ucontext.h>
 #endif
 
+#include <time.h>
+
 #include "ntstatus.h"
 #include "windef.h"
 #include "winnt.h"
@@ -1746,6 +1748,7 @@ void ios_reclaim_pages_report( const char *when, unsigned long long fault_addr )
 
 /* ml369 (#63): defined after setup_exception (needs save_context and
  * struct exc_stack_layout); used by the exception loop below. */
+static int ios_redirect_process_failure(arm_thread_state64_t *state, unsigned status);
 static int ios_mach_deliver_guest_exception( thread_t thread, arm_thread_state64_t *state,
                                              arm_neon_state64_t *neon, int have_neon,
                                              int exception, uintptr_t fault_addr,
@@ -5891,14 +5894,13 @@ dispatch_guest_fault:
                     zsz == sizeof(zpeb) && ios_peb_is_dead( zpeb ))
                 {
                     static int zombie_n;
-                    kern_return_t zkr = thread_terminate( thread );
-                    if (zkr != KERN_SUCCESS) zkr = thread_suspend( thread );
+                    int zkr = ios_redirect_process_failure(&state, STATUS_ACCESS_VIOLATION);
                     if (zombie_n++ < 16)
                         dprintf( 2, "[zombie] teb=%p of exited peb=%p faulted pc=0x%llx addr=0x%llx -- "
                                     "ended this thread only (kr=%d)\n", (void *)thread_teb, zpeb,
                                  (unsigned long long)__darwin_arm_thread_state64_get_pc( state ),
                                  (unsigned long long)fault_addr, (int)zkr );
-                    handled = 1;   /* thread_set_state on the ended thread below is harmless */
+                    handled = zkr; /* native thread retirement runs after Mach return */
                 }
             }
 
@@ -6051,20 +6053,15 @@ dispatch_guest_fault:
                              * dies cleanly instead of eating the whole run. Native
                              * unix-code faults (dylib pc) can never be delivered
                              * to guest SEH anyway. */
-                            if (n >= 50)
+                            if (n >= 50 && ios_thread_is_registered(thread))
                             {
-                                extern void abort_thread( int status );
-                                uint64_t cur_sp = __darwin_arm_thread_state64_get_sp(state);
                                 dprintf(STDERR_FILENO,
                                     "[fault-stuck] BREAKING LOOP: page 0x%llx pc 0x%llx repeated %u times "
-                                    "-> diverting thread to abort_thread\n",
+                                    "-> preserving AV and ending its owner\n",
                                     (unsigned long long)fpage, (unsigned long long)fault_pc_check, n);
-                                state.__x[0] = 1;
-                                __darwin_arm_thread_state64_set_sp(state, cur_sp & ~0xfull);
-                                __darwin_arm_thread_state64_set_pc_fptr(state, (void *)abort_thread);
-                                thread_set_state( thread, ARM_THREAD_STATE64,
-                                                  (thread_state_t)&state, count );
-                                handled = 1;
+                                handled = ios_redirect_process_failure(&state, STATUS_ACCESS_VIOLATION);
+                                if (handled) thread_set_state(thread, ARM_THREAD_STATE64,
+                                                               (thread_state_t)&state, count);
                                 stk[ss].n = 0;
                             }
                             /* ml369: was 2048, which NEVER fired — the
@@ -8647,6 +8644,118 @@ static int ios_emulate_unaligned_guest_access(ucontext_t *ctx, uint32_t insn, ui
 static int ios_native_unaligned_emulate( ucontext_t *ctx, uint32_t insn, uintptr_t addr, uint64_t pc );
 static uint64_t ios_app_text_lo, ios_app_text_hi;
 
+#include "fault_replay.h"
+
+static DECLSPEC_NORETURN void ios_stop_faulting_process(unsigned status)
+{
+    /* Executed by the original Wine thread AFTER signal/Mach return, on its
+     * validated native stack. No server RPC or process teardown in a handler. */
+    extern int ios_peb_is_dead(const void *owner);
+    if (NtCurrentTeb() && ios_peb_is_dead(NtCurrentTeb()->Peb)) abort_thread(status);
+    NtTerminateProcess(GetCurrentProcess(), status);
+    abort_process(status);
+}
+
+static int ios_fault_read(uint64_t address, void *dest, size_t size)
+{
+    mach_vm_size_t got = 0;
+    return address && mach_vm_read_overwrite(mach_task_self(), address, size,
+                 (mach_vm_address_t)(uintptr_t)dest, &got) == KERN_SUCCESS && got == size;
+}
+
+static char *ios_fault_hex(char *out, uint64_t value)
+{
+    static const char hex[] = "0123456789abcdef";
+    int shift;
+    for (shift = 60; shift >= 0; shift -= 4) *out++ = hex[(value >> shift) & 15];
+    *out++ = ' ';
+    return out;
+}
+
+static void ios_fex_fault_log(int terminal, const struct ios_fault_signature *key,
+                              uint64_t fex, const ucontext_t *context)
+{
+    /* Fixed-size address/register data only. write(), no stdio, allocation,
+     * guest strings, or arbitrary pointer contents in a POSIX signal handler. */
+    const char *label = terminal ? "[fex-fault] repeated guest AV; ending owner only " :
+                                   "[fex-fault] original guest AV ";
+    char line[1400], *out = line;
+    unsigned i;
+    while (*label) *out++ = *label++;
+    label = "owner teb native-pc addr guest-rip guest-rsp native-sp threadstate | x0..x28 fp lr: ";
+    while (*label) *out++ = *label++;
+    out = ios_fault_hex(out, key->owner); out = ios_fault_hex(out, key->teb);
+    out = ios_fault_hex(out, key->pc); out = ios_fault_hex(out, key->addr);
+    out = ios_fault_hex(out, key->rip); out = ios_fault_hex(out, key->rsp);
+    out = ios_fault_hex(out, key->sp); out = ios_fault_hex(out, fex);
+    for (i = 0; i < 29; ++i) out = ios_fault_hex(out, REGn_sig(i, context));
+    out = ios_fault_hex(out, FP_sig(context)); out = ios_fault_hex(out, LR_sig(context));
+    *out++ = '\n';
+    write(STDERR_FILENO, line, out - line);
+}
+
+static int ios_redirect_process_failure(arm_thread_state64_t *state, unsigned status)
+{
+    uint64_t sp = arm_thread_state64_get_sp(*state);
+    mach_vm_address_t base = sp > 0x4000 ? sp - 0x4000 : 0;
+    mach_vm_size_t size = 0;
+    vm_region_basic_info_data_64_t info;
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t object = MACH_PORT_NULL;
+    kern_return_t kr = mach_vm_region(mach_task_self(), &base, &size, VM_REGION_BASIC_INFO_64,
+                                      (vm_region_info_t)&info, &count, &object);
+    if (object != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), object);
+    if (sp < 0x4000 || kr != KERN_SUCCESS || base > sp - 0x4000 ||
+        sp - base > size || !(info.protection & VM_PROT_WRITE)) return 0;
+    __darwin_arm_thread_state64_set_pc_fptr(*state, ios_stop_faulting_process);
+    __darwin_arm_thread_state64_set_sp(*state, (sp - 0x100) & ~15ull);
+    state->__x[0] = status;
+    return 1;
+}
+
+static int ios_bound_fex_guest_fault(ucontext_t *context, uintptr_t teb,
+                                     uintptr_t fault_addr, struct ios_fault_replay *replay)
+{
+    extern int ios_fex_code_owner_matches(uintptr_t pc, void *owner);
+    struct ios_fault_signature key = {0};
+    uint32_t insns[2];
+    uint64_t fex = 0, frame_address = 0, frame[20], self = 0;
+    struct timespec now;
+    int action;
+    key.pc = PC_sig(context);
+    /* CurrentFrame is InternalThreadState's first member; do not hardcode
+     * the offset of its embedded BaseFrameState (changes with build options).
+     * Pinned FEX GuestSignal_SIGSEGV: mov w1,#0; ldr x1,[x1]. x1=0 is
+     * intentional, not an x18/CPUArea repair opportunity. Require the owned
+     * i386 ThreadState from TLS14 and its actual CpuStateFrame, too. */
+    if (fault_addr || REGn_sig(1, context) || !teb ||
+        !ios_fault_read(key.pc - 4, insns, sizeof(insns)) ||
+        insns[0] != 0x52800001 || insns[1] != 0xf9400021 ||
+        !ios_fault_read(teb + offsetof(TEB, Tib.Self), &self, sizeof(self)) || self != teb ||
+        !ios_fault_read(teb + offsetof(TEB, Peb), &key.owner, sizeof(key.owner)) ||
+        !ios_fex_code_owner_matches(key.pc, (void *)(uintptr_t)key.owner) ||
+        !ios_fault_read(teb + offsetof(TEB, TlsSlots) + 14 * sizeof(void *), &fex, sizeof(fex)) ||
+        !fex || !ios_fault_read(fex, &frame_address, sizeof(frame_address)) ||
+        !frame_address || REGn_sig(28, context) != frame_address ||
+        !ios_fault_read(frame_address, frame, sizeof(frame))) return 0;
+    key.teb = teb;
+    key.addr = fault_addr;
+    key.sp = SP_sig(context);
+    key.rip = frame[0x18 / 8];
+    key.rsp = frame[0x20 / 8 + 4];
+    if (clock_gettime(CLOCK_MONOTONIC, &now)) return 0;
+    action = ios_fault_replay_note(replay, &key, (uint64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000);
+    if (!action) return 0;
+    ios_fex_fault_log(action == 2, &key, fex, context);
+    if (action == 2)
+    {
+        /* Preserve the original AV and end its owner through normal Wine
+         * termination, after returning to a validated native stack. */
+        return ios_redirect_process_failure(&context->uc_mcontext->__ss, STATUS_ACCESS_VIOLATION);
+    }
+    return 0;
+}
+
 static int ios_mach_deliver_guest_exception_inner( thread_t thread, arm_thread_state64_t *state,
                                                    arm_neon_state64_t *neon, int have_neon,
                                                    int exception, uintptr_t fault_addr,
@@ -8832,49 +8941,14 @@ static int ios_mach_deliver_guest_exception_inner( thread_t thread, arm_thread_s
                 }
             }
 
-            /* ml378: BEST-EFFORT DELIVERY instead of declining.
-             *
-             * ml372 declined here because a frame outside the TEB's stack made
-             * call_seh_handlers reject it and NtRaiseException kill the process.
-             * But declining is not the safe option it looked like: while
-             * StikDebug is attached the declined fault cannot be converted to a
-             * BSD signal at all, so it repeats until the script kills the WHOLE
-             * app after 8 stops — which is exactly how ml378 died
-             * (`DECLINE pc=0x14f5e36cc … no TEB owns this stack`, 8 repeats).
-             *
-             * The reason for declining is also gone: the ml377 ntdll fix makes a
-             * first-step bad frame an ordinary UNHANDLED exception rather than
-             * EXCEPTION_STACK_INVALID + immediate terminate. So delivering on the
-             * guest's own stack now degrades to "the guest sees an unhandled
-             * exception" (its filter runs, its pseudo-process dies) instead of
-             * taking everything down.
-             *
-             * Use any SELF-CONSISTENT TEB (Tib.Self check already done above);
-             * virtual_setup_exception's "outside thread stack" branch handles the
-             * frame placement and verifies writability. */
-            uint64_t cand2[2] = { state->__x[18], (uint64_t)thread_teb };
-            int j;
-            for (j = 0; j < 2 && !teb; j++)
-            {
-                uint64_t self = 0;
-                mach_vm_size_t got = 0;
-                if (cand2[j] < 0x10000 || (cand2[j] & 0xfff)) continue;
-                if (mach_vm_read_overwrite( mach_task_self(),
-                        (mach_vm_address_t)(cand2[j] + 0x30), 8,
-                        (mach_vm_address_t)&self, &got ) == KERN_SUCCESS
-                    && got == 8 && self == cand2[j])
-                    teb = (TEB *)(uintptr_t)cand2[j];
-            }
-            if (deliver_logs < 24)
-            {
-                deliver_logs++;
-                dprintf( 2, "[mach-deliver] rev=ml378 no TEB owns sp=0x%llx (pc=0x%llx x18=0x%llx "
-                            "registry=0x%llx) -> %s\n",
-                         (unsigned long long)sp, (unsigned long long)pc,
-                         (unsigned long long)state->__x[18], (unsigned long long)thread_teb,
-                         teb ? "BEST-EFFORT delivery on guest stack" : "DECLINE (no usable TEB at all)" );
-            }
-            if (!teb) return 0;
+            /* An x18/registry TEB does not own an arbitrary native stack.
+             * Never place guest SEH frames into an unverified stack. Declining
+             * preserves a genuine native fault in the iOS crash report. */
+            if (deliver_logs++ < 24)
+                dprintf(2, "[mach-deliver] no owned guest stack pc=%llx sp=%llx teb=%llx; native fault preserved\n",
+                        (unsigned long long)pc, (unsigned long long)sp,
+                        (unsigned long long)thread_teb);
+            return 0;
         }
         thread_teb = (uintptr_t)teb;
     }
@@ -9203,6 +9277,27 @@ static int ios_mach_deliver_guest_exception_inner( thread_t thread, arm_thread_s
     }
 
 dispatch:
+    if (!is_align)
+    {
+        static struct { thread_t thread; uintptr_t teb; struct ios_fault_replay replay; } faults[IOS_MAX_WINE_THREADS];
+        unsigned i;
+        for (i = 0; i < IOS_MAX_WINE_THREADS; ++i)
+            if (ios_thread_registry[i].mach_thread == thread && ios_thread_registry[i].teb == thread_teb)
+            {
+                if (faults[i].thread != thread || faults[i].teb != thread_teb)
+                {
+                    memset(&faults[i], 0, sizeof(faults[i]));
+                    faults[i].thread = thread;
+                    faults[i].teb = thread_teb;
+                }
+                if (ios_bound_fex_guest_fault(&uc, thread_teb, fault_addr, &faults[i].replay))
+                {
+                    *state = mc.__ss;
+                    return 1;
+                }
+                break;
+            }
+    }
     /* resolve the dispatcher for the TARGET's pseudo-process (this thread
      * has no pseudo-process identity, so IOS_PFUNC would always fall back
      * to the session ntdll) */
@@ -9268,99 +9363,6 @@ dispatch:
                  (unsigned long long)pc, rec.ExceptionAddress,
                  (unsigned long long)fault_addr, frame_addr, (void *)thread_teb, dispatcher );
     deliver_logs++;
-
-    /* iOS-Madeira ml461 (#76): identical-fault redelivery TERMINAL. A host-C++
-     * fault misdelivered down the guest SEH path can never be handled — the
-     * guest restores the context and refaults, forever. ml452 stormed 65k×,
-     * ml459 70k×, ml460 326,500× (rpmalloc free-list bucket holding x86 code
-     * bytes; the wedged thread was the chrome-ipc pump and the run died of
-     * log/CPU burn instead of saying anything). No legitimate guest pattern
-     * redelivers the SAME (thread,pc,addr) thousands of times — handled
-     * retries (redirects, USD, unaligned) never reach this point. This sits
-     * at delivery-complete so every route counts, including the goto-dispatch
-     * one that bypasses the rep[] debounce above. Single server thread: no
-     * atomics needed. At the threshold: dump raw memory near the faulting
-     * thread's pointer registers (the ml460 corruption lived at [x10+x9*8]
-     * and register dumps were capped away long before the storm settled),
-     * then terminate honestly. */
-    /* 2026-09-19: EXEMPT ALIGNMENT FAULTS. The premise of this terminal is "no
-     * legitimate guest pattern redelivers the SAME (thread,pc,addr) thousands
-     * of times" — and the comment above already lists "unaligned" among the
-     * handled retries that "never reach this point". That was true only while
-     * this path mislabelled them c0000005; now that 80000002 is delivered from
-     * here, an unaligned atomic in a guest spin-acquire legitimately redelivers
-     * once per loop iteration (FEX emulates, it cannot back-patch an LSE
-     * atomic), and counting those would kill the pseudo-process for making
-     * progress. */
-    if (!is_align)
-    {
-        /* Count CONSECUTIVE identical deliveries per thread, not lifetime hits
-         * of a (thread,pc,addr) key. Slots used to be chosen by the key itself,
-         * so a fault that recurs once per frame with real progress in between
-         * kept its count for as long as no other key landed in its slot. Dark
-         * Souls Remastered's Settings menu re-writes Arxan-guarded .text every
-         * frame; each write is a self-modifying-code fault FEX handles, the
-         * game keeps running, yet 7 keys cycling once per frame reached 2000 in
-         * ~35 s and this guard killed a healthy game. A real storm refaults the
-         * same instruction back to back on one thread, so the slot is chosen by
-         * thread and any other fault on that thread restarts the run. */
-        static struct { uint64_t thread, key; uint32_t n; } redeliv[16];
-        static volatile int ios_redeliv_terminating;
-        uint64_t rkey = ((uint64_t)thread << 48) ^ pc ^ ((uint64_t)fault_addr << 1);
-        int rslot = (int)(((uint64_t)thread * 0x9E3779B97F4A7C15ull) >> 60);
-        if (redeliv[rslot].thread != (uint64_t)thread || redeliv[rslot].key != rkey)
-        {
-            redeliv[rslot].thread = (uint64_t)thread;
-            redeliv[rslot].key = rkey;
-            redeliv[rslot].n = 1;
-        }
-        else if (++redeliv[rslot].n == 256)
-            dprintf( 2, "[redeliv] 256 identical redeliveries pc=0x%llx addr=0x%llx — storm forming rev=ml461\n",
-                     (unsigned long long)pc, (unsigned long long)fault_addr );
-        else if (redeliv[rslot].n >= 2000 && !ios_redeliv_terminating)
-        {
-            /* ml463: was `== 2000` + exit(76) — one shot, and exit() on iOS is
-             * the wine_ios_exit shim which LONGJMPS instead of terminating (the
-             * ml462 run sailed straight past its own death sentence and kept
-             * storming with a fexlock held, 11 threads parked behind it).
-             *
-             * ml465: `>=` without a latch was worse — EVERY delivery past 2000
-             * re-dumped the forensics, and the ml464 run wrote 4 MILLION lines
-             * (22k dumps) because the kill did not stop delivery instantly.
-             * Latch it: dump exactly once, then kill and keep killing. Mach
-             * task_terminate first (unshimmable), then the raw _exit syscall,
-             * then park this thread forever so it can never deliver again —
-             * whichever lands first, no second dump is possible. */
-            ios_redeliv_terminating = 1;
-            static const int fregs[] = { 0, 8, 9, 10, 16, 19, 20 };
-            unsigned fi;
-            dprintf( 2, "[redeliv] 2000 identical redeliveries pc=0x%llx addr=0x%llx — unrecoverable host fault misdelivered to guest rev=ml461\n",
-                     (unsigned long long)pc, (unsigned long long)fault_addr );
-            for (fi = 0; fi < sizeof(fregs) / sizeof(fregs[0]); fi++)
-            {
-                uint64_t rv = state->__x[fregs[fi]];
-                uint64_t words[8];
-                mach_vm_size_t got = 0;
-                if (rv < 0x1000 || rv >= 0x800000000000ull) continue;
-                if (mach_vm_read_overwrite( mach_task_self(), (mach_vm_address_t)(rv & ~7ull), 64,
-                                            (mach_vm_address_t)(uintptr_t)words, &got ) != KERN_SUCCESS || got != 64)
-                {
-                    dprintf( 2, "[redeliv-mem] x%d=0x%llx: <unmapped>\n", fregs[fi], (unsigned long long)rv );
-                    continue;
-                }
-                dprintf( 2, "[redeliv-mem] x%d=0x%llx: %016llx %016llx %016llx %016llx %016llx %016llx %016llx %016llx\n",
-                         fregs[fi], (unsigned long long)rv,
-                         (unsigned long long)words[0], (unsigned long long)words[1],
-                         (unsigned long long)words[2], (unsigned long long)words[3],
-                         (unsigned long long)words[4], (unsigned long long)words[5],
-                         (unsigned long long)words[6], (unsigned long long)words[7] );
-            }
-            dprintf( 2, "[redeliv] terminating process rev=ml465\n" );
-            task_terminate( mach_task_self() );
-            _exit( 76 );
-            for (;;) pause();
-        }
-    }
 
     /* iOS-Madeira ml422 (#70): a webhelper thread died STATUS_STACK_OVERFLOW
      * right after the first CreateBrowser (ml421). Name the dying thread's
@@ -11934,78 +11936,11 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
     rec.ExceptionInformation[1] = (ULONG_PTR)siginfo->si_addr;
 #ifdef WINE_IOS
     {
-        static uintptr_t last_fault_pc = 0;
-        static int fault_repeat_count = 0;
-        uintptr_t this_pc = PC_sig(context);
-        if (this_pc == last_fault_pc)
+        if (ios_teb_for_signals)
         {
-            fault_repeat_count++;
-            static unsigned long loop_storm;
-            if (fault_repeat_count == 3 && ios_sig_storm_gate( &loop_storm ))
-            {
-                ERR("SEGV LOOP DETECTED: pc=%p addr=%p repeated %d times, dumping TEB+PEB\n",
-                    (void*)this_pc, siginfo->si_addr, fault_repeat_count);
-                /* Dump TEB */
-                if (ios_teb_for_signals)
-                {
-                    uint64_t *teb = (uint64_t *)ios_teb_for_signals;
-                    ERR("  TEB[0x00]=%p TEB[0x08]=%p TEB[0x10]=%p TEB[0x18]=%p\n",
-                        (void*)teb[0], (void*)teb[1], (void*)teb[2], (void*)teb[3]);
-                    ERR("  TEB[0x20]=%p TEB[0x28]=%p TEB[0x30]=%p TEB[0x38]=%p\n",
-                        (void*)teb[4], (void*)teb[5], (void*)teb[6], (void*)teb[7]);
-                    ERR("  TEB[0x40]=%p TEB[0x48]=%p TEB[0x50]=%p TEB[0x58]=%p\n",
-                        (void*)teb[8], (void*)teb[9], (void*)teb[10], (void*)teb[11]);
-                    ERR("  TEB[0x60]=%p TEB[0x68]=%p TEB[0x70]=%p TEB[0x78]=%p\n",
-                        (void*)teb[12], (void*)teb[13], (void*)teb[14], (void*)teb[15]);
-                    /* Dump PEB (TEB+0x60 is PEB pointer) */
-                    uint64_t peb_addr = teb[12]; /* TEB[0x60] */
-                    if (peb_addr > 0x10000)
-                    {
-                        uint64_t *peb = (uint64_t *)peb_addr;
-                        ERR("  PEB @ %p:\n", (void*)peb_addr);
-                        ERR("  PEB[0x00]=%p PEB[0x08]=%p PEB[0x10]=%p PEB[0x18]=%p\n",
-                            (void*)peb[0], (void*)peb[1], (void*)peb[2], (void*)peb[3]);
-                        ERR("  PEB[0x20]=%p PEB[0x28]=%p PEB[0x30]=%p PEB[0x38]=%p\n",
-                            (void*)peb[4], (void*)peb[5], (void*)peb[6], (void*)peb[7]);
-                        ERR("  PEB[0x40]=%p PEB[0x48]=%p PEB[0x50]=%p PEB[0x58]=%p\n",
-                            (void*)peb[8], (void*)peb[9], (void*)peb[10], (void*)peb[11]);
-                        ERR("  PEB[0x60]=%p PEB[0x68]=%p PEB[0x70]=%p PEB[0x78]=%p\n",
-                            (void*)peb[12], (void*)peb[13], (void*)peb[14], (void*)peb[15]);
-                        /* Dump PEB->Ldr (PEB+0x18) if it looks valid */
-                        uint64_t ldr_addr = peb[3]; /* PEB[0x18] */
-                        ERR("  PEB->Ldr = %p\n", (void*)ldr_addr);
-                        if (ldr_addr > 0x10000)
-                        {
-                            uint64_t *ldr = (uint64_t *)ldr_addr;
-                            ERR("  LDR[0x00]=%p LDR[0x08]=%p LDR[0x10]=%p LDR[0x18]=%p\n",
-                                (void*)ldr[0], (void*)ldr[1], (void*)ldr[2], (void*)ldr[3]);
-                            ERR("  LDR[0x20]=%p LDR[0x28]=%p LDR[0x30]=%p LDR[0x38]=%p\n",
-                                (void*)ldr[4], (void*)ldr[5], (void*)ldr[6], (void*)ldr[7]);
-                        }
-                        else
-                        {
-                            ERR("  PEB->Ldr is INVALID (0x%lx)!\n", (unsigned long)ldr_addr);
-                        }
-                    }
-                }
-            }
-            if (fault_repeat_count >= 5)
-            {
-                ERR("SEGV LOOP FATAL: pc=%p addr=%p after %d repeats, forcing thread exit\n",
-                    (void*)this_pc, siginfo->si_addr, fault_repeat_count);
-                /* Skip the faulting instruction and set return value to indicate failure */
-                PC_sig(context) = PC_sig(context) + 4;
-                REGn_sig(0, context) = 0xDEAD0001;
-                ios_fixup_x18_for_return( context );
-                last_fault_pc = 0;
-                fault_repeat_count = 0;
-                return;
-            }
-        }
-        else
-        {
-            last_fault_pc = this_pc;
-            fault_repeat_count = 1;
+            static _Thread_local struct ios_fault_replay replay;
+            if (ios_bound_fex_guest_fault(context, ios_teb_for_signals,
+                                          (uintptr_t)siginfo->si_addr, &replay)) return;
         }
     }
 #endif
@@ -15363,6 +15298,7 @@ void init_syscall_frame( LPTHREAD_START_ROUTINE entry, void *arg, BOOL suspend, 
      * pLdrSystemDllInitBlock->pRtlUserThreadStart is already published guest.
      * Without a guest window wow_base is 0 and this is the upstream code. */
     ULONG_PTR wow_base = ios_wow_base_for_peb( teb->Peb );
+    const SYSTEM_DLL_INIT_BLOCK *wow_init = ios_wow64_init_block_for_peb(teb->Peb);
 #define IOS_WOW_GUEST_IN(ptr) ios_wow_guest_in( (ptr), wow_base )
 
     if ((i386_context = get_cpu_area( IMAGE_FILE_MACHINE_I386 )))
@@ -15370,9 +15306,11 @@ void init_syscall_frame( LPTHREAD_START_ROUTINE entry, void *arg, BOOL suspend, 
         XMM_SAVE_AREA32 *fpu = (XMM_SAVE_AREA32 *)i386_context->ExtendedRegisters;
         i386_context->ContextFlags = CONTEXT_I386_ALL;
         i386_context->Eax = IOS_WOW_GUEST_IN( entry );
-        i386_context->Ebx = IOS_WOW_GUEST_IN( arg == peb ? (void *)wow_peb : arg );
+        i386_context->Ebx = IOS_WOW_GUEST_IN( arg == teb->Peb ? (char *)teb->Peb + page_size : arg );
         i386_context->Esp = get_wow_teb( teb )->Tib.StackBase - 16;
-        i386_context->Eip = pLdrSystemDllInitBlock->pRtlUserThreadStart;
+        if (!wow_base || !wow_init || !wow_init->pRtlUserThreadStart)
+            abort_process( STATUS_INVALID_ADDRESS );
+        i386_context->Eip = wow_init->pRtlUserThreadStart;
         i386_context->SegCs = 0x23;
         i386_context->SegDs = 0x2b;
         i386_context->SegEs = 0x2b;
@@ -15390,7 +15328,7 @@ void init_syscall_frame( LPTHREAD_START_ROUTINE entry, void *arg, BOOL suspend, 
         arm_context->R0 = IOS_WOW_GUEST_IN( entry );
         arm_context->R1 = IOS_WOW_GUEST_IN( arg == peb ? (void *)wow_peb : arg );
         arm_context->Sp = get_wow_teb( teb )->Tib.StackBase;
-        arm_context->Pc = pLdrSystemDllInitBlock->pRtlUserThreadStart;
+        arm_context->Pc = wow_init ? wow_init->pRtlUserThreadStart : 0;
         if (arm_context->Pc & 1) arm_context->Cpsr |= 0x20; /* thumb mode */
     }
 #undef IOS_WOW_GUEST_IN

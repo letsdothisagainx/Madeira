@@ -5103,12 +5103,35 @@ static int init_thread_pipe(void)
  *
  * Close server socket and exit process normally.
  */
+#ifdef WINE_IOS
+/* No live Wine thread may execute from resources we hand to a new process.
+ * Socket EOF reports death immediately; pool/window reuse waits for the last
+ * registered Wine thread. If a thread cannot exit, retain its memory. */
+static void ios_finish_process_memory(void *dead_peb)
+{
+    extern void ios_fd_cache_release(void *owner);
+    extern void ios_subfloor_release_owner(void *owner);
+    extern void ios_jit_reclaim_process(void *owner);
+    extern void ios_exe_win_mark_ready(void *owner);
+    ios_fd_cache_release(dead_peb);
+    ios_subfloor_release_owner(dead_peb);
+    ios_jit_reclaim_process(dead_peb);
+    ios_wow_window_release(dead_peb);
+    ios_exe_win_mark_ready(dead_peb);
+    wine_log_write("[process-quarantine] peb=%p last Wine thread retired; memory released", dead_peb);
+}
+#endif
+
 void process_exit_wrapper( int status )
 {
 #ifdef WINE_IOS
     /* Close THIS pseudo-process's master socket — the EOF is how wineserver
      * learns the process died (signals its process object, wakes waiters).
      * Clear the registry slot so a stray second call can't double-close. */
+    extern int ios_thread_process_exit_ready(void *owner);
+    extern void ios_retire_own_fixed_base_image(void *owner);
+    void *caller_peb = ios_jit_current_peb();
+    int memory_ready = ios_thread_process_exit_ready(caller_peb);
     int i = ios_proc_socket_index();
     if (i >= 0)
     {
@@ -5120,42 +5143,13 @@ void process_exit_wrapper( int status )
         /* ml987: hand back the fixed-base main image BEFORE the socket closes.
          * NtUnmapViewOfSection needs a live server connection, and this is the
          * last moment we have one while still on the owning process's thread. */
-        ios_retire_own_fixed_base_image( dead_peb );
+        if (memory_ready) ios_retire_own_fixed_base_image( dead_peb );
         ios_fdt_note_close( ios_proc_sockets[i].fd, "exit-master", dead_peb );
         close( ios_proc_sockets[i].fd );
         ios_proc_sockets[i].peb = NULL;
         ios_dead_pebs[__sync_fetch_and_add( &ios_dead_peb_next, 1 ) % IOS_DEAD_PEB_MAX] = dead_peb;
-        /* ml571: drop this pseudo-process's fd cache and close what it held.
-         * Must happen on the SAME identity used to key it, and before the JIT
-         * reclaim below reuses anything. */
-        {
-            extern void ios_fd_cache_release( void *peb );
-            ios_fd_cache_release( dead_peb );
-        }
-        {   /* ml1205: its ml938 sub-floor windows go with it */
-            extern void ios_subfloor_release_owner( void *owner );
-            ios_subfloor_release_owner( dead_peb );
-        }
-        /* Task #25: release this pseudo-process's JIT pool allocations
-         * (module copies, trampolines, FEX CodeBuffers). Children only —
-         * the session (else-branch) lives as long as the app. Reuse is
-         * grace-delayed inside the allocator for laggard exit threads. */
-        ios_jit_reclaim_process( dead_peb );
-        /* and its guest window, if it had one.  Here rather
-         * than only in ios_child_thread_entry because THIS is the chokepoint
-         * every pseudo-process exit reaches, on whichever thread called
-         * ExitProcess — a guest worker thread that ends the process does not
-         * return to the boot thread's setjmp at all.  Keyed by the dying PEB,
-         * not by the calling thread.  Nothing is unmapped here; see
-         * ios_wow_window_mark_released(). */
-        ios_wow_window_release( dead_peb );
-        /* ml988 phase 2: only now may the retired fixed base be handed on. Until
-         * this point the old generation's pool mappings and FEX translations are
-         * still live, so a new claimant taking the same VA would race them. */
-        {
-            extern void ios_exe_win_mark_ready( void *peb );
-            ios_exe_win_mark_ready( dead_peb );
-        }
+        if (memory_ready) ios_finish_process_memory(dead_peb);
+        else wine_log_write("[process-quarantine] peb=%p still has live Wine threads; memory retained", dead_peb);
     }
     else
     {
@@ -5174,6 +5168,12 @@ void process_exit_wrapper( int status )
             wine_log_write( "[Wine ntdll/server] process_exit_wrapper(%d): orphaned thread "
                             "of an exited process (peb=%p); exiting this thread only",
                             status, caller );
+            if (memory_ready)
+            {
+                extern void ios_retire_own_fixed_base_image_after_exit(void *owner);
+                ios_retire_own_fixed_base_image_after_exit(caller);
+                ios_finish_process_memory(caller);
+            }
             pthread_exit( NULL );
         }
         /* No slot: this is the session's initial process, the program the app

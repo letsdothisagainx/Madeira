@@ -6,6 +6,9 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[2]
 commands = [
+    ['python3', 'tests/host/check-process-isolation.py'],
+    ['python3', 'tests/host/check-fex-fault-replay.py'],
+    ['python3', 'tests/host/check-fault-stuck-per-thread.py'],
     ['python3', 'tests/host/check-x18-loads.py'],
     ['python3', 'tests/host/check-x18-arith.py'],
     ['python3', 'tests/host/check-x18-derived-base.py'],
