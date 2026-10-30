@@ -285,6 +285,62 @@ int main(void) {
 threads = threads.replace('static sigset_t server_block_set;\n#include <signal.h>', '#include <signal.h>\nstatic sigset_t server_block_set;')
 run('deferred TEB handoff/counts are per process; protected stale TEB never read; live threads quarantine memory', threads)
 
+# The final retiring thread no longer has a live master socket. Exercise the
+# real fixed-image state machine, including refusal to touch a foreign image.
+fixed = common + r"""
+#include <stdlib.h>
+#include <signal.h>
+#include <errno.h>
+#define STATUS_NOT_MAPPED_VIEW 0xc0000019u
+#define VPROT_SYSTEM 0x100
+#define IOS_EXEWIN_OWNED 1
+#define IOS_EXEWIN_RETIRING 2
+#define IOS_EXEWIN_FREE 3
+#define IOS_EXEWIN_HELD_NOT_READY 4
+static pthread_mutex_t ios_exewin_lock=PTHREAD_MUTEX_INITIALIZER, virtual_mutex=PTHREAD_MUTEX_INITIALIZER;
+static int ios_exewin_st, ios_exe_win_img_dead, ios_retire_trace_armed, ios_retire_trace_fd, ios_retire_trace_lastwr;
+static unsigned ios_exe_win_generation=7;
+static void *ios_exe_win_img_base, *ios_exe_win_img_peb, *ios_exe_win_held_base;
+static size_t ios_exe_win_img_size, ios_exe_win_held_size;
+struct file_view { void *base; size_t size; unsigned protect; };
+static struct file_view test_view;
+static int deleted, rpc_calls, view_present=1;
+static void ios_retire_mark(const char *s) {}
+static void *NtCurrentProcess(void) { return (void*)-1; }
+static unsigned NtUnmapViewOfSection(void*p,void*b) { ++rpc_calls; return 0; }
+static void server_enter_uninterrupted_section(pthread_mutex_t*m,sigset_t*s) { pthread_mutex_lock(m); }
+static void server_leave_uninterrupted_section(pthread_mutex_t*m,sigset_t*s) { pthread_mutex_unlock(m); }
+static struct file_view *find_view(void*b,size_t n) { return view_present ? &test_view : NULL; }
+static int is_view_valloc(struct file_view *v) { return !!(v->protect&0x200); }
+static void delete_view(struct file_view *v) { ++deleted; view_present=0; }
+static void *anon_mmap_tryfixed(void*b,size_t n,int prot,int flags) { return b; }
+""" + body(v,'static void ios_retire_fixed_base_image(') + r"""
+static void setup(void) {
+    ios_exewin_st=IOS_EXEWIN_OWNED;
+    ios_exe_win_img_base=(void*)0x140000000; ios_exe_win_img_size=0x20000;
+    ios_exe_win_img_peb=(void*)0x100; ios_exe_win_img_dead=1;
+    test_view=(struct file_view){ios_exe_win_img_base,ios_exe_win_img_size,0};
+    view_present=1; deleted=rpc_calls=0;
+}
+int main(void) {
+    setup(); ios_retire_fixed_base_image((void*)0x200,1);
+    assert(!deleted && !rpc_calls && ios_exewin_st==IOS_EXEWIN_OWNED);
+    ios_retire_fixed_base_image((void*)0x100,1);
+    assert(deleted==1 && !rpc_calls && ios_exewin_st==IOS_EXEWIN_HELD_NOT_READY);
+    assert(ios_exe_win_held_base==(void*)0x140000000 && ios_exe_win_held_size==0x20000);
+    setup(); test_view.size+=0x1000; ios_retire_fixed_base_image((void*)0x100,1);
+    assert(!deleted && !rpc_calls && ios_exewin_st==IOS_EXEWIN_OWNED);
+    setup(); test_view.protect=VPROT_SYSTEM; ios_retire_fixed_base_image((void*)0x100,1);
+    assert(!deleted && !rpc_calls && ios_exewin_st==IOS_EXEWIN_OWNED);
+    setup(); test_view.protect=0x200; ios_retire_fixed_base_image((void*)0x100,1);
+    assert(!deleted && !rpc_calls && ios_exewin_st==IOS_EXEWIN_OWNED);
+    setup(); ios_retire_fixed_base_image((void*)0x100,0);
+    assert(!deleted && rpc_calls==1 && ios_exewin_st==IOS_EXEWIN_HELD_NOT_READY);
+    return 0;
+}
+"""
+run('last-thread fixed-image cleanup uses no dead-server RPC; foreign/system/changed views are retained', fixed)
+
 frame = body(s,'void init_syscall_frame(')
 assert 'i386_context->Eip = wow_init->pRtlUserThreadStart;' in frame
 assert 'arg == teb->Peb ? (char *)teb->Peb + page_size : arg' in frame
