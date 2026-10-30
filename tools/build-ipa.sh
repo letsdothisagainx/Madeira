@@ -26,6 +26,7 @@ bash "$ROOT/tools/check-prefix-template.sh" "$ROOT/app/Madeira/prefix-template.t
 
 "$ROOT/tools/build/setup-llvm-mingw.sh"
 "$ROOT/build/madeira-dock/build.sh"
+"$ROOT/build/wow64-probe/build.sh"
 "$ROOT/tools/build/build-wine.sh"
 "$ROOT/tools/build/build-scm-rpc.sh"
 "$ROOT/tools/build/build-fex-ios.sh"

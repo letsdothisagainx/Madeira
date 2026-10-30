@@ -1,3 +1,4 @@
+#include "steam_client_identity.h"
 // WineProcessBridge.m - Initialize Wine's ntdll Unix-side on iOS
 // This calls __wine_main() to bootstrap the Wine process, connecting
 // to the already-running wineserver thread.
@@ -1524,16 +1525,20 @@ static void *wine_process_thread(void *arg) {
          * A Steam game the library starts as its own program ("Start with: The
          * game", LibraryEntry.configureLaunch) knows its title too. It passes that
          * game's App ID and install folder in MADEIRA_STEAM_APPID / MADEIRA_STEAM_APPPATH,
-         * and this launch publishes the game's own identity instead of the fixed one. Both
+         * and this launch publishes the game's own identity instead of the fixed one. A
+         * standalone steam.exe launch also clears all three before Wine snapshots the
+         * environment, even when direct-game metadata from an older entry is present. Both
          * are cleared here, so no later launch inherits them. */
         const char *dock_session = getenv("MADEIRA_DOCK_SESSION");
         const char *direct_app = getenv("MADEIRA_STEAM_APPID");    /* set by the library for one direct Steam start (Start with: The game); not a setting */
         const char *direct_path = getenv("MADEIRA_STEAM_APPPATH"); /* that game's install folder, with MADEIRA_STEAM_APPID; not a setting */
-        if (dock_session && dock_session[0] == '1') {
+        const int steam_client = madeira_is_steam_client_image(getenv("MADEIRA_EXE"));
+        if ((dock_session && dock_session[0] == '1') || steam_client) {
             unsetenv("SteamAppPath");
             unsetenv("SteamGameId");
             unsetenv("SteamAppId");
-            dprintf(STDERR_FILENO, "[steam-env] Madeira Dock session: no fixed Steam game identity published\n");
+            dprintf(STDERR_FILENO, "[steam-env] %s: no inherited Steam game identity published\n",
+                    steam_client ? "Steam client" : "Madeira Dock session");
         } else if (direct_app && direct_app[0] && strlen(direct_app) <= 10 &&
             strspn(direct_app, "0123456789") == strlen(direct_app) &&
             direct_path && (direct_path[0] == 'C' || direct_path[0] == 'c') && direct_path[1] == ':' &&

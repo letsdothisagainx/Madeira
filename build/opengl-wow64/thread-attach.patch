@@ -1,0 +1,38 @@
+--- a/dlls/opengl32/unix_wgl.c
++++ b/dlls/opengl32/unix_wgl.c
+@@ -2829,6 +2829,34 @@
+ NTSTATUS wow64_thread_attach( void *args )
+ {
+-    return thread_attach( get_teb64( (ULONG_PTR)args ));
++    TEB *teb;
++    NTSTATUS status;
++#ifdef WINE_IOS
++    /* Normal Unix-call context, never a signal handler. The observer reads
++     * mappings fault-safely and cannot change their validity or the result. */
++    extern void ios_wow_gl_attach_trace( void *, void *, NTSTATUS );
++    ULONG_PTR base = ios_wow_host_base(), raw = (ULONG_PTR)args;
++    ios_wow_gl_attach_trace( args, NULL, STATUS_PENDING );
++    /* FEX has already widened the outer argument. Do not truncate an alien
++     * host pointer and then initialize a different process's TEB. */
++    if (!base || raw < base || raw - base >= ((ULONG_PTR)1 << 32))
++    {
++        ios_wow_gl_attach_trace( args, NULL, STATUS_INVALID_PARAMETER );
++        return STATUS_INVALID_PARAMETER;
++    }
++#endif
++    teb = get_teb64( (ULONG_PTR)args );
++#ifdef WINE_IOS
++    if (teb != NtCurrentTeb())
++    {
++        ios_wow_gl_attach_trace( args, teb, STATUS_INVALID_PARAMETER );
++        return STATUS_INVALID_PARAMETER;
++    }
++#endif
++    status = thread_attach( teb );
++#ifdef WINE_IOS
++    ios_wow_gl_attach_trace( args, teb, status );
++#endif
++    return status;
+ }
+
+ NTSTATUS wow64_process_detach( void *args )
