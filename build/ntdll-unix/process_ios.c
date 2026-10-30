@@ -1735,15 +1735,13 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
      * can hold exactly ONE CEF instance's PartitionAlloc pools + one V8
      * sandbox (see virtual_ios.c slot allocator). Force steamwebhelper into
      * Chromium single-process mode so browser/gpu/renderer/utility all run
-     * as threads of one pseudo-process, and refuse any --type= child it
-     * still tries to spawn (e.g. crashpad-handler) — a second instance
-     * would re-init both static PA copies and exhaust the slots. Chromium
-     * tolerates a failed crashpad spawn (continues without crash upload). */
+     * as threads of one pseudo-process. Keep that renderer policy separate
+     * from crashpad-handler: crashpad is a genuine reporting child and must
+     * use its own unchanged command line, not browser-only switches. */
     {
-        static const char typesw[] = "--type=";
         const WCHAR *ip = params->ImagePathName.Buffer;
         int ip_len = params->ImagePathName.Length / sizeof(WCHAR);
-        int k, j;
+        int j;
         int is_helper = madeira_cef_image( ip, ip_len );
         int compat = madeira_cef_compat_options( getenv( "MADEIRA_STEAM_CEF_POLICY" ) );
         if (is_helper && !compat)
@@ -1756,61 +1754,32 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
         {
             const WCHAR *cl = params->CommandLine.Buffer;
             int cl_len = params->CommandLine.Length / sizeof(WCHAR);
-            int tl = sizeof(typesw) - 1, has_type = 0;
-            for (k = 0; k + tl <= cl_len && !has_type; k++)
+            enum madeira_cef_role role = madeira_cef_process_role( cl, cl_len );
+            const char *dock = getenv( "MADEIRA_DOCK_SESSION" );
+            /* Preserve Dock's existing process/memory policy. This exception
+             * is for the standalone Windows Steam client being diagnosed. */
+            if (role == MADEIRA_CEF_OTHER_CHILD ||
+                (role == MADEIRA_CEF_CRASHPAD && dock && dock[0] == '1'))
             {
-                for (j = 0; j < tl; j++)
-                    if (cl[k + j] != (WCHAR)typesw[j]) break;
-                if (j == tl) has_type = 1;
-            }
-            if (has_type)
-            {
-                dprintf(2, "[proc-gate] REFUSING steamwebhelper --type= child (single-process mode; task #34)\n");
+                dprintf(2, "[steam-cef] child request policy=compat result=denied (legacy session child policy)\n");
                 return STATUS_ACCESS_DENIED;
+            }
+            if (role == MADEIRA_CEF_CRASHPAD)
+            {
+                int saved_errno = errno;
+                dprintf( 2, "[steam-cef] request role=crashpad policy=compat; unchanged arguments, normal process creation\n" );
+                errno = saved_errno;
             }
             /* Append --single-process to the browser instance's command line.
              * The new buffer intentionally leaks (once per helper launch);
              * RtlDestroyProcessParameters only frees the params block itself. */
+            else
             {
-                /* ml279: also raise CEF's OWN verbosity.
-                 *
-                 * Across every run that reached CEF init, cef_log.txt ends on the SAME four
-                 * lines -- chrome_main_delegate / process_singleton_win / os_crypt_win /
-                 * network_change_notifier_win -- and then goes silent. A consistent stopping
-                 * point (not scattered crash sites) says CEF is getting somewhere specific
-                 * and dying there, but Chromium's default verbosity only emits WARNING and
-                 * ERROR, so whatever it attempts next is simply never written down.
-                 *
-                 * --enable-logging routes Chromium's logging to the --log-file it already
-                 * has, and --v=1 turns on VLOG(1) across the codebase, which covers browser
-                 * startup, CefBrowserHost creation and the compositor bring-up -- exactly
-                 * the stretch after network_change_notifier that we cannot currently see.
-                 * Cheap: one command-line append, no code paths changed, and if CEF dies at
-                 * the same place the log now says what it was doing. */
-                /* ml281: it must be --enable-logging=FILE, not bare --enable-logging.
-                 *
-                 * Bare --enable-logging makes Chromium log to STDERR and ignore --log-file.
-                 * The verbose output WAS produced -- the user saw it filling a rendered
-                 * conhost window in the virtual desktop -- but cef_log.txt received only
-                 * the usual 4 WARNING/ERROR lines, so none of it was readable by us. (The
-                 * 58 INFO/VERBOSE lines already in that file are all stamped 0428/, from
-                 * whatever Windows box this Steam install was copied off.)
-                 * --enable-logging=file routes the same output through the --log-file the
-                 * command line already carries, which we can pull. */
-                /* ml282: add --log-severity=verbose.
-                 *
-                 * --enable-logging=file --v=1 still produced ONLY 2 WARNING + 2 ERROR lines.
-                 * That severity profile is itself the diagnosis: it is exactly
-                 * LOGSEVERITY_WARNING, which is a CefSettings field the HOST APP sets, and
-                 * CefSettings overrides Chromium's --v. So Steam is capping CEF's logging.
-                 *
-                 * CEF reads the --log-severity switch when the app leaves log_severity at
-                 * LOGSEVERITY_DEFAULT, and Steam's own webhelper command line does NOT pass
-                 * one (checked in webhelper.txt), so this may be honoured. If the next run
-                 * still shows only WARNING/ERROR then Steam sets log_severity explicitly and
-                 * no command line can raise it -- at which point the answer is to capture
-                 * the webhelper's STDERR instead, which we know carries the output because it
-                 * was visibly filling a rendered conhost window. */
+                /* Browser-only logging: Chromium 126's DetermineLoggingDestination
+                 * accepts an empty --enable-logging value (the default file),
+                 * stderr, or a child handle. Keep Valve's existing --log-file;
+                 * do not invent a destination named "file". Host CefSettings
+                 * can still cap verbosity. Logging is not a BrowserReady result. */
                 /* ml287: steer proxy resolution AWAY from the in-process V8 PAC resolver.
                  *
                  * CEF's own verbose trace dies immediately after
@@ -1971,13 +1940,18 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
                  * Interpreted V8 costs 5-20x on all of Steam's UI JavaScript, so
                  * this is the largest single startup lever we have.
                  * MADEIRA_JITLESS=0 turns it off; default stays ON (unchanged). */
-                static const char sp_jitless[] = " --single-process --enable-logging=file --v=1 --log-severity=verbose"
+                /* Chromium 126 logging_chrome.cc accepts an empty logging
+                 * destination (the default file), stderr, or a child's handle.
+                 * The literal value 'file' is invalid. Keep Valve's log-file. */
+                static const char sp_jitless[] = " --single-process --enable-logging --v=1 --log-severity=verbose"
                                                  " --no-proxy-server --winhttp-proxy-resolver --js-flags=--jitless";
-                static const char sp_jit[]     = " --single-process --enable-logging=file --v=1 --log-severity=verbose"
+                static const char sp_jit[]     = " --single-process --enable-logging --v=1 --log-severity=verbose"
                                                  " --no-proxy-server --winhttp-proxy-resolver";
                 const char *jl = getenv( "MADEIRA_JITLESS" );
                 int jitless_on = !(jl && jl[0] == '0');
                 const char *sp = jitless_on ? sp_jitless : sp_jit;
+                dprintf( 2, "[steam-cef] request role=browser policy=compat mode=single-process v8=%s logging=default-file\n",
+                         jitless_on ? "jitless" : "jit" );
                 dprintf(2, "[proc-gate] V8 %s (MADEIRA_JITLESS=%s) rev=ml526\n",
                         jitless_on ? "JITLESS (interpreted)" : "JIT ENABLED — #82 retest",
                         jl ? jl : "unset");
