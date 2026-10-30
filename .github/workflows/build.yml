@@ -5,6 +5,11 @@ on:
     branches: [main, 'codex/pr-build-*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      inspect_native_run_id:
+        description: Inspect an existing IPA's native APC image instead of building (optional run ID)
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -19,6 +24,7 @@ concurrency:
 
 jobs:
   plan:
+    if: inputs.inspect_native_run_id == ''
     runs-on: xcode-27
     outputs:
       ipa: ${{ steps.key.outputs.ipa }}
@@ -371,3 +377,24 @@ jobs:
           assert b'[wow-gl-attach] phase=' in Path('scm-ipa/Payload/Madeira.app/Madeira.debug.dylib').read_bytes(), 'missing native attach diagnostics'
           print('PASS native attach diagnostics included in IPA')
           PY
+
+  inspect-native:
+    if: inputs.inspect_native_run_id != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: Madeira-ipa
+          run-id: ${{ inputs.inspect_native_run_id }}
+          github-token: ${{ github.token }}
+          path: previous-ipa
+      - name: Inspect the native instruction from the reported build
+        run: |
+          python3 -m venv "$RUNNER_TEMP/native-image-tools"
+          "$RUNNER_TEMP/native-image-tools/bin/pip" install capstone==5.0.6
+          unzip -q previous-ipa/Madeira.ipa 'Payload/Madeira.app/Madeira.debug.dylib' -d previous-ipa
+          "$RUNNER_TEMP/native-image-tools/bin/python" tools/inspect-native-apc.py previous-ipa/Payload/Madeira.app/Madeira.debug.dylib --expected-uuid C785040B-848D-37AD-985C-832B8923F782 --annotations
