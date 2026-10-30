@@ -2506,18 +2506,18 @@ static void load_ntdll_wow64_functions( HMODULE module )
 
     for (i = 0; i < ios_proc_ident_count; ++i)
         if (ios_proc_idents[i].peb == owner) break;
-    if (i < ios_proc_ident_count)
-    {
-        ios_proc_idents[i].wow_init = block;
-        __sync_synchronize();
-        ios_proc_idents[i].wow_init_ready = 1;
-    }
-    else
     {
         extern void *ios_session_peb_get(void);
-        if (!owner || owner != ios_session_peb_get())
+        int session = owner && owner == ios_session_peb_get();
+        if (!session && i == ios_proc_ident_count)
             ios_unix_fatal_exit(1, "unregistered WoW64 startup owner");
-        *pLdrSystemDllInitBlock = block;  /* session only; never a child's exports */
+        if (session) *pLdrSystemDllInitBlock = block;
+        if (i < ios_proc_ident_count)
+        {
+            ios_proc_idents[i].wow_init = block;
+            __sync_synchronize();
+            ios_proc_idents[i].wow_init_ready = 1;
+        }
     }
 
     /* host pointer: the unix side calls through this one directly */
@@ -3372,6 +3372,9 @@ static void start_main_thread(void)
         ios_jumbo_holdback_init();
     }
 
+    /* The initial process also needs an immutable identity: children briefly
+     * overwrite main_image_info while its existing threads keep running. */
+    ios_register_proc_ident(NtCurrentTeb()->Peb, &main_image_info);
     WINE_IOS_LOG("load_ntdll...");
     load_ntdll();
     WINE_IOS_LOG("load_wow64_ntdll...");

@@ -11192,7 +11192,7 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
                                    (mach_vm_address_t)(cpu_area + 0x30), 8,
                                    (mach_vm_address_t)&ca30, &got ) == KERN_SUCCESS
                                && got == 8);
-                    ERR("[x18-decline] #%d teb=%p CPUArea(teb+0x1788)=%p(ok=%d) "
+                    ERR("[x18-decline] #%d teb=%p CHPE-CPUArea(teb+0x1788)=%p(ok=%d) "
                         "CPUArea+0x30=%p(ok=%d)\n",
                         ios_x18_decline_reports, (void *)teb,
                         (void *)(uintptr_t)cpu_area, ok1,

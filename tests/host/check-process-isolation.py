@@ -149,6 +149,7 @@ static __attribute__((noreturn)) void ios_unix_fatal_exit(int s,const char*w) { 
 static uintptr_t current_base;
 static void *unix_call_wow64_funcs;
 static IMAGE_EXPORT_DIRECTORY exports;
+static SECTION_IMAGE_INFORMATION main_image_info={0x14c};
 static void *ios_jit_current_peb(void) { return current_peb; }
 static void *ios_session_peb_get(void) { return session_peb; }
 static uintptr_t ios_wow_base(void) { return current_base; }
@@ -163,7 +164,8 @@ static uintptr_t find_named_export(void *m,const IMAGE_EXPORT_DIRECTORY *e,const
 '''
 startup += body(l, 'struct ios_proc_ident\n{') + ';\n'
 startup += 'static struct ios_proc_ident ios_proc_idents[IOS_MAX_PROC_IDENTS];\n'
-for f in ('void ios_register_proc_ident(', 'void ios_proc_ident_release(',
+for f in ('const SECTION_IMAGE_INFORMATION *ios_image_info_for_peb(',
+          'void ios_register_proc_ident(', 'void ios_proc_ident_release(',
           'const SYSTEM_DLL_INIT_BLOCK *ios_wow64_init_block_for_peb(',
           'static void load_ntdll_wow64_functions('):
     startup += body(l, f) + '\n'
@@ -173,7 +175,10 @@ int main(void) {
     SYSTEM_DLL_INIT_BLOCK saved_root, saved_child;
     SECTION_IMAGE_INFORMATION info={0x14c};
     current_peb=session_peb; current_base=(uintptr_t)images[0]-0xfff40000ull;
+    ios_register_proc_ident(current_peb,&info);
     load_ntdll_wow64_functions(images[0]); saved_root=root_block;
+    main_image_info.Machine=0x8664; /* mutable child bootstrap global */
+    assert(ios_image_info_for_peb(session_peb)->Machine==0x14c);
     current_peb=(void*)0x200; current_base=(uintptr_t)images[1]-0xffe30000ull;
     ios_register_proc_ident(current_peb,&info);
     assert(!ios_wow64_init_block_for_peb(current_peb));
@@ -187,7 +192,7 @@ int main(void) {
     assert(!memcmp(&root_block,&saved_root,sizeof(root_block)));
     assert(!memcmp(ios_wow64_init_block_for_peb((void*)0x200),&saved_child,sizeof(saved_child)));
     assert(!saved_child.pRtlpFreezeTimeBias);
-    assert(ios_wow64_init_block_for_peb(session_peb)==pLdrSystemDllInitBlock);
+    assert(!memcmp(ios_wow64_init_block_for_peb(session_peb),pLdrSystemDllInitBlock,sizeof(saved_root)));
     ios_proc_ident_release((void*)0x200);
     assert(!ios_wow64_init_block_for_peb((void*)0x200));
     assert(!ios_wow64_init_block_for_peb(NULL));
@@ -217,7 +222,7 @@ int main(void) {
     assert(!memcmp(rw,pe,64) && !memcmp(rw+512,pe,64));
     assert(!ios_jit_write_process_data((void*)4,pe+16,&value,8));
     assert(!ios_jit_write_process_data((void*)2,pe+60,&value,8));
-    assert(!ios_jit_write_process_data((void*)2,pe-1,&value,8));
+    assert(!ios_jit_write_process_data((void*)2,(void*)((uintptr_t)pe-1),&value,8));
     assert(!ios_jit_write_process_data(NULL,pe,&value,8));
     return 0;
 }
