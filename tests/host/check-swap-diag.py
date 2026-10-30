@@ -341,6 +341,7 @@ check('IOSDisplayShim reports the HWND before choosing the session kind',
 win_harness = r'''
 #define _GNU_SOURCE
 #include <assert.h>
+#include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdarg.h>

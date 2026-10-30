@@ -24,6 +24,7 @@
 #endif
 
 #include <assert.h>
+#include <errno.h>
 #include <pthread.h>
 
 #include "ntstatus.h"
@@ -966,10 +967,19 @@ static BOOL winios_trace_steam_window( const char *event, unsigned int kind, HWN
     TEB *teb = NtCurrentTeb();
     RTL_USER_PROCESS_PARAMETERS *params = teb && teb->Peb ? teb->Peb->ProcessParameters : NULL;
     DWORD pid = 0, tid;
+    DWORD saved_error;
+    int saved_errno;
     if (!params || !madeira_steam_ui_image( params->ImagePathName.Buffer,
                                            params->ImagePathName.Length / sizeof(WCHAR) )) return FALSE;
+    saved_error = teb->LastErrorValue;
+    saved_errno = errno;
     tid = get_window_thread( hwnd, &pid );
-    if (!madeira_ui_trace_take( steam_ui_trace, pid, (uintptr_t)hwnd, kind )) return FALSE;
+    if (!madeira_ui_trace_take( steam_ui_trace, pid, (uintptr_t)hwnd, kind ))
+    {
+        teb->LastErrorValue = saved_error;
+        errno = saved_errno;
+        return FALSE;
+    }
     dprintf( 2, "[steam-ui] event=%s pid=%04x tid=%04x caller=%04x hwnd=%p parent=%p owner=%p "
                 "after=%p flags=%08x style=%08x exstyle=%08x visible=%u surface=%p surface-hwnd=%p\n",
              event, (unsigned)pid, (unsigned)tid, (unsigned)GetCurrentThreadId(), hwnd,
@@ -977,6 +987,8 @@ static BOOL winios_trace_steam_window( const char *event, unsigned int kind, HWN
              flags, (unsigned)get_window_long( hwnd, GWL_STYLE ),
              (unsigned)get_window_long( hwnd, GWL_EXSTYLE ), (unsigned)is_window_visible( hwnd ), surface,
              surface ? surface->hwnd : NULL );
+    teb->LastErrorValue = saved_error;
+    errno = saved_errno;
     return TRUE;
 }
 
@@ -984,8 +996,13 @@ static UINT winios_drv_show_window( HWND hwnd, INT cmd, RECT *rect, UINT swp )
 {
     BOOL traced = winios_trace_steam_window( "show-request", STEAM_UI_SHOW, hwnd, swp, 0, NULL );
     UINT result = winios_pShowWindow( hwnd, cmd, rect, swp );
-    if (traced) dprintf( 2, "[steam-ui] event=show-return hwnd=%p cmd=%d swp=%08x result=%08x\n",
-                        hwnd, cmd, swp, result );
+    if (traced)
+    {
+        int saved_errno = errno;
+        dprintf( 2, "[steam-ui] event=show-return hwnd=%p cmd=%d swp=%08x result=%08x\n",
+                 hwnd, cmd, swp, result );
+        errno = saved_errno;
+    }
     return result;
 }
 
@@ -995,8 +1012,12 @@ static void winios_drv_set_window_style( HWND hwnd, INT offset, STYLESTRUCT *sty
     HWND fg;
 
     if (winios_trace_steam_window( "style", STEAM_UI_STYLE, hwnd, 0, 0, NULL ))
+    {
+        int saved_errno = errno;
         dprintf( 2, "[steam-ui] hwnd=%p offset=%d old=%08x new=%08x\n",
                  hwnd, offset, (unsigned)style->styleOld, (unsigned)style->styleNew );
+        errno = saved_errno;
+    }
 
     if (!winios_swap_win_take( winios_swap_win( hwnd ), WINIOS_SWAP_STYLE, &seq )) return;
     fg = NtUserGetForegroundWindow();
@@ -1308,8 +1329,13 @@ static void winios_drv_window_pos_changed( HWND hwnd, HWND insert_after, HWND ow
      * UIKit only reads its own layers; it never queries Wine from that queue. */
     if (steam_traced && winios_ui_surface_trace)
     {
+        TEB *teb = NtCurrentTeb();
+        DWORD saved_error = teb->LastErrorValue;
+        int saved_errno = errno;
         DWORD pid = 0, tid = get_window_thread( hwnd, &pid );
         winios_ui_surface_trace( hwnd, pid, tid, is_window_visible( hwnd ), surface );
+        teb->LastErrorValue = saved_error;
+        errno = saved_errno;
     }
 
     {   /* madeira-bcd: [swap-win] */

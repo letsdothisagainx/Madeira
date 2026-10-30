@@ -97,7 +97,8 @@ main UI failure.
 
 The focused tests compile the production diagnostic helpers/ShowWindow
 wrapper and Wine's existing IOSB publisher/completion. They check concurrent
-budgets, exact image matching, unchanged command/flags/placement/result,
+budgets, exact image matching, preserved errno/Wine last-error values,
+unchanged command/flags/placement/result,
 both IOSB layouts, and an invalid completion that still produces a genuine
 fault in an isolated child. Existing hidden-parent, child geometry, Dock,
 embedded signal and SCM tests remain in CI. The IPA check verifies the

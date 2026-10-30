@@ -32744,6 +32744,7 @@ NTSTATUS WINAPI NtProtectVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T 
         unsigned int ticket = __atomic_fetch_add( &guard_failures, 1, __ATOMIC_RELAXED );
         if (ticket < 8)
         {
+            int saved_errno = errno;
             TEB *teb = NtCurrentTeb();
             mach_vm_address_t region = (mach_vm_address_t)base;
             mach_vm_size_t region_size = 0;
@@ -32764,6 +32765,7 @@ NTSTATUS WINAPI NtProtectVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T 
                      view ? view->base : NULL, view ? (unsigned long)view->size : 0,
                      query, (void *)(uintptr_t)region, (unsigned long long)region_size,
                      (unsigned)info.protection, (unsigned)info.max_protection );
+            errno = saved_errno;
         }
     }
 

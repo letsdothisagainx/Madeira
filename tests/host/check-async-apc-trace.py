@@ -31,6 +31,7 @@ assert 'set_async_iosb( call->async_io.sb, result->async_io.status, info );' in 
 code = r'''
 #define _GNU_SOURCE
 #include <assert.h>
+#include <errno.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdarg.h>
@@ -57,7 +58,7 @@ static client_ptr_t wine_server_client_ptr(void *p) { return (uintptr_t)p; }
 static void *wine_server_get_ptr(client_ptr_t p) { return (void *)(uintptr_t)p; }
 #define WriteRelease(ptr, value) __atomic_store_n((ptr), (value), __ATOMIC_RELEASE)
 static int capture(int fd, const char *format, ...) {
-    (void)fd; (void)format; logs++; return 0;
+    (void)fd; (void)format; logs++; errno = EIO; return 0;
 }
 #define dprintf capture
 ''' + publish + '\n' + complete + '\n' + register + '\n' + observe + r'''
@@ -68,7 +69,9 @@ int main(void) {
     IO_STATUS_BLOCK32 io32 = {.Status = 0x103, .Information = 0};
     IO_STATUS_BLOCK wrapper = {.Pointer = &io32};
     wow = FALSE;
+    errno = EAGAIN;
     assert(iosb_client_ptr(&io64) == (uintptr_t)&io64);
+    assert(errno == EAGAIN);
     set_async_iosb((uintptr_t)&io64, 0, 0x1234567887654321ull);
     assert(io64.Status == 0 && io64.Information == 0x1234567887654321ull);
     wow = TRUE;
@@ -83,6 +86,7 @@ int main(void) {
     assert(iosb_client_ptr(&wrapper) == 0x10000);
     union apc_call call = {.async_io = {.sb = 0x10000}};
     assert(ios_trace_async_apc(&call, "before-callback"));
+    assert(errno == EAGAIN);
     assert(call.async_io.sb == 0x10000);
     pid_t child = fork(); assert(child >= 0);
     if (!child) { set_async_iosb(call.async_io.sb, 0, 37); _exit(0); }

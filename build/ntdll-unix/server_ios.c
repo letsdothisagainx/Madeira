@@ -3385,13 +3385,16 @@ void ios_trace_iosb_registration( IO_STATUS_BLOCK *io, client_ptr_t target, cons
         ? __atomic_fetch_add( &low, 1, __ATOMIC_RELAXED )
         : __atomic_fetch_add( &ordinary, 1, __ATOMIC_RELAXED );
     TEB *teb;
+    int saved_errno;
     if (ticket >= 8) return;
+    saved_errno = errno;
     teb = NtCurrentTeb();
     dprintf( 2, "[iosb-register] api=%s pid=%04x tid=%04x teb=%p peb=%p window=%p wow=%u "
                 "native-iosb=%p target=%p\n", api,
              teb ? (unsigned)(ULONG_PTR)teb->ClientId.UniqueProcess : 0,
              teb ? (unsigned)(ULONG_PTR)teb->ClientId.UniqueThread : 0, teb, teb ? teb->Peb : NULL,
              (void *)ios_wow_host_base(), (unsigned)in_wow64_call(), io, wine_server_get_ptr( target ) );
+    errno = saved_errno;
 }
 
 /* Normal APC-dispatch context, never a signal handler. Observe the wire
@@ -3405,11 +3408,13 @@ static BOOL ios_trace_async_apc( const union apc_call *call, const char *phase )
     BOOL wow;
     ULONG_PTR window;
     unsigned int ticket;
+    int saved_errno;
 
     ticket = call->async_io.sb && call->async_io.sb < 0x100000000ULL
         ? __atomic_fetch_add( &low, 1, __ATOMIC_RELAXED )
         : __atomic_fetch_add( &ordinary, 1, __ATOMIC_RELAXED );
     if (ticket >= 8) return FALSE;
+    saved_errno = errno;
     teb = NtCurrentTeb();
     window = ios_wow_host_base();
     wow = in_wow64_call();
@@ -3420,6 +3425,7 @@ static BOOL ios_trace_async_apc( const union apc_call *call, const char *phase )
              (void *)window, (unsigned)wow, wine_server_get_ptr( call->async_io.user ),
              wine_server_get_ptr( call->async_io.sb ), call->async_io.status, call->async_io.result,
              teb ? teb->TlsSlots[WOW64_TLS_CPURESERVED] : NULL, teb ? teb->TlsSlots[14] : NULL );
+    errno = saved_errno;
     return TRUE;
 }
 #endif
@@ -3455,9 +3461,13 @@ static void invoke_system_apc( const union apc_call *call, union apc_result *res
         else result->async_io.status = STATUS_PENDING; /* restart it */
 #ifdef WINE_IOS
         if (traced)
+        {
+            int saved_errno = errno;
             dprintf( 2, "[async-apc] phase=returned iosb=%p result=%08x bytes=%u\n",
                      wine_server_get_ptr( call->async_io.sb ), result->async_io.status,
                      result->async_io.total );
+            errno = saved_errno;
+        }
 #endif
         break;
     }
