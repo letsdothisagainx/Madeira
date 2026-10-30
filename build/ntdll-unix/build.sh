@@ -64,7 +64,7 @@ compile_one() {
         FAILED=$((FAILED + 1))
         FAILED_FILES="$FAILED_FILES $name"
         case "$name" in
-            io_status_abi|file|socket|server|thread|process|virtual)
+            io_status_abi|file|socket|server|thread|process|virtual|signal_arm64)
                 python3 - "$OBJ_DIR/$name.err" <<'PYCODE'
 import sys
 from pathlib import Path

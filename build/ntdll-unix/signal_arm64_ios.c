@@ -964,10 +964,7 @@ static volatile int32_t ios_thread_count = 0;
  * so two of them never fill the same entry; the lookups stay lock-free. */
 static pthread_mutex_t ios_thread_registry_lock = PTHREAD_MUTEX_INITIALIZER;
 
-/* Exact-match registry probe — NO slot-0 fallback.
- *
- * ml540: ios_lookup_thread() returns 1 even when it fell back to slot 0, so no
- * caller can use it to answer "is this a guest thread at all?". Fault handling
+/* Exact-match registry probes never borrow another thread's TEB. Fault handling
  * needs exactly that: since #67 we hold the TASK-level exception port, so this
  * handler now sees faults from EVERY thread in the process — including the
  * SwiftUI UI thread, which has no TEB and must never be handed guest exception
@@ -1170,7 +1167,7 @@ static int ios_thread_registry_add( thread_t pe_thread, uintptr_t teb, void *tra
     else
     {
         ERR("[thread-registry] FULL (%d slots, %s) — thread 0x%x teb=%p NOT registered; "
-            "Mach events on it will resolve to the slot-0 TEB (wrong process!)\n",
+            "Mach events on it have no Wine TEB\n",
             IOS_MAX_WINE_THREADS, ios_thread_registry_reuse_enabled() ? "none free" : "MADEIRA_THREAD_REUSE=0",
             pe_thread, (void *)teb);
         idx = -1;
@@ -1213,26 +1210,16 @@ static int ios_lookup_thread(thread_t mach_thread, uintptr_t *teb_out, void **tr
             return 1;
         }
     }
-    /* Fallback: use first registered thread */
-    /* ml390 (task #66): a thread that registered CORRECTLY (0184: idx=75 port
-     * 0x4493 teb ok) later resolved to the slot-0 TEB here — either the
-     * exception message named the thread differently than mach_thread_self()
-     * did at registration (name drift), or the entry was clobbered.  Print the
-     * sought name so it can be diffed against the registration line offline. */
+    /* An unregistered UIKit/debugger thread does not own the first Wine
+     * thread's TEB. Never emulate or deliver an exception using that process. */
     {
         static int miss_n;
         if (miss_n < 32)
         {
             miss_n++;
-            ERR( "[reg-miss] #%d port=0x%x not in registry (count=%d) -> slot-0 fallback teb=%p\n",
-                 miss_n, mach_thread, count, count > 0 ? (void *)ios_thread_registry[0].teb : NULL );
+            ERR( "[reg-miss] #%d port=0x%x not in registry (count=%d); no Wine TEB borrowed\n",
+                 miss_n, mach_thread, count );
         }
-    }
-    if (count > 0)
-    {
-        *teb_out = ios_thread_registry[0].teb;
-        *tramp_out = ios_thread_registry[0].trampoline;
-        return 1;
     }
     *teb_out = 0;
     *tramp_out = NULL;
@@ -2130,6 +2117,56 @@ static int ios_fault_read_insn( uint64_t fault_pc, uint32_t *out )
                      "unrecognised encoding rather than faulting inside the handler\n",
                      (unsigned long long)fault_pc );
         return 0;
+    }
+    return 1;
+}
+
+#include "x18_scalar_load.h"
+
+/* Only the faulting Mach thread's registered, self-consistent TEB is used.
+ * The handler's own TLS and another Wine process's TEB are never fallbacks.
+ * Read through Mach so an invalid backing remains a genuine unhandled fault. */
+static int ios_emulate_x18_signed_load( thread_t thread, arm_thread_state64_t *state,
+                                       uintptr_t teb, uintptr_t fault_addr, uint32_t insn )
+{
+    struct ios_arm64_scalar_load load;
+    unsigned char identity[offsetof(TEB, Peb) + sizeof(void *)], data[8];
+    uintptr_t self, pid, tid, peb;
+    mach_vm_size_t copied = 0;
+    uint64_t value;
+    if (state->__x[18] || !teb || !ios_decode_scalar_load( insn, &load ) ||
+        !load.extend || load.base != 18 || fault_addr != load.offset ||
+        fault_addr > 0x10000 - load.bytes || teb > UINTPTR_MAX - fault_addr - load.bytes)
+        return 0;
+    if (mach_vm_read_overwrite( mach_task_self(), teb, sizeof(identity),
+                               (mach_vm_address_t)identity, &copied ) || copied != sizeof(identity)) return 0;
+    memcpy( &self, identity + offsetof(TEB, Tib.Self), sizeof(self) );
+    memcpy( &pid, identity + offsetof(TEB, ClientId.UniqueProcess), sizeof(pid) );
+    memcpy( &tid, identity + offsetof(TEB, ClientId.UniqueThread), sizeof(tid) );
+    memcpy( &peb, identity + offsetof(TEB, Peb), sizeof(peb) );
+    if (self != teb || !pid || !tid || !peb) return 0;
+    copied = 0;
+    if (mach_vm_read_overwrite( mach_task_self(), teb + fault_addr, load.bytes,
+                               (mach_vm_address_t)data, &copied ) || copied != load.bytes) return 0;
+    value = ios_scalar_load_value( data, &load );
+    if (load.reg < 29) state->__x[load.reg] = value;
+    else if (load.reg == 29) state->__fp = value;
+    else if (load.reg == 30) state->__lr = value;
+    /* Rt==31 discards the value, but the memory read must still be valid. */
+    {
+        static unsigned int reports;
+        if (__atomic_fetch_add( &reports, 1, __ATOMIC_RELAXED ) < 8)
+        {
+            int saved_errno = errno;
+            char message[272];
+            int n = snprintf( message, sizeof(message), "[x18-load] signed-load recovered insn=%08x "
+                              "port=%#x pid=%04lx tid=%04lx teb=%p self=match peb=%p "
+                              "offset=%#x bytes=%u extend=%u rt=%u\n", insn, thread,
+                              (unsigned long)pid, (unsigned long)tid, (void *)teb, (void *)peb,
+                              load.offset, load.bytes, load.extend, load.reg );
+            if (n > 0) write( STDERR_FILENO, message, (size_t)n < sizeof(message) ? (size_t)n : sizeof(message)-1 );
+            errno = saved_errno;
+        }
     }
     return 1;
 }
@@ -3431,9 +3468,10 @@ static void *ios_mach_exception_thread( void *arg )
                     {
                         uintptr_t ea = thread_teb + fault_addr;
                         int rt = insn & 0x1f;
-                        int emulated = 0;
+                        int signed_load = ios_emulate_x18_signed_load( thread, &state, thread_teb, fault_addr, insn );
+                        int emulated = signed_load;
 
-                        switch (insn & 0xffc00000)
+                        if (!emulated) switch (insn & 0xffc00000)
                         {
                         /* unsigned-offset immediate loads, base x18 */
                         case 0xf9400000: /* LDR Xt */
@@ -3591,7 +3629,7 @@ static void *ios_mach_exception_thread( void *arg )
                              * switch instead of once per TEB access. Free
                              * either way — verify via emul3 rate + next-
                              * fault x18 values in the log. */
-                            state.__x[18] = thread_teb;
+                            if (!signed_load || rt != 18) state.__x[18] = thread_teb;
                             __darwin_arm_thread_state64_set_pc_fptr(
                                 state, (void *)(uintptr_t)(fault_pc + 4));
                             ios_exc_x18_fixes++;
