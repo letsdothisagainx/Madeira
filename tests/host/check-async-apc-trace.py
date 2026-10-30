@@ -26,7 +26,8 @@ publish = function(private, 'static inline client_ptr_t iosb_client_ptr(')
 complete = function(private, 'static inline void set_async_iosb(')
 invoke = function(server, 'static void invoke_system_apc(')
 assert invoke.index('ios_trace_async_apc( call, "before-callback" )') < invoke.index('user->callback(')
-assert 'set_async_iosb( call->async_io.sb, result->async_io.status, info );' in invoke
+assert 'ios_complete_io_status( call->async_io.sb, result->async_io.status, info, iosb32 );' in invoke
+assert invoke.index('BOOL iosb32 = user->iosb32;') < invoke.index('user->callback(')
 
 code = r'''
 #define _GNU_SOURCE
@@ -48,6 +49,7 @@ typedef struct { union { NTSTATUS Status; void *Pointer; }; ULONG_PTR Informatio
 typedef struct { union { NTSTATUS Status; uint32_t Pointer; }; uint32_t Information; } IO_STATUS_BLOCK32;
 typedef struct { struct { void *UniqueProcess, *UniqueThread; } ClientId; void *Peb; void *TlsSlots[64]; } TEB;
 union apc_call { struct { unsigned type, status; client_ptr_t user, sb; unsigned result; } async_io; };
+struct async_fileio { BOOL iosb32; };
 static TEB current;
 static BOOL wow;
 static unsigned logs;

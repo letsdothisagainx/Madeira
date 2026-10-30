@@ -21,6 +21,12 @@ export PATH="$(brew --prefix bison)/bin:$(brew --prefix llvm)/bin:$PATH"
 log "Checking out submodules"
 git -C "$ROOT" submodule update --init --recursive
 
+# Keep Wine's pin and developer source intact while compiling both ends of
+# the per-request IOSB ABI. Every native consumer sees the same header.
+IO_ABI_STATE="$(mktemp -d)"
+python3 "$ROOT/tools/build/stage-io-status-abi.py" apply "$IO_ABI_STATE"
+trap 'io_build_status=$?; python3 "$ROOT/tools/build/stage-io-status-abi.py" restore "$IO_ABI_STATE" || exit 1; rm -rf "$IO_ABI_STATE"; exit "$io_build_status"' EXIT
+
 log "Validating bundled Wine prefix"
 bash "$ROOT/tools/check-prefix-template.sh" "$ROOT/app/Madeira/prefix-template.tar.gz"
 
@@ -28,6 +34,7 @@ bash "$ROOT/tools/check-prefix-template.sh" "$ROOT/app/Madeira/prefix-template.t
 "$ROOT/build/madeira-dock/build.sh"
 "$ROOT/build/wow64-probe/build.sh"
 "$ROOT/tools/build/build-wine.sh"
+"$ROOT/tools/build/build-wow64-io.sh"
 "$ROOT/tools/build/build-scm-rpc.sh"
 "$ROOT/tools/build/build-fex-ios.sh"
 "$ROOT/build/rppairing-ios/build.sh"

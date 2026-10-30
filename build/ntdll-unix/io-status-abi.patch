@@ -1,0 +1,214 @@
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -28,6 +28,11 @@
+ #include "wine/server.h"
+ #include "wine/list.h"
+ #include "wine/debug.h"
++#ifdef WINE_IOS
++#include "wine/ios_io_abi.h"
++extern void *ios_io_status_proxy( const IO_STATUS_BLOCK *native );
++extern BOOL ios_io_status_target32( client_ptr_t target );
++#endif
+ 
+ struct msghdr;
+ 
+@@ -172,6 +177,9 @@
+     async_callback_t    *callback;
+     struct async_fileio *next;
+     HANDLE               handle;
++#ifdef WINE_IOS
++    BOOL                 iosb32; /* captured at submission, before the callback can free this object */
++#endif
+ };
+ 
+ static const SIZE_T page_size = 0x1000;
+@@ -509,6 +517,9 @@
+     async.handle      = wine_server_obj_handle( handle );
+     async.user        = wine_server_client_ptr( user );
+     async.iosb        = iosb;
++#ifdef WINE_IOS
++    if (user) user->iosb32 = ios_io_status_target32( iosb );
++#endif
+     async.event       = wine_server_obj_handle( event );
+     async.apc         = wine_server_client_ptr( apc );
+     async.apc_context = wine_server_client_ptr( apc_context );
+@@ -572,8 +583,13 @@
+ 
+ static inline client_ptr_t iosb_client_ptr( IO_STATUS_BLOCK *io )
+ {
++#ifdef WINE_IOS
++    void *proxy = ios_io_status_proxy( io );
++    return wine_server_client_ptr( proxy ? proxy : io );
++#else
+     if (io && in_wow64_call()) return wine_server_client_ptr( io->Pointer );
+     return wine_server_client_ptr( io );
++#endif
+ }
+ 
+ static inline ULONG_PTR get_zero_bits_limit( ULONG_PTR zero_bits )
+--- a/dlls/ntdll/unix/file.c
++++ b/dlls/ntdll/unix/file.c
+@@ -6351,6 +6351,9 @@
+     {
+         io->callback = callback;
+         io->handle   = handle;
++#ifdef WINE_IOS
++        io->iosb32   = FALSE;
++#endif
+     }
+     return io;
+ }
+@@ -6494,9 +6497,13 @@
+ 
+ static void set_sync_iosb( IO_STATUS_BLOCK *io, NTSTATUS status, ULONG_PTR info, unsigned int options )
+ {
+-    if (in_wow64_call() && !(options & (FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT)))
+-    {
+-        IO_STATUS_BLOCK32 *io32 = io->Pointer;
++#ifdef WINE_IOS
++    IO_STATUS_BLOCK32 *io32 = ios_io_status_proxy( io );
++#else
++    IO_STATUS_BLOCK32 *io32 = in_wow64_call() ? io->Pointer : NULL;
++#endif
++    if (io32 && !(options & (FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT)))
++    {
+ 
+         io32->Status = status;
+         io32->Information = info;
+@@ -7917,11 +7924,13 @@
+ /* helper for internal ioctl calls */
+ NTSTATUS sync_ioctl( HANDLE file, ULONG code, void *in_buffer, ULONG in_size, void *out_buffer, ULONG out_size )
+ {
++    IO_STATUS_BLOCK io;
++#ifndef WINE_IOS
+     IO_STATUS_BLOCK32 io32;
+-    IO_STATUS_BLOCK io;
+-
+-    /* the 32-bit iosb is filled for overlapped file handles */
++    /* Classic Wine uses the process-wide WoW64 I/O convention. */
+     io.Pointer = &io32;
++#endif
++    /* On embedded iOS this is native internal I/O, never a guest proxy. */
+     return NtDeviceIoControlFile( file, NULL, NULL, NULL, &io, code, in_buffer, in_size, out_buffer, out_size );
+ }
+ 
+--- a/dlls/wow64/wow64_private.h
++++ b/dlls/wow64/wow64_private.h
+@@ -23,6 +23,7 @@
+ 
+ #include "../ntdll/ntsyscalls.h"
+ #include "struct32.h"
++#include "wine/ios_io_abi.h"
+ 
+ #define SYSCALL_ENTRY(id,name,_args) extern NTSTATUS WINAPI wow64_ ## name( UINT *args );
+ ALL_SYSCALLS32
+@@ -200,10 +201,21 @@
+ /* NOT window-converted: io->Pointer is a HOST-only cookie that put_iosb and
+  * set_async_iosb compare against and dereference; it never reaches guest
+  * code. */
++static inline void iosb_control( unsigned int operation, const IO_STATUS_BLOCK *io, IO_STATUS_BLOCK32 *io32 )
++{
++    struct madeira_io_control control = { MADEIRA_IO_ABI_VERSION, operation, NULL, (void *)io, io32 };
++    NTSTATUS status;
++    if (!wow_guest_base) return; /* classic identity-mapped Wine is unchanged */
++    status = NtSetInformationThread( GetCurrentThread(), (THREADINFOCLASS)MADEIRA_THREAD_IO_ABI,
++                                     &control, sizeof(control) );
++    if (status) RtlRaiseStatus( status );
++}
++
+ static inline IO_STATUS_BLOCK *iosb_32to64( IO_STATUS_BLOCK *io, IO_STATUS_BLOCK32 *io32 )
+ {
+     if (!io32) return NULL;
+     io->Pointer = io32;
++    iosb_control( MADEIRA_IO_BIND, io, io32 );
+     return io;
+ }
+ 
+@@ -338,6 +350,7 @@
+         io32->Status = io->Status;
+         io32->Information = io->Information;
+     }
++    if (io32) iosb_control( MADEIRA_IO_UNBIND, io, io32 );
+ }
+ 
+ extern void put_section_image_info( SECTION_IMAGE_INFORMATION32 *info32,
+--- a/dlls/wow64/file.c
++++ b/dlls/wow64/file.c
+@@ -37,7 +37,9 @@
+ static inline NTSTATUS get_file_id( HANDLE handle, FILE_OBJECTID_BUFFER *id )
+ {
+     IO_STATUS_BLOCK32 io32;
+-    IO_STATUS_BLOCK io = { .Pointer = &io32 };
++    IO_STATUS_BLOCK io;
++    /* Internal native I/O does not enter a guest syscall's IOSB protocol. */
++    if (!wow_guest_base) io.Pointer = &io32;
+ 
+     return NtFsControlFile( handle, 0, NULL, NULL, &io, FSCTL_GET_OBJECT_ID, NULL, 0, id, sizeof(*id) );
+ }
+--- a/dlls/wow64/syscall.c
++++ b/dlls/wow64/syscall.c
+@@ -29,6 +29,7 @@
+ #include "rtlsupportapi.h"
+ #include "wine/unixlib.h"
+ #include "wine/asm.h"
++#include "wine/exception.h"
+ #include "wow64_private.h"
+ #include "wine/debug.h"
+ 
+@@ -1137,7 +1138,7 @@
+                                    &wow_guest_base, sizeof(wow_guest_base), NULL ))
+         wow_guest_base = 0;
+     if (wow_guest_base)
+-        TRACE( "guest window base %p\n", (void *)wow_guest_base );
++        ERR( "madeira-io-abi-v1: guest window base %p\n", (void *)wow_guest_base );
+     args_alignment = (current_machine == IMAGE_FILE_MACHINE_I386) ? sizeof(ULONG) : sizeof(ULONG64);
+     NtQuerySystemInformation( SystemEmulationBasicInformation, &info, sizeof(info), NULL );
+     highest_user_address = (ULONG_PTR)info.HighestUserAddress;
+@@ -1449,6 +1450,15 @@
+ /**********************************************************************
+  *           Wow64SystemServiceEx  (wow64.@)
+  */
++static void io_scope_leave( BOOL normal, void *scope )
++{
++    struct madeira_io_control control = { MADEIRA_IO_ABI_VERSION, MADEIRA_IO_LEAVE, scope, NULL, NULL };
++    NTSTATUS status = NtSetInformationThread( GetCurrentThread(), (THREADINFOCLASS)MADEIRA_THREAD_IO_ABI,
++                                              &control, sizeof(control) );
++    /* Preserve an original exception during abnormal unwinding. */
++    if (status && normal) RtlRaiseStatus( status );
++}
++
+ NTSTATUS WINAPI Wow64SystemServiceEx( UINT num, UINT *args )
+ {
+     NTSTATUS status;
+@@ -1460,7 +1470,20 @@
+         ERR( "unsupported syscall %04x\n", num );
+         return STATUS_INVALID_SYSTEM_SERVICE;
+     }
+-    status = wow64_syscall( args, table->ServiceTable[id] );
++    if (wow_guest_base)
++    {
++        struct madeira_io_scope scope;
++        struct madeira_io_control control = { MADEIRA_IO_ABI_VERSION, MADEIRA_IO_ENTER, &scope, NULL, NULL };
++        status = NtSetInformationThread( GetCurrentThread(), (THREADINFOCLASS)MADEIRA_THREAD_IO_ABI,
++                                         &control, sizeof(control) );
++        if (status) return status; /* mixed ABI versions must fail closed */
++        __TRY
++        {
++            status = wow64_syscall( args, table->ServiceTable[id] );
++        }
++        __FINALLY_CTX( io_scope_leave, &scope )
++    }
++    else status = wow64_syscall( args, table->ServiceTable[id] );
+     free_temp_data();
+     return status;
+ }
+--- a/include/Makefile.in
++++ b/include/Makefile.in
+@@ -986,6 +986,7 @@
+ 	wine/glu.h \
+ 	wine/hid.h \
+ 	wine/http.h \
++	wine/ios_io_abi.h \
+ 	wine/iaccessible2.idl \
+ 	wine/irot.idl \
+ 	wine/irpcss.idl \

@@ -6,6 +6,9 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[2]
 commands = [
+    ['python3', 'tests/host/check-io-status-abi.py'],
+    ['python3', 'tests/host/check-steam-cef-policy.py'],
+    ['python3', 'tests/host/check-steam-dependencies.py'],
     ['python3', 'tests/host/check-steam-ui-trace.py'],
     ['python3', 'tests/host/check-async-apc-trace.py'],
     ['python3', 'tests/host/check-window-visibility.py'],

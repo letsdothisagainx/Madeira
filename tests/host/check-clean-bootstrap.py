@@ -80,6 +80,10 @@ ar() { touch "$2"; }
     entry_path = pipeline / 'tools/build-ipa.sh'
     entry_path.parent.mkdir()
     entry_path.write_text(entry)
+    # The overlay has its own real apply/restore regression. Here isolate the
+    # pipeline's Rust/build ordering with the other tool fixtures.
+    (pipeline / 'tools/build').mkdir(parents=True, exist_ok=True)
+    (pipeline / 'tools/build/stage-io-status-abi.py').write_text('import sys\n')
     for relative in set(re.findall(r'"\$ROOT/([^"]+\.sh)"', entry)) | {'build/rppairing-ios/build.sh'}:
         path = pipeline / relative
         path.parent.mkdir(parents=True, exist_ok=True)
