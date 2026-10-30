@@ -22,7 +22,9 @@ static uint32_t open_manager(void)
     ULONGLONG begin = GetTickCount64();
     HANDLE process = NULL, started = NULL;
     BOOL other = FALSE;
+    unsigned traces = 0;
     for (;;) {
+        if (traces++ < 4) event("scm-call", SC_MANAGER_CONNECT);
         manager = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
         if (manager) { if (process) CloseHandle(process); if (started) CloseHandle(started); event("scm", 0); return 0; }
         DWORD error = last_error();
