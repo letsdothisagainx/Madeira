@@ -40,7 +40,7 @@ for name, text in [('MadeiraDock.swift', dock), ('MadeiraDockView.swift', view),
     names = {l.replace('/', '\\').split('\\')[-1].lower() for l in literals}
     # DockInstallers.swift checks the ".exe" suffix of install-script programs and whether the
     # bundle has Windows Installer (msiexec.exe); it keys nothing on a program's name.
-    require(names <= {'dockhost.exe', 'explorer.exe', 'steam.exe', '.exe', 'msiexec.exe'}, f'{name}: no program-name list ({sorted(names)})')
+    require(names <= {'dockhost.exe', 'madeira-steam-service.exe', 'explorer.exe', 'steam.exe', '.exe', 'msiexec.exe'}, f'{name}: no program-name list ({sorted(names)})')
     for line in text.splitlines():
         if re.search(r'SteamLog\.(event|trace)|LogStore|print\(|NSLog', line):
             require(re.search(r'\\\((account|token|signIn|secret|data|url|name)\b', line) is None,
@@ -106,6 +106,8 @@ enum SteamSignIn {
     static func flag(_ name: String, default fallback: Bool) -> Bool { getenv(name).map { String(cString: $0) != "0" } ?? fallback }
 }
 enum SteamLog { static func event(_ m: String) {}; static func trace(_ m: @autoclosure () -> String) {} }
+// Headless fixture: no user-selected external volumes are mounted.
+enum ExternalDrives { static var steamLibraries: [String] { [] } }
 enum SteamRuntimeFiles {
     static let relativeRoot = "Program Files (x86)/Steam"
     static let windowsRoot = "C:\\Program Files (x86)\\Steam"
@@ -252,11 +254,11 @@ func jwt(_ claims: String) -> String {
         unsetenv("MADEIRA_IMAGE_MAP_GUARD"); setenv("MADEIRA_DOCK_IMAGE_MAP_GUARD", "0", 1); MadeiraDock.configure(alpha)
         require(env("MADEIRA_IMAGE_MAP_GUARD") == nil, "MADEIRA_DOCK_IMAGE_MAP_GUARD=0 leaves the image-map guard off")
         unsetenv("MADEIRA_DOCK_IMAGE_MAP_GUARD")
-        require(MadeiraDock.launchArguments(width: 1280, height: 720) == "/desktop=madeira,1280x720 C:\\windows\\system32\\dockhost.exe", "explorer desktop runs the host")
+        require(MadeiraDock.launchArguments(width: 1280, height: 720) == "/desktop=madeira,1280x720 C:\\windows\\system32\\cmd.exe /c C:\\windows\\system32\\madeira-steam-service.exe && C:\\windows\\system32\\dockhost.exe", "service preparation precedes the host")
         require(!MadeiraDock.launchArguments(width: 1280, height: 720).contains("\""), "no quotes: MADEIRA_ARGS is split at spaces and passed on as is")
         require(!MadeiraDock.executable.contains(" "), "the host path has no spaces")
         require(MadeiraDock.launchArguments(width: 1280, height: 720, installers: "C:\\i.cmd") ==
-                "/desktop=madeira,1280x720 C:\\windows\\system32\\cmd.exe /c call C:\\i.cmd & C:\\windows\\system32\\dockhost.exe",
+                "/desktop=madeira,1280x720 C:\\windows\\system32\\cmd.exe /c call C:\\i.cmd & C:\\windows\\system32\\madeira-steam-service.exe && C:\\windows\\system32\\dockhost.exe",
                 "with one-time installs: cmd.exe runs them, then the host, in the same session")
         require(MadeiraDock.handoffGuestPath(URL(fileURLWithPath: "/var/x/launch.auth")) == "\\\\?\\unix\\var\\x\\launch.auth", "transfer path through Wine's Unix namespace")
 

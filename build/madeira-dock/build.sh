@@ -40,6 +40,16 @@ trap 'rm -rf "$TMP"' EXIT
     -static -Wl,--strip-all -Wl,--no-insert-timestamp \
     -o "$TMP/dockhost.exe" "$SRC"/src/*.c -ladvapi32
 
+# The service preparation helper uses only Windows SCM APIs and Valve's own
+# local installer; it never writes registrations or emulates service traffic.
+"$CC" -std=c11 -O2 -Wall -Wextra -Werror -municode \
+    -static -Wl,--strip-all -Wl,--no-insert-timestamp \
+    -o "$TMP/madeira-steam-service.exe" "$REPO_ROOT/build/steam-service/main.c" -ladvapi32
+
+"$CC" -std=c11 -O2 -Wall -Wextra -Werror \
+    -static -Wl,--strip-all -Wl,--no-insert-timestamp \
+    -o "$TMP/madeira-scm-probe.exe" "$REPO_ROOT/build/scm-rpc/probe.c" -ladvapi32
+
 section() { printf '\n\n==== %s ====\n\n' "$1"; }
 {
     cat "$SRC/LICENSE"
@@ -51,11 +61,14 @@ section() { printf '\n\n==== %s ====\n\n' "$1"; }
     cat "$SRC/COPYING"
     section 'MinGW-w64 runtime notice (statically linked runtime)'
     cat "$SRC/notices/MinGW-w64-runtime.txt"
+    section 'Madeira Steam service preparation helper'
+    printf 'Source: https://github.com/letsdothisagainx/Madeira (commit %s), build/steam-service/ and build/scm-rpc/probe.c; GPL-3.0-or-later with Madeira Converter Exception.\n' \
+        "$(git -C "$REPO_ROOT" rev-parse HEAD)"
     section 'LLVM runtime notice'
     cat "$SRC/notices/LLVM.txt"
 } > "$TMP/dock-notices.txt"
 
 mkdir -p "$OUT"
-cp "$TMP/dockhost.exe" "$TMP/dock-notices.txt" "$OUT/"
+cp "$TMP/dockhost.exe" "$TMP/dock-notices.txt" "$TMP/madeira-steam-service.exe" "$TMP/madeira-scm-probe.exe" "$OUT/"
 if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$OUT/dockhost.exe"; else sha256sum "$OUT/dockhost.exe"; fi
 ls -la "$OUT/dockhost.exe" "$OUT/dock-notices.txt"

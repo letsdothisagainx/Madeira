@@ -7,7 +7,8 @@ repo_root=$(git rev-parse --show-toplevel)
 rustc=$(cd "$repo_root/build/rppairing-ios" && rustc -vV)
 fingerprint() { shasum -a 256 | cut -c1-20; }
 flags() { env | LC_ALL=C sort | awk -F= -v pattern="$1" '$1 ~ pattern'; }
-key=$( { printf '%s\n' "$xcode" "$sdk" "$compiler"; uname -sm; flags '^(CC|CXX|AR|RANLIB|CFLAGS|CXXFLAGS|CPPFLAGS|LDFLAGS|SDKROOT|MACOSX_DEPLOYMENT_TARGET|IPHONEOS_DEPLOYMENT_TARGET|ImageOS|ImageVersion)$'; } | fingerprint)
+# Runner image labels vary between jobs; fingerprint the actual toolchain and flags.
+key=$( { printf '%s\n' "$xcode" "$sdk" "$compiler"; uname -sm; flags '^(CC|CXX|AR|RANLIB|CFLAGS|CXXFLAGS|CPPFLAGS|LDFLAGS|SDKROOT|MACOSX_DEPLOYMENT_TARGET|IPHONEOS_DEPLOYMENT_TARGET)$'; } | fingerprint)
 rust=$( { printf '%s\n' "$key" "$rustc"; flags '^(RUSTFLAGS|CARGO_ENCODED_RUSTFLAGS|RUSTUP_TOOLCHAIN)$'; } | fingerprint)
 graphics=$( { printf '%s\n' "$key"; flags '^(DXMT_METAL_STD|MADEIRA_ONLY|MADEIRA_MSC_ROOT)$'; } | fingerprint)
 ipa=$( { printf '%s\n' "$key" "$rust" "$graphics"; flags '^(CONFIGURATION|MADEIRA_MOLTENVK)$'; } | fingerprint)

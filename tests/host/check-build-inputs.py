@@ -44,11 +44,11 @@ with tempfile.TemporaryDirectory(prefix='madeira-build-inputs-') as folder:
                SDK_INPUT=str(sdk), CLANG_INPUT=str(clang), RUST_INPUT=str(rust), GITHUB_OUTPUT=str(output),
                REPO_INPUT=str(root), GIT_INPUT=shutil.which('git'))
     native_flags = ('CC', 'CXX', 'AR', 'RANLIB', 'CFLAGS', 'CXXFLAGS', 'CPPFLAGS', 'LDFLAGS',
-                    'SDKROOT', 'MACOSX_DEPLOYMENT_TARGET', 'IPHONEOS_DEPLOYMENT_TARGET', 'ImageOS', 'ImageVersion')
+                    'SDKROOT', 'MACOSX_DEPLOYMENT_TARGET', 'IPHONEOS_DEPLOYMENT_TARGET')
     rust_flags = ('RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', 'RUSTUP_TOOLCHAIN')
     graphics_flags = ('DXMT_METAL_STD', 'MADEIRA_ONLY', 'MADEIRA_MSC_ROOT')
     app_flags = ('CONFIGURATION', 'MADEIRA_MOLTENVK')
-    for key in (*native_flags, *rust_flags, *graphics_flags, *app_flags, 'MADEIRA_PLANNED_SDK', 'MADEIRA_PLANNED_IPA'):
+    for key in (*native_flags, *rust_flags, *graphics_flags, *app_flags, 'MADEIRA_PLANNED_SDK', 'MADEIRA_PLANNED_IPA', 'ImageOS', 'ImageVersion'):
         env.pop(key, None)
     def fingerprint(extra=None):
         output.unlink(missing_ok=True)
@@ -57,6 +57,11 @@ with tempfile.TemporaryDirectory(prefix='madeira-build-inputs-') as folder:
     first = fingerprint()
     assert first == fingerprint()
     assert first == fingerprint({'JOBS': '3'})
+    # GitHub can assign plan and build jobs different macOS image releases.
+    for labels in ({'ImageOS': 'macos26', 'ImageVersion': '20261026.0314.1'},
+                   {'ImageOS': 'macos26', 'ImageVersion': '20261023.0307.1'},
+                   {'ImageOS': 'different-label', 'ImageVersion': 'different-release'}):
+        assert first == fingerprint(labels), 'runner image labels must not change any fingerprint'
     sdk.write_text('27.2\n')
     assert first != fingerprint()
     sdk.write_text('27.1\n')

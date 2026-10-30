@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""Run the packaging entry point with synthetic build products/Xcode commands.
+This validates resource gates and ZIP contents, not an iOS executable."""
+from pathlib import Path
+import os
+import re
+import subprocess
+import tempfile
+import zipfile
+root = Path(__file__).resolve().parents[2]
+entry = (root/'tools/build-ipa.sh').read_text()
+assert entry.index('"$ROOT/tools/build/setup-llvm-mingw.sh"') < entry.index('"$ROOT/build/madeira-dock/build.sh"') < entry.index('"$ROOT/tools/build/package-ipa.sh"')
+project = (root/'app/Madeira.xcodeproj/project.pbxproj').read_text()
+assert 'A1000080 /* arm64ec-windows in Resources */' in project
+assert 'lastKnownFileType = folder; path = "arm64ec-windows"' in project
+script = (root/'tools/build/package-ipa.sh').read_text()
+with tempfile.TemporaryDirectory() as temp:
+    t = Path(temp); commands = t/'bin'; commands.mkdir()
+    package = t/'package.sh'; package.write_text(script)
+    # Populate all production prerequisites, avoiding a separate list that can drift.
+    for relative in re.findall(r'"\$ROOT/([^"\n]+)"', script.split('for path in "${required[@]}"')[0]):
+        p = t/relative
+        if relative.endswith(('.a','.exe','.txt')):
+            p.parent.mkdir(parents=True, exist_ok=True); p.write_bytes(b'fixture')
+    bodies = {
+      'xcodebuild': '''mkdir -p "$TEST_APP/arm64ec-windows" "$TEST_APP/x86_64-vcruntime"
+printf fixture > "$TEST_APP/Madeira"
+printf fixture > "$TEST_APP/prefix-template.tar.gz"
+printf fixture > "$TEST_APP/arm64ec-windows/xtajit64.dll"
+printf fixture > "$TEST_APP/x86_64-vcruntime/vcruntime140.dll"
+for resource in dockhost.exe dock-notices.txt madeira-steam-service.exe madeira-scm-probe.exe; do
+  if [ "${OMIT_RESOURCE:-}" != "$resource" ]; then cp "$ROOT/app/Madeira/arm64ec-windows/$resource" "$TEST_APP/arm64ec-windows/"; fi
+done
+''',
+      'codesign': 'if [ "$1" = -d ]; then echo com.apple.security.cs.allow-jit; fi\n',
+      'ditto': 'cp -R "$1" "$2"\n',
+    }
+    for name, body in bodies.items():
+        p=commands/name; p.write_text('#!/bin/sh\nset -eu\n'+body); p.chmod(0o755)
+    env=dict(os.environ, ROOT=str(t), TEST_APP=str(t/'app/DerivedData/Build/Products/Debug-iphoneos/Madeira.app'), PATH=str(commands)+os.pathsep+os.environ['PATH'])
+    def run(extra=None):
+        return subprocess.run(['bash',str(package)],env=dict(env,**(extra or {})),capture_output=True,text=True)
+    result=run(); assert result.returncode == 0, result.stdout+result.stderr
+    with zipfile.ZipFile(t/'dist/Madeira.ipa') as archive:
+        for resource in ['dockhost.exe','dock-notices.txt','madeira-steam-service.exe','madeira-scm-probe.exe']:
+            assert archive.read('Payload/Madeira.app/arm64ec-windows/'+resource) == b'fixture'
+    print('PASS final ZIP includes Dock, service helper and license notices')
+    for resource in ['dockhost.exe','dock-notices.txt','madeira-steam-service.exe','madeira-scm-probe.exe']:
+        result=run({'OMIT_RESOURCE':resource})
+        assert result.returncode != 0 and 'required bundle resource missing' in result.stderr, result.stderr
+        p=t/'app/Madeira/arm64ec-windows'/resource; p.write_bytes(b'')
+        result=run()
+        assert result.returncode != 0 and 'required build artifact missing' in result.stderr, result.stderr
+        p.write_bytes(b'fixture')
+    print('PASS missing bundle resources and empty staging outputs fail packaging')

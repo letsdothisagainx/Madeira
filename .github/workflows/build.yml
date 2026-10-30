@@ -210,6 +210,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+      - name: Check embedded signal ownership and Dock packaging
+        run: python3 tests/host/run-embedded-checks.py
       - id: sdk
         run: bash tools/build/ci-input-key.sh
       - id: cache-llvm
@@ -340,3 +342,25 @@ jobs:
           if-no-files-found: error
           overwrite: true
           compression-level: 0
+
+  scm-rpc-abi:
+    needs: [app, reuse]
+    if: always() && (needs.app.result == 'success' || needs.reuse.result == 'success')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: Madeira-ipa
+          path: scm-ipa
+      - name: Check compiled SCM producer and NDR argument frames
+        run: |
+          python3 -m venv "$RUNNER_TEMP/scm-abi-tools"
+          "$RUNNER_TEMP/scm-abi-tools/bin/pip" install -r build/scm-rpc/test-requirements.txt
+          unzip -q scm-ipa/Madeira.ipa 'Payload/Madeira.app/arm64ec-windows/*' -d scm-ipa
+          farm=scm-ipa/Payload/Madeira.app/arm64ec-windows
+          test -s "$farm/madeira-steam-service.exe"
+          test -s "$farm/madeira-scm-probe.exe"
+          test -s "$farm/dock-notices.txt"
+          python3 tools/check-scm-rpc-image.py "$farm/sechost.dll" "$farm/ntdll.dll"
+          "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-scm-rpc-abi.py --producer "$farm/sechost.dll" --runtime "$farm/rpcrt4.dll"

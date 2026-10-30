@@ -578,3 +578,24 @@ client still checks the account and the game license.
 
 Rebuild the Dock host with these source changes. The source tests and the
 Windows cross-build do not establish Steam startup or gameplay on a device.
+
+## Steam Client Service preparation (2026-10-29)
+
+Madeira runs `madeira-steam-service.exe` before ordinary Dock launches and the
+Steam Testing batch. It waits for Wine's SCM RPC endpoint, checks `Steam Client
+Service`, and runs the local, unmodified `bin\SteamService.exe /install` only
+when OpenService returns 1060. It then reopens the service and uses StartService
+and QueryServiceStatusEx. A failure stops that launch; success means SCM reported
+SERVICE_RUNNING, not that Valve authentication or a private service protocol
+succeeded. It does not guarantee VAC compatibility.
+
+The helper is built from `build/steam-service/`, staged beside Dock, covered by
+`dock-notices.txt`, and required in both the built app and final IPA ZIP. Wine's
+existing cross-architecture system32 links expose it in ARM64 desktop sessions.
+No Valve binary is bundled, patched, signed, or replaced. Existing registrations
+are retained; the helper never calls CreateService or writes service keys. Only
+Valve's own installer can change its registration. Installer timeout is reported
+without terminating it; close the session before retrying a timed-out setup.
+
+See [service investigation](STEAM_SERVICE_DIAGNOSTICS.md) for evidence limits,
+architecture/registry/pipe diagnostics, and device validation.

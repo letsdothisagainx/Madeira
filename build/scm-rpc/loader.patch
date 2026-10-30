@@ -1,0 +1,72 @@
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -1380,6 +1380,51 @@
+ }
+ #endif
+
++#ifdef __arm64ec__
++#include "madeira_scm_aux_slot.h"
++
++/* Bind the native auxiliary slot as well as the public IAT. An EC varargs
++ * call cannot safely take the lazy EC->x64->EC detour: the exit thunk spills
++ * the x4/x5 argument-window descriptor as x64 arguments. Keep this repair
++ * limited to the verified SCM producer/import, without changing x64 exports,
++ * the global EC classifier, FEX state or generic NDR argument slots. */
++static BOOL arm64ec_bind_scm_rpc_aux( WINE_MODREF *wm, IMAGE_THUNK_DATA *slot )
++{
++    extern void *xlate_ios_jit( void *ptr );
++    HMODULE module = wm->ldr.DllBase;
++    const IMAGE_ARM64EC_METADATA *metadata = arm64ec_get_module_metadata( module );
++    const IMAGE_NT_HEADERS *nt = RtlImageNtHeader( module );
++    const IMAGE_DATA_DIRECTORY *iat;
++    ULONG_PTR *aux, *pool;
++    PVOID protect_base;
++    SIZE_T protect_size = sizeof(*aux);
++    DWORD protect_old, ignored;
++    uint32_t aux_rva;
++    static unsigned int reports;
++
++    if (!metadata || !nt || !RtlIsEcCode( slot->u1.Function )) return FALSE;
++    iat = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IAT];
++    if (!madeira_scm_aux_slot( nt->OptionalHeader.SizeOfImage, iat->VirtualAddress,
++                              iat->Size, (char *)slot - (char *)module,
++                              metadata->AuxiliaryIAT, &aux_rva )) return FALSE;
++    aux = get_rva( module, aux_rva );
++    protect_base = aux;
++    if (NtProtectVirtualMemory( NtCurrentProcess(), &protect_base, &protect_size,
++                                PAGE_READWRITE, &protect_old )) return FALSE;
++    *aux = slot->u1.Function;
++    /* Runtime native code reads the owning process's translated data copy.
++     * Use the existing naked translator, never an unchecked unix function
++     * pointer through arm64x_check_call. Like delay-IAT sync, write both views. */
++    pool = xlate_ios_jit( aux );
++    if (pool && pool != aux) *(volatile ULONG_PTR *)pool = slot->u1.Function;
++    if (NtProtectVirtualMemory( NtCurrentProcess(), &protect_base, &protect_size,
++                                protect_old, &ignored )) return FALSE;
++    if (reports++ < 8)
++        ERR( "[scm-rpc-bind] native=1 auxiliary=1 pool=%u\n", !!pool && pool != aux );
++    return TRUE;
++}
++#endif
++
+ static BOOL import_dll( WINE_MODREF *wm, const IMAGE_IMPORT_DESCRIPTOR *descr, LPCWSTR load_path, WINE_MODREF **pwm )
+ {
+     HMODULE module = wm->ldr.DllBase;
+@@ -1529,6 +1574,17 @@
+                 thunk_list->u1.Function = (ULONG_PTR)arm64ec_redirect_ptr( imp_mod,
+                                                                            (void *)thunk_list->u1.Function,
+                                                                            imp_metadata );
++                if (!_wcsicmp( wm->ldr.BaseDllName.Buffer, L"sechost.dll" ) &&
++                    !_stricmp( name, "rpcrt4.dll" ) &&
++                    !strcmp( (const char *)pe_name->Name, "NdrClientCall2" ) &&
++                    !arm64ec_bind_scm_rpc_aux( wm, thunk_list ))
++                {
++                    ERR( "[scm-rpc-bind] failed; refusing unsafe varargs linkage\n" );
++                    NtProtectVirtualMemory( NtCurrentProcess(), &protect_base, &protect_size,
++                                            protect_old, &protect_old );
++                    *pwm = NULL;
++                    return FALSE;
++                }
+                 /* iOS-Madeira ml230: does the EC->EC import bind actually land on native
+                  * code, and is that code MARKED EC?
+                  *

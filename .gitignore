@@ -223,3 +223,7 @@ __pycache__/
 
 # Python host-check caches
 __pycache__/
+
+app/Madeira/arm64ec-windows/madeira-steam-service.exe
+
+app/Madeira/arm64ec-windows/madeira-scm-probe.exe

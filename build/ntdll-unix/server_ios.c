@@ -4672,7 +4672,7 @@ NTSTATUS unixcall_wine_server_handle_to_fd( void *args )
 int server_pipe( int fd[2] )
 {
     int ret;
-#ifdef HAVE_PIPE2
+#if defined(HAVE_PIPE2) && !defined(WINE_IOS) /* host config is not an iOS availability probe */
     static BOOL have_pipe2 = TRUE;
 
     if (have_pipe2)
@@ -4985,10 +4985,27 @@ static int init_thread_pipe(void)
     ss.ss_sp    = get_signal_stack();
     ss.ss_size  = signal_stack_size;
     ss.ss_flags = 0;
-    sigaltstack( &ss, NULL );
+    if (sigaltstack( &ss, NULL ) == -1) server_protocol_perror( "sigaltstack" );
 
-    if (server_pipe( reply_pipe ) == -1) server_protocol_perror( "pipe" );
-    if (server_pipe( ntdll_get_thread_data()->wait_fd ) == -1) server_protocol_perror( "pipe" );
+#ifdef WINE_IOS
+    /* Normal startup code, never a signal handler. No paths, game names or
+     * credentials; opt-in because each Wine thread creates these pipes. */
+    const char *trace_env = getenv( "MADEIRA_PIPE_TRACE" );
+    int trace = trace_env && !strcmp( trace_env, "1" );
+    if (trace) dprintf( STDERR_FILENO, "[thread-pipe] before reply teb=%p reply=%p wait=%p alt=%p/%zu\n",
+                       NtCurrentTeb(), (void *)reply_pipe,
+                       (void *)ntdll_get_thread_data()->wait_fd, ss.ss_sp, ss.ss_size );
+#endif
+    if (server_pipe( reply_pipe ) == -1) server_protocol_perror( "reply pipe" );
+#ifdef WINE_IOS
+    if (trace) dprintf( STDERR_FILENO, "[thread-pipe] after reply=%d/%d; before wait\n",
+                       reply_pipe[0], reply_pipe[1] );
+#endif
+    if (server_pipe( ntdll_get_thread_data()->wait_fd ) == -1) server_protocol_perror( "wait pipe" );
+#ifdef WINE_IOS
+    if (trace) dprintf( STDERR_FILENO, "[thread-pipe] after wait=%d/%d\n",
+                       ntdll_get_thread_data()->wait_fd[0], ntdll_get_thread_data()->wait_fd[1] );
+#endif
 #ifdef WINE_IOS
     {
         void *peb = ios_jit_current_peb();
