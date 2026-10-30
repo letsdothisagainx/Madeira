@@ -54,6 +54,9 @@ def inspect(path, offset):
         raise ValueError('APC instruction range is not file-backed')
     lines = [f'UUID={image_uuid}', f'SHA256={hashlib.sha256(data).hexdigest()}',
              f'invoke_system_apc={address:#x} target=+{offset:#x} ({target:#x})']
+    lines.append('I/O ABI symbols: ' + ', '.join(
+        f'{name}={names.get(name, 0):#x}' for name in
+        ('_ios_in_wow64_call', '_ios_wow_base', '_ios_wow64_by_teb', '_wow_peb')))
     decoder = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
     for pos in range(0, len(raw), 4):
         pc, word = start + pos, raw[pos:pos + 4]
@@ -77,9 +80,11 @@ if __name__ == '__main__':
     parser.add_argument('--annotations', action='store_true')
     args = parser.parse_args()
     image_uuid, lines = inspect(args.image, args.offset)
-    for line in lines:
-        print(line)
-        if args.annotations:
-            print('::notice title=Native APC image::' + line.replace('%', '%25'))
+    print('\n'.join(lines))
+    if args.annotations:
+        # One annotation retains the fault instruction even on integrations
+        # that cap the number of annotations accepted from a step.
+        message = '\n'.join(lines).replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+        print('::notice title=Native APC image::' + message)
     if args.expected_uuid and image_uuid != args.expected_uuid.upper():
         raise SystemExit('UUID does not match the device report; do not attribute this disassembly to it')
