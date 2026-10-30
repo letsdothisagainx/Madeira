@@ -1930,6 +1930,29 @@ void winios_window_frame(HWND hwnd, int x, int y, int w, int h, int visible,
     });
 }
 
+/* Read-only counterpart of [steam-ui] on the UIKit queue. No window text,
+ * bitmap contents, Metal allocation or visibility override. The Wine caller
+ * has a separate bounded budget for each HWND and kind of transition. */
+void winios_ui_surface_trace(void *hwnd, unsigned int pid, unsigned int tid,
+                             int wine_visible, void *surface) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSNumber *key = @((uintptr_t)hwnd);
+        CALayer *layer = g_layers[key];
+        CAMetalLayer *metal = g_metal_layers[key];
+        fprintf(stderr, "[steam-ui-host] pid=%04x tid=%04x hwnd=%p wine-visible=%d surface=%p "
+                        "layer=%p hidden=%d attached=%d frame={%.0f,%.0f,%.0f,%.0f} "
+                        "contents=%d metal=%p metal-hidden=%d metal-attached=%d "
+                        "compositor-attached=%d compositor-hidden=%d\n",
+                pid, tid, hwnd, wine_visible, surface, (__bridge void *)layer,
+                layer ? (int)layer.hidden : -1, layer.superlayer != nil,
+                (double)layer.frame.origin.x, (double)layer.frame.origin.y,
+                (double)layer.frame.size.width, (double)layer.frame.size.height,
+                layer.contents != nil, (__bridge void *)metal, metal ? (int)metal.hidden : -1,
+                metal.superlayer != nil, g_compositor_view.window != nil,
+                g_compositor_view ? (int)g_compositor_view.hidden : -1);
+    });
+}
+
 /* MADEIRA_DUMP_SURFACES=1: save each window's DIB as PNG under
  * Documents/surfdump/ — surf-<hwnd>-first.png once, then
  * surf-<hwnd>-latest.png at most every 2s. Ground truth for whether a

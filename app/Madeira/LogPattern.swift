@@ -90,7 +90,6 @@ struct LogPattern {
 
     /// Lines that look like errors but are expected in a normal session.
     static func isHarmless(_ raw: String) -> Bool {
-        if raw.contains("Failed to mprotect last page of code buffer") { return true }
         // WoW64 falls back to its own CPU backend at once.
         if raw.contains("CPU backend wow64cpu.dll not available") { return true }
         guard raw.contains("[dll-missing]") || raw.contains("err:module:"), !raw.contains("c0000017") else { return false }
@@ -103,6 +102,7 @@ struct LogPattern {
     private static func inferLevel(from line: String) -> LogStore.LogEntry.Level {
         let l = line.lowercased()
         if l.contains("fatal") || l.contains("c000001d") || l.contains("c0000005") ||
+            l.contains("failed to mprotect last page of code buffer") ||
             l.contains("ntterminateprocess") || l.contains("unhandled") ||
             l.contains("seh:") || l.contains("err:") || line.hasPrefix("E ") {
             return .error

@@ -6,6 +6,11 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[2]
 commands = [
+    ['python3', 'tests/host/check-steam-ui-trace.py'],
+    ['python3', 'tests/host/check-async-apc-trace.py'],
+    ['python3', 'tests/host/check-window-visibility.py'],
+    ['python3', 'tests/host/check-window-coordinates.py'],
+    ['python3', 'tests/host/check-harmless-warnings.py', '--require-swift'],
     ['python3', 'tests/host/check-opengl-wow64.py'],
     ['python3', 'tests/host/check-steam-client-environment.py'],
     ['python3', 'tests/host/check-wow-context.py'],

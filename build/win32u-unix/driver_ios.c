@@ -41,6 +41,7 @@ static struct user_driver_funcs null_user_driver;
 static WCHAR driver_load_error[80];
 
 #ifdef WINE_IOS
+#include "../steam-ui/trace.h"
 /* winios.drv — Madeira's iOS display/input driver. Lives in
  * app/Madeira/Winios/. Most slots stay NULL so __wine_set_user_driver's
  * SET_USER_FUNC fallback installs the always-success nulldrv_* stubs;
@@ -954,10 +955,48 @@ static double winios_swap_win_ms(void)
 static __thread HWND winios_swap_pos_hwnd;   /* the swapchain window between pos-begin and pos */
 static __thread double winios_swap_pos_t0;
 
+enum { STEAM_UI_SHOW, STEAM_UI_POS_BEGIN, STEAM_UI_POS_END, STEAM_UI_VISIBILITY, STEAM_UI_STYLE };
+extern void winios_ui_surface_trace( void *hwnd, unsigned int pid, unsigned int tid,
+                                      int visible, void *surface ) __attribute__((weak));
+static struct madeira_ui_trace_slot steam_ui_trace[MADEIRA_UI_TRACE_WINDOWS];
+
+static BOOL winios_trace_steam_window( const char *event, unsigned int kind, HWND hwnd,
+                                      UINT flags, HWND after, struct window_surface *surface )
+{
+    TEB *teb = NtCurrentTeb();
+    RTL_USER_PROCESS_PARAMETERS *params = teb && teb->Peb ? teb->Peb->ProcessParameters : NULL;
+    DWORD pid = 0, tid;
+    if (!params || !madeira_steam_ui_image( params->ImagePathName.Buffer,
+                                           params->ImagePathName.Length / sizeof(WCHAR) )) return FALSE;
+    tid = get_window_thread( hwnd, &pid );
+    if (!madeira_ui_trace_take( steam_ui_trace, pid, (uintptr_t)hwnd, kind )) return FALSE;
+    dprintf( 2, "[steam-ui] event=%s pid=%04x tid=%04x caller=%04x hwnd=%p parent=%p owner=%p "
+                "after=%p flags=%08x style=%08x exstyle=%08x visible=%u surface=%p surface-hwnd=%p\n",
+             event, (unsigned)pid, (unsigned)tid, (unsigned)GetCurrentThreadId(), hwnd,
+             NtUserGetAncestor( hwnd, GA_PARENT ), NtUserGetWindowRelative( hwnd, GW_OWNER ), after,
+             flags, (unsigned)get_window_long( hwnd, GWL_STYLE ),
+             (unsigned)get_window_long( hwnd, GWL_EXSTYLE ), (unsigned)is_window_visible( hwnd ), surface,
+             surface ? surface->hwnd : NULL );
+    return TRUE;
+}
+
+static UINT winios_drv_show_window( HWND hwnd, INT cmd, RECT *rect, UINT swp )
+{
+    BOOL traced = winios_trace_steam_window( "show-request", STEAM_UI_SHOW, hwnd, swp, 0, NULL );
+    UINT result = winios_pShowWindow( hwnd, cmd, rect, swp );
+    if (traced) dprintf( 2, "[steam-ui] event=show-return hwnd=%p cmd=%d swp=%08x result=%08x\n",
+                        hwnd, cmd, swp, result );
+    return result;
+}
+
 static void winios_drv_set_window_style( HWND hwnd, INT offset, STYLESTRUCT *style )
 {
     unsigned int seq;
     HWND fg;
+
+    if (winios_trace_steam_window( "style", STEAM_UI_STYLE, hwnd, 0, 0, NULL ))
+        dprintf( 2, "[steam-ui] hwnd=%p offset=%d old=%08x new=%08x\n",
+                 hwnd, offset, (unsigned)style->styleOld, (unsigned)style->styleNew );
 
     if (!winios_swap_win_take( winios_swap_win( hwnd ), WINIOS_SWAP_STYLE, &seq )) return;
     fg = NtUserGetForegroundWindow();
@@ -972,6 +1011,8 @@ static BOOL winios_drv_window_pos_changing( HWND hwnd, UINT swp_flags, BOOL shap
 {
     unsigned int seq;
     int slot = winios_swap_win( hwnd );
+
+    winios_trace_steam_window( "pos-request", STEAM_UI_POS_BEGIN, hwnd, swp_flags, 0, NULL );
 
     if (slot)
     {
@@ -1154,6 +1195,9 @@ static void winios_drv_window_pos_changed( HWND hwnd, HWND insert_after, HWND ow
                                            const struct window_rects *new_rects, struct window_surface *surface )
 {
     ios_note_fullscreen_show( hwnd, swp_flags, &new_rects->visible );
+    BOOL steam_traced = winios_trace_steam_window( "pos-applied",
+                                  swp_flags & (SWP_SHOWWINDOW | SWP_HIDEWINDOW) ? STEAM_UI_VISIBILITY : STEAM_UI_POS_END,
+                                  hwnd, swp_flags, insert_after, surface );
 
     /* desktop mode, or a top-level window in game mode (Winios.m draws it
      * in its transparent game-mode overlay, never the desktop backdrop that
@@ -1259,6 +1303,14 @@ static void winios_drv_window_pos_changed( HWND hwnd, HWND insert_after, HWND ow
 
     if (winios_pWindowPosChanged)
         winios_pWindowPosChanged( hwnd, insert_after, owner_hint, swp_flags, new_rects, surface );
+
+    /* Queue after the frame/child-visibility updates on this Wine thread.
+     * UIKit only reads its own layers; it never queries Wine from that queue. */
+    if (steam_traced && winios_ui_surface_trace)
+    {
+        DWORD pid = 0, tid = get_window_thread( hwnd, &pid );
+        winios_ui_surface_trace( hwnd, pid, tid, is_window_visible( hwnd ), surface );
+    }
 
     {   /* madeira-bcd: [swap-win] */
         int slot = winios_swap_win( hwnd );
@@ -2322,7 +2374,7 @@ static void load_display_driver(void)
         if ((!winios_desktop_mode() || winios_mouse_routing_on()) && winios_direct_cursor_pos)
             winios_user_driver.pSetCursorPos = winios_drv_set_cursor_pos;
         if (winios_pDestroyCursorIcon)   winios_user_driver.pDestroyCursorIcon   = winios_pDestroyCursorIcon;
-        if (winios_pShowWindow)          winios_user_driver.pShowWindow          = winios_pShowWindow;
+        if (winios_pShowWindow)          winios_user_driver.pShowWindow          = winios_drv_show_window;
         /* window-pos wrapper dereferences window_rects on this side and
          * forwards plain ints to Winios.m's layer compositor */
         if (winios_pWindowPosChanged || winios_window_frame)

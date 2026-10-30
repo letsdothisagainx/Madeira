@@ -372,10 +372,13 @@ jobs:
           "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-scm-rpc-abi.py --producer "$farm/sechost.dll" --runtime "$farm/rpcrt4.dll"
           unzip -q scm-ipa/Madeira.ipa 'Payload/Madeira.app/i386-windows/madeira-wow64-*' 'Payload/Madeira.app/Madeira.debug.dylib' -d scm-ipa
           "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-wow64-probe-image.py scm-ipa/Payload/Madeira.app/i386-windows
+          "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-native-apc-image.py
           python3 - <<'PY'
           from pathlib import Path
-          assert b'[wow-gl-attach] phase=' in Path('scm-ipa/Payload/Madeira.app/Madeira.debug.dylib').read_bytes(), 'missing native attach diagnostics'
-          print('PASS native attach diagnostics included in IPA')
+          image = Path('scm-ipa/Payload/Madeira.app/Madeira.debug.dylib').read_bytes()
+          for marker in (b'[wow-gl-attach] phase=', b'[steam-ui-host]', b'[iosb-register]', b'[async-apc]', b'[guard-protect]'):
+              assert marker in image, 'missing native diagnostic: ' + repr(marker)
+          print('PASS native attach/UI/I/O/guard diagnostics included in IPA')
           PY
 
   inspect-native:
@@ -396,5 +399,6 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/native-image-tools"
           "$RUNNER_TEMP/native-image-tools/bin/pip" install capstone==5.0.6
+          "$RUNNER_TEMP/native-image-tools/bin/python" tests/host/check-native-apc-image.py
           unzip -q previous-ipa/Madeira.ipa 'Payload/Madeira.app/Madeira.debug.dylib' -d previous-ipa
           "$RUNNER_TEMP/native-image-tools/bin/python" tools/inspect-native-apc.py previous-ipa/Payload/Madeira.app/Madeira.debug.dylib --expected-uuid C785040B-848D-37AD-985C-832B8923F782 --annotations

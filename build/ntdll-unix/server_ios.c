@@ -3377,6 +3377,52 @@ static NTSTATUS invoke_user_apc( CONTEXT *context, const struct user_apc *apc, N
 /***********************************************************************
  *              invoke_system_apc
  */
+#ifdef WINE_IOS
+void ios_trace_iosb_registration( IO_STATUS_BLOCK *io, client_ptr_t target, const char *api )
+{
+    static unsigned int ordinary, low;
+    unsigned int ticket = target && target < 0x100000000ULL
+        ? __atomic_fetch_add( &low, 1, __ATOMIC_RELAXED )
+        : __atomic_fetch_add( &ordinary, 1, __ATOMIC_RELAXED );
+    TEB *teb;
+    if (ticket >= 8) return;
+    teb = NtCurrentTeb();
+    dprintf( 2, "[iosb-register] api=%s pid=%04x tid=%04x teb=%p peb=%p window=%p wow=%u "
+                "native-iosb=%p target=%p\n", api,
+             teb ? (unsigned)(ULONG_PTR)teb->ClientId.UniqueProcess : 0,
+             teb ? (unsigned)(ULONG_PTR)teb->ClientId.UniqueThread : 0, teb, teb ? teb->Peb : NULL,
+             (void *)ios_wow_host_base(), (unsigned)in_wow64_call(), io, wine_server_get_ptr( target ) );
+}
+
+/* Normal APC-dispatch context, never a signal handler. Observe the wire
+ * completion pointer before its callback can release the async_fileio.
+ * A low pointer is especially useful here: client_ptr_t is a HOST pointer,
+ * including for a WoW64 status block. Do not repair or suppress a bad one. */
+static BOOL ios_trace_async_apc( const union apc_call *call, const char *phase )
+{
+    static unsigned int ordinary, low;
+    TEB *teb;
+    BOOL wow;
+    ULONG_PTR window;
+    unsigned int ticket;
+
+    ticket = call->async_io.sb && call->async_io.sb < 0x100000000ULL
+        ? __atomic_fetch_add( &low, 1, __ATOMIC_RELAXED )
+        : __atomic_fetch_add( &ordinary, 1, __ATOMIC_RELAXED );
+    if (ticket >= 8) return FALSE;
+    teb = NtCurrentTeb();
+    window = ios_wow_host_base();
+    wow = in_wow64_call();
+    dprintf( 2, "[async-apc] phase=%s pid=%04x tid=%04x teb=%p peb=%p window=%p "
+                "wow=%u user=%p iosb=%p status=%08x bytes=%u cpu-area=%p tls14=%p\n",
+             phase, teb ? (unsigned)(ULONG_PTR)teb->ClientId.UniqueProcess : 0,
+             teb ? (unsigned)(ULONG_PTR)teb->ClientId.UniqueThread : 0, teb, teb ? teb->Peb : NULL,
+             (void *)window, (unsigned)wow, wine_server_get_ptr( call->async_io.user ),
+             wine_server_get_ptr( call->async_io.sb ), call->async_io.status, call->async_io.result,
+             teb ? teb->TlsSlots[WOW64_TLS_CPURESERVED] : NULL, teb ? teb->TlsSlots[14] : NULL );
+    return TRUE;
+}
+#endif
 static void invoke_system_apc( const union apc_call *call, union apc_result *result, BOOL self )
 {
     SIZE_T size, bits;
@@ -3393,6 +3439,9 @@ static void invoke_system_apc( const union apc_call *call, union apc_result *res
         struct async_fileio *user = wine_server_get_ptr( call->async_io.user );
         ULONG_PTR info = call->async_io.result;
         unsigned int status;
+#ifdef WINE_IOS
+        BOOL traced = ios_trace_async_apc( call, "before-callback" );
+#endif
 
         result->type = call->type;
         status = call->async_io.status;
@@ -3404,6 +3453,12 @@ static void invoke_system_apc( const union apc_call *call, union apc_result *res
             set_async_iosb( call->async_io.sb, result->async_io.status, info );
         }
         else result->async_io.status = STATUS_PENDING; /* restart it */
+#ifdef WINE_IOS
+        if (traced)
+            dprintf( 2, "[async-apc] phase=returned iosb=%p result=%08x bytes=%u\n",
+                     wine_server_get_ptr( call->async_io.sb ), result->async_io.status,
+                     result->async_io.total );
+#endif
         break;
     }
     /* in every APC below, `addr` is a

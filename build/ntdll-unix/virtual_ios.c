@@ -32735,6 +32735,38 @@ NTSTATUS WINAPI NtProtectVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T 
     if (!status) VIRTUAL_DEBUG_DUMP_VIEW( view );
 
 #ifdef WINE_IOS
+    /* FEX's guard-page warning omits the owning process, failure status and
+     * actual host page size. Observe failed NOACCESS requests without changing
+     * their result or any mapping. This is ordinary syscall context. */
+    if (!ios_in_mach_exc && status && new_prot == PAGE_NOACCESS)
+    {
+        static unsigned int guard_failures;
+        unsigned int ticket = __atomic_fetch_add( &guard_failures, 1, __ATOMIC_RELAXED );
+        if (ticket < 8)
+        {
+            TEB *teb = NtCurrentTeb();
+            mach_vm_address_t region = (mach_vm_address_t)base;
+            mach_vm_size_t region_size = 0;
+            natural_t depth = 0;
+            vm_region_submap_short_info_data_64_t info;
+            mach_msg_type_number_t count = VM_REGION_SUBMAP_SHORT_INFO_COUNT_64;
+            kern_return_t query;
+            memset( &info, 0, sizeof(info) );
+            query = mach_vm_region_recurse( mach_task_self(), &region, &region_size, &depth,
+                                           (vm_region_recurse_info_t)&info, &count );
+            dprintf( 2, "[guard-protect] pid=%04x tid=%04x teb=%p peb=%p window=%p requested=%p+%#lx "
+                        "normalized=%p+%#lx status=%08x host-page=%#lx view=%p+%#lx "
+                        "mach-query=%d region=%p+%#llx prot=%x max=%x\n",
+                     teb ? (unsigned)(ULONG_PTR)teb->ClientId.UniqueProcess : 0,
+                     teb ? (unsigned)(ULONG_PTR)teb->ClientId.UniqueThread : 0, teb, teb ? teb->Peb : NULL,
+                     (void *)ios_wow_base(), ios_patch_requested, (unsigned long)ios_patch_length,
+                     base, (unsigned long)size, status, (unsigned long)host_page_size,
+                     view ? view->base : NULL, view ? (unsigned long)view->size : 0,
+                     query, (void *)(uintptr_t)region, (unsigned long long)region_size,
+                     (unsigned)info.protection, (unsigned)info.max_protection );
+        }
+    }
+
     /* madeira-bcd: [prot-img] -- protection changes of 64 KB or more on the
      * process's own main image, with the section they start in. GTA V Enhanced
      * died executing GTA5_Enhanced.exe+0x509a144, in sections the emulator was
