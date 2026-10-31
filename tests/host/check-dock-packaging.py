@@ -28,12 +28,16 @@ with tempfile.TemporaryDirectory() as temp:
     wow[:2] = b'MZ'; struct.pack_into('<I', wow, 0x3c, 0x80)
     wow[0x80:0x84] = b'PE\0\0'; struct.pack_into('<H', wow, 0x84, 0xaa64)
     wow[0xa0:0xa0+len(b'madeira-io-abi-v1')] = b'madeira-io-abi-v1'
+    wow.extend(b'[wow-thread-init-v1]')
     (t/'app/Madeira/aarch64-windows/wow64.dll').write_bytes(wow)
+    cpu = bytearray(wow)
+    cpu.extend(b'MadeiraBTCpuThreadInit[fex-thread-init-v1]')
+    (t/'app/Madeira/aarch64-windows/xtajit.dll').write_bytes(cpu)
     (t/'tools').mkdir()
     (t/'tools/check-io-abi-package.py').write_text((root/'tools/check-io-abi-package.py').read_text())
     bodies = {
       'xcodebuild': '''mkdir -p "$TEST_APP/arm64ec-windows" "$TEST_APP/i386-windows" "$TEST_APP/x86_64-vcruntime" "$TEST_APP/aarch64-windows"
-cp "$ROOT/app/Madeira/aarch64-windows/wow64.dll" "$TEST_APP/aarch64-windows/"
+cp "$ROOT/app/Madeira/aarch64-windows/wow64.dll" "$ROOT/app/Madeira/aarch64-windows/xtajit.dll" "$TEST_APP/aarch64-windows/"
 printf '[io-abi] v1 per-request IOSB layout active' > "$TEST_APP/Madeira.debug.dylib"
 printf fixture > "$TEST_APP/Madeira"
 printf fixture > "$TEST_APP/prefix-template.tar.gz"
@@ -75,6 +79,11 @@ done
         result=run();assert result.returncode and 'required build artifact missing' in result.stderr
         p.write_bytes(b'fixture')
     print('PASS missing bundle resources and empty staging outputs fail packaging')
+    (t/'app/Madeira/aarch64-windows/xtajit.dll').write_bytes(wow)
+    result=run()
+    assert result.returncode and 'stale FEX CPU producer' in result.stderr, result.stderr
+    (t/'app/Madeira/aarch64-windows/xtajit.dll').write_bytes(cpu)
+    print('PASS stale FEX checked-init producer fails final IPA validation')
     (t/'app/Madeira/aarch64-windows/wow64.dll').write_bytes(b'old image')
     result=run()
     assert result.returncode and 'not a PE image' in result.stderr, result.stderr
