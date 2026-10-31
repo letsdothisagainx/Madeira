@@ -56,6 +56,8 @@ typedef struct { int protection, max_protection, shared; } vm_region_basic_info_
 #define IOS_WOW_FEX_BAND_END ((ULONG_PTR)0x8000000000)
 #define IOS_WOW_SPILL_TOP ((ULONG_PTR)0x7b00000000)
 static int ios_wow_spill_walk;
+/* Elastic adjacent placement is exercised by check-lazy-windows.py. */
+static int ios_wow_elastic(void) { return 0; }
 static const ULONG_PTR host_page_size = 0x4000;
 struct ios_wow_window { ULONG_PTR base; unsigned dead, leaked, guard_owned; };
 struct ios_wow_placeholder { unsigned adopted, guard_owned; };
