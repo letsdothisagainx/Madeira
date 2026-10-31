@@ -34,6 +34,8 @@ with tempfile.TemporaryDirectory() as tmp:
     subprocess.run(['python3', str(root/'tools/build/stage-fex-compat.py'), 'stage', str(target)], check=True)
     s = (target/'Source/Windows/WOW64/Module.cpp').read_text()
     fn = body(s, 'extern "C" __declspec(dllexport) NTSTATUS WINAPI MadeiraBTCpuThreadInit()')
+    legacy = body(s, 'void BTCpuThreadInit()')
+    assert 'NTSYSAPI NTSTATUS NTAPI NtTerminateThread(HANDLE ThreadHandle, NTSTATUS ExitStatus);' in s
     protect = body((target/'FEXCore/include/FEXCore/Utils/AllocatorHooks.h').read_text(), 'inline bool VirtualProtect(')
     run(r'''
 #include <cassert>
@@ -92,6 +94,14 @@ static Context* CTX=&context;
 static std::unordered_map<unsigned, ThreadState*> Threads;
 struct Stats {void* AllocateSlot(unsigned){return nullptr;}}; static Stats* StatAllocHandler=nullptr;
 ''' + fn + r'''
+struct Retired { NTSTATUS status; };
+static void* GetCurrentThread(){return nullptr;}
+static NTSTATUS NtTerminateThread(void*, NTSTATUS status){
+ assert(ThreadCreationMutex.try_lock());ThreadCreationMutex.unlock();
+ assert(!tls_thread && !crt && Threads.empty() && !gdts && !fronts);
+ throw Retired{status};
+}
+''' + legacy + r'''
 namespace FEXCore::Allocator {
 enum class ProtectOptions { None=0, Read=1, Write=2, Exec=4 };
 constexpr ProtectOptions operator|(ProtectOptions a, ProtectOptions b){return ProtectOptions(unsigned(a)|unsigned(b));}
@@ -115,6 +125,9 @@ int main(){
   assert(destroyed==before+(failure!=1));
   assert(ThreadCreationMutex.try_lock());ThreadCreationMutex.unlock();
  }
+ failure=1;bool retired=false;
+ try { BTCpuThreadInit(); } catch(const Retired& r) {retired=true;assert(uint32_t(r.status)==0xc0000017u);}
+ assert(retired);
  failure=0;assert(!MadeiraBTCpuThreadInit());assert(tls_thread && Threads.size()==1 && crt==1 && gdts==1 && fronts==1 && stacks==1);
  assert(ThreadCreationMutex.try_lock());ThreadCreationMutex.unlock();
  auto* t=tls_thread; tls_thread=nullptr; Threads.clear(); delete static_cast<FrontendThreadData*>(t->FrontendPtr);
