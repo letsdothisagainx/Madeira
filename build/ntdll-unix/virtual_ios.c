@@ -1180,7 +1180,11 @@ static void *ios_pool_warmer_thread( void *arg )
                     size_t t_sz  = ios_jit_mappings[mi].text_size;
                     size_t o;
 
-                    if (!jb || !t_sz) continue;
+                    /* Reclaimed entries retain their old jit_base/text metadata.
+                     * A reused pool VA can now hold another module's data. */
+                    void *pe = ios_jit_mappings[mi].pe_base;
+                    size_t live_size = ios_jit_mappings[mi].size;
+                    if (!pe || !jb || !live_size || !t_sz || t_off > live_size || t_sz > live_size - t_off) continue;
                     for (o = 0; o < t_sz; o += 0x40000)   /* 256KB stride inside .text */
                     {
                         mach_vm_address_t want = (mach_vm_address_t)(jb + t_off + o), a = want;
@@ -1192,12 +1196,16 @@ static void *ios_pool_warmer_thread( void *arg )
                         if (mach_vm_region( mach_task_self(), &a, &rsz, VM_REGION_BASIC_INFO_64,
                                             (vm_region_info_t)&inf, &cnt, &obj ) != KERN_SUCCESS)
                             break;
+                        if (obj != MACH_PORT_NULL) mach_port_deallocate( mach_task_self(), obj );
                         if (a > want) continue;                  /* hole */
+                        __sync_synchronize();
+                        if (ios_jit_mappings[mi].pe_base != pe || ios_jit_mappings[mi].size != live_size ||
+                            (uintptr_t)ios_jit_mappings[mi].jit_base != jb) break;
                         checked++;
                         if (!(inf.max_protection & VM_PROT_EXECUTE) && bad++ < 8)
                             dprintf(2, "[pool-rot] TEXT LOST EXEC va=0x%llx mod_pool=0x%llx"
-                                       " text+0x%lx prot=%x max=%x region=0x%llx+0x%llx cycle=%u\n",
-                                    (unsigned long long)want, (unsigned long long)jb,
+                                       " pe=%p size=%#lx text+0x%lx prot=%x max=%x region=0x%llx+0x%llx cycle=%u\n",
+                                    (unsigned long long)want, (unsigned long long)jb, pe, (unsigned long)live_size,
                                     (unsigned long)o, inf.protection, inf.max_protection,
                                     (unsigned long long)a, (unsigned long long)rsz, cycle);
                     }
@@ -6982,6 +6990,7 @@ NTSTATUS unixcall_ios_sync_pe_write(void *args)
  */
 
 #include "x18_scalar_load.h"
+#include "pool_section_policy.h"
 
 /* Check if an ARM64 instruction references x18 as a register operand.
  * Returns the role (which field contains x18) or 0 if no x18 reference. */
@@ -17151,6 +17160,52 @@ static int ios_guest_anon_rwx_is_host_data( const void *base, size_t size )
 }
 
 
+/* Only whole host pages exclusively containing data may lose execute access.
+ * Mixed pages keep RX and receive writes through the existing RW alias emulator. */
+static void ios_pool_protect_image_data( void *rx, const void *rw, size_t size,
+                                         size_t pe, size_t host_page, const char *site )
+{
+    uintptr_t first = (uintptr_t)rx & ~(uintptr_t)(host_page - 1), end;
+    static unsigned int logged;
+    if (!host_page || (host_page & (host_page - 1)) || size > UINTPTR_MAX - (uintptr_t)rx) return;
+    end = (uintptr_t)rx + size;
+    for (uintptr_t page = first; page < end; page += host_page)
+    {
+        unsigned flags = ios_pool_page_policy( rw, size, pe, (uintptr_t)rx, page, host_page );
+        int saved_errno = errno, rc = 0, error = 0;
+        if (!(flags & IOS_POOL_PAGE_DATA)) continue;
+        if (!(flags & IOS_POOL_PAGE_CODE))
+        {
+            rc = mprotect( (void *)page, host_page, PROT_READ | PROT_WRITE );
+            error = rc ? errno : 0;
+        }
+        /* Record mixed boundaries and failed data transitions, with readback.
+         * No probe attempts to re-grant EXEC after max_protection lost it. */
+        if ((flags & IOS_POOL_PAGE_CODE) || rc)
+        {
+            unsigned n = __atomic_fetch_add( &logged, 1, __ATOMIC_RELAXED );
+            if (n < 48)
+            {
+                mach_vm_address_t region = page;
+                mach_vm_size_t bytes = 0;
+                natural_t depth = 0;
+                vm_region_submap_short_info_data_64_t info = {0};
+                mach_msg_type_number_t count = VM_REGION_SUBMAP_SHORT_INFO_COUNT_64;
+                kern_return_t query = mach_vm_region_recurse( mach_task_self(), &region, &bytes,
+                    &depth, (vm_region_recurse_info_t)&info, &count );
+                dprintf( 2, "[pool-section] site=%s image=%p page=%p+%#lx mixed=%u "
+                            "operation=%s rc=%d errno=%d query=%d region=%p+%#llx prot=%x max=%x owner=%p\n",
+                         site, rx, (void *)page, (unsigned long)host_page, !!(flags & IOS_POOL_PAGE_CODE),
+                         flags & IOS_POOL_PAGE_CODE ? "keep-rx-use-alias" : "mprotect-rw", rc, error,
+                         query, (void *)(uintptr_t)region, (unsigned long long)bytes,
+                         (unsigned)info.protection, (unsigned)info.max_protection, ios_jit_current_peb() );
+            }
+        }
+        errno = saved_errno;
+        if (page > UINTPTR_MAX - host_page) break;
+    }
+}
+
 static inline int mprotect_exec( void *base, size_t size, int unix_prot )
 {
 #ifdef WINE_IOS
@@ -18677,121 +18732,10 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
                         ERR("iOS JIT:   recorded .text: offset=0x%x size=0x%x\n", sec_rva, sec_vsize);
                         continue;
                     }
-                    if (!sec_vsize) continue;
-
-                    /* Only writable sections (.data) need protection changes.
-                     * Read-only sections (.rdata, .pdata, etc.) are fine as-is. */
-                    if (sec_chars & 0x80000000)  /* IMAGE_SCN_MEM_WRITE */
-                    {
-                        /* ml140 TASK #34 ROOT CAUSE — THE ONE-PAGE .text KILLER.
-                         *
-                         * This rounded the writable section's start DOWN to a
-                         * page boundary, so when a .data section begins partway
-                         * into a page that also holds the TAIL OF .text, the
-                         * mprotect below stripped EXECUTE from a page of live
-                         * code. [copy-verify] caught it at birth in 7 modules at
-                         * once — always exactly one page (two for chromehtml,
-                         * where the 64KB round-down spans several 16KB pages),
-                         * always at a 64KB-aligned offset, which is precisely
-                         * what (sec_rva & ~(page_size-1)) produces.
-                         *
-                         * That is the whole of #34: the page is not reclaimed
-                         * and not overwritten, it is mprotect'ed non-executable
-                         * by US at copy time, and it only kills the process when
-                         * execution finally reaches that part of .text — which
-                         * is why CEF dies at libarm64ecfex+0xd06d0 while Thumper,
-                         * which never calls those emitters, runs clean. It also
-                         * explains max_prot=0x3: mprotect drops EXECUTE from
-                         * max_protection on blessed memory permanently, so no
-                         * later mprotect/read-touch could ever restore it.
-                         *
-                         * Round the writable range UP instead: never touch the
-                         * page shared with preceding code. Writes landing in
-                         * that shared page fall to the SIGBUS emulation path the
-                         * failure branch below already relies on. */
-                        /* ml141 REVERTED to the round-DOWN. Skipping the shared
-                         * page (round-UP) removed every BORN NON-EXEC page, but
-                         * traded an exec fault for an immediate STORE fault:
-                         * steam.exe died after 61 unix calls with
-                         *   BUS: unhandled store insn=0x880a7d09 (STXR)
-                         * A .data write landing in the .text-shared page now hits
-                         * a read-only page, and the SIGBUS store emulator does
-                         * NOT cover store-exclusive — see
-                         * reference_str_emulator_state.md. Losing the write is
-                         * far worse than losing the exec: writes there are common
-                         * and immediate, executing that .text tail is rare.
-                         *
-                         * The correct fix is to remove the SHARING, not to pick a
-                         * loser: PE sections are 4KB-aligned while iOS pages are
-                         * 16KB, so a .data section can always land mid-page on
-                         * .text. Choose each image's pool offset so its first
-                         * writable section starts on a 16KB boundary — everything
-                         * before it is RX, so misaligning .text costs nothing. */
-                        /* ml142: round the ABSOLUTE address, not the RVA. The
-                         * ml141 data-align shift makes `offset` non-page-aligned
-                         * (steamexe +0x2000, libarm64ecfex +0x3000), so
-                         * base+offset+(rva & ~mask) is no longer page-aligned and
-                         * mprotect rejects it — .data stayed read-only and the
-                         * first STXR killed the process at 68 unix calls. With
-                         * the shift in place .data IS absolutely page-aligned, so
-                         * rounding the absolute address is exact: target lands on
-                         * .data's first byte and no .text page is ever included. */
-                        uintptr_t sec_abs = (uintptr_t)((char *)jit_rx_base + offset + sec_rva);
-                        uintptr_t sec_abs_end = (sec_abs + sec_vsize + page_size - 1) & ~(page_size - 1);
-                        void *target = (void *)(sec_abs & ~(uintptr_t)(page_size - 1));
-                        size_t sec_page_size;
-                        /* ml1351: NEVER PROTECT POOL PAGES BEYOND THIS COPY (port of the
-                         * pre-reset ml1970 guard).
-                         *
-                         * A manually mapped image (a DRM loader's in-memory DLL, not a
-                         * loader-mapped file) can declare a writable section that runs
-                         * past the memory its mapper allocated -- and so past the
-                         * image_size bytes copied here. The RW mprotect below then
-                         * reached the NEXT pool pages. On blessed pool memory that drops
-                         * EXECUTE from max_protection for good (ml140), so every later
-                         * hand-out there was born non-executable: device logs 80-83 show
-                         * [pool-poison] starting exactly at such an image's allocation
-                         * end, after which every process started later in the session
-                         * (the in-session launcher's services.exe and steam.exe) faulted
-                         * at its ntdll copy's first instruction. Clamp to the pages this
-                         * copy owns. MADEIRA_POOL_SECTION_CLAMP=0 restores the unclamped
-                         * range. */
-                        {
-                            static int clamp = -1;
-                            uintptr_t limit = ((uintptr_t)((char *)jit_rx_base + offset + image_size)
-                                               + page_size - 1) & ~(uintptr_t)(page_size - 1);
-                            if (clamp < 0)
-                            {
-                                const char *e = getenv( "MADEIRA_POOL_SECTION_CLAMP" );
-                                clamp = !(e && e[0] == '0');
-                            }
-                            if (clamp && sec_abs_end > limit)
-                            {
-                                static unsigned int n_clamped;
-                                if (++n_clamped <= 16)
-                                    dprintf( 2, "[pool-guard] ml1351 %s section rva=0x%x vsize=0x%x runs past "
-                                             "the 0x%lx-byte pool copy: RW limited to the copy's own pages\n",
-                                             ios_pe_module_name( image_base, image_size ), sec_rva, sec_vsize,
-                                             (unsigned long)image_size );
-                                sec_abs_end = limit;
-                            }
-                            if (sec_abs_end <= (uintptr_t)target) continue;
-                        }
-                        sec_page_size = sec_abs_end - (uintptr_t)target;
-
-                        /* Try mprotect to make data section writable (drops execute) */
-                        if (mprotect(target, sec_page_size, PROT_READ | PROT_WRITE) == 0)
-                        {
-                            ERR("iOS JIT:     → mprotect RW at %p (0x%lx bytes) OK\n",
-                                target, (unsigned long)sec_page_size);
-                        }
-                        else
-                        {
-                            ERR("iOS JIT:     → mprotect RW FAILED errno=%d (%s), writes handled via SIGBUS emulation\n",
-                                errno, strerror(errno));
-                        }
-                    }
                 }
+                ios_pool_protect_image_data( (char *)jit_rx_base + offset,
+                                             (char *)jit_rw_base + offset, image_size,
+                                             pe_off, page_size, "image-copy" );
 
                 /* Apply DIR64 relocations to JIT pool copy.
                  * The unix-side mapping has UNRELOCATED data (still at PE ImageBase).
@@ -19239,37 +19183,7 @@ int ios_jit_copy_module_for_child(void *module_addr, void *child_peb)
                                      : *(uint64_t *)(rw_dest + pe_off + 0x30);
     child_delta = (intptr_t)rx_dest - (intptr_t)pe_image_base;
 
-    /* Writable sections → RW on the RX view (mirrors parent path; a failed
-     * mprotect falls back to the STR fault emulator, just slower). */
-    {
-        unsigned short num_sec = *(unsigned short *)(rw_dest + pe_off + 6);
-        unsigned short opt_sz = *(unsigned short *)(rw_dest + pe_off + 0x14);
-        char *sec = rw_dest + pe_off + 0x18 + opt_sz;
-        int s;
-        for (s = 0; s < num_sec; s++, sec += 40)
-        {
-            unsigned int chars = *(unsigned int *)(sec + 36);
-            unsigned int rva = *(unsigned int *)(sec + 12);
-            unsigned int vsz = *(unsigned int *)(sec + 8);
-            if ((chars & 0x80000000) && vsz)  /* IMAGE_SCN_MEM_WRITE */
-            {
-                size_t p_off = rva & ~(pg - 1);
-                size_t p_end = ((size_t)rva + vsz + pg - 1) & ~(pg - 1);
-                size_t p_lim = ((size_t)m->size + pg - 1) & ~(pg - 1);
-                size_t p_sz;
-                /* ml1351: as in the image copy, never reach past this copy's pages
-                 * (MADEIRA_POOL_SECTION_CLAMP=0 restores the unclamped range). */
-                if (p_end > p_lim && !(getenv( "MADEIRA_POOL_SECTION_CLAMP" ) &&
-                                       getenv( "MADEIRA_POOL_SECTION_CLAMP" )[0] == '0'))
-                    p_end = p_lim;
-                if (p_end <= p_off) continue;
-                p_sz = p_end - p_off;
-                if (mprotect(rx_dest + p_off, p_sz, PROT_READ | PROT_WRITE) != 0)
-                    dprintf(2, "[child-ntdll] mprotect RW failed for section RVA 0x%x (errno=%d)\n",
-                            rva, errno);
-            }
-        }
-    }
+    ios_pool_protect_image_data( rx_dest, rw_dest, m->size, pe_off, pg, "child-copy" );
 
     /* DIR64 relocations with the child's delta. The unix view is
      * unrelocated (values at PE ImageBase); the range check preserves
@@ -32759,10 +32673,10 @@ NTSTATUS WINAPI NtProtectVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T 
     /* FEX's guard-page warning omits the owning process, failure status and
      * actual host page size. Observe failed NOACCESS requests without changing
      * their result or any mapping. This is ordinary syscall context. */
-    if (!ios_in_mach_exc && status && new_prot == PAGE_NOACCESS)
+    if (!ios_in_mach_exc && new_prot == PAGE_NOACCESS)
     {
-        static unsigned int guard_failures;
-        unsigned int ticket = __atomic_fetch_add( &guard_failures, 1, __ATOMIC_RELAXED );
+        static unsigned int guard_outcomes[2];
+        unsigned int ticket = __atomic_fetch_add( &guard_outcomes[!!status], 1, __ATOMIC_RELAXED );
         if (ticket < 8)
         {
             int saved_errno = errno;
@@ -32786,7 +32700,7 @@ NTSTATUS WINAPI NtProtectVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T 
                         "normalized=%p+%#lx status=%08x host-page=%#lx view=%p+%#lx "
                         "mach-query=%d region=%p+%#llx prot=%x max=%x "
                         "carve-lookup=%d carve=%p+%#lx owner-peb=%p released=%d tail-page=%u "
-                        "host-prefix=%#lx\n",
+                        "host-prefix=%#lx kernel-call=%s\n",
                      teb ? (unsigned)(ULONG_PTR)teb->ClientId.UniqueProcess : 0,
                      teb ? (unsigned)(ULONG_PTR)teb->ClientId.UniqueThread : 0, teb, teb ? teb->Peb : NULL,
                      (void *)ios_wow_base(), ios_patch_requested, (unsigned long)ios_patch_length,
@@ -32797,7 +32711,8 @@ NTSTATUS WINAPI NtProtectVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T 
                      carve, (void *)carve_base, (unsigned long)carve_size, carve_owner, carve_released,
                      carve == 1 && (uintptr_t)base - carve_base < carve_size &&
                      size == carve_size - ((uintptr_t)base - carve_base),
-                     (unsigned long)((uintptr_t)base & (host_page_size - 1)) );
+                     (unsigned long)((uintptr_t)base & (host_page_size - 1)),
+                     view ? "via-set-protection" : "not-called:no-wine-view" );
             errno = saved_errno;
         }
     }

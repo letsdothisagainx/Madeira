@@ -26,7 +26,7 @@ static inline int madeira_steam_ui_image( const unsigned short *path, size_t len
 
 /* Separate budgets retain ShowWindow and show/hide transitions when early
  * SetWindowPos traffic is noisy. Wine HWNDs are 32-bit user handles. */
-#define MADEIRA_UI_TRACE_KINDS 5
+#define MADEIRA_UI_TRACE_KINDS 8
 #define MADEIRA_UI_TRACE_WINDOWS 64
 struct madeira_ui_trace_slot { uint64_t key; unsigned int count[MADEIRA_UI_TRACE_KINDS]; };
 static inline int madeira_ui_trace_take( struct madeira_ui_trace_slot *slots,

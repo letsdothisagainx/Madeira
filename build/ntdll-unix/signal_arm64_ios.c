@@ -2122,6 +2122,7 @@ static int ios_fault_read_insn( uint64_t fault_pc, uint32_t *out )
 }
 
 #include "x18_scalar_load.h"
+#include "stik_breakpoint.h"
 
 /* Only the faulting Mach thread's registered, self-consistent TEB is used.
  * The handler's own TLS and another Wine process's TEB are never fallbacks.
@@ -2456,6 +2457,81 @@ static uint64_t exc_peek64( uint64_t addr )
     return v;
 }
 
+/* Read the current thread's saved guest32 state without executing guest code or
+ * acquiring its loader lock. Stack words are reported only if they fall inside
+ * a loader-listed module, as candidates rather than a fabricated unwind. */
+void ios_cef_assert_context(void)
+{
+    int saved_errno = errno;
+    TEB *teb = NtCurrentTeb();
+    uint64_t area = 0, frame = 0, rip = 0, rsp = 0, window = ios_wow_base();
+    int32_t wow_offset = 0;
+    uint32_t peb32 = 0, ldr32 = 0, link = 0, head;
+    struct { uint32_t base, size; char name[48]; } modules[96];
+    unsigned int count = 0;
+    mach_vm_size_t got;
+#define CEF_READ(addr, value) (got = 0, mach_vm_read_overwrite( mach_task_self(), \
+    (mach_vm_address_t)(addr), sizeof(value), (mach_vm_address_t)(uintptr_t)&(value), &got ) == KERN_SUCCESS && got == sizeof(value))
+    if (!teb || !window ||
+        !CEF_READ( (uintptr_t)teb + 0x1788, area ) || !area ||
+        !CEF_READ( area + 0x30, frame ) || !frame ||
+        !CEF_READ( frame + 0x18, rip ) || !CEF_READ( frame + 0x40, rsp ) ||
+        !CEF_READ( (uintptr_t)teb + 0x180c, wow_offset ) || !wow_offset ||
+        !CEF_READ( (uintptr_t)teb + wow_offset + 0x30, peb32 ) || !peb32 ||
+        !CEF_READ( window + peb32 + 0x0c, ldr32 ) || !ldr32)
+    {
+        dprintf( 2, "[cef-origin] guest32 saved context unavailable; assertion origin unresolved\n" );
+        goto out;
+    }
+    head = ldr32 + 0x0c;
+    if (!CEF_READ( window + head, link )) goto out;
+    for (unsigned guard = 0; link && link != head && guard < 192 && count < 96; guard++)
+    {
+        uint32_t base = 0, bytes = 0, name = 0, next = 0;
+        uint16_t length = 0;
+        if (!CEF_READ( window + link, next ) ||
+            !CEF_READ( window + link + 0x18, base ) ||
+            !CEF_READ( window + link + 0x20, bytes ) ||
+            !CEF_READ( window + link + 0x2c, length ) ||
+            !CEF_READ( window + link + 0x30, name )) break;
+        if (base && bytes && bytes <= UINT32_MAX - base)
+        {
+            unsigned k, n = length / 2;
+            if (n > 47) n = 47;
+            memset( &modules[count], 0, sizeof(modules[count]) );
+            modules[count].base = base; modules[count].size = bytes;
+            for (k = 0; k < n; k++)
+            {
+                uint16_t ch = 0;
+                if (!name || !CEF_READ( window + name + 2 * k, ch )) break;
+                modules[count].name[k] = ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                    (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' || ch == '-') ? ch : '?';
+            }
+            count++;
+        }
+        if (next == link) break;
+        link = next;
+    }
+    dprintf( 2, "[cef-origin] pid=%04x tid=%04x frame=%p saved-rip=%#llx saved-esp=%#x modules=%u\n",
+             (unsigned)(ULONG_PTR)teb->ClientId.UniqueProcess, (unsigned)(ULONG_PTR)teb->ClientId.UniqueThread,
+             (void *)(uintptr_t)frame, (unsigned long long)rip, (unsigned)rsp, count );
+    for (unsigned word = 0, emitted = 0; word < 96 && emitted < 16; word++)
+    {
+        uint32_t candidate = 0;
+        if ((uint32_t)rsp > UINT32_MAX - 4 * word || !CEF_READ( window + (uint32_t)rsp + 4 * word, candidate )) break;
+        for (unsigned m = 0; m < count; m++)
+            if (candidate >= modules[m].base && candidate - modules[m].base < modules[m].size)
+            {
+                dprintf( 2, "[cef-origin] stack+%#x candidate=%s+%#x\n", 4 * word,
+                         modules[m].name, candidate - modules[m].base );
+                emitted++; break;
+            }
+    }
+out:
+#undef CEF_READ
+    errno = saved_errno;
+}
+
 static uint8_t exc_peek8( uint64_t addr )
 {
     uint8_t v = 0xd3;
@@ -2503,6 +2579,34 @@ static void *ios_mach_exception_thread( void *arg )
 
         thread_t thread = req->thread.name;
         int handled = 0;
+
+        /* Expected native JIT protocol events follow the established exception
+         * chain to the debugger / SIGTRAP fallback. Do not consume the request,
+         * alter registers, borrow a Wine TEB or run fatal dump diagnostics. */
+        if (req->exception == EXC_BREAKPOINT)
+        {
+            arm_thread_state64_t protocol_state;
+            mach_msg_type_number_t pcnt = ARM_THREAD_STATE64_COUNT;
+            if (thread_get_state( thread, ARM_THREAD_STATE64, (thread_state_t)&protocol_state, &pcnt ) == KERN_SUCCESS)
+            {
+                uint64_t pc = arm_thread_state64_get_pc( protocol_state );
+                uint32_t insn = 0;
+                mach_vm_size_t got = 0;
+                Dl_info symbol = {0};
+                if (!(pc & 3) && mach_vm_read_overwrite( mach_task_self(), pc, sizeof(insn),
+                        (mach_vm_address_t)(uintptr_t)&insn, &got ) == KERN_SUCCESS && got == sizeof(insn) &&
+                    dladdr( (void *)(uintptr_t)pc, &symbol ) &&
+                    ios_expected_stik_breakpoint( insn, protocol_state.__x[16], symbol.dli_sname ))
+                {
+                    static unsigned int protocol_count;
+                    if (__atomic_fetch_add( &protocol_count, 1, __ATOMIC_RELAXED ) < 8)
+                        dprintf( 2, "[stik-protocol] pc=%p symbol=%s command=%llu action=forward\n",
+                                 (void *)(uintptr_t)pc, symbol.dli_sname,
+                                 (unsigned long long)protocol_state.__x[16] );
+                    goto send_exception_reply;
+                }
+            }
+        }
 
         /* 2026-07-03 storm probe: ~40K Mach exceptions PER PRESENT measured
          * in the menu phase (~all of the 1.4s frame time at ~33us each).
@@ -7506,7 +7610,8 @@ dispatch_guest_fault:
             }
         }
 
-        /* Build reply */
+send_exception_reply:;
+        /* Build reply, including declined expected protocol events. */
         ios_exc_reply_t reply;
         reply.head.msgh_bits = MACH_MSGH_BITS( MACH_MSGH_BITS_REMOTE(req->head.msgh_bits), 0 );
         reply.head.msgh_size = sizeof(reply);

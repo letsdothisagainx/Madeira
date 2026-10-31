@@ -385,7 +385,8 @@ jobs:
           from pathlib import Path
           image = Path('scm-ipa/Payload/Madeira.app/Madeira.debug.dylib').read_bytes()
           for marker in (b'[wow-gl-attach] phase=', b'[steam-ui-host]', b'[iosb-register]', b'[async-apc]', b'[guard-protect]',
-                         b'[x18-load] signed-load recovered', b'[steam-cef] request role=browser', b'[steam-cef] request role=crashpad'):
+                         b'[x18-load] signed-load recovered', b'[steam-cef] request role=browser', b'[steam-cef] request role=crashpad', b'[pool-section]', b'[stik-protocol]',
+                         b'[cef-origin]', b'[cef-adjacent]', b'[steam-frame]', b'[steam-helper]'):
               assert marker in image, 'missing native diagnostic: ' + repr(marker)
           print('PASS native attach/UI/I/O/guard diagnostics included in IPA')
           import plistlib, struct, uuid, zipfile

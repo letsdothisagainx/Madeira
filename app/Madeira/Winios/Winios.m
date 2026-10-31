@@ -1933,10 +1933,26 @@ void winios_window_frame(HWND hwnd, int x, int y, int w, int h, int visible,
 /* Read-only counterpart of [steam-ui] on the UIKit queue. No window text,
  * bitmap contents, Metal allocation or visibility override. The Wine caller
  * has a separate bounded budget for each HWND and kind of transition. */
+/* Main-queue only, bounded to 64 Steam windows and eight frame outcomes each. */
+static NSMutableDictionary<NSNumber *, NSMutableArray<NSNumber *> *> *g_steam_frames;
+static void winios_trace_steam_frame(HWND hwnd, const char *outcome, CALayer *layer) {
+    NSMutableArray<NSNumber *> *state = g_steam_frames[@((uintptr_t)hwnd)];
+    if (!state || state[2].unsignedIntValue >= 8) return;
+    state[2] = @(state[2].unsignedIntValue + 1);
+    fprintf(stderr, "[steam-frame] pid=%04x tid=%04x hwnd=%p seq=%u outcome=%s contents=%d "
+                    "hidden=%d attached=%d compositor-attached=%d compositor-hidden=%d\n",
+            state[0].unsignedIntValue, state[1].unsignedIntValue, hwnd, state[2].unsignedIntValue,
+            outcome, layer.contents != nil, layer ? (int)layer.hidden : -1, layer.superlayer != nil,
+            g_compositor_view.window != nil, g_compositor_view ? (int)g_compositor_view.hidden : -1);
+}
+
 void winios_ui_surface_trace(void *hwnd, unsigned int pid, unsigned int tid,
                              int wine_visible, void *surface) {
     dispatch_async(dispatch_get_main_queue(), ^{
         NSNumber *key = @((uintptr_t)hwnd);
+        if (!g_steam_frames) g_steam_frames = [NSMutableDictionary new];
+        if (!g_steam_frames[key] && g_steam_frames.count < 64)
+            g_steam_frames[key] = [NSMutableArray arrayWithObjects:@(pid), @(tid), @0, nil];
         CALayer *layer = g_layers[key];
         CAMetalLayer *metal = g_metal_layers[key];
         fprintf(stderr, "[steam-ui-host] pid=%04x tid=%04x hwnd=%p wine-visible=%d surface=%p "
@@ -2371,7 +2387,7 @@ int winios_surface_present(HWND hwnd, int dx, int dy, int dw, int dh,
          * result stays 1 -- only the presentation is skipped. `data` is captured
          * and released with the block, which is exactly why the snapshot has to
          * own its bytes: this runs AFTER winios_surface_present has returned. */
-        if (!g_compositor_view) return;
+        if (!g_compositor_view) { winios_trace_steam_frame(hwnd, "no-compositor", nil); return; }
         /* game mode draws a window only once its position says it is not
          * the game's own (winios_game_window_shown); bits that arrive before
          * any position wait in a hidden layer for winios_window_frame. */
@@ -2379,7 +2395,7 @@ int winios_surface_present(HWND hwnd, int dx, int dy, int dw, int dh,
         if (g_comp_game) {
             NSNumber *k = @((uintptr_t)hwnd);
             if (!g_px_rects[k] && ![g_game_metal containsObject:k]) pending = YES;
-            else if (!winios_game_window_shown(k)) return;
+            else if (!winios_game_window_shown(k)) { winios_trace_steam_frame(hwnd, "game-filter", g_layers[k]); return; }
         }
         CALayer *l = winios_layer_for(hwnd, true);
         CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
@@ -2405,8 +2421,10 @@ int winios_surface_present(HWND hwnd, int dx, int dy, int dw, int dh,
                 l.frame = winios_layer_rect(0, 0, sw, sh);
             }
             winios_apply_contents_rect(key, l);
+            winios_trace_steam_frame(hwnd, pending ? "position-pending" : l.hidden ? "contents-hidden" : "contents-submitted", l);
             CGImageRelease(img);
         }
+        else winios_trace_steam_frame(hwnd, "image-create-failed", l);
         CGDataProviderRelease(dp);
         CGColorSpaceRelease(cs);
     });

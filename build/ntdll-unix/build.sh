@@ -298,7 +298,15 @@ text = source.read_text()
 needle = '#include "unix_private.h"'
 if text.count(needle) != 1:
     raise SystemExit('I/O diagnostic include boundary changed')
-output.write_text(text.replace(needle, needle + '\n#include "' + str(header) + '"'))
+text = text.replace(needle, needle + '\n#include "' + str(header) + '"')
+if source.name == 'file.c':
+    boundary = '/* guest-log-test:end */'
+    call = '        ios_guest_log_mirror( unix_handle, buffer, total );'
+    if text.count(boundary) != 1 or text.count(call) != 1:
+        raise SystemExit('CEF log observer boundary changed; refusing stale diagnostics')
+    text = text.replace(boundary, boundary + '\n#include "' + str(header.with_name('cef_log_context.h')) + '"')
+    text = text.replace(call, call + '\n    if (total) ios_cef_log_observe( unix_handle, buffer, total );')
+output.write_text(text)
 PYCODE
             IO_FAILED_BEFORE=$FAILED
             compile_one "$OBJ_DIR/${name}_ios.c" "$name"

@@ -78,6 +78,7 @@ volatile long long ios_affinity_sets;   /* ml1117 */
 #include "wine/debug.h"
 #include "unix_private.h"
 #include "ios_wow.h"
+#include "steam_helper_identity.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(thread);
 WINE_DECLARE_DEBUG_CHANNEL(seh);
@@ -2073,8 +2074,44 @@ done:
 /***********************************************************************
  *           abort_thread
  */
+/* Genuine process/thread exit status, including helper failures hidden by a
+ * process-wide ERR budget. No command line, file mutation or synthetic success. */
+static void ios_trace_steam_helper_exit( const char *event, int status )
+{
+    TEB *teb = NtCurrentTeb();
+    RTL_USER_PROCESS_PARAMETERS *params = teb && teb->Peb ? teb->Peb->ProcessParameters : NULL;
+    static unsigned int counts[2];
+    const char *name;
+    int saved_errno = errno;
+    if (params && (name = ios_steam_helper_name( params->ImagePathName.Buffer,
+                                                 params->ImagePathName.Length / sizeof(WCHAR) )))
+    {
+        unsigned index = !strncmp( event, "thread-", 7 );
+        if (__atomic_fetch_add( &counts[index], 1, __ATOMIC_RELAXED ) < (index ? 128 : 64))
+        {
+            uintptr_t image = (uintptr_t)teb->Peb->ImageBaseAddress;
+            uint16_t machine = 0;
+            uint32_t pe = 0;
+            mach_vm_size_t got = 0;
+            uintptr_t window = ios_wow_base();
+            if (window && image <= UINT32_MAX) image += window;
+            if (image && mach_vm_read_overwrite( mach_task_self(), image + 0x3c, sizeof(pe),
+                    (mach_vm_address_t)(uintptr_t)&pe, &got ) == KERN_SUCCESS && got == sizeof(pe) && pe <= 0x100000)
+                mach_vm_read_overwrite( mach_task_self(), image + pe + 4, sizeof(machine),
+                    (mach_vm_address_t)(uintptr_t)&machine, &got );
+            dprintf( 2, "[steam-helper] event=%s pid=%04x tid=%04x image=%s machine=%04x "
+                        "guest-window=%p status=%08x native-thread=%u\n", event,
+                     (unsigned)(ULONG_PTR)teb->ClientId.UniqueProcess, (unsigned)(ULONG_PTR)teb->ClientId.UniqueThread,
+                     name, machine, (void *)window, (unsigned)status,
+                     (unsigned)pthread_mach_thread_np( pthread_self() ) );
+        }
+    }
+    errno = saved_errno;
+}
+
 void abort_thread( int status )
 {
+    ios_trace_steam_helper_exit( "thread-abort", status );
     pthread_sigmask( SIG_BLOCK, &server_block_set, NULL );
     if (InterlockedDecrement( &nb_threads ) <= 0) abort_process( status );
     pthread_exit_wrapper( status );
@@ -2086,6 +2123,7 @@ void abort_thread( int status )
  */
 void abort_process( int status )
 {
+    ios_trace_steam_helper_exit( "process-abort", status );
 #ifdef WINE_IOS
     /* ml937: _exit() HERE KILLED THE WHOLE APP.
      *
@@ -2132,6 +2170,7 @@ void abort_process( int status )
  */
 static DECLSPEC_NORETURN void exit_thread( int status )
 {
+    ios_trace_steam_helper_exit( "thread-exit", status );
     static void *prev_teb;
     TEB *teb;
 
@@ -2158,6 +2197,7 @@ static DECLSPEC_NORETURN void exit_thread( int status )
  */
 void exit_process( int status )
 {
+    ios_trace_steam_helper_exit( "process-exit", status );
 #ifdef WINE_IOS
     ERR("exit_process: raw_status=0x%x unix_code=%d\n", (unsigned)status, get_unix_exit_code(status));
 #endif

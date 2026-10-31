@@ -868,6 +868,12 @@ static void winios_surface_set_clip( struct window_surface *surface, const RECT 
     }
 }
 
+enum { STEAM_UI_SHOW, STEAM_UI_POS_BEGIN, STEAM_UI_POS_END, STEAM_UI_VISIBILITY, STEAM_UI_STYLE,
+       STEAM_UI_CREATE, STEAM_UI_PRESENT, STEAM_UI_SURFACE };
+static BOOL
+winios_trace_steam_window( const char *, unsigned int, HWND, UINT, HWND, struct window_surface * );
+extern void winios_ui_surface_trace( void *, unsigned int, unsigned int, int, void * ) __attribute__((weak));
+
 static BOOL winios_surface_flush( struct window_surface *surface, const RECT *rect, const RECT *dirty,
                                   const BITMAPINFO *color_info, const void *color_bits, BOOL shape_changed,
                                   const BITMAPINFO *shape_info, const void *shape_bits )
@@ -886,6 +892,17 @@ static BOOL winios_surface_flush( struct window_surface *surface, const RECT *re
                      (unsigned)pthread_mach_thread_np( pthread_self() ),
                      (int)rect->left, (int)rect->top, (int)rect->right, (int)rect->bottom,
                      (int)dirty->left, (int)dirty->top, (int)dirty->right, (int)dirty->bottom );
+    }
+
+    if (surface && winios_trace_steam_window( "present-request", STEAM_UI_PRESENT, surface->hwnd, 0, 0, surface ) &&
+        winios_ui_surface_trace)
+    {
+        DWORD saved_error = NtCurrentTeb()->LastErrorValue;
+        int saved_errno = errno;
+        DWORD pid = 0, tid = get_window_thread( surface->hwnd, &pid );
+        winios_ui_surface_trace( surface->hwnd, pid, tid, is_window_visible( surface->hwnd ), surface );
+        NtCurrentTeb()->LastErrorValue = saved_error;
+        errno = saved_errno;
     }
 
     if (winios_surface_present && color_bits)
@@ -956,7 +973,6 @@ static double winios_swap_win_ms(void)
 static __thread HWND winios_swap_pos_hwnd;   /* the swapchain window between pos-begin and pos */
 static __thread double winios_swap_pos_t0;
 
-enum { STEAM_UI_SHOW, STEAM_UI_POS_BEGIN, STEAM_UI_POS_END, STEAM_UI_VISIBILITY, STEAM_UI_STYLE };
 extern void winios_ui_surface_trace( void *hwnd, unsigned int pid, unsigned int tid,
                                       int visible, void *surface ) __attribute__((weak));
 static struct madeira_ui_trace_slot steam_ui_trace[MADEIRA_UI_TRACE_WINDOWS];
@@ -990,6 +1006,17 @@ static BOOL winios_trace_steam_window( const char *event, unsigned int kind, HWN
     teb->LastErrorValue = saved_error;
     errno = saved_errno;
     return TRUE;
+}
+
+static BOOL winios_drv_create_window( HWND hwnd )
+{
+    BOOL result = winios_pCreateWindow( hwnd );
+    DWORD saved_error = NtCurrentTeb()->LastErrorValue;
+    int saved_errno = errno;
+    winios_trace_steam_window( result ? "create-ok" : "create-failed", STEAM_UI_CREATE, hwnd, 0, 0, NULL );
+    NtCurrentTeb()->LastErrorValue = saved_error;
+    errno = saved_errno;
+    return result;
 }
 
 static UINT winios_drv_show_window( HWND hwnd, INT cmd, RECT *rect, UINT swp )
@@ -1114,6 +1141,8 @@ static BOOL winios_CreateWindowSurface( HWND hwnd, BOOL layered, const RECT *sur
 
     *window_surface = window_surface_create( sizeof(struct window_surface), &winios_surface_funcs,
                                              hwnd, surface_rect, info, 0 );
+    winios_trace_steam_window( *window_surface ? "surface-created" : "surface-failed", STEAM_UI_SURFACE,
+                              hwnd, 0, 0, *window_surface );
     if (previous) window_surface_release( previous );
 
     {
@@ -2390,7 +2419,7 @@ static void load_display_driver(void)
          * with no implementation linked (weak ref == NULL) stay NULL
          * and SET_USER_FUNC falls back to nulldrv_*. Real impls live
          * in app/Madeira/Winios/Winios.m and link in via Madeira.app. */
-        if (winios_pCreateWindow)        winios_user_driver.pCreateWindow        = winios_pCreateWindow;
+        if (winios_pCreateWindow)        winios_user_driver.pCreateWindow        = winios_drv_create_window;
         if (winios_pDestroyWindow)       winios_user_driver.pDestroyWindow       = winios_pDestroyWindow;
         if (winios_pProcessEvents)       winios_user_driver.pProcessEvents       = winios_drv_process_events;
         if (winios_desktop_mode())       winios_user_driver.pSetCursor           = winios_drv_set_cursor;
