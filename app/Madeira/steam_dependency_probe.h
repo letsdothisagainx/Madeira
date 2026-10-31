@@ -15,7 +15,7 @@ static inline void madeira_steam_probe_dependencies( const char *root )
 {
     static const char *dirs[] = { "", "bin", "bin/x64", "bin/cef/cef.win7", "bin/cef/cef.win7x64" };
     static const char *names[] = { "SDL2.dll", "SDL3.dll", "gldriverquery.exe", "gldriverquery64.exe",
-                                  "vulkan-1.dll", "winevulkan.dll" };
+                                  "vulkandriverquery.exe", "vulkandriverquery64.exe", "vulkan-1.dll", "winevulkan.dll" };
     int saved_errno = errno;
     for (unsigned d = 0; d < sizeof(dirs)/sizeof(dirs[0]); d++)
     {

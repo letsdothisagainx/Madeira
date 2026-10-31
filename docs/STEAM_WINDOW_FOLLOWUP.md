@@ -135,7 +135,8 @@ Crashpad process creation are bypassed.
 
 The inventory confirms gldriverquery.exe is present, machine 014c. Both driver
 queries fail CREATE before receiving a child window; a successful child exit
-status cannot be inferred. Existing helper lifecycle traces record raw status,
+status cannot be inferred. The bounded read-only dependency inventory now also includes both Vulkan query
+executables (previously omitted). Existing helper lifecycle traces record raw status,
 architecture and owner when they do launch. Further device evidence must show
 successful GL/Vulkan query and Crashpad monitor startup after capacity improves.
 
