@@ -7,6 +7,7 @@ from pathlib import Path
 root = Path(__file__).resolve().parents[2]
 commands = [
     ['python3', 'tests/host/check-steam-protection.py'],
+    ['python3', 'tests/host/check-jit-exclusive.py'],
     ['python3', 'tests/host/check-cef-context.py'],
     ['python3', 'tests/host/check-x18-loads.py'],
     ['python3', 'tests/host/check-x18-arith.py'],

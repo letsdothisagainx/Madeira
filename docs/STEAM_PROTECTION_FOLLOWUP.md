@@ -48,7 +48,7 @@ text** page lost execution. The page's RW/max-RW state is real; its attribution
 to executable code is not established. The candidate checks current live
 ownership and bounds, rechecks the mapping after the Mach query, includes PE
 identity/size in remaining warnings and releases returned Mach object rights.
-It continues reporting execute loss on live mappings.
+It checks both current and maximum execute permission on live mappings.
 
 A separate source-level defect is corrected in both original and child PE
 copy paths. Writable section protection formerly rounded a section onto host
@@ -171,7 +171,8 @@ New ASan/UBSan checks compile the actual production page policy/protection
 routine, protocol classifier, exact helper identity parser, CEF observer and
 saved guest32 context reader. Fixtures cover mixed and later executable
 sections, four PE subpage alignments, malformed/truncated/overflowing ranges,
-exclusive-data protection transitions, unchanged error state, protocol command
+exclusive-data protection transitions, existing 32/64-bit STXR/STLXR atomic
+success/retry and clobber rejection through the RW alias, unchanged error state, protocol command
 mismatches, foreign/FEX/Swift traps, bounded source context, a valid module
 candidate, unreadable state and excluded log-body/stack secrets.
 

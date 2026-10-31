@@ -85,6 +85,7 @@ signal=(root/'build/ntdll-unix/signal_arm64_ios.c').read_text()
 assert virtual.count('ios_pool_protect_image_data( ')==3
 assert 'if (!pe || !jb || !live_size || !t_sz' in virtual
 assert 'ios_jit_mappings[mi].pe_base != pe' in virtual
+assert '(!(inf.protection & VM_PROT_EXECUTE) || !(inf.max_protection & VM_PROT_EXECUTE))' in virtual
 assert signal.index('goto send_exception_reply;')<signal.index('[mach_exc] UNHANDLED')
 assert signal.index('send_exception_reply:;')<signal.index('reply.ret_code = handled ? KERN_SUCCESS : KERN_FAILURE;')
 assert 'req->exception == EXC_BREAKPOINT' in signal[signal.index('thread_t thread = req->thread.name;'):signal.index('goto send_exception_reply;')]

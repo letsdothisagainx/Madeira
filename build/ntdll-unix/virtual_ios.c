@@ -1202,7 +1202,7 @@ static void *ios_pool_warmer_thread( void *arg )
                         if (ios_jit_mappings[mi].pe_base != pe || ios_jit_mappings[mi].size != live_size ||
                             (uintptr_t)ios_jit_mappings[mi].jit_base != jb) break;
                         checked++;
-                        if (!(inf.max_protection & VM_PROT_EXECUTE) && bad++ < 8)
+                        if ((!(inf.protection & VM_PROT_EXECUTE) || !(inf.max_protection & VM_PROT_EXECUTE)) && bad++ < 8)
                             dprintf(2, "[pool-rot] TEXT LOST EXEC va=0x%llx mod_pool=0x%llx"
                                        " pe=%p size=%#lx text+0x%lx prot=%x max=%x region=0x%llx+0x%llx cycle=%u\n",
                                     (unsigned long long)want, (unsigned long long)jb, pe, (unsigned long)live_size,
