@@ -4032,6 +4032,17 @@ static int ios_guard_carve_snapshot( uintptr_t address, uintptr_t *base, size_t 
     return found;
 }
 
+/* Signal-path discriminator: no blocking lock and no cross-owner fallback. */
+int ios_fex_code_owner_matches(uintptr_t pc, void *expected_owner)
+{
+    uintptr_t base = 0;
+    size_t size = 0;
+    void *owner = NULL;
+    int released = 1;
+    return expected_owner && ios_guard_carve_snapshot(pc, &base, &size, &owner, &released) == 1 &&
+           !released && owner == expected_owner;
+}
+
 /* Exported JIT pool addresses for use by SIGBUS handler in signal_arm64_ios.c */
 /* ml251: does anything MUNMAP/MMAP inside the JIT pool's VA?
  *
@@ -10128,10 +10139,14 @@ struct ios_wow_window
     unsigned   force_exec;      /* ml1354: this process turned DEP off (ProcessExecuteFlags) */
     unsigned   exec_flags_set;  /* ml1354: exec_flags below holds this process's ProcessExecuteFlags */
     ULONG      exec_flags;
+    unsigned   generation;     /* distinguish a recycled slot from its old reservation */
 };
 static struct ios_wow_window ios_wow_windows[IOS_WOW_MAX_WINDOWS];
 static unsigned ios_wow_window_count;
 static pthread_mutex_t ios_wow_mutex = PTHREAD_MUTEX_INITIALIZER;
+static unsigned ios_wow_next_generation;
+static _Thread_local struct ios_wow_window *ios_wow_boot_slot;
+static _Thread_local unsigned ios_wow_boot_generation;
 
 /* Set once the session can have a 32-bit process; see the LAZY note above. */
 static int ios_wow_armed;
@@ -10246,25 +10261,24 @@ static struct ios_wow_window *ios_wow_slot_at_base( ULONG_PTR base )
     return NULL;
 }
 
-/* The calling thread's window: its pseudo-process's, or one this thread
- * reserved.  The owner fallback covers the boot gap in which the window is
- * already bound but the new process's TEB is not published yet, so
- * ios_jit_current_peb() cannot resolve the PEB.  `owner` is the owning
- * process's own boot thread, so the fallback can only resolve to that
- * process's window. */
+/* A reservation is an explicit TLS token, including its generation. pthread_t
+ * values can be reused while the old process still has other live threads;
+ * matching a slot's old boot pthread_t is never proof of ownership. */
+static struct ios_wow_window *ios_wow_slot_boot(void)
+{
+    struct ios_wow_window *slot = ios_wow_boot_slot;
+    if (slot && slot->generation == ios_wow_boot_generation && slot->base &&
+        !slot->leaked && !slot->dead && pthread_equal( slot->owner, pthread_self() )) return slot;
+    return NULL;
+}
+
 static struct ios_wow_window *ios_wow_slot_current(void)
 {
-    struct ios_wow_window *slot;
-    unsigned i, n = ios_wow_window_count;
-
-    if (!n) return NULL;   /* no window in this session: nothing to resolve */
-    if ((slot = ios_wow_slot_for_peb( ios_jit_current_peb() ))) return slot;
-    for (i = 0; i < n; i++)
-        if (ios_wow_windows[i].base && !ios_wow_windows[i].leaked &&
-            !ios_wow_windows[i].dead &&
-            pthread_equal( ios_wow_windows[i].owner, pthread_self() ))
-            return &ios_wow_windows[i];
-    return NULL;
+    struct ios_wow_window *slot = ios_wow_slot_boot();
+    /* A new process's explicit reservation wins throughout bootstrap. Never
+     * infer a reservation from a recycled pthread_t matching a live process. */
+    if (slot) return slot;
+    return ios_wow_slot_for_peb( ios_jit_current_peb() );
 }
 
 /* Live windows (bound or reserved, not dead or leaked). */
@@ -11552,7 +11566,7 @@ NTSTATUS ios_wow_window_reserve(void)
     ios_wow_reclaim_dead_windows();
 
     pthread_mutex_lock( &ios_wow_mutex );
-    if (ios_wow_slot_current())
+    if (ios_wow_slot_boot())
     {
         pthread_mutex_unlock( &ios_wow_mutex );
         return STATUS_SUCCESS;   /* already have one */
@@ -11602,6 +11616,9 @@ NTSTATUS ios_wow_window_reserve(void)
     slot->released_at   = 0;
     slot->guard_owned   = guard_owned;
     slot->base          = base;
+    slot->generation    = ++ios_wow_next_generation;
+    ios_wow_boot_slot = slot;
+    ios_wow_boot_generation = slot->generation;
     __sync_synchronize();
     if (slot - ios_wow_windows >= (ptrdiff_t)ios_wow_window_count)
         ios_wow_window_count = (unsigned)(slot - ios_wow_windows) + 1;
@@ -11699,7 +11716,10 @@ void ios_wow_window_release_current(void)
     struct ios_wow_window *slot;
 
     pthread_mutex_lock( &ios_wow_mutex );
-    slot = ios_wow_slot_current();
+    slot = ios_wow_slot_boot();
+    /* Bootstrap failure only. A bound process may still have live threads;
+     * its normal process-exit path owns quarantine and release. */
+    if (slot && slot->peb) slot = NULL;
     pthread_mutex_unlock( &ios_wow_mutex );
     if (slot) ios_wow_window_mark_released( slot );
 }
@@ -14651,6 +14671,16 @@ static int ios_wow_window_teardown( ULONG_PTR base, void *dead_peb, unsigned gua
     sigset_t sigset;
     unsigned n, i;
 
+    /* Drain native deferred-thread bookkeeping before ANY TEB is unmapped.
+     * Lock order is thread-group -> virtual_mutex, matching exit_thread. */
+    {
+        extern int ios_thread_process_forget(void *owner);
+        if (!ios_thread_process_forget(dead_peb))
+        {
+            dprintf(2, "[process-quarantine] peb=%p native TEB reaper still busy; window retained\n", dead_peb);
+            return 0;
+        }
+    }
     server_enter_uninterrupted_section( &virtual_mutex, &sigset );
 
     /* teb_list is threaded THROUGH THE TEBs themselves (the entry is a field of
@@ -19091,6 +19121,29 @@ static void ios_jit_mark_ec_ranges_for_copy(char *rw_image, char *jit_base, size
         dprintf(2, "[child-ntdll] EC ranges marked for copy at %p (codemap=%d ec_ranges=%d)\n",
                 jit_base, !!found_codemap, found_codemap ? found_codemap - 1 : 0);
     }
+}
+
+/* Update private PE data without touching the session's source image. Unlike
+ * address translation, this operation MUST NOT fall back to another owner. */
+int ios_jit_write_process_data(void *owner, void *addr, const void *data, size_t size)
+{
+    int i;
+    if (!owner || !addr || !data || !size || !ios_jit_rw_base_global) return 0;
+    for (i = 0; i < ios_jit_mapping_count; ++i)
+    {
+        struct ios_jit_mapping *m = &ios_jit_mappings[i];
+        uintptr_t offset = (uintptr_t)addr - (uintptr_t)m->pe_base;
+        uintptr_t pool_offset;
+        if (!m->pe_base || m->owner_peb != owner || offset >= m->size || size > m->size - offset)
+            continue;
+        pool_offset = (uintptr_t)m->jit_base - (uintptr_t)ios_jit_rx_base_global;
+        if (pool_offset >= ios_jit_pool_size_global || m->size > ios_jit_pool_size_global - pool_offset)
+            return 0;
+        memcpy((char *)ios_jit_rw_base_global + pool_offset + offset, data, size);
+        __sync_synchronize();
+        return 1;
+    }
+    return 0;
 }
 
 /* Copy the module containing `module_addr` into a fresh pool slot owned by
@@ -32671,12 +32724,13 @@ NTSTATUS WINAPI NtProtectVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T 
 
 #ifdef WINE_IOS
     /* FEX's guard-page warning omits the owning process, failure status and
-     * actual host page size. Observe failed NOACCESS requests without changing
-     * their result or any mapping. This is ordinary syscall context. */
+     * actual host page size. Observe NOACCESS requests without changing their
+     * result or any mapping: FEX's Windows wrapper inverts the BOOL result, so
+     * its warning alone cannot distinguish success from failure. */
     if (!ios_in_mach_exc && new_prot == PAGE_NOACCESS)
     {
-        static unsigned int guard_outcomes[2];
-        unsigned int ticket = __atomic_fetch_add( &guard_outcomes[!!status], 1, __ATOMIC_RELAXED );
+        static unsigned int guard_results[2];
+        unsigned int ticket = __atomic_fetch_add(&guard_results[!!status], 1, __ATOMIC_RELAXED);
         if (ticket < 8)
         {
             int saved_errno = errno;
@@ -34572,7 +34626,7 @@ NTSTATUS WINAPI NtUnmapViewOfSection( HANDLE process, PVOID addr )
  *
  * MADEIRA_NO_IMAGE_RETIRE=1 disables the handoff entirely.
  */
-void ios_retire_own_fixed_base_image( void *dying_peb )
+static void ios_retire_fixed_base_image( void *dying_peb, int server_exited )
 {
     static int disabled = -1;
     void *base;
@@ -34604,7 +34658,26 @@ void ios_retire_own_fixed_base_image( void *dying_peb )
      * lock must never be held while acquiring it. */
     ios_retire_trace_armed = 1;                       /* ml989 */
     ios_retire_mark( "U0>\n" );                       /* about to call the unmap */
-    status = NtUnmapViewOfSection( NtCurrentProcess(), base );
+    if (server_exited)
+    {
+        /* The process's socket EOF has already retired its server-side view
+         * records. The last remaining Wine thread may now delete ONLY the
+         * fixed image still owned by this PEB, without an RPC on a dead socket.
+         * Same local delete_view path as dead WoW64-window teardown. */
+        struct file_view *view;
+        sigset_t sigset;
+        status = STATUS_NOT_MAPPED_VIEW;
+        server_enter_uninterrupted_section(&virtual_mutex, &sigset);
+        view = find_view(base, 0);
+        if (view && view->base == base && view->size == size &&
+            !is_view_valloc(view) && !(view->protect & VPROT_SYSTEM))
+        {
+            delete_view(view);
+            status = STATUS_SUCCESS;
+        }
+        server_leave_uninterrupted_section(&virtual_mutex, &sigset);
+    }
+    else status = NtUnmapViewOfSection( NtCurrentProcess(), base );
     ios_retire_mark( "U1<\n" );                       /* the unmap RETURNED */
     ios_retire_trace_armed = 0;
     dprintf( 2, "ml988: NtUnmapViewOfSection(%p) = %#x\n", base, status );
@@ -34650,6 +34723,17 @@ void ios_retire_own_fixed_base_image( void *dying_peb )
              "-- RETIRING -> HELD_NOT_READY, not claimable until the old generation's pool "
              "mappings are reclaimed\n", gen, base, (unsigned long)size );
 }
+
+void ios_retire_own_fixed_base_image(void *owner)
+{
+    ios_retire_fixed_base_image(owner, 0);
+}
+
+void ios_retire_own_fixed_base_image_after_exit(void *owner)
+{
+    ios_retire_fixed_base_image(owner, 1);
+}
+
 
 
 /***********************************************************************

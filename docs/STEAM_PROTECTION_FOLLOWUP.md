@@ -1,14 +1,23 @@
 # Steam protection and presentation follow-up — 2026-10-30
 
-This candidate continues `663a289` (the signed x18-load/CEF follow-up).
-The two attached files are the current 15,732-line Madeira log and the
-accumulated CEF log. The requested timestamped current filename was uploaded
-as `madeira-log.txt`; its native UUID is
-`59125EDC-AD3F-36A7-9B7E-4D2DFF2A7055` (line 233).
-The original preceding two Madeira logs are not attached or present in this
-workspace. Comparisons with build 22 and build 29 use the checked-in reports
-`STEAM_UI_FORENSICS.md` and `STEAM_X18_FORENSICS.md`, not a claimed reanalysis
-of those original logs. Logs, credentials, installed data and Valve binaries
+This candidate preserves the latest `024eeb97` process-isolation work on top
+of the x18/CEF fixes. The current capture's native UUID
+`59125EDC-AD3F-36A7-9B7E-4D2DFF2A7055` (line 233) exactly matches the
+[a59aa7a5 Actions IPA](https://github.com/letsdothisagainx/Madeira/actions/runs/41143210881).
+The later 024eeb97 final-thread retirement correction and regressions are kept.
+
+The two attached files are the current 15,732-line Madeira log and the accumulated
+CEF log. The requested timestamped filename was uploaded as `madeira-log.txt`.
+The original preceding captures, `madeira-log(20261030-210323).txt` and
+`madeira-log(20261030-222002).txt`, are not attached or present in this workspace.
+Comparison uses their checked-in reports `STEAM_X18_FORENSICS.md` and
+`forensics/steam-2026-10-30-222002.md`, rather than claiming to reanalyze the
+original logs. The latter identifies the 20,000+ guest-fault replay cascade,
+shared startup exports, borrowed process windows and cross-process deferred TEB.
+Those process ownership and fault lifetime fixes remain included. The current
+capture has no recurrence of that cascade and only the expected native detach
+breakpoint reaches the generic unhandled path. The older build-22 I/O report
+is background evidence only. Logs, credentials, installed data and Valve binaries
 are not committed.
 
 ## Proven protection findings
@@ -127,7 +136,8 @@ and this NOTREACHED have no established causal relationship.
 
 The staged Wine log observer now retains at most twelve preceding and eight
 following Chromium source tags and captures at most two assertion contexts.
-It reads the current thread's saved guest32 frame and its own process's loader
+It reads the i386 ThreadState from the current thread's TLS14, follows its
+actual CurrentFrame pointer, and reads its own process's loader
 list through fault-safe Mach reads, then reports only module+offset stack
 candidates. These are explicitly candidates, not a claimed unwind. It does
 not print raw stack values, command lines, URLs or log bodies in the context

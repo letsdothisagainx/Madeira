@@ -20,7 +20,7 @@ code=r'''
 #include "winternl.h"
 typedef uint64_t mach_vm_size_t,mach_vm_address_t;
 #define KERN_SUCCESS 0
-static unsigned char native[0x5000],area[0x80],frame[0x100],guest[0x10000];
+_Alignas(16) static unsigned char native[0x5000],area[0x80],frame[0x100],guest[0x10000];
 static TEB *NtCurrentTeb(void) {return (TEB*)native;}
 static uintptr_t ios_wow_base(void) {return 0x600000000ull;}
 static int mach_task_self(void) {return 1;}
@@ -47,7 +47,7 @@ int main(void) {
  TEB *teb=NtCurrentTeb();PEB peb={0};RTL_USER_PROCESS_PARAMETERS params={0};
  const char *exe="C:/Steam/bin/cef/cef.win7/steamwebhelper.exe";WCHAR path[100];unsigned len=strlen(exe);for(unsigned i=0;i<len;i++)path[i]=exe[i];
  params.ImagePathName.Buffer=path;params.ImagePathName.Length=len*2;peb.ProcessParameters=&params;teb->Peb=&peb;teb->ClientId.UniqueProcess=(void*)0x64;teb->ClientId.UniqueThread=(void*)0x68;
- put64(native+0x1788,(uintptr_t)area);put64(area+0x30,(uintptr_t)frame);put64(frame+0x18,0x401234);put64(frame+0x40,0x1800);
+ teb->TlsSlots[14]=area;put64(area,(uintptr_t)frame);put64(frame+0x18,0x401234);put64(frame+0x40,0x1800);
  put32(native+0x180c,0x2000);put32(native+0x2030,0x1100);put32(guest+0x110c,0x1200);put32(guest+0x120c,0x1300);
  put32(guest+0x1300,0x120c);put32(guest+0x1318,0x400000);put32(guest+0x1320,0x100000);guest[0x132c]=20;put32(guest+0x1330,0x1500);
  const char *mod="libcef.dll";for(unsigned i=0;i<10;i++)guest[0x1500+i*2]=mod[i];put32(guest+0x1800,0x401234);put32(guest+0x1804,0xdeadbeef);
