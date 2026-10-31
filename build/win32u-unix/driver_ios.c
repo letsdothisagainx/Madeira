@@ -1318,11 +1318,11 @@ static void winios_drv_window_pos_changed( HWND hwnd, HWND insert_after, HWND ow
                 WCHAR clsW[64], txtW[200];
                 char cls[64], txt[200];
                 UNICODE_STRING us = { 0, sizeof(clsW), clsW };
-                int j, tn;
+                int j, tn, cn;
                 cls[0] = 0;
-                if (NtUserGetClassName( hwnd, FALSE, &us ) > 0)
+                if ((cn = NtUserGetClassName( hwnd, FALSE, &us )) > 0)
                 {
-                    for (j = 0; j < us.Length / (int)sizeof(WCHAR) && j < 63; j++)
+                    for (j = 0; j < cn && j < 63; j++)
                         cls[j] = (clsW[j] >= 32 && clsW[j] < 127) ? (char)clsW[j] : '?';
                     cls[j] = 0;
                 }

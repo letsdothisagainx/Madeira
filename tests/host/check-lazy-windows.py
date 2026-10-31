@@ -30,6 +30,11 @@ if " *           ios_laa_forced / ios_wow_ceiling_for_charact" in block:
     lb = block.index("/* Clamp [*start, *end) off the reserved slot [wb, we).")
     block = block[:la] + block[lb:]
 
+# OpenGL TEB diagnostics share this registry block but are unrelated to placement.
+ga = block.index("void ios_wow_gl_attach_trace(")
+gb = block.index("\n}\n", ga) + 3
+block = block[:ga] + block[gb:]
+
 # ---- call-site invariants
 init = src[src.index("void virtual_init(void)\n{"):]
 init = init[:init.index("\n}\n")]
@@ -81,6 +86,7 @@ typedef struct { unsigned long long max_address; } task_vm_info_data_t;
 struct region { ULONG_PTR lo, hi; int prot; };
 static struct region map[256]; static int nmap;
 static unsigned long long fake_max;
+unsigned long long ios_layerkit_lo, ios_layerkit_hi;
 static int mmap_calls, task_info_calls;
 static int ios_cage_holdback_live, ios_cage_window_tail_live;
 static const ULONG_PTR host_page_size = 0x4000;
@@ -161,6 +167,7 @@ static void run_proc( int release ) {
 
 int main( int argc, char **argv ) {
     const char *mode = argv[1];
+    if (getenv("TEST_STEAM")) ios_main_image_steam = 1;
     fake_max = strtoull( argv[2], NULL, 0 );
     add_region( 0x100000000ULL, 0x300000000ULL, 1 );          /* image, malloc zones, shared cache */
     add_region( 0x7000000000ULL, 0x7038000000ULL, 1 );        /* JIT pool RW alias */
@@ -174,6 +181,27 @@ int main( int argc, char **argv ) {
         printf( "bias end=%llx taskinfo=%d base=%llx\n", (unsigned long long)(ULONG_PTR)end, task_info_calls,
                 (unsigned long long)ios_wow_base() );
         return 0;
+    }
+    if (!strcmp( mode, "guards" )) {
+        unsigned owned = 0; ULONG_PTR b = 0x500000000ULL;
+        ios_main_image_steam = 1;
+        add_region( b, b + host_page_size, PROT_NONE );
+        /* An inaccessible foreign prefix is not ours to share. */
+        if (ios_wow_window_try( b, &owned )) return 4;
+        ios_wow_windows[0].base = b - IOS_WOW_WINDOW_SIZE;
+        ios_wow_windows[0].guard_owned = 1; ios_wow_window_count = 1;
+        if (!ios_wow_window_try( b, &owned ) || !owned) return 5;
+        ios_wow_windows[1].base = b; ios_wow_windows[1].guard_owned = owned;
+        ios_wow_window_count = 2;
+        if (!ios_wow_guard_conflicts( b, host_page_size ) ||
+            !ios_wow_guard_conflicts( b + IOS_WOW_WINDOW_SIZE, host_page_size ) ||
+            ios_wow_guard_conflicts( b + 0x10000, 0x10000 )) return 6;
+        /* Exhaust the next tail: its existing head guard must survive. */
+        add_region( b + IOS_WOW_WINDOW_SIZE + host_page_size,
+                    b + 2 * IOS_WOW_WINDOW_SIZE, PROT_READ );
+        if (ios_wow_window_try( b + IOS_WOW_WINDOW_SIZE, &owned ) ||
+            !ios_wow_guard_neighbour_blocked( b + IOS_WOW_WINDOW_SIZE, host_page_size )) return 7;
+        puts( "guards preserved" );return 0;
     }
     if (!strcmp( mode, "procs" )) {
         int i, n = atoi( argv[3] );
@@ -216,7 +244,7 @@ with tempfile.TemporaryDirectory() as t:
     c = Path(t) / "lazy.c"; c.write_text(harness)
     exe = Path(t) / "lazy"
     subprocess.run(["cc", "-std=gnu11", "-Wall", "-Wno-unused-function", "-Wno-unused-variable",
-                    "-Wno-unused-but-set-variable", "-pthread", "-fsanitize=address,undefined",
+                    "-Wno-unused-but-set-variable", "-pthread", "-fsanitize=address,undefined", "-fno-sanitize-recover=all",
                     str(c), "-o", str(exe)], check=True)
 
     for m in (BIG, TABLET):
@@ -245,6 +273,25 @@ with tempfile.TemporaryDirectory() as t:
     assert re.search(r"proc2 status=0 base=[4-9a]00000000 new_mappings=1\n", out), out + err
     assert "teardowns=1" in out, out
     print("PASS: an exited process's window is torn down and reused by the next one without a new mapping")
+
+    out, err = run(exe, "procs", TABLET, "8", env={"TEST_STEAM": "1", "MADEIRA_WOW_SMALL_VA_SLOTS": "3"})
+    for i in range(7):
+        assert f"proc{i} status=0 base={i + 4:x}00000000" in out, out + err
+    assert "proc7 status=c0000017 base=0" in out, out + err
+    assert "shared owned NULL/overrun guard" in err, err
+    print("PASS: Steam uses seven real contiguous guarded slots in the existing 16..44 GB band; eighth fails")
+
+    out, err = run(exe, "procs", TABLET, "4", "1", env={"TEST_STEAM": "1", "MADEIRA_WOW_SMALL_VA_SLOTS": "3"})
+    assert "proc1 status=0 base=500000000" in out and "proc2 status=0 base=500000000 new_mappings=0" in out, out + err
+    print("PASS: released adjacent window is reused without taking any new VA")
+
+    out, err = run(exe, "procs", TABLET, "4", env={"TEST_STEAM": "1", "MADEIRA_WOW_SMALL_VA_SLOTS": "3", "MADEIRA_WOW_ELASTIC": "0"})
+    assert "proc3 status=c0000017 base=0" in out, out + err
+    print("PASS: explicit elastic opt-out retains the configured hard limit")
+
+    out, err = run(exe, "guards", TABLET)
+    assert "guards preserved" in out, out + err
+    print("PASS: foreign PROT_NONE prefix rejected; owned shared guards reject fixed commits and survive failed tail mappings")
 
     out, err = run(exe, "procs", SMALL, "1")
     assert "proc0 status=c0000017 base=0 new_mappings=0" in out and "refused: map too small" in err, out + err

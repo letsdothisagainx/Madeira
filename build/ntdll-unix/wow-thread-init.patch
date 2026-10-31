@@ -1,0 +1,48 @@
+--- a/dlls/wow64/syscall.c
++++ b/dlls/wow64/syscall.c
+@@ -157,6 +157,7 @@
+ static void     (WINAPI *pBTCpuProcessInit)(void);
+ static NTSTATUS (WINAPI *pBTCpuSetContext)(HANDLE,HANDLE,void *,void *);
+ static void     (WINAPI *pBTCpuThreadInit)(void);
++static NTSTATUS (WINAPI *pMadeiraBTCpuThreadInit)(void);
+ static void     (WINAPI *pBTCpuSimulate)(void) __attribute__((used));
+ static void *   (WINAPI *p__wine_get_unix_opcode)(void);
+ static void *   (WINAPI *pKiRaiseUserExceptionDispatcher)(void);
+@@ -1165,6 +1166,7 @@
+     GET_PTR( BTCpuIsProcessorFeaturePresent );
+     GET_PTR( BTCpuProcessInit );
+     GET_PTR( BTCpuThreadInit );
++    GET_PTR( MadeiraBTCpuThreadInit );
+     GET_PTR( BTCpuResetToConsistentState );
+     GET_PTR( BTCpuSetContext );
+     GET_PTR( BTCpuSimulate );
+@@ -1209,6 +1211,7 @@
+     XLATE_PTR( BTCpuIsProcessorFeaturePresent );
+     XLATE_PTR( BTCpuProcessInit );
+     XLATE_PTR( BTCpuThreadInit );
++    XLATE_PTR( MadeiraBTCpuThreadInit );
+     XLATE_PTR( BTCpuResetToConsistentState );
+     XLATE_PTR( BTCpuSetContext );
+     XLATE_PTR( BTCpuSimulate );
+@@ -1293,7 +1296,20 @@
+     check_guest_addr( "WOW32Reserved (BTCpuGetBopCode)", pBTCpuGetBopCode() );
+     NtCurrentTeb32()->WOW32Reserved = (ULONG)(ULONG_PTR)pBTCpuGetBopCode();
+     NtCurrentTeb()->TlsSlots[WOW64_TLS_WOW64INFO] = wow64info;
+-    if (pBTCpuThreadInit) pBTCpuThreadInit();
++    if (pMadeiraBTCpuThreadInit)
++    {
++        NTSTATUS status = pMadeiraBTCpuThreadInit();
++        if (status)
++        {
++            /* Native loader_section was released by init_wow64 before this
++             * call. No guest loader code or CPU simulation has run yet, and
++             * FEX returned through its mutex and cleaned unpublished state. */
++            ERR( "[wow-thread-init-v1] tid=%04lx status=%08lx; retiring before guest execution\n",
++                 (long)HandleToULong(NtCurrentTeb()->ClientId.UniqueThread), (long)status );
++            for (;;) NtTerminateThread( GetCurrentThread(), status );
++        }
++    }
++    else if (pBTCpuThreadInit) pBTCpuThreadInit();
+ 
+     /* update initial context to jump to 32-bit LdrInitializeThunk (cf. 32-bit call_init_thunk) */
+     switch (current_machine)

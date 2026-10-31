@@ -37,6 +37,7 @@ bash "$ROOT/tools/check-prefix-template.sh" "$ROOT/app/Madeira/prefix-template.t
 "$ROOT/tools/build/build-wow64-io.sh"
 "$ROOT/tools/build/build-scm-rpc.sh"
 "$ROOT/tools/build/build-fex-ios.sh"
+"$ROOT/tools/build/build-fex-wow64-compat.sh"
 "$ROOT/build/rppairing-ios/build.sh"
 "$ROOT/tools/build/build-freetype-ios.sh"
 

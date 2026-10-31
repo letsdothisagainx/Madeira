@@ -2545,6 +2545,36 @@ static uint8_t exc_peek8( uint64_t addr )
     return v;
 }
 
+static int ios_fault_read(uint64_t address, void *dest, size_t size);
+
+/* This only selects diagnostic treatment. The exception still follows the
+ * original debugger/SIGTRAP chain, including guest breakpoint termination. */
+static int ios_verified_guest_breakpoint( uint64_t pc, uint64_t frame, uintptr_t teb )
+{
+    extern int ios_fex_code_owner_matches(uintptr_t pc, void *owner);
+    uint32_t insn = 0;
+    uint64_t owner = 0, self = 0, fex = 0, current = 0, rip = 0, rsp = 0;
+    ULONG_PTR window;
+    if (!teb || !frame || (pc & 3) ||
+        !ios_fault_read(pc, &insn, sizeof(insn)) || insn != 0xd4200000 ||
+        !ios_fault_read(teb + offsetof(TEB, Tib.Self), &self, sizeof(self)) || self != teb ||
+        !ios_fault_read(teb + offsetof(TEB, Peb), &owner, sizeof(owner)) ||
+        !ios_fex_code_owner_matches(pc, (void *)(uintptr_t)owner) ||
+        !(window = ios_wow_base_for_peb((void *)(uintptr_t)owner)) ||
+        !ios_fault_read(teb + offsetof(TEB, TlsSlots) + 14 * sizeof(void *), &fex, sizeof(fex)) || !fex ||
+        !ios_fault_read(fex, &current, sizeof(current)) || current != frame ||
+        !ios_fault_read(frame + 0x18, &rip, sizeof(rip)) || rip < 0x10000 || rip >= 0x100000000ULL ||
+        !ios_fault_read(frame + 0x40, &rsp, sizeof(rsp)) || rsp < 0x10000 || rsp >= 0x100000000ULL) return 0;
+    {
+        static unsigned count;
+        if (__atomic_fetch_add(&count, 1, __ATOMIC_RELAXED) < 16)
+            dprintf(2, "[guest-breakpoint] pc=%p owner=%p window=%p rip=%p rsp=%p action=forward\n",
+                    (void *)(uintptr_t)pc, (void *)(uintptr_t)owner, (void *)window,
+                    (void *)(uintptr_t)rip, (void *)(uintptr_t)rsp);
+    }
+    return 1;
+}
+
 static void *ios_mach_exception_thread( void *arg )
 {
     mach_port_t port = (mach_port_t)(uintptr_t)arg;
@@ -3088,6 +3118,9 @@ static void *ios_mach_exception_thread( void *arg )
         if (kr == KERN_SUCCESS)
         {
             uintptr_t fault_addr = (uintptr_t)req->code[1];
+            if (req->exception == EXC_BREAKPOINT &&
+                ios_verified_guest_breakpoint( arm_thread_state64_get_pc(state), state.__x[28], thread_teb ))
+                goto send_exception_reply;
 #ifdef WINE_IOS
             /* ml939: THE SUB-FLOOR SERVICE BELONGS HERE, NOT IN segv_handler.
              *

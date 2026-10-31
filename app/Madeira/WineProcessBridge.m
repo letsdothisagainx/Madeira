@@ -594,6 +594,7 @@ void madeira_seed_prefix_if_needed(const char *prefix_path) {
  * 32-bit. The unix side reserves the process's guest window before its first
  * TEB when it is set; the image's machine is not known there until later. */
 extern int ios_main_image_i386;
+extern int ios_main_image_steam;
 
 /* IMAGE_FILE_HEADER.Machine, read off disk (MZ -> e_lfanew -> "PE\0\0").
  * 0 on any read or format failure. */
@@ -2452,6 +2453,7 @@ static void *wine_process_thread(void *arg) {
          * this process's guest window before its first TEB, and hand FEX's
          * WOW64 module the host features it cannot query itself. */
         ios_main_image_i386 = is_i386_target ? 1 : 0;
+        ios_main_image_steam = madeira_is_steam_client_image(getenv("MADEIRA_EXE"));
         madeira_publish_host_probe();   /* both FEX modules read it (A12/A13: FlagM, FlagM2) */
 
         if (setjmp(wine_ios_exit_jmpbuf) == 0) {

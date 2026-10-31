@@ -26,6 +26,9 @@ def stage(destination, source):
         shutil.copyfile(source / name, target)
     subprocess.run(['git', '-C', str(destination), 'apply', '--check', str(PATCH)], check=True)
     subprocess.run(['git', '-C', str(destination), 'apply', str(PATCH)], check=True)
+    thread_patch = ROOT / 'build/ntdll-unix/wow-thread-init.patch'
+    subprocess.run(['git', '-C', str(destination), 'apply', '--check', str(thread_patch)], check=True)
+    subprocess.run(['git', '-C', str(destination), 'apply', str(thread_patch)], check=True)
     header = destination / HEADER
     header.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(ROOT / 'build/ntdll-unix/io_status_abi.h', header)

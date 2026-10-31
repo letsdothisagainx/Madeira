@@ -1,0 +1,91 @@
+--- a/Source/Windows/WOW64/Module.cpp
++++ b/Source/Windows/WOW64/Module.cpp
+@@ -1450,15 +1450,35 @@
+ 
+ void BTCpuProcessTerm(HANDLE Handle, BOOL After, ULONG Status) {}
+ 
+-void BTCpuThreadInit() {
++extern "C" __declspec(dllexport) NTSTATUS WINAPI MadeiraBTCpuThreadInit() {
+   static constexpr size_t DefaultWow64CS {4};
+   std::scoped_lock Lock(ThreadCreationMutex);
+   FEX::Windows::InitCRTThread();
+   auto* Thread = CTX->CreateThread(0, 0);
+ 
+-  // Default segment setup.
+-  auto Frame = Thread->CurrentFrame;
+-  auto NewSegments = new FEXCore::Core::CPUState::gdt_segment[32]();
++  // Publish neither TLS nor the thread registry until every required allocation
++  // succeeds. Return normally through ThreadCreationMutex before Wine retires
++  // a failed native thread; a fault/termination while holding it strands peers.
++  auto Frame = Thread ? Thread->CurrentFrame : nullptr;
++  auto NewSegments = Frame ? new (std::nothrow) FEXCore::Core::CPUState::gdt_segment[32]() : nullptr;
++  auto Frontend = NewSegments ? new (std::nothrow) FrontendThreadData() : nullptr;
++  const char* Failed = !Thread ? "ThreadState" : !Frame ? "CPUFrame" :
++                       !NewSegments ? "GDT" : !Frontend ? "Frontend" : nullptr;
++  if (!Failed && !FEX::Windows::CallRetStack::InitializeThread(Thread)) Failed = "CallRetStack";
++  if (Failed) {
++    static std::atomic<unsigned> Failures {};
++    if (Failures.fetch_add(1, std::memory_order::relaxed) < 32) {
++      LogMan::Msg::EFmt("[fex-thread-init-v1] tid={:#x} stage={} thread={} frame={} guest-window={:#x} status=0xc0000017 unpublished",
++                       GetCurrentThreadId(), Failed, static_cast<void*>(Thread), static_cast<void*>(Frame),
++                       static_cast<uint64_t>(GuestWindow::Base));
++    }
++    delete Frontend;
++    delete[] NewSegments;
++    if (Thread) CTX->DestroyThread(Thread);
++    FEX::Windows::DeinitCRTThread();
++    return static_cast<NTSTATUS>(0xc0000017);
++  }
++  Thread->FrontendPtr = Frontend;
+ 
+   // Setup initial code-segment GDT
+   auto& GDT = NewSegments[DefaultWow64CS];
+@@ -1473,8 +1493,6 @@
+ 
+   Frame->State.cs_idx = DefaultWow64CS << 3;
+   Frame->State.cs_cached = FEXCore::Core::CPUState::CalculateGDTBase(GDT);
+-
+-  FEX::Windows::CallRetStack::InitializeThread(Thread);
+ 
+   const auto TLS = GetTLS();
+   // MADEIRA: one line per thread naming the slot this module's ThreadState lives in, the TEB it is
+@@ -1490,7 +1508,6 @@
+                     static_cast<void*>(TLS.TEB), TLS.ThreadStateSlot, static_cast<void*>(Thread), PrevSlotValue,
+                     PrevSlotValue ? " - NOT ZERO, slot content did not come from this module" : "");
+ 
+-  Thread->FrontendPtr = new FrontendThreadData();
+ 
+ #ifdef FEX_IOS_HOST
+   // MADEIRA ml1430: route this thread's syscalls through the parking entry and let the
+@@ -1507,6 +1524,16 @@
+   Threads.emplace(ThreadTID, Thread);
+   if (StatAllocHandler) {
+     Thread->ThreadStats = StatAllocHandler->AllocateSlot(ThreadTID);
++  }
++  return 0;
++}
++
++void BTCpuThreadInit() {
++  const NTSTATUS Status = MadeiraBTCpuThreadInit();
++  if (Status) {
++    // Legacy consumers cannot accept a status. The checked function has already
++    // released its mutex and discarded partial CPU state. Never simulate it.
++    for (;;) NtTerminateThread(GetCurrentThread(), Status);
+   }
+ }
+ 
+--- a/FEXCore/include/FEXCore/Utils/AllocatorHooks.h
++++ b/FEXCore/include/FEXCore/Utils/AllocatorHooks.h
+@@ -211,7 +211,11 @@
+     LOGMAN_MSG_A_FMT("Unknown VirtualProtect options combination");
+   }
+ 
+-  return ::VirtualProtect(Ptr, Size, prot, nullptr) == 0;
++  // Win32 returns nonzero on success and requires a valid old-protection
++  // output. Match the POSIX wrapper's boolean contract, without changing the
++  // target range or rounding into neighbouring translations.
++  DWORD Previous {};
++  return ::VirtualProtect(Ptr, Size, prot, &Previous) != 0;
+ }
+ 
+ FEX_DEFAULT_VISIBILITY extern VirtualNamePtr VirtualName;

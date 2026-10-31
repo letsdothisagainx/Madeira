@@ -23,9 +23,16 @@ def check(staged, app, ipa):
     assert (app / 'aarch64-windows/wow64.dll').read_bytes() == expected, 'Xcode packaged a stale WoW64 producer'
     native = (app / 'Madeira.debug.dylib').read_bytes()
     assert CONSUMER in native, 'native IOSB consumer missing from linked image'
+    assert b'[wow-thread-init-v1]' in expected, 'stale Wine CPU initialization consumer'
+    cpu = staged.parent / 'xtajit.dll'
+    cpu_data = cpu.read_bytes()
+    assert struct.unpack_from('<H', cpu_data, struct.unpack_from('<I', cpu_data, 0x3c)[0] + 4)[0] == 0xaa64
+    assert b'MadeiraBTCpuThreadInit' in cpu_data and b'[fex-thread-init-v1]' in cpu_data, 'stale FEX CPU producer'
+    assert (app / 'aarch64-windows/xtajit.dll').read_bytes() == cpu_data, 'Xcode packaged stale FEX'
     with zipfile.ZipFile(ipa) as archive:
         assert archive.read('Payload/Madeira.app/aarch64-windows/wow64.dll') == expected, 'ZIP producer differs'
         assert archive.read('Payload/Madeira.app/Madeira.debug.dylib') == native, 'ZIP native consumer differs'
+        assert archive.read('Payload/Madeira.app/aarch64-windows/xtajit.dll') == cpu_data, 'ZIP FEX producer differs'
     print('PASS final IPA contains matching native IOSB consumer and byte-identical rebuilt ARM64 WoW64 producer')
 
 

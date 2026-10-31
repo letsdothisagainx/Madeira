@@ -7707,6 +7707,21 @@ static int fex_arena_covers( const void *limit_low, const void *limit_high )
 
     if (!ios_fex_arena_base_unix || !ios_fex_arena_end_unix) return 0;
     if (lo >= ios_fex_arena_base_unix && hi <= ios_fex_arena_end_unix) return 1;
+    /* The small-map WOW64 producer predates the authoritative arena channel.
+     * Its exact 48..60 GB requirement overlaps our 45..53 GB reservation.
+     * map_reserved_area_inner clips both ends to the owning FEX_ONLY area;
+     * treating this as ordinary free VA instead repeatedly collides with our
+     * own PROT_NONE reservation (EEXIST), despite a 5 GB view-tree gap. */
+    if (ios_wow_base() && lo == 0xc00000000ULL &&
+        (hi == 0xeffffffffULL || hi == 0xf00000000ULL) &&
+        lo < ios_fex_arena_end_unix && hi > ios_fex_arena_base_unix)
+    {
+        if (__atomic_fetch_add( &logged, 1, __ATOMIC_RELAXED ) < 8)
+            dprintf( 2, "[fex-arena-route] wow=%p request=[%p,%p] owner=[%p,%p) clipped-to-owner\n",
+                     (void *)ios_wow_base(), limit_low, limit_high,
+                     (void *)ios_fex_arena_base_unix, (void *)ios_fex_arena_end_unix );
+        return 1;
+    }
     /* madeira-bcd [wow-band]: the WOW64 CPU module (xtajit.dll) is never handed
      * the arena (its ios_get_fex_arena unix call is unsupported), so its rpmalloc
      * band selector asks for the whole hardware FEX band [0x7c00000000,
@@ -10200,6 +10215,7 @@ static struct ios_wow_placeholder *ios_wow_placeholder_find( ULONG_PTR base )
  * unix_init_startup_info, which runs after the first TEB is placed, so the app
  * (which already probes the target PE) says so up front.  0 = 64-bit/unknown. */
 int ios_main_image_i386 = 0;
+int ios_main_image_steam = 0;
 
 /* The session's own PEB (the first pseudo-process), captured in
  * virtual_alloc_first_teb().  The child path leaves the session global `peb`
@@ -10777,6 +10793,33 @@ static unsigned long ios_wow_env_ulong( const char *name, unsigned long dflt )
  * when a 32-bit process starts, never ahead of time.  0 on a large map.
  */
 static unsigned ios_wow_small_va_slots;
+/* Steam's browser and Crashpad children outlive short driver probes. The
+ * configured small-map count is a baseline for this session only; expansion
+ * still requires measured free VA, a candidate in the existing band and a
+ * successful no-clobber reservation. Games keep their existing hard limit. */
+static int ios_wow_elastic(void)
+{
+    const char *e = getenv( "MADEIRA_WOW_ELASTIC" );
+    return ios_main_image_steam && !(e && e[0] == '0');
+}
+
+/* A shared boundary remains an overrun guard even when its adjacent window
+ * is reused. Explicit fixed allocations must never commit that NULL prefix. */
+static int ios_wow_guard_conflicts( ULONG_PTR base, size_t size )
+{
+    unsigned i;
+    ULONG_PTR end = base + size, guard = ios_wow_guard_size();
+    if (end < base) return 1;
+    for (i = 0; i < ios_wow_window_count + ios_wow_placeholder_count; i++)
+    {
+        ULONG_PTR b = i < ios_wow_window_count ? ios_wow_windows[i].base :
+                      ios_wow_placeholders[i - ios_wow_window_count].base;
+        if (!b) continue;
+        if ((base < b + guard && end > b) ||
+            (base < b + IOS_WOW_WINDOW_SIZE + guard && end > b + IOS_WOW_WINDOW_SIZE)) return 1;
+    }
+    return 0;
+}
 extern unsigned long long ios_layerkit_lo, ios_layerkit_hi;   /* ml900: measured in ios_va_profile() */
 static void ios_wow_band( ULONG_PTR *floor, ULONG_PTR *ceil )
 {
@@ -11036,6 +11079,41 @@ static int ios_wow_window_try( ULONG_PTR base, unsigned *guard_owned )
                  (void *)base, (void *)(base + IOS_WOW_WINDOW_SIZE),
                  ph->guard_owned ? "owned" : "borrowed" );
         return 1;
+    }
+
+    /* A preceding window's owned overrun guard is also this window's NULL
+     * page. Keep it permanently inaccessible, and reserve only the free tail.
+     * Never infer ownership from PROT_NONE alone. No MAP_FIXED replacement or
+     * guard removal occurs, including when the tail reservation fails. */
+    if (ios_wow_elastic() && base >= IOS_WOW_WINDOW_SIZE)
+    {
+        struct ios_wow_window *prev = ios_wow_slot_at_base( base - IOS_WOW_WINDOW_SIZE );
+        struct ios_wow_placeholder *prev_ph = ios_wow_placeholder_find( base - IOS_WOW_WINDOW_SIZE );
+        if (((prev && prev->guard_owned) || (prev_ph && prev_ph->guard_owned)) &&
+            ios_wow_guard_neighbour_blocked( base, guard ))
+        {
+            ULONG_PTR tail = base + guard;
+            if (ios_wow_band_ok( base, IOS_WOW_WINDOW_SIZE + guard ) &&
+                anon_mmap_tryfixed( (void *)tail, IOS_WOW_WINDOW_SIZE,
+                                    PROT_NONE, MAP_NORESERVE ) != MAP_FAILED)
+            {
+                mmap_add_reserved_area( (void *)tail, IOS_WOW_WINDOW_SIZE );
+                *guard_owned = 1;
+                dprintf( 2, "[wow-window] B=%p: shared owned NULL/overrun guard; reserved tail + own end guard\n",
+                         (void *)base );
+                return 1;
+            }
+            if (ios_wow_guard_neighbour_blocked( base + IOS_WOW_WINDOW_SIZE, guard ) &&
+                anon_mmap_tryfixed( (void *)tail, IOS_WOW_WINDOW_SIZE - guard,
+                                    PROT_NONE, MAP_NORESERVE ) != MAP_FAILED)
+            {
+                mmap_add_reserved_area( (void *)tail, IOS_WOW_WINDOW_SIZE - guard );
+                dprintf( 2, "[wow-window] B=%p: shared owned NULL guard; borrowed inaccessible end guard\n",
+                         (void *)base );
+                return 1;
+            }
+            return 0;
+        }
     }
 
     /* preferred: the 4 GB window plus our own guard page */
@@ -11555,7 +11633,7 @@ static void ios_wow_reclaim_dead_windows(void)
 NTSTATUS ios_wow_window_reserve(void)
 {
     struct ios_wow_window *slot = NULL;
-    unsigned guard_owned = 0, held = 0;
+    unsigned guard_owned = 0, held = 0, released = 0, quarantined = 0;
     ULONG_PTR base, floor, ceil;
     unsigned i;
 
@@ -11573,7 +11651,12 @@ NTSTATUS ios_wow_window_reserve(void)
     }
     for (i = 0; i < IOS_WOW_MAX_WINDOWS; i++)
     {
-        if (ios_wow_windows[i].base) held++;
+        if (ios_wow_windows[i].base)
+        {
+            held++;
+            if (ios_wow_windows[i].dead) released++;
+            if (ios_wow_windows[i].leaked) quarantined++;
+        }
         else if (!slot) slot = &ios_wow_windows[i];
     }
     if (!slot)
@@ -11583,7 +11666,7 @@ NTSTATUS ios_wow_window_reserve(void)
         return STATUS_NO_MEMORY;
     }
     ios_wow_band( &floor, &ceil );
-    if (ios_wow_small_va_slots && held >= ios_wow_small_va_slots)
+    if (ios_wow_small_va_slots && held >= ios_wow_small_va_slots && !ios_wow_elastic())
     {
         pthread_mutex_unlock( &ios_wow_mutex );
         dprintf( 2, "[wow-window] refused: map too small for another window (%u of at most %u "
@@ -11599,7 +11682,14 @@ NTSTATUS ios_wow_window_reserve(void)
         pthread_mutex_unlock( &ios_wow_mutex );
         return STATUS_NO_MEMORY;
     }
-    if (!(base = ios_wow_window_pick( &guard_owned )))
+    /* Prefer a released reservation, including placeholders outside the
+     * current preferred band. It already owns the VA and its guards. */
+    base = 0;
+    if (i < ios_wow_placeholder_count &&
+        ios_wow_window_try( ios_wow_placeholders[i].base, &guard_owned ))
+        base = ios_wow_placeholders[i].base;
+    if (!base) base = ios_wow_window_pick( &guard_owned );
+    if (!base)
     {
         pthread_mutex_unlock( &ios_wow_mutex );
         return STATUS_NO_MEMORY;
@@ -11626,6 +11716,12 @@ NTSTATUS ios_wow_window_reserve(void)
     dprintf( 2, "[wow-window] reserved B=%p..%p (slot %d) guard=%s\n", (void *)base,
              (void *)(base + IOS_WOW_WINDOW_SIZE), (int)(slot - ios_wow_windows),
              guard_owned ? "owned" : "borrowed" );
+    {
+        static unsigned lifecycle_n;
+        if (__atomic_fetch_add( &lifecycle_n, 1, __ATOMIC_RELAXED ) < 128)
+            dprintf( 2, "[wow-lifecycle] generation=%u held=%u released=%u abandoned=%u baseline=%u elastic=%d\n",
+                     slot->generation, held + 1, released, quarantined, ios_wow_small_va_slots, ios_wow_elastic() );
+    }
     return STATUS_SUCCESS;
 }
 
@@ -19930,6 +20026,7 @@ static NTSTATUS map_fixed_area( void *base, size_t size, int unix_prot )
     if ((UINT_PTR)base & host_page_mask) return STATUS_CONFLICTING_ADDRESSES;
     if (find_view_range( base, size )) return STATUS_CONFLICTING_ADDRESSES;
 #ifdef WINE_IOS
+    if (ios_wow_guard_conflicts( (ULONG_PTR)base, size )) return STATUS_CONFLICTING_ADDRESSES;
     /* Madeira: every address in a thin arena lies inside some thin reservation's
      * range (or the arena's margin), so a fixed map there conflicts, as it would
      * on Windows. Only ios_thin_reserve places heads in it. */

@@ -75,7 +75,9 @@ static pthread_mutex_t ios_wow_mutex = PTHREAD_MUTEX_INITIALIZER;
 static _Thread_local struct ios_wow_window *ios_wow_boot_slot;
 static _Thread_local unsigned ios_wow_boot_generation;
 static unsigned ios_wow_small_va_slots, ios_wow_placeholder_count;
-static struct { int adopted; } ios_wow_placeholders[1];
+static struct { int adopted; ULONG_PTR base; } ios_wow_placeholders[1];
+static int ios_wow_elastic(void) { return 0; }
+static int ios_wow_window_try(ULONG_PTR b, unsigned *g) { (void)b; (void)g; return 0; }
 static void *current_peb;
 static int allocation_allowed = 1;
 static ULONG_PTR next_base = 0x400000000;
