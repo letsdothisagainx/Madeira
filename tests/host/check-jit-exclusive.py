@@ -42,5 +42,5 @@ int main(void) {
 '''
 with tempfile.TemporaryDirectory(prefix='madeira-exclusive-') as tmp:
     src=Path(tmp)/'check.c';binary=Path(tmp)/'check';src.write_text(code)
-    subprocess.run([os.environ.get('CC','cc'),'-std=gnu11','-Wall','-Wextra','-Werror','-fsanitize=address,undefined',str(src),'-o',str(binary)],check=True)
+    subprocess.run([os.environ.get('CC','cc'),'-std=gnu11','-Wall','-Wextra','-Werror','-fsanitize=address,undefined','-fno-sanitize-recover=all',str(src),'-o',str(binary)],check=True)
     subprocess.run([str(binary)],check=True)

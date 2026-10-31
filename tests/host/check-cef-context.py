@@ -30,7 +30,7 @@ static int mach_vm_read_overwrite(int task,uint64_t a,uint64_t n,uint64_t dst,ui
  const void *p=NULL;
  struct {uintptr_t a;size_t n;} regions[]={{(uintptr_t)native,sizeof(native)},{(uintptr_t)area,sizeof(area)},{(uintptr_t)frame,sizeof(frame)}};
  for(unsigned i=0;i<3;i++)if(a>=regions[i].a && n<=regions[i].n && a-regions[i].a<=regions[i].n-n)p=(void*)(uintptr_t)a;
- if(a>=ios_wow_base() && n<=sizeof(guest) && a-ios_wow_base()<=sizeof(guest)-n)p=guest+a-ios_wow_base();
+ if(a>=ios_wow_base() && n<=sizeof(guest) && a-ios_wow_base()<=sizeof(guest)-n)p=guest+(a-ios_wow_base());
  if(!p)return 1;memcpy((void*)(uintptr_t)dst,p,n);*got=n;return 0;
 }
 static char output[32768];static size_t used;
@@ -70,5 +70,5 @@ int main(void) {
 code=code.replace('static TEB *NtCurrentTeb(void)', 'static TEB *test_current_teb(void)').replace('return (TEB*)native;}','return (TEB*)native;}\n#define NtCurrentTeb test_current_teb')
 with tempfile.TemporaryDirectory() as tmp:
  src=Path(tmp)/'main.c';binary=Path(tmp)/'check';src.write_text(code)
- subprocess.run([os.environ.get('CC','cc'),'-std=c11','-Wall','-Wextra','-Werror','-Wno-misleading-indentation','-fsanitize=address,undefined','-I',str(root/'wine/include'),'-I',str(root/'build/ntdll-unix'),str(src),'-o',str(binary)],check=True)
+ subprocess.run([os.environ.get('CC','cc'),'-std=c11','-Wall','-Wextra','-Werror','-Wno-misleading-indentation','-fsanitize=address,undefined','-fno-sanitize-recover=all','-I',str(root/'wine/include'),'-I',str(root/'build/ntdll-unix'),str(src),'-o',str(binary)],check=True)
  subprocess.run([str(binary)],check=True)

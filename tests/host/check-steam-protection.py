@@ -91,5 +91,5 @@ assert signal.index('send_exception_reply:;')<signal.index('reply.ret_code = han
 assert 'req->exception == EXC_BREAKPOINT' in signal[signal.index('thread_t thread = req->thread.name;'):signal.index('goto send_exception_reply;')]
 with tempfile.TemporaryDirectory() as tmp:
  src=Path(tmp)/'main.c';binary=Path(tmp)/'check';src.write_text(code)
- subprocess.run([os.environ.get('CC','cc'),'-std=c11','-Wall','-Wextra','-Werror','-fsanitize=address,undefined','-I',str(root/'build/ntdll-unix'),str(src),'-o',str(binary)],check=True)
+ subprocess.run([os.environ.get('CC','cc'),'-std=c11','-Wall','-Wextra','-Werror','-fsanitize=address,undefined','-fno-sanitize-recover=all','-I',str(root/'build/ntdll-unix'),str(src),'-o',str(binary)],check=True)
  subprocess.run([str(binary)],check=True)
