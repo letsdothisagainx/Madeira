@@ -86,7 +86,123 @@ WINE_DECLARE_DEBUG_CHANNEL(threadname);
 
 pthread_key_t teb_key = 0;
 
-static LONG nb_threads = 1;
+/* Unix globals are shared by all Wine pseudo-processes on iOS. Keep both the
+ * thread count and the deferred join/TEB handoff with the owning PEB. In
+ * particular, never dereference a previous process's TEB after its window was
+ * replaced by PROT_NONE. All joins use a captured pthread_t, not a stale TEB. */
+struct ios_thread_group
+{
+    void *owner;
+    unsigned count;
+    int exiting;
+    int reclaimed;
+    void *prev_teb;
+    pthread_t prev_pthread;
+};
+static struct ios_thread_group ios_thread_groups[64];
+static pthread_mutex_t ios_thread_group_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t ios_thread_reapers[64];
+static pthread_once_t ios_thread_reapers_once = PTHREAD_ONCE_INIT;
+static void ios_thread_reapers_init(void)
+{
+    unsigned i;
+    for (i = 0; i < ARRAY_SIZE(ios_thread_reapers); ++i) pthread_mutex_init(&ios_thread_reapers[i], NULL);
+}
+static _Thread_local void *ios_retired_thread_owner;
+
+static struct ios_thread_group *ios_thread_group_locked(void *owner)
+{
+    struct ios_thread_group *free_slot = NULL;
+    unsigned i;
+    if (!owner) return NULL;
+    for (i = 0; i < ARRAY_SIZE(ios_thread_groups); ++i)
+    {
+        if (ios_thread_groups[i].owner == owner) return &ios_thread_groups[i];
+        if (!ios_thread_groups[i].owner && !free_slot) free_slot = &ios_thread_groups[i];
+    }
+    if (free_slot)
+    {
+        memset(free_slot, 0, sizeof(*free_slot));
+        free_slot->count = 1; /* the process's initial thread */
+        free_slot->owner = owner;
+    }
+    return free_slot;
+}
+
+static int ios_thread_count_add(void *owner, int delta)
+{
+    struct ios_thread_group *group;
+    int result = -1;
+    pthread_mutex_lock(&ios_thread_group_mutex);
+    if ((group = ios_thread_group_locked(owner)) && (!group->exiting || delta < 0))
+    {
+        group->count += delta;
+        result = group->count;
+    }
+    pthread_mutex_unlock(&ios_thread_group_mutex);
+    return result;
+}
+
+static unsigned ios_thread_retire_current(void)
+{
+    void *owner = NtCurrentTeb() ? NtCurrentTeb()->Peb : NULL;
+    struct ios_thread_group *group;
+    unsigned count = 1; /* unknown ownership: do not reclaim anyone's memory */
+    pthread_mutex_lock(&ios_thread_group_mutex);
+    if ((group = ios_thread_group_locked(owner)))
+    {
+        if (ios_retired_thread_owner != owner)
+        {
+            ios_retired_thread_owner = owner;
+            if (group->count) --group->count;
+        }
+        count = group->count;
+    }
+    pthread_mutex_unlock(&ios_thread_group_mutex);
+    return count;
+}
+
+/* Called on the terminating thread, before deciding whether its memory can be
+ * reclaimed. Other threads keep the dead process quarantined until they exit. */
+int ios_thread_process_exit_ready(void *owner)
+{
+    struct ios_thread_group *group;
+    int ready = 0;
+    ios_thread_retire_current();
+    pthread_mutex_lock(&ios_thread_group_mutex);
+    if ((group = ios_thread_group_locked(owner)))
+    {
+        group->exiting = 1;
+        ready = !group->count && !group->reclaimed;
+        if (ready) group->reclaimed = 1;
+    }
+    pthread_mutex_unlock(&ios_thread_group_mutex);
+    return ready;
+}
+
+int ios_thread_process_forget(void *owner)
+{
+    unsigned i;
+    pthread_once(&ios_thread_reapers_once, ios_thread_reapers_init);
+    pthread_mutex_lock(&ios_thread_group_mutex);
+    for (i = 0; i < ARRAY_SIZE(ios_thread_groups); ++i)
+        if (ios_thread_groups[i].owner == owner) break;
+    pthread_mutex_unlock(&ios_thread_group_mutex);
+    if (i == ARRAY_SIZE(ios_thread_groups)) return 1;
+    /* Never stall unrelated processes behind a stuck join/TEB reaper. Leave
+     * this window quarantined if its native cleanup is still using it. */
+    if (pthread_mutex_trylock(&ios_thread_reapers[i])) return 0;
+    pthread_mutex_lock(&ios_thread_group_mutex);
+    if (ios_thread_groups[i].owner == owner)
+    {
+        if (ios_thread_groups[i].prev_pthread) pthread_detach(ios_thread_groups[i].prev_pthread);
+        memset(&ios_thread_groups[i], 0, sizeof(ios_thread_groups[i]));
+    }
+    pthread_mutex_unlock(&ios_thread_group_mutex);
+    pthread_mutex_unlock(&ios_thread_reapers[i]);
+    return 1;
+}
+
 
 static inline int get_unix_exit_code( NTSTATUS status )
 {
@@ -2043,10 +2159,16 @@ NTSTATUS WINAPI NtCreateThreadEx( HANDLE *handle, ACCESS_MASK access, OBJECT_ATT
     pthread_attr_setstack( &pthread_attr, thread_data->kernel_stack, kernel_stack_size );
     pthread_attr_setguardsize( &pthread_attr, 0 );
     pthread_attr_setscope( &pthread_attr, PTHREAD_SCOPE_SYSTEM ); /* force creating a kernel thread */
-    InterlockedIncrement( &nb_threads );
+    if (ios_thread_count_add(teb->Peb, 1) < 0)
+    {
+        pthread_attr_destroy(&pthread_attr);
+        virtual_free_teb(teb);
+        status = STATUS_PROCESS_IS_TERMINATING;
+        goto done;
+    }
     if ((pthread_err = pthread_create( &pthread_id, &pthread_attr, (void * (*)(void *))start_thread, teb )))
     {
-        InterlockedDecrement( &nb_threads );
+        ios_thread_count_add(teb->Peb, -1);
         virtual_free_teb( teb );
         status = STATUS_NO_MEMORY;
         ios_note_thread_create_failure( "pthread_create", status, pthread_err, stack_reserve, stack_commit );
@@ -2076,7 +2198,7 @@ done:
 void abort_thread( int status )
 {
     pthread_sigmask( SIG_BLOCK, &server_block_set, NULL );
-    if (InterlockedDecrement( &nb_threads ) <= 0) abort_process( status );
+    if (!ios_thread_retire_current()) abort_process( status );
     pthread_exit_wrapper( status );
 }
 
@@ -2112,11 +2234,9 @@ void abort_process( int status )
      * is how the server learns the process died and wakes its waiters), drop
      * its fd cache and reclaim its JIT-pool allocations.
      *
-     * Still owed: process_exit_wrapper's exit() only longjmps on a
-     * pseudo-process's MAIN thread; a non-main thread calling it falls back to
-     * pthread_exit and leaves that process's other threads running on a
-     * reclaimed pool. That hole predates this change and is shared with
-     * exit_process. */
+     * A worker's exit only ends that pthread. process_exit_wrapper therefore
+     * quarantines this process's memory until its remaining Wine threads
+     * retire; it must never hand executing pages to another process. */
     pthread_sigmask( SIG_BLOCK, &server_block_set, NULL );
     ERR( "abort_process: status=0x%x — tearing down this pseudo-process only (ml937; was _exit, which killed the app)\n",
          (unsigned int)status );
@@ -2132,22 +2252,35 @@ void abort_process( int status )
  */
 static DECLSPEC_NORETURN void exit_thread( int status )
 {
-    static void *prev_teb;
-    TEB *teb;
+    TEB *current = NtCurrentTeb(), *previous = NULL;
+    struct ios_thread_group *group;
+    pthread_t previous_pthread = 0;
+    unsigned index = ARRAY_SIZE(ios_thread_groups);
 
     pthread_sigmask( SIG_BLOCK, &server_block_set, NULL );
+    if (!ios_thread_retire_current()) exit_process( status );
 
-    if (InterlockedDecrement( &nb_threads ) <= 0) exit_process( status );
-
-    if ((teb = InterlockedExchangePointer( &prev_teb, NtCurrentTeb() )))
+    pthread_once(&ios_thread_reapers_once, ios_thread_reapers_init);
+    pthread_mutex_lock(&ios_thread_group_mutex);
+    if ((group = ios_thread_group_locked(current->Peb))) index = group - ios_thread_groups;
+    pthread_mutex_unlock(&ios_thread_group_mutex);
+    if (index < ARRAY_SIZE(ios_thread_groups))
     {
-        struct ntdll_thread_data *thread_data = (struct ntdll_thread_data *)&teb->GdiTebBatch;
-
-        if (thread_data->pthread_id)
+        pthread_mutex_lock(&ios_thread_reapers[index]);
+        pthread_mutex_lock(&ios_thread_group_mutex);
+        group = &ios_thread_groups[index];
+        if (group->owner == current->Peb)
         {
-            pthread_join( thread_data->pthread_id, NULL );
-            virtual_free_teb( teb );
+            previous = group->prev_teb;
+            previous_pthread = group->prev_pthread;
+            group->prev_teb = current;
+            group->prev_pthread = pthread_self();
         }
+        pthread_mutex_unlock(&ios_thread_group_mutex);
+        /* No global registry lock across a join or VM teardown. Only this
+         * process's reaper is serialized; other processes can create/exit. */
+        if (previous && previous_pthread && !pthread_join(previous_pthread, NULL)) virtual_free_teb(previous);
+        pthread_mutex_unlock(&ios_thread_reapers[index]);
     }
     pthread_exit_wrapper( status );
 }

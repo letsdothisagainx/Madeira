@@ -26,4 +26,7 @@ struct ios_ntdll_funcs
 /* Current thread's pseudo-process ntdll funcs; NULL = session ntdll. */
 extern const struct ios_ntdll_funcs *ios_cur_ntdll_funcs(void);
 
+/* WoW64 startup exports belong to the target process's 32-bit ntdll. */
+extern const SYSTEM_DLL_INIT_BLOCK *ios_wow64_init_block_for_peb(void *peb);
+
 #endif /* __MADEIRA_IOS_MIXED_H */

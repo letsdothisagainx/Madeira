@@ -586,6 +586,12 @@ static void *ios_child_thread_entry( void *arg )
                 break;
             }
         }
+        /* Post-server failures must close their own socket and retire their
+         * process memory through the same quarantine path as normal exits. */
+        {
+            extern void ios_unix_fatal_exit(int status, const char *why) __attribute__((noreturn));
+            ios_unix_fatal_exit(1, "child bootstrap");
+        }
     } else {
         dprintf(STDERR_FILENO, "[Wine child thread] child exited with code %d\n", wine_ios_exit_code);
     }

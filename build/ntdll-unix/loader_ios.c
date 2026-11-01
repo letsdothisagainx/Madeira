@@ -320,11 +320,14 @@ struct ios_proc_ident
      * aarch64 ntdll can't host an AMD64 process). NULL = session ntdll. */
     void *ntdll_module;
     struct ios_ntdll_funcs funcs;     /* valid when ntdll_module != NULL */
+    SYSTEM_DLL_INIT_BLOCK wow_init;
+    int wow_init_ready;
 };
 static struct ios_proc_ident ios_proc_idents[IOS_MAX_PROC_IDENTS];
 static int ios_proc_ident_count;
 
 extern void *ios_jit_current_peb(void);
+extern void ios_unix_fatal_exit(int status, const char *why) __attribute__((noreturn));
 
 const SECTION_IMAGE_INFORMATION *ios_image_info_for_peb( void *peb_id )
 {
@@ -364,6 +367,8 @@ void ios_register_proc_ident( void *peb_id, const SECTION_IMAGE_INFORMATION *inf
     }
     ios_proc_idents[idx].info = *info;
     ios_proc_idents[idx].ntdll_module = NULL;
+    ios_proc_idents[idx].wow_init_ready = 0;
+    memset( &ios_proc_idents[idx].wow_init, 0, sizeof(ios_proc_idents[idx].wow_init) );
     __sync_synchronize();
     ios_proc_idents[idx].peb = peb_id;
     __sync_synchronize();
@@ -392,6 +397,8 @@ void ios_proc_ident_release( void *peb_id )
         ios_proc_idents[i].peb = NULL;        /* readers match on peb: clear it first */
         __sync_synchronize();
         ios_proc_idents[i].ntdll_module = NULL;
+        ios_proc_idents[i].wow_init_ready = 0;
+        memset( &ios_proc_idents[i].wow_init, 0, sizeof(ios_proc_idents[i].wow_init) );
         memset( &ios_proc_idents[i].funcs, 0, sizeof(ios_proc_idents[i].funcs) );
         memset( &ios_proc_idents[i].info, 0, sizeof(ios_proc_idents[i].info) );
         dprintf(2, "[proc-ident] released peb=%p (slot %d)\n", peb_id, i);
@@ -438,6 +445,19 @@ const struct ios_ntdll_funcs *ios_ntdll_funcs_for_peb( void *peb_id )
             if (ios_proc_idents[i].peb == peb_id)
                 return ios_proc_idents[i].ntdll_module ? &ios_proc_idents[i].funcs : NULL;
     return NULL;
+}
+
+const SYSTEM_DLL_INIT_BLOCK *ios_wow64_init_block_for_peb( void *peb_id )
+{
+    extern void *ios_session_peb_get(void);
+    int i;
+    if (!peb_id) return NULL;
+    for (i = 0; i < ios_proc_ident_count; ++i)
+        if (ios_proc_idents[i].peb == peb_id)
+            return ios_proc_idents[i].wow_init_ready ? &ios_proc_idents[i].wow_init : NULL;
+    /* Only the session uses the original ntdll image. Children are registered
+     * before mapping ntdll32 and must never borrow its startup addresses. */
+    return peb_id == ios_session_peb_get() ? pLdrSystemDllInitBlock : NULL;
 }
 
 /* ml381: find __os_arm64x_dispatch_call_no_redirect's RVA BY SCANNING, not by
@@ -1568,6 +1588,9 @@ static NTSTATUS ios_wrap_2(void *a)
 static NTSTATUS ios_wow64_wine_dbg_write( void *args )
 {
     const struct { ULONG str; unsigned int len; } *p32 = args;
+    /* The i386 unix-call entry requires a private guest window. A missing
+     * owner is a failed process bootstrap, never an identity translation. */
+    if (p32 && !ios_wow_base()) abort_process(STATUS_INVALID_ADDRESS);
     if (p32 && ios_log_throttle_drop( (const char *)ios_wow_host_ptr( p32->str ), p32->len )) return p32->len;
     return wow64_wine_dbg_write( args );
 }
@@ -2444,6 +2467,9 @@ static void load_ntdll_functions( HMODULE module )
 static void load_ntdll_wow64_functions( HMODULE module )
 {
     const IMAGE_EXPORT_DIRECTORY *exports;
+    SYSTEM_DLL_INIT_BLOCK block = *pLdrSystemDllInitBlock;
+    void *owner = ios_jit_current_peb();
+    int i;
     /* every p* entry of LdrSystemDllInitBlock ends up
      * in a 32-bit CONTEXT (Eip/Pc for LdrInitializeThunk, the Ki*Dispatchers,
      * RtlUserThreadStart), so it must hold a GUEST address.  find_named_export
@@ -2463,9 +2489,9 @@ static void load_ntdll_wow64_functions( HMODULE module )
     exports = get_module_data_dir( module, IMAGE_FILE_EXPORT_DIRECTORY, NULL );
     assert( exports );
 
-    pLdrSystemDllInitBlock->ntdll_handle = TO_GUEST( (ULONG_PTR)module );
+    block.ntdll_handle = TO_GUEST( (ULONG_PTR)module );
 
-#define GET_FUNC(name) pLdrSystemDllInitBlock->p##name = \
+#define GET_FUNC(name) block.p##name = \
         TO_GUEST( find_named_export( module, exports, #name ) )
     GET_FUNC( KiUserApcDispatcher );
     GET_FUNC( KiUserCallbackDispatcher );
@@ -2477,6 +2503,22 @@ static void load_ntdll_wow64_functions( HMODULE module )
     GET_FUNC( RtlpQueryProcessDebugInformationRemote );
 #undef GET_FUNC
 #undef TO_GUEST
+
+    for (i = 0; i < ios_proc_ident_count; ++i)
+        if (ios_proc_idents[i].peb == owner) break;
+    {
+        extern void *ios_session_peb_get(void);
+        int session = owner && owner == ios_session_peb_get();
+        if (!session && i == ios_proc_ident_count)
+            ios_unix_fatal_exit(1, "unregistered WoW64 startup owner");
+        if (session) *pLdrSystemDllInitBlock = block;
+        if (i < ios_proc_ident_count)
+        {
+            ios_proc_idents[i].wow_init = block;
+            __sync_synchronize();
+            ios_proc_idents[i].wow_init_ready = 1;
+        }
+    }
 
     /* host pointer: the unix side calls through this one directly */
     p__wine_ctrl_routine = (void *)find_named_export( module, exports, "__wine_ctrl_routine" );
@@ -2492,9 +2534,8 @@ static void load_ntdll_wow64_functions( HMODULE module )
     /* also set the 32-bit LdrSystemDllInitBlock (guest address -> host).
      * Guarded: pLdrSystemDllInitBlock is now 0 if the 32-bit ntdll does not
      * export it, and writing at wow_base + 0 would scribble on guest page 0. */
-    if (pLdrSystemDllInitBlock->pLdrSystemDllInitBlock)
-        memcpy( (void *)((ULONG_PTR)pLdrSystemDllInitBlock->pLdrSystemDllInitBlock + wow_base),
-                pLdrSystemDllInitBlock, sizeof(*pLdrSystemDllInitBlock) );
+    if (block.pLdrSystemDllInitBlock)
+        memcpy( (void *)((ULONG_PTR)block.pLdrSystemDllInitBlock + wow_base), &block, sizeof(block) );
     else
         ERR( "[wow-window] 32-bit ntdll has no LdrSystemDllInitBlock export — "
              "its copy of the init block will stay zero\n" );
@@ -3331,6 +3372,9 @@ static void start_main_thread(void)
         ios_jumbo_holdback_init();
     }
 
+    /* The initial process also needs an immutable identity: children briefly
+     * overwrite main_image_info while its existing threads keep running. */
+    ios_register_proc_ident(NtCurrentTeb()->Peb, &main_image_info);
     WINE_IOS_LOG("load_ntdll...");
     load_ntdll();
     WINE_IOS_LOG("load_wow64_ntdll...");
@@ -3941,6 +3985,10 @@ DECLSPEC_EXPORT void wine_ios_child_main( int argc, char *argv[], int child_fd_s
      * (including from other threads and from NtQueryInformationProcess). */
     CHILD_STAGE( "window-bind" );
     ios_wow_window_bind( child_peb );
+    if (ios_child_main_machine && !is_machine_64bit( ios_child_main_machine ) &&
+        (!ios_wow_base_for_peb( child_peb ) ||
+         ios_wow_base_for_peb( child_peb ) != ios_wow_base()))
+        CHILD_BOOT_FAIL( "private guest-window ownership not established for peb=%p\n", child_peb );
     /* init_teb ran before the child PEB existed, so TEB32->Peb still points at
      * the CREATOR's PEB (which is outside this window — a truncated host
      * address, i.e. garbage to guest code).  Repoint it now.
@@ -4074,8 +4122,8 @@ DECLSPEC_EXPORT void wine_ios_child_main( int argc, char *argv[], int child_fd_s
             CHILD_STAGE( "load_wow64_ntdll" );
             load_wow64_ntdll( ios_cur_image_info()->Machine );
             ERR( "[Wine child] i386 ntdll bound: ntdll_handle=%p LdrInitializeThunk=%p (guest)\n",
-                 (void *)(ULONG_PTR)pLdrSystemDllInitBlock->ntdll_handle,
-                 (void *)(ULONG_PTR)pLdrSystemDllInitBlock->pLdrInitializeThunk );
+                 (void *)(ULONG_PTR)ios_wow64_init_block_for_peb(child_peb)->ntdll_handle,
+                 (void *)(ULONG_PTR)ios_wow64_init_block_for_peb(child_peb)->pLdrInitializeThunk );
         }
 
         /* start_main_thread runs load_apiset_dll() right after load_wow64_ntdll;
@@ -4138,6 +4186,22 @@ DECLSPEC_EXPORT void wine_ios_child_main( int argc, char *argv[], int child_fd_s
             }
             else
             {
+                /* The copy inherited the session's .data. Publish this child's
+                 * 32-bit exports into ONLY its private native ntdll alias, too:
+                 * wow64.dll reads this block before starting every thread. */
+                if (!is_machine_64bit( ios_cur_image_info()->Machine ))
+                {
+                    extern int ios_jit_write_process_data(void *owner, void *addr,
+                                                          const void *data, size_t size);
+                    const SYSTEM_DLL_INIT_BLOCK *block = ios_wow64_init_block_for_peb(child_peb);
+                    if (!block || !ios_jit_write_process_data(child_peb, pLdrSystemDllInitBlock,
+                                                              block, sizeof(*block)))
+                        CHILD_BOOT_FAIL("private WoW64 startup block unavailable for peb=%p\n", child_peb);
+                    dprintf(2, "[wow-startup] peb=%p window=%p ntdll32=%llx thread-start=%llx private=1\n",
+                            child_peb, (void *)ios_wow_base_for_peb(child_peb),
+                            (unsigned long long)block->ntdll_handle,
+                            (unsigned long long)block->pRtlUserThreadStart);
+                }
                 /* Verify from this (child) thread: translation must now hit
                  * the child copy, and the dispatcher slots inside it must
                  * hold sane values (inherited via the copy + pool sweep). */
