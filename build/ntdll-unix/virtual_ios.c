@@ -6927,14 +6927,17 @@ int ios_image_section_describe( unsigned long long va, char *buf, size_t len, un
  * reading the image's initial zero index from the pool copy. That selects
  * TLS[0] instead of this DLL's slot, so a thread_local pointer can become
  * arbitrary bytes from the main EXE's TLS template. Keep the Unix call narrow:
- * it copies only the loader's four-byte index, and verifies the executable
- * copy before the newly loaded DLL is allowed to run. */
+ * it copies only one DWORD index or one native auxiliary-IAT pointer, and
+ * verifies the executable copy before the newly loaded DLL may run. Pointer
+ * writes use the writable JIT alias too: AuxiliaryIAT lives in read-only
+ * .rdata, so a store through the executable view would fault. */
 NTSTATUS unixcall_ios_sync_pe_write(void *args)
 {
     struct ios_sync_pe_write_params *p = args;
     void *copy;
 
-    if (!p || !p->address || p->size != sizeof(ULONG)) return STATUS_INVALID_PARAMETER;
+    if (!p || !p->address || (p->size != sizeof(ULONG) && p->size != sizeof(ULONG_PTR)))
+        return STATUS_INVALID_PARAMETER;
     p->synced = 0;
     copy = ios_jit_translate_addr(p->address);
     if (copy == p->address) return STATUS_SUCCESS; /* image not copied yet */

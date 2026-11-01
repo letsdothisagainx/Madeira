@@ -46,8 +46,13 @@ documented by ios_jit_heal_aux_iat in virtual_ios.c). Eager loading alone is
 therefore insufficient. A versioned loader overlay fills the validated native
 auxiliary slot and its owning process's translated execution copy for exactly
 sechost -> rpcrt4!NdrClientCall2. The target must be real resolved EC code;
-invalid metadata/protection failures abort DLL import instead of entering the
-known corrupt path. Page protection is restored. It does not rewrite the public
+invalid metadata/protection/sync failures abort DLL import instead of entering
+the known corrupt path. AuxiliaryIAT is read-only .rdata in the execution view.
+The existing owner-aware Unix PE-write helper now accepts exactly a DWORD
+(TLS index) or pointer (auxiliary IAT), copying through the writable JIT alias
+and verifying the read-only view; the loader never writes through RX or relies
+on fault emulation. Unix-call ordinal and parameter layout stay unchanged.
+Page protection is restored even when synchronization fails. It does not rewrite the public
 x64 export or retain pointers across unloads. A bounded [scm-rpc-bind] marker
 records this genuine binding, without argument contents. ntdll is rebuilt with
 this overlay, and the pinned Wine checkout is restored even on build failure.
@@ -67,7 +72,10 @@ fixture executes the build-10 compiled exit thunk and reproduces the wrong
 SCM stub and native NdrClientCall2 entry with the patched loader's native
 auxiliary-IAT binding modeled explicitly. A separate host test compiles the
 shared RVA validation used by the loader and checks bounds/alignment/overflow
-failures. The machine-code test checks masks 1, 0x10, 0xf003f and 0x12345678,
+failures. A production-backend regression maps real shared read-only/RW views
+and checks full-pointer writes, process-owner isolation, canaries and failure
+reporting. The existing DWORD TLS-index tests still pass. The machine-code
+test checks masks 1, 0x10, 0xf003f and 0x12345678,
 all four RPC argument positions, the output-address canary, NDR procedure 15,
 all five format offsets, and the scalar's 32-bit width (padding is unspecified).
 Execution stops at NdrpClientCall2; no server response is synthesized. This is

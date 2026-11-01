@@ -7,6 +7,8 @@ from pathlib import Path
 root = Path(__file__).resolve().parents[2]
 commands = [
     ['python3', 'tests/host/check-scm-rpc-loader.py'],
+    ['python3', 'tests/host/check-scm-rpc-sync.py'],
+    ['python3', 'tests/host/check-tls-jit-sync.py'],
     ['python3', 'tests/host/check-steam-service.py'],
     ['python3', 'tests/host/check-dock-contract.py'],
     ['python3', 'tests/host/check-embedded-signals.py'],

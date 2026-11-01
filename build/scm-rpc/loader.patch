@@ -1,6 +1,6 @@
 --- a/dlls/ntdll/loader.c
 +++ b/dlls/ntdll/loader.c
-@@ -1380,6 +1380,51 @@
+@@ -1380,6 +1380,55 @@
  }
  #endif
 
@@ -14,12 +14,13 @@
 + * the global EC classifier, FEX state or generic NDR argument slots. */
 +static BOOL arm64ec_bind_scm_rpc_aux( WINE_MODREF *wm, IMAGE_THUNK_DATA *slot )
 +{
-+    extern void *xlate_ios_jit( void *ptr );
 +    HMODULE module = wm->ldr.DllBase;
 +    const IMAGE_ARM64EC_METADATA *metadata = arm64ec_get_module_metadata( module );
 +    const IMAGE_NT_HEADERS *nt = RtlImageNtHeader( module );
 +    const IMAGE_DATA_DIRECTORY *iat;
-+    ULONG_PTR *aux, *pool;
++    ULONG_PTR *aux;
++    struct ios_sync_pe_write_params params;
++    NTSTATUS sync;
 +    PVOID protect_base;
 +    SIZE_T protect_size = sizeof(*aux);
 +    DWORD protect_old, ignored;
@@ -36,15 +37,18 @@
 +    if (NtProtectVirtualMemory( NtCurrentProcess(), &protect_base, &protect_size,
 +                                PAGE_READWRITE, &protect_old )) return FALSE;
 +    *aux = slot->u1.Function;
-+    /* Runtime native code reads the owning process's translated data copy.
-+     * Use the existing naked translator, never an unchecked unix function
-+     * pointer through arm64x_check_call. Like delay-IAT sync, write both views. */
-+    pool = xlate_ios_jit( aux );
-+    if (pool && pool != aux) *(volatile ULONG_PTR *)pool = slot->u1.Function;
++    /* AuxiliaryIAT is read-only .rdata in the execution view. Sync through
++     * the existing owner-aware Unix helper and its writable JIT alias;
++     * never store through the RX translation or rely on fault emulation. */
++    params.address = aux;
++    params.size = sizeof(*aux);
++    params.synced = 0;
++    sync = WINE_UNIX_CALL( unix_ios_sync_pe_write, &params );
 +    if (NtProtectVirtualMemory( NtCurrentProcess(), &protect_base, &protect_size,
 +                                protect_old, &ignored )) return FALSE;
++    if (sync) return FALSE;
 +    if (reports++ < 8)
-+        ERR( "[scm-rpc-bind] native=1 auxiliary=1 pool=%u\n", !!pool && pool != aux );
++        ERR( "[scm-rpc-bind] native=1 auxiliary=1 pool=%u\n", (unsigned int)params.synced );
 +    return TRUE;
 +}
 +#endif
@@ -52,7 +56,7 @@
  static BOOL import_dll( WINE_MODREF *wm, const IMAGE_IMPORT_DESCRIPTOR *descr, LPCWSTR load_path, WINE_MODREF **pwm )
  {
      HMODULE module = wm->ldr.DllBase;
-@@ -1529,6 +1574,17 @@
+@@ -1529,6 +1578,17 @@
                  thunk_list->u1.Function = (ULONG_PTR)arm64ec_redirect_ptr( imp_mod,
                                                                             (void *)thunk_list->u1.Function,
                                                                             imp_metadata );
@@ -70,3 +74,15 @@
                  /* iOS-Madeira ml230: does the EC->EC import bind actually land on native
                   * code, and is that code MARKED EC?
                   *
+--- a/dlls/ntdll/unixlib.h
++++ b/dlls/ntdll/unixlib.h
+@@ -140,8 +140,8 @@
+ struct ios_sync_pe_write_params
+ {
+     void *address;       /* IN: address in the original PE image */
+-    ULONG size;          /* IN: bounded to a single DWORD for TLS indices */
++    ULONG size;          /* IN: bounded to a DWORD (TLS) or pointer (native auxiliary IAT) */
+     ULONG synced;        /* OUT: 1 if a JIT-pool copy existed and was updated */
+ };
+
+ enum ntdll_unix_funcs
