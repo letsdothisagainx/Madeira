@@ -20,13 +20,14 @@ let harmless = [
     #"00a8:err:module:load_dll [dll-missing] rev=ml336 #1 L"\\??\\C:\\windows\\system32\\wow64cpu.dll" status=c0000135"#,
     #"00a8:err:wow:load_cpu_dll CPU backend wow64cpu.dll not available, falling back to the platform default xtajit.dll"#,
     #"0030:err:module:import_dll Library Kerberos.dll (which is needed by L"x") not found"#,
-    "Failed to mprotect last page of code buffer",
 ]
 for line in harmless {
     let (sig, lvl) = level(line)
     assert(sig.hasPrefix("harmless: ") && lvl == .debug, line)
 }
 let errors = [
+    "Failed to mprotect last page of code buffer.",
+    "E 138 Failed to mprotect last page of code buffer.",
     #"00ac:err:module:load_dll [dll-missing] rev=ml336 #15 L"v8.dll" status=c0000017 -- note"#,
     #"00ac:err:module:load_dll [dll-missing] rev=ml336 #16 L"SDL3.dll" status=c0000017"#,
     #"00b0:err:module:load_dll [dll-missing] rev=ml336 #9 L"gameoverlayrenderer64.dll" status=c000007b"#,

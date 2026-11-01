@@ -32,7 +32,7 @@ app = (ROOT / "app/Madeira/Winios/Winios.m").read_text()
 coordinates = function(driver, "static BOOL winios_drv_screen_rects(")
 refresh = function(driver, "static void winios_drv_refresh_children(")
 callback = function(driver, "static void winios_drv_window_pos_changed(")
-frame = callback[:callback.index("    /* ml505: z-order")] + "}\n"
+frame = callback[:callback.index("    /* ml505: z-order")] + "(void)steam_traced; }\n"
 predicate = function(wine, "BOOL is_window_visible( HWND hwnd )")
 getter = function(wine, "BOOL get_window_rects( HWND hwnd,")
 # Keep the actual local/cache/parent traversal. Inject replies only at the
@@ -60,6 +60,7 @@ harness = r'''
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#define winios_trace_steam_window(...) 0
 typedef uintptr_t HWND;
 typedef int BOOL, NTSTATUS;
 typedef unsigned int UINT, DWORD, ULONG;

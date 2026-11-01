@@ -308,6 +308,11 @@ else:
 table = winios[winios.index('#define WINIOS_SWAP_HWNDS 32'):winios.index('static void winios_remove_layer(HWND hwnd);')]
 hooks_at = driver.index("/* madeira-bcd: [swap-win] WHAT HAPPENS TO A SWAPCHAIN'S WINDOW.")
 hooks = driver[hooks_at:driver.index('\n}\n', driver.index('static void winios_swap_win_pos(', hooks_at)) + 3]
+# The independent Steam diagnostic is exercised by check-steam-ui-trace.py.
+# This harness owns only the existing swapchain diagnostics.
+steam_start = hooks.index('enum { STEAM_UI_SHOW,')
+steam_end = hooks.index('static void winios_drv_set_window_style(', steam_start)
+hooks = hooks[:steam_start] + '#define winios_trace_steam_window(...) 0\n' + hooks[steam_end:]
 callback = function(driver, 'static void winios_drv_window_pos_changed(')
 frame_part = callback[:callback.index('    /* ml505: z-order')]
 check('the window-position callback logs a swapchain window at its end, after the chained hook, '
@@ -336,6 +341,7 @@ check('IOSDisplayShim reports the HWND before choosing the session kind',
 win_harness = r'''
 #define _GNU_SOURCE
 #include <assert.h>
+#include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdarg.h>

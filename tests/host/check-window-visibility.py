@@ -30,7 +30,7 @@ wine = (ROOT / "wine/dlls/win32u/window.c").read_text()
 app = (ROOT / "app/Madeira/Winios/Winios.m").read_text()
 callback = function(driver, "static void winios_drv_window_pos_changed(")
 # The remainder is the existing logging, repaint and chained driver hook.
-frame = callback[:callback.index("    /* ml505: z-order")] + "}\n"
+frame = callback[:callback.index("    /* ml505: z-order")] + "(void)steam_traced; }\n"
 coordinates = function(driver, "static BOOL winios_drv_screen_rects(")
 refresh = function(driver, "static void winios_drv_refresh_children(")
 predicate = function(wine, "BOOL is_window_visible( HWND hwnd )")
@@ -48,6 +48,7 @@ harness = r'''
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#define winios_trace_steam_window(...) 0
 typedef uintptr_t HWND;
 typedef int BOOL;
 typedef unsigned int UINT, DWORD, ULONG;

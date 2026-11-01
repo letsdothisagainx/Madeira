@@ -272,6 +272,27 @@ for src in $WINE_SRC/dlls/ntdll/unix/*.c; do
         thread)
             compile_one "$BUILD_DIR/thread_ios.c" "thread"
             ;;
+        file|socket)
+            # Observe the real IOSB publication in both producers. Only the
+            # generated translation unit includes this diagnostic wrapper;
+            # the pinned Wine source and its ABI remain unchanged.
+            python3 - "$src" "$OBJ_DIR/${name}_ios.c" "$BUILD_DIR/io_status_trace.h" <<'PYCODE'
+import sys
+from pathlib import Path
+source, output, header = map(Path, sys.argv[1:])
+text = source.read_text()
+needle = '#include "unix_private.h"'
+if text.count(needle) != 1:
+    raise SystemExit('I/O diagnostic include boundary changed')
+output.write_text(text.replace(needle, needle + '\n#include "' + str(header) + '"'))
+PYCODE
+            IO_FAILED_BEFORE=$FAILED
+            compile_one "$OBJ_DIR/${name}_ios.c" "$name"
+            if [ "$FAILED" -ne "$IO_FAILED_BEFORE" ]; then
+                echo "I/O producer compilation failed; refusing to reuse an old object" >&2
+                exit 1
+            fi
+            ;;
         sync)
             # madeira-bcd: a NULL keyed-event handle resolves per guest process
             # (ios_default_keyed_event, loader_ios.c), not to the first process's
