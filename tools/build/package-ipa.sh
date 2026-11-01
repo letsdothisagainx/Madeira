@@ -9,6 +9,7 @@ CONFIGURATION="${CONFIGURATION:-Debug}"
 APP="$DERIVED/Build/Products/$CONFIGURATION-iphoneos/Madeira.app"
 
 required=(
+  "$ROOT/app/Madeira/aarch64-windows/wow64.dll"
   "$ROOT/app/Madeira/i386-windows/madeira-wow64-probe.exe"
   "$ROOT/app/Madeira/i386-windows/madeira-wow64-module-probe.dll"
   "$ROOT/FEX/build-ios/FEXCore/Source/libFEXCore.a"
@@ -55,6 +56,8 @@ codesign --force --sign - \
   "$APP"
 
 bundle_required=(
+  "$APP/aarch64-windows/wow64.dll"
+  "$APP/Madeira.debug.dylib"
   "$APP/i386-windows/madeira-wow64-probe.exe"
   "$APP/i386-windows/madeira-wow64-module-probe.dll"
   "$APP/arm64ec-windows/madeira-scm-probe.exe"
@@ -92,3 +95,6 @@ done
 for resource in madeira-wow64-probe.exe madeira-wow64-module-probe.dll; do
   unzip -p "$DIST/Madeira.ipa" "Payload/Madeira.app/i386-windows/$resource" | cmp - "$APP/i386-windows/$resource"
 done
+
+python3 "$ROOT/tools/check-io-abi-package.py" \
+  --staged "$ROOT/app/Madeira/aarch64-windows/wow64.dll" --app "$APP" --ipa "$DIST/Madeira.ipa"

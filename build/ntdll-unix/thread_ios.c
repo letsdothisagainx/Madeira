@@ -3324,6 +3324,11 @@ NTSTATUS WINAPI NtSetInformationThread( HANDLE handle, THREADINFOCLASS class,
 
     switch (class)
     {
+    case (THREADINFOCLASS)MADEIRA_THREAD_IO_ABI: /* versioned private per-request IOSB ABI */
+    {
+        extern NTSTATUS ios_io_status_control( HANDLE, const void *, ULONG );
+        return ios_io_status_control( handle, data, length );
+    }
     case ThreadZeroTlsCell:
         if (handle == GetCurrentThread())
         {

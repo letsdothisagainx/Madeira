@@ -10,6 +10,12 @@ on:
         description: Inspect an existing IPA's native APC image instead of building (optional run ID)
         required: false
         default: ''
+      inspect_native_uuid:
+        description: Expected native dylib UUID for exact-image inspection
+        default: FDE23E02-3C8E-38E6-A3DE-499E98412C42
+      inspect_native_offset:
+        description: Fault offset within invoke_system_apc
+        default: '0x6b8'
 
 permissions:
   contents: read
@@ -387,6 +393,9 @@ jobs:
     permissions:
       contents: read
       actions: read
+    env:
+      MADEIRA_INSPECT_UUID: ${{ inputs.inspect_native_uuid }}
+      MADEIRA_INSPECT_OFFSET: ${{ inputs.inspect_native_offset }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -401,4 +410,4 @@ jobs:
           "$RUNNER_TEMP/native-image-tools/bin/pip" install capstone==5.0.6
           "$RUNNER_TEMP/native-image-tools/bin/python" tests/host/check-native-apc-image.py
           unzip -q previous-ipa/Madeira.ipa 'Payload/Madeira.app/Madeira.debug.dylib' -d previous-ipa
-          "$RUNNER_TEMP/native-image-tools/bin/python" tools/inspect-native-apc.py previous-ipa/Payload/Madeira.app/Madeira.debug.dylib --expected-uuid C785040B-848D-37AD-985C-832B8923F782 --annotations
+          "$RUNNER_TEMP/native-image-tools/bin/python" tools/inspect-native-apc.py previous-ipa/Payload/Madeira.app/Madeira.debug.dylib --expected-uuid "$MADEIRA_INSPECT_UUID" --offset "$MADEIRA_INSPECT_OFFSET" --annotations

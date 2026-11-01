@@ -1,119 +1,180 @@
-# Genuine Steam UI investigation (2026-10-30)
+# Steam UI and WoW64 I/O forensics — 2026-10-30
 
-This branch is a diagnostic candidate. It does **not** establish that Steam's
-login/library appears on an iPhone, or identify the complete cause of the hidden
-UI. The supplied report excerpts were available; the actual 14,837-line
-`steam.exe-2026-10-30_14-47-17.txt`, Steam's CEF log, and installed Valve PE files
-were not available in the cloud workspace. An attachment/path was requested.
+The new candidate fixes a demonstrated memory-corruption defect. It does not
+establish that Steam's login/library works on an iPhone. The actual Steam,
+SDL2 and CEF binaries remain on the phone; none were replaced or supplied to
+the cloud workspace. There is no new CS2 or VAC result.
 
-## Exact native fault identified
+## Evidence from build 22
 
-The previous IPA from run [40991877110](https://github.com/letsdothisagainx/Madeira/actions/runs/40991877110)
-was inspected inside Actions without executing it. Its native dylib has UUID
-`C785040B-848D-37AD-985C-832B8923F782`, exactly matching the device report, and
-SHA-256 `08009fe81c05e24e505faa090693721aed5848553bc9676bfbf07602822828d5`.
-Inspection evidence is in run
-[41112452094](https://github.com/letsdothisagainx/Madeira/actions/runs/41112452094).
+The supplied `steam.exe-2026-10-30_15-45-08.txt` has 12,719 lines; `cef_log.txt`
+contains several sessions. The newest session is 19:45 UTC (15:45 device time).
+Earlier sessions in that CEF file are not evidence of progress in this run.
+The captured launch lasts approximately 35 seconds.
 
-`invoke_system_apc` starts at unslid `0x11baf5c`. At offset `0x578`, instruction
-`0xb9000676` is `str w22, [x19, #4]`; the following instruction is
-`stlr w21, [x19]`. These implement `set_async_iosb`'s **32-bit** Information
-write followed by the release store of Status in `APC_ASYNC_IO`. A write to
-`0x10004` therefore means the completion uses an IOSB pointer of `0x10000`.
-The instruction does not address memory relative to x18. x18 being zero does
-not by itself identify a TEB failure.
+[Exact-image inspection](https://github.com/letsdothisagainx/Madeira/actions/runs/41120982687)
+reads the IPA from build 22, checks UUID
+`FDE23E02-3C8E-38E6-A3DE-499E98412C42`, and reports native image SHA-256
+`00e8d622b09999bc0f88d603506d068967ce4d6a2fd9605d8644026a67452ad0`.
+`invoke_system_apc` is at unslid `0x11bb65c`; offset `0x6b8` is
+`0xb90006f6`, **`str w22, [x23, #4]`**, at image RVA **`0x11bbd14`**.
+The log's runtime PC `0x101947d14` minus image base `0x10078c000` agrees.
+The originally quoted offset `0x01c3fd14` does not identify this instruction.
+The write uses x23, not x18.
 
-The pointer's producer, the affected pseudo-process and the reason the 32-bit
-layout was selected still require the original log and/or the new publication
-trace. No slot swap, layout inference from pointer contents, pointer repair,
-fallback TEB, or exception suppression has been introduced.
+### Producer and asynchronous consumer
 
-## Observation added to the candidate IPA
+1. `in_wow64_call()` in this embedded Wine identifies a WoW64 *process* by
+   its guest window, including native bootstrap/FEX calls made before FEX
+   initializes. Those native calls use a real 16-byte `IO_STATUS_BLOCK`.
+2. The former `iosb_client_ptr()` selected `io->Pointer` whenever that
+   predicate was true. For a real native IOSB, this union is not an output
+   pointer: it can hold uninitialized stack data or an earlier status.
+   Only the actual WoW64 file thunk's temporary proxy uses that convention.
+3. At lines 3614–3618, genuine i386 **steamsysinfo.exe**, pid `0048`, tid
+   `004c`, submits `NtWriteFile` / `server_write_file` with native stack IOSB
+   `0x1293fe950`. The producer selects **`0x10000`** instead. Its guest window
+   is `0x600000000`, TEB `0x600300000`, CPU area `0x1293ffd20`, TLS14 zero.
+   The completion tries the 32-bit Information store at **`0x10004`**.
+4. This is not just a helper crash at an unrelated instruction. At line
+   3729 a later completion targets **code address `0x301169354`**, with byte
+   count **54**. Its Information store writes **`0x00000036`** at
+   `0x301169358`. Execution then reaches that invalid word in kernelbase.dll
+   and reports `0xC000001D`. A later i386 hardware helper repeats this
+   corruption/illegal-instruction sequence near lines 12337–12404.
+5. The genuine **i386 SteamWebhelper**, pid `0058`, tid `005c`, also publishes
+   native `NtWriteFile` with target `0x10000` at line 4646. The defect affects
+   browser startup as well as hardware discovery.
 
-* `[steam-ui]`: ShowWindow command/result and unchanged flags, SetWindowPos
-  before/after, style, ancestor visibility, parent, owner, owning pid/tid,
-  caller tid, surface and the HWND that owns that surface. Only exact
-  `steam.exe` and `steamwebhelper.exe` callers are selected. There are 64
-  window/process slots and eight records per event kind per slot; show/hide
-  transitions retain a separate budget from position churn.
-* `[steam-ui-host]`: a read-only snapshot on the UIKit queue after that Wine
-  thread queued its frame updates: backing layer, actual hidden/attached
-  state, geometry, whether GDI contents exist, Metal layer and compositor
-  attachment. It records no text or pixels and never forces a window visible.
-* `[iosb-register]`: the existing file/socket publisher's native IOSB and
-  selected completion pointer, API name, owning pid/tid, native TEB/PEB,
-  guest-window base and WoW64 I/O predicate. The original pointer is returned
-  verbatim. Native and WoW64 layouts are not changed.
-* `[async-apc]`: the same ownership metadata and wire IOSB before the genuine
-  callback, followed by its actual result if it returns. CPU area and TLS slot
-  14 are addresses only. Ordinary and low-address observations have separate
-  eight-record budgets. No user data or I/O buffer contents are logged.
-* `[guard-protect]`: bounded metadata for actual failed Wine PAGE_NOACCESS
-  requests, including NTSTATUS, normalized range, view, host page size and
-  Mach protection query. It does not execute in the Mach exception path or
-  change a protection result. The generic FEX warning is no longer universally
-  labelled harmless by the app's log viewer.
+Adding the guest-window base, swapping status fields, checking whether a
+pointer looks low, ignoring exceptions, or globally using 32-bit completion
+layouts would not correct the producer.
 
-The C I/O sources are staged with a diagnostic include; the pinned Wine and
-FEX submodule trees remain unchanged. Failed compilation of these staged
-producers stops packaging instead of using an old object.
+## Implemented I/O correction
 
-## Other reported symptoms
+The maintained Wine overlay explicitly binds the native temporary IOSB proxy
+to the already-converted host address of the guest's 8-byte IOSB, at the real
+`iosb_32to64()` boundary. Unbound IOSBs remain native 16-byte structures.
 
-The existing ShowWindow driver already returns `~0u`, preserving Wine's show
-flags. Existing visibility/coordinate tests, including hidden ancestors and a
-normal Sign In show, pass. A hidden internal Chromium window is not evidence
-that host presentation should make it visible. The new trace distinguishes a
-missing show request, Wine visibility, and host layer state without modifying
-them. It does not prove Chromium reaches BrowserReady or finishes UI startup.
+Each `Wow64SystemServiceEx` dispatch owns a native-thread scope with exception
+cleanup through `__FINALLY_CTX`. Scopes nest without a fixed depth or heap
+allocation. A versioned private `NtSetInformationThread` operation connects the
+rebuilt native ARM64 PE producer to the embedded Unix consumer. It rejects a
+mixed/unsupported version instead of claiming success. No application pointer
+is replaced by a token, and the wineserver wire protocol is unchanged.
 
-The Steam launcher already forces CEF single-process mode, refuses `--type=`
-children and adds V8/CEF flags. These restrictions have not been changed on a
-new hypothesis. Loader-lock timeouts must be correlated with the owning
-process, thread 01cc's stack and later progress before diagnosing a permanent
-deadlock; no loader lock has been bypassed.
+`server_async()` records the request's 32/64-bit layout in native-only async
+metadata at submission. APC dispatch snapshots that flag **before the genuine
+callback can free its metadata**. Delayed completion therefore uses the
+original layout even after the syscall scope ends. Native internal ioctl
+calls use native status blocks. Genuine status values, byte counts,
+asynchronous ownership, faults and guest-pointer conversion remain intact.
 
-FEX's Windows `AllocatorHooks.h` implements its boolean protection wrapper as
-`::VirtualProtect(...) == 0`, whereas `Common/WinAPI/Alloc.cpp` returns
-`WinAPIReturn(NtProtectVirtualMemory(...))`, true on success. That can invert
-the guard-page success indication and emit the warning after success. The
-Apple-native implementation separately tests POSIX `mprotect(...) == 0`,
-which is correct. The same message also has two source emitters. Thus the
-reported warning cannot establish real protection failure or UI causality
-without identifying its emitter and actual status. FEX source has not been
-changed; its AGENTS.md disallows AI-generated contributions.
+Both ends are built together. The IPA build rebuilds the actual
+`aarch64-windows/wow64.dll`, checks its machine and ABI marker, and requires
+byte-identical copies in the staged app, Xcode bundle and IPA ZIP. The final
+linked native dylib must contain the matching consumer. Required changed
+native translation units cannot fall back to stale objects after a compiler
+failure. The build overlay restores the exact Wine source bytes and refuses
+to overwrite concurrent source edits; the submodule pin is unchanged.
 
-`0xC000001D` alone does not distinguish an unsupported instruction, deliberate
-UD2/assertion, or a bad branch. The authentic hardware-helper PC/bytes and
-process/thread association remain needed. No illegal instruction is ignored.
+## Window and Chromium findings
 
-Likewise, the SDL2 error needs the genuine gldriverquery import graph,
-architecture, current directory and DLL search results. There are no Steam
-files in this workspace to inspect. No DLL was downloaded, replaced or
-fabricated, and this optional probe's error has not been claimed to cause the
-main UI failure.
+Steam completes verification, loads steamui.dll, and starts genuine i386
+`bin/cef/cef.win7/steamwebhelper.exe`. CrBrowserMain appears. HWND `0x10098`
+gets a 655×302 UIKit layer. Its recorded style `0x06cf0000` lacks WS_VISIBLE;
+Wine visibility stays zero, the host layer stays hidden, and it has no pixels.
+Recorded position operations do not request SWP_SHOWWINDOW. No legitimate
+main-window show/presentation is observed for it in this capture. The driver
+continues returning Wine's show flags unchanged and honors hidden ancestors.
+Forcing this internal window visible would not establish a working login UI.
 
-## Validation and next device capture
+The newest CEF session reaches display/media initialization and the ordinary
+cloud-management-disabled diagnostic, then has no later BrowserReady evidence.
+The I/O defect is present in browser startup; fixing it is necessary, but this
+short capture does not prove it is the only reason UI initialization stops.
+It also does not establish a persistent loader-lock deadlock. Older-session
+messages and an active CrBrowserMain are not a completed login/library.
 
-The focused tests compile the production diagnostic helpers/ShowWindow
-wrapper and Wine's existing IOSB publisher/completion. They check concurrent
-budgets, exact image matching, preserved errno/Wine last-error values,
-unchanged command/flags/placement/result,
-both IOSB layouts, and an invalid completion that still produces a genuine
-fault in an isolated child. Existing hidden-parent, child geometry, Dock,
-embedded signal and SCM tests remain in CI. The IPA check verifies the
-compiled native diagnostics and existing real i386/SCM probes are included.
-These are host and artifact tests, not a successful genuine Steam session.
+For a controlled on-device comparison, `env.MADEIRA_STEAM_CEF_POLICY=valve`
+leaves **Valve's complete webhelper command line and child creation unchanged**:
+no Madeira single-process, proxy, V8, feature-list or logging rewrites, and no
+Madeira `--type=` rejection in that block. The default retains the established
+compatibility switches so the I/O correction can be tested first; unknown
+policy values retain that default. `env.MADEIRA_JITLESS=0` remains a separate
+single-variable comparison within the default policy. Do not combine these
+experiments in the initial run. The old Madeira addition that disabled
+PartitionAllocBackupRefPtr has been removed: memory-corruption detection is
+left to Valve's own settings. Genuine arguments and authentication are not
+rewritten by the Valve comparison policy.
 
-Cold-launch Madeira for a fresh bounded trace budget, then start the genuine
-Steam client directly. Preserve the original complete log and, if available,
-Steam's CEF/browser startup log. The decisive evidence is the owning pid/tid
-for the bad completion, its `[iosb-register]` producer, thread 01cc's progress,
-and the show/host records for the real login/library window. The original log
-can resolve some of these questions before another device run.
+## Executable-memory protection
 
-No bundle ID, entitlements, signing configuration, prefix contents, Valve
-binaries, Steam/CS2 installation or JIT memory limits are changed by this
-branch. Steam UI usability and Dock/CS2 performance still need on-device
-verification. Successful Steam or service startup does not guarantee VAC
-compatibility; VAC testing remains separate.
+This capture demonstrates real **Wine-side** PAGE_NOACCESS failures, not merely
+a warning string. For example, line 681 requests `0x33fffb000+0x1000` and gets
+`STATUS_INVALID_PARAMETER (c000000d)`, with **no Wine view**. Mach's query succeeds
+and reports the containing `0x33fff8000+0x4000` mapping as RX (`prot=5`, max=7),
+with a 16 KB host page. Other pseudo-processes repeat this pattern. The
+EC_CODE allocation path deliberately returns pool carves without Wine views;
+`NtProtectVirtualMemory` rejects an absent view before its normal protection
+operation. This status is not a failed kernel mprotect return.
+
+Additionally, FEX's Windows allocator boolean wrapper compares WinAPI
+`VirtualProtect(...) == 0`, although that API returns true on success. This
+can invert the warning's meaning. Its separate Apple/POSIX wrapper is correct.
+FEX's `AGENTS.md` disallows AI-generated contributions; FEX source is unchanged.
+
+Neither issue justifies suppressing the warning or reporting false protection
+success. Protecting the containing 16 KB page would also remove access from
+12 KB that the 4 KB request did not cover. A safe guard-layout change needs
+allocator/emitter coordination, not a guessed mprotect call. Bounded ordinary
+syscall diagnostics now add the exact code-carve range, owner PEB, live/free
+state, whether the request is its last page, and preceding bytes sharing the
+host page. They do not change results, protections or JIT limits. Whether
+these guard failures impede Chromium remains an on-device question.
+
+## SDL2 and helper loading
+
+The genuine 32-bit `bin/gldriverquery.exe` is found and loaded, then fails its
+required **SDL2.dll** import at lines 11377–11383 with `c0000135`. It is a
+separate helper process. Steam and SteamWebhelper load **SDL3.dll**; SDL3 does
+not satisfy an SDL2 import. The relative helper path correctly resolves under
+the Steam root in this log. No installed SDL2 image was supplied, so its actual
+location/architecture cannot be established from the cloud checkout alone.
+
+A read-only launch diagnostic now inventories known Steam root/bin/CEF
+locations, matches the requested filenames case-insensitively, and reads only
+bounded PE headers to report x86/x64/ARM machine values and errors. It records
+relative directory labels, not account data, and never scans steamapps or
+changes DLL search paths. The next log's `[steam-deps]` records distinguish an
+absent Valve DLL, wrong architecture, unreadable file, or loader-resolution
+problem. No replacement DLL, SDL alias, Valve file modification, or fabricated
+loader/service result is introduced. SDL2 failure's UI causality is unproven.
+
+## Validation and device acceptance
+
+Automated regressions compile the actual patched IOSB publishers, PE conversion
+helpers, native controller and APC consumer with ASan/UBSan. They cover native
+unions containing `0x10000` and a code address, original NTSTATUS/Information,
+32-bit completion canaries, callback-freed metadata, delayed completions after
+scope exit, nested scopes, independent threads, scope ordering, exact source
+restoration and real invalid-pointer faults in an isolated child. A negative
+comparison reproduces the old instruction corruption with byte count 54.
+The actual native ARM64 WoW64 DLL is also cross-compiled, rather than relying
+only on a model of its C helpers.
+
+CEF policy tests compile the real transformation/gate and check byte-for-byte
+preservation under the Valve policy, normal child launches, isolated legacy
+behavior, exact image matching and retention of corruption detection. Existing
+window tests cover show/hide and hidden ancestors. Packaging tests reject a
+stale producer. DLL inventory tests cover architecture, casing, absent/invalid
+files, privacy, unchanged contents/timestamps and errno.
+
+GitHub Actions must still build/link/package the iOS app and run the complete
+macOS host suite. Only a fresh iPhone run can establish whether native IOSBs
+remain native, the corrupt completion/illegal-instruction cascade disappears,
+Steam reaches BrowserReady, a real login/library window is legitimately shown
+with contents, and interaction works. Capture long enough to distinguish slow
+startup from a stall. Preserve the prefix and the existing installation.
+Only after that should the user separately test Steam's normal Play button.
+Successful Steam UI or service startup does **not** guarantee VAC compatibility.

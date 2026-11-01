@@ -4002,6 +4002,28 @@ int ios_tail_carve_lookup_trylock( unsigned long long rx_addr, unsigned *idx_out
     return found;
 }
 
+/* Ordinary syscall diagnostics only; take one coherent ownership snapshot.
+ * Never wait for the allocator while virtual_mutex is held. */
+static int ios_guard_carve_snapshot( uintptr_t address, uintptr_t *base, size_t *size,
+                                     void **owner, int *released )
+{
+    int found = 0;
+    if (pthread_mutex_trylock( &ios_tail_carve_lock )) return -1;
+    for (unsigned i = 0; i < ios_tail_carve_n; i++)
+    {
+        uintptr_t start = (uintptr_t)ios_jit_rx_base_global + ios_tail_carves[i].off;
+        if (address < start || address - start >= ios_tail_carves[i].size) continue;
+        *base = start;
+        *size = ios_tail_carves[i].size;
+        *owner = ios_tail_carves[i].peb;
+        *released = ios_tail_carves[i].free;
+        found = 1;
+        break;
+    }
+    pthread_mutex_unlock( &ios_tail_carve_lock );
+    return found;
+}
+
 /* Exported JIT pool addresses for use by SIGBUS handler in signal_arm64_ios.c */
 /* ml251: does anything MUNMAP/MMAP inside the JIT pool's VA?
  *
@@ -32752,19 +32774,31 @@ NTSTATUS WINAPI NtProtectVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T 
             vm_region_submap_short_info_data_64_t info;
             mach_msg_type_number_t count = VM_REGION_SUBMAP_SHORT_INFO_COUNT_64;
             kern_return_t query;
+            uintptr_t carve_base = 0;
+            size_t carve_size = 0;
+            void *carve_owner = NULL;
+            int carve_released = -1;
+            int carve = ios_guard_carve_snapshot( (uintptr_t)base, &carve_base, &carve_size,
+                                                  &carve_owner, &carve_released );
             memset( &info, 0, sizeof(info) );
             query = mach_vm_region_recurse( mach_task_self(), &region, &region_size, &depth,
                                            (vm_region_recurse_info_t)&info, &count );
             dprintf( 2, "[guard-protect] pid=%04x tid=%04x teb=%p peb=%p window=%p requested=%p+%#lx "
                         "normalized=%p+%#lx status=%08x host-page=%#lx view=%p+%#lx "
-                        "mach-query=%d region=%p+%#llx prot=%x max=%x\n",
+                        "mach-query=%d region=%p+%#llx prot=%x max=%x "
+                        "carve-lookup=%d carve=%p+%#lx owner-peb=%p released=%d tail-page=%u "
+                        "host-prefix=%#lx\n",
                      teb ? (unsigned)(ULONG_PTR)teb->ClientId.UniqueProcess : 0,
                      teb ? (unsigned)(ULONG_PTR)teb->ClientId.UniqueThread : 0, teb, teb ? teb->Peb : NULL,
                      (void *)ios_wow_base(), ios_patch_requested, (unsigned long)ios_patch_length,
                      base, (unsigned long)size, status, (unsigned long)host_page_size,
                      view ? view->base : NULL, view ? (unsigned long)view->size : 0,
                      query, (void *)(uintptr_t)region, (unsigned long long)region_size,
-                     (unsigned)info.protection, (unsigned)info.max_protection );
+                     (unsigned)info.protection, (unsigned)info.max_protection,
+                     carve, (void *)carve_base, (unsigned long)carve_size, carve_owner, carve_released,
+                     carve == 1 && (uintptr_t)base - carve_base < carve_size &&
+                     size == carve_size - ((uintptr_t)base - carve_base),
+                     (unsigned long)((uintptr_t)base & (host_page_size - 1)) );
             errno = saved_errno;
         }
     }

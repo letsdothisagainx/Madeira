@@ -63,6 +63,18 @@ compile_one() {
         echo "FAILED"
         FAILED=$((FAILED + 1))
         FAILED_FILES="$FAILED_FILES $name"
+        case "$name" in
+            io_status_abi|file|socket|server|thread|process|virtual)
+                python3 - "$OBJ_DIR/$name.err" <<'PYCODE'
+import sys
+from pathlib import Path
+for line in [s for s in Path(sys.argv[1]).read_text(errors='replace').splitlines() if 'error:' in s][:8]:
+    print('::error::' + line.replace('%', '%25').replace('\r', '%0D'))
+PYCODE
+                echo "Required IOSB ABI consumer failed: $name; refusing a stale object" >&2
+                exit 1
+                ;;
+        esac
     fi
 }
 
@@ -108,6 +120,8 @@ echo "=== Building ntdll unix (iOS) ==="
 # IAudioClock that advances at real time so FMOD's audio-gated rhythm
 # logic in Thumper et al. advances past intro music.
 compile_one "$BUILD_DIR/audio_null_ios.c" "audio_null_ios"
+test -f "$WINE_SRC/include/wine/ios_io_abi.h" || { echo "Missing IOSB ABI overlay" >&2; exit 1; }
+compile_one "$BUILD_DIR/io_status_abi.c" "io_status_abi"
 compile_one "$BUILD_DIR/../madsync/madsync.c" "madsync"   # ml1058: userspace ntsync
 
 # iOS-Madeira 2026-07-05 (Steam S0): network + crypto unix sides.
@@ -325,6 +339,7 @@ fi
 echo ""
 echo "=== Building libntdll_unix.a ==="
 ar rcs "$OBJ_DIR/libntdll_unix.a" \
+    "$OBJ_DIR/io_status_abi.o" \
     "$OBJ_DIR/audio_null_ios.o" "$OBJ_DIR/madsync.o" "$OBJ_DIR/nsi_unixlib_ios.o" \
     "$OBJ_DIR/nsi_network_ios.o" "$OBJ_DIR/nsi_ndis.o" "$OBJ_DIR/nsi_ip.o" \
     "$OBJ_DIR/gnutls_symtab_ios.o" "$OBJ_DIR/ws2_32_unixlib.o" \

@@ -64,6 +64,7 @@
 #include <pthread.h>
 #include <setjmp.h>
 #include <stdint.h>
+#include "steam_cef_policy.h"
 #include <sys/stat.h>
 #endif
 
@@ -1739,23 +1740,19 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
      * would re-init both static PA copies and exhaust the slots. Chromium
      * tolerates a failed crashpad spawn (continues without crash upload). */
     {
-        static const char helper[] = "steamwebhelper.exe";
         static const char typesw[] = "--type=";
         const WCHAR *ip = params->ImagePathName.Buffer;
         int ip_len = params->ImagePathName.Length / sizeof(WCHAR);
-        int hl = sizeof(helper) - 1, k, j;
-        int is_helper = 0;
-        for (k = 0; k + hl <= ip_len && !is_helper; k++)
+        int k, j;
+        int is_helper = madeira_cef_image( ip, ip_len );
+        int compat = madeira_cef_compat_options( getenv( "MADEIRA_STEAM_CEF_POLICY" ) );
+        if (is_helper && !compat)
         {
-            for (j = 0; j < hl; j++)
-            {
-                WCHAR c = ip[k + j];
-                if (c >= 'A' && c <= 'Z') c += 32;
-                if (c != (WCHAR)helper[j]) break;
-            }
-            if (j == hl) is_helper = 1;
+            int saved_errno = errno;
+            dprintf( 2, "[steam-cef] policy=valve; command line and child creation unchanged\n" );
+            errno = saved_errno;
         }
-        if (is_helper)
+        if (is_helper && compat)
         {
             const WCHAR *cl = params->CommandLine.Buffer;
             int cl_len = params->CommandLine.Length / sizeof(WCHAR);
@@ -1994,7 +1991,9 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
                  * cmdline showed no trace) — this splice is the layer that works.
                  * Feature strings verified present in libcef. One variable per
                  * run: --js-flags=--jitless held in reserve if this fails. */
-                static const char brp[] = ",PartitionAllocBackupRefPtr,SegmentationPlatform"
+                /* Retain Chromium's memory-corruption detector. A previous
+                 * diagnostic disabled BRP rather than fixing corruption. */
+                static const char brp[] = ",SegmentationPlatform"
                                           ",OptimizationTargetPrediction,OptimizationHints";
                 int sl = (int)strlen( sp );
                 int dfl = sizeof(dfs) - 1, bl = sizeof(brp) - 1;
@@ -2037,7 +2036,7 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
                     params->CommandLine.MaximumLength = params->CommandLine.Length + sizeof(WCHAR);
                     dprintf(2, "[proc-gate] steamwebhelper: injected --single-process + CEF verbosity"
                                " + no-proxy + jitless (switch experiments concluded ml509-ml511);"
-                               " BRP+segmentation-disable %s (ml426)\n",
+                               " segmentation-disable %s; BRP left to Valve\n",
                             bl ? "SPLICED into Steam's existing --disable-features list"
                                : "NOT applied (no --disable-features found -- refusing to add a "
                                  "second one, it would override Steam's list)");

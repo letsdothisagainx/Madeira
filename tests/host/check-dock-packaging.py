@@ -7,6 +7,7 @@ import re
 import subprocess
 import tempfile
 import zipfile
+import struct
 root = Path(__file__).resolve().parents[2]
 entry = (root/'tools/build-ipa.sh').read_text()
 assert entry.index('"$ROOT/tools/build/setup-llvm-mingw.sh"') < entry.index('"$ROOT/build/madeira-dock/build.sh"') < entry.index('"$ROOT/tools/build/package-ipa.sh"')
@@ -22,8 +23,18 @@ with tempfile.TemporaryDirectory() as temp:
         p = t/relative
         if relative.endswith(('.a','.exe','.dll','.txt')):
             p.parent.mkdir(parents=True, exist_ok=True); p.write_bytes(b'fixture')
+    # A minimal architecture/marker fixture tests the gate, not executable Wine.
+    wow = bytearray(256)
+    wow[:2] = b'MZ'; struct.pack_into('<I', wow, 0x3c, 0x80)
+    wow[0x80:0x84] = b'PE\0\0'; struct.pack_into('<H', wow, 0x84, 0xaa64)
+    wow[0xa0:0xa0+len(b'madeira-io-abi-v1')] = b'madeira-io-abi-v1'
+    (t/'app/Madeira/aarch64-windows/wow64.dll').write_bytes(wow)
+    (t/'tools').mkdir()
+    (t/'tools/check-io-abi-package.py').write_text((root/'tools/check-io-abi-package.py').read_text())
     bodies = {
-      'xcodebuild': '''mkdir -p "$TEST_APP/arm64ec-windows" "$TEST_APP/i386-windows" "$TEST_APP/x86_64-vcruntime"
+      'xcodebuild': '''mkdir -p "$TEST_APP/arm64ec-windows" "$TEST_APP/i386-windows" "$TEST_APP/x86_64-vcruntime" "$TEST_APP/aarch64-windows"
+cp "$ROOT/app/Madeira/aarch64-windows/wow64.dll" "$TEST_APP/aarch64-windows/"
+printf '[io-abi] v1 per-request IOSB layout active' > "$TEST_APP/Madeira.debug.dylib"
 printf fixture > "$TEST_APP/Madeira"
 printf fixture > "$TEST_APP/prefix-template.tar.gz"
 printf fixture > "$TEST_APP/arm64ec-windows/xtajit64.dll"
@@ -64,3 +75,7 @@ done
         result=run();assert result.returncode and 'required build artifact missing' in result.stderr
         p.write_bytes(b'fixture')
     print('PASS missing bundle resources and empty staging outputs fail packaging')
+    (t/'app/Madeira/aarch64-windows/wow64.dll').write_bytes(b'old image')
+    result=run()
+    assert result.returncode and 'not a PE image' in result.stderr, result.stderr
+    print('PASS stale WoW64 IOSB producer fails final IPA validation')
