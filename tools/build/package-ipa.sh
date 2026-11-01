@@ -9,6 +9,8 @@ CONFIGURATION="${CONFIGURATION:-Debug}"
 APP="$DERIVED/Build/Products/$CONFIGURATION-iphoneos/Madeira.app"
 
 required=(
+  "$ROOT/app/Madeira/i386-windows/madeira-wow64-probe.exe"
+  "$ROOT/app/Madeira/i386-windows/madeira-wow64-module-probe.dll"
   "$ROOT/FEX/build-ios/FEXCore/Source/libFEXCore.a"
   "$ROOT/FEX/build-ios/FEXCore/Source/libFEXCore_Base.a"
   "$ROOT/FEX/build-ios/External/fmt/libfmt.a"
@@ -53,6 +55,8 @@ codesign --force --sign - \
   "$APP"
 
 bundle_required=(
+  "$APP/i386-windows/madeira-wow64-probe.exe"
+  "$APP/i386-windows/madeira-wow64-module-probe.dll"
   "$APP/arm64ec-windows/madeira-scm-probe.exe"
   "$APP/arm64ec-windows/madeira-steam-service.exe"
   "$APP/arm64ec-windows/dockhost.exe"
@@ -83,4 +87,8 @@ unzip -tq "$DIST/Madeira.ipa" >/dev/null
 
 for resource in dockhost.exe dock-notices.txt madeira-steam-service.exe madeira-scm-probe.exe; do
   unzip -p "$DIST/Madeira.ipa" "Payload/Madeira.app/arm64ec-windows/$resource" | cmp - "$APP/arm64ec-windows/$resource"
+done
+
+for resource in madeira-wow64-probe.exe madeira-wow64-module-probe.dll; do
+  unzip -p "$DIST/Madeira.ipa" "Payload/Madeira.app/i386-windows/$resource" | cmp - "$APP/i386-windows/$resource"
 done

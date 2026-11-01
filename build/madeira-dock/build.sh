@@ -62,7 +62,7 @@ section() { printf '\n\n==== %s ====\n\n' "$1"; }
     section 'MinGW-w64 runtime notice (statically linked runtime)'
     cat "$SRC/notices/MinGW-w64-runtime.txt"
     section 'Madeira Steam service preparation helper'
-    printf 'Source: https://github.com/letsdothisagainx/Madeira (commit %s), build/steam-service/ and build/scm-rpc/probe.c; GPL-3.0-or-later with Madeira Converter Exception.\n' \
+    printf 'Source: https://github.com/letsdothisagainx/Madeira (commit %s), build/steam-service/, build/scm-rpc/probe.c and build/wow64-probe/; GPL-3.0-or-later with Madeira Converter Exception.\n' \
         "$(git -C "$REPO_ROOT" rev-parse HEAD)"
     section 'LLVM runtime notice'
     cat "$SRC/notices/LLVM.txt"

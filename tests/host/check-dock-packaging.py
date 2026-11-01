@@ -20,16 +20,19 @@ with tempfile.TemporaryDirectory() as temp:
     # Populate all production prerequisites, avoiding a separate list that can drift.
     for relative in re.findall(r'"\$ROOT/([^"\n]+)"', script.split('for path in "${required[@]}"')[0]):
         p = t/relative
-        if relative.endswith(('.a','.exe','.txt')):
+        if relative.endswith(('.a','.exe','.dll','.txt')):
             p.parent.mkdir(parents=True, exist_ok=True); p.write_bytes(b'fixture')
     bodies = {
-      'xcodebuild': '''mkdir -p "$TEST_APP/arm64ec-windows" "$TEST_APP/x86_64-vcruntime"
+      'xcodebuild': '''mkdir -p "$TEST_APP/arm64ec-windows" "$TEST_APP/i386-windows" "$TEST_APP/x86_64-vcruntime"
 printf fixture > "$TEST_APP/Madeira"
 printf fixture > "$TEST_APP/prefix-template.tar.gz"
 printf fixture > "$TEST_APP/arm64ec-windows/xtajit64.dll"
 printf fixture > "$TEST_APP/x86_64-vcruntime/vcruntime140.dll"
 for resource in dockhost.exe dock-notices.txt madeira-steam-service.exe madeira-scm-probe.exe; do
   if [ "${OMIT_RESOURCE:-}" != "$resource" ]; then cp "$ROOT/app/Madeira/arm64ec-windows/$resource" "$TEST_APP/arm64ec-windows/"; fi
+done
+for resource in madeira-wow64-probe.exe madeira-wow64-module-probe.dll; do
+  if [ "${OMIT_RESOURCE:-}" != "$resource" ]; then cp "$ROOT/app/Madeira/i386-windows/$resource" "$TEST_APP/i386-windows/"; fi
 done
 ''',
       'codesign': 'if [ "$1" = -d ]; then echo com.apple.security.cs.allow-jit; fi\n',
@@ -44,12 +47,20 @@ done
     with zipfile.ZipFile(t/'dist/Madeira.ipa') as archive:
         for resource in ['dockhost.exe','dock-notices.txt','madeira-steam-service.exe','madeira-scm-probe.exe']:
             assert archive.read('Payload/Madeira.app/arm64ec-windows/'+resource) == b'fixture'
-    print('PASS final ZIP includes Dock, service helper and license notices')
+    with zipfile.ZipFile(t/'dist/Madeira.ipa') as archive:
+        for resource in ['madeira-wow64-probe.exe','madeira-wow64-module-probe.dll']:
+            assert archive.read('Payload/Madeira.app/i386-windows/'+resource)==b'fixture'
+    print('PASS final ZIP includes Dock, helpers, i386 loader fixture and license notices')
     for resource in ['dockhost.exe','dock-notices.txt','madeira-steam-service.exe','madeira-scm-probe.exe']:
         result=run({'OMIT_RESOURCE':resource})
         assert result.returncode != 0 and 'required bundle resource missing' in result.stderr, result.stderr
         p=t/'app/Madeira/arm64ec-windows'/resource; p.write_bytes(b'')
         result=run()
         assert result.returncode != 0 and 'required build artifact missing' in result.stderr, result.stderr
+        p.write_bytes(b'fixture')
+    for resource in ['madeira-wow64-probe.exe','madeira-wow64-module-probe.dll']:
+        result=run({'OMIT_RESOURCE':resource}); assert result.returncode and 'required bundle resource missing' in result.stderr
+        p=t/'app/Madeira/i386-windows'/resource; p.write_bytes(b'')
+        result=run();assert result.returncode and 'required build artifact missing' in result.stderr
         p.write_bytes(b'fixture')
     print('PASS missing bundle resources and empty staging outputs fail packaging')
