@@ -46,6 +46,9 @@ static void check(const char *image,const char *command,const char *policy,int c
     if(changed) {
         assert(p.CommandLine.Buffer!=c);
         assert(has(p.CommandLine.Buffer,"--single-process"));
+        assert(has(p.CommandLine.Buffer," --enable-logging --v=1"));
+        assert(!has(p.CommandLine.Buffer,"--enable-logging=file"));
+        assert(!has(p.CommandLine.Buffer,"--no-sandbox"));
         assert(!has(p.CommandLine.Buffer,"PartitionAllocBackupRefPtr"));
         assert(has(p.CommandLine.Buffer,"--disable-features=ValveFeature,SegmentationPlatform"));
         free(p.CommandLine.Buffer);
@@ -62,10 +65,19 @@ int main(void) {
     check(image,"steamwebhelper.exe --type=renderer --sandbox=enabled","valve",0,0);
     check(image,command,NULL,1,0);
     check(image,"steamwebhelper.exe --type=renderer",NULL,0,STATUS_ACCESS_DENIED);
+    check(image,"steamwebhelper.exe --type=crashpad-handler --database=fixture",NULL,0,0);
+    check(image,"steamwebhelper.exe \"--type=crashpad-handler\" --database=fixture",NULL,0,0);
+    check(image,"steamwebhelper.exe --type=renderer --type=crashpad-handler",NULL,0,0);
+    check(image,"steamwebhelper.exe --type=crashpad-handler --type=renderer",NULL,0,STATUS_ACCESS_DENIED);
+    check(image,"steamwebhelper.exe --type=crashpad-handler-extra",NULL,0,STATUS_ACCESS_DENIED);
+    check(image,"steamwebhelper.exe --type=renderer --log-file=\"C:\\--type=crashpad-handler\"",NULL,0,STATUS_ACCESS_DENIED);
+    setenv("MADEIRA_DOCK_SESSION","1",1);
+    check(image,"steamwebhelper.exe --type=crashpad-handler",NULL,0,STATUS_ACCESS_DENIED);
+    unsetenv("MADEIRA_DOCK_SESSION");
     check("C:\\steamwebhelper.exe\\game.exe",command,NULL,0,0);
     check("notsteamwebhelper.exe",command,NULL,0,0);
     check(image,command,"unknown",1,0);
-    puts("PASS Valve policy preserves exact arguments and child launches; legacy policy is isolated; BRP detector remains enabled by Valve's settings");
+    puts("PASS real browser rewrite uses valid logging; crashpad arguments and normal creation preserved; quoted/duplicate/substrings classified; Valve policy and security settings preserved");
 }
 '''.replace('BLOCK',block)
 with tempfile.TemporaryDirectory(prefix='madeira-cef-policy-') as temp:

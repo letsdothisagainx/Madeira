@@ -376,15 +376,30 @@ jobs:
           test -s "$farm/dock-notices.txt"
           python3 tools/check-scm-rpc-image.py "$farm/sechost.dll" "$farm/ntdll.dll"
           "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-scm-rpc-abi.py --producer "$farm/sechost.dll" --runtime "$farm/rpcrt4.dll"
+          git submodule update --init --depth 1 wine
+          "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-x18-loads.py --emulate
           unzip -q scm-ipa/Madeira.ipa 'Payload/Madeira.app/i386-windows/madeira-wow64-*' 'Payload/Madeira.app/Madeira.debug.dylib' -d scm-ipa
           "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-wow64-probe-image.py scm-ipa/Payload/Madeira.app/i386-windows
           "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-native-apc-image.py
           python3 - <<'PY'
           from pathlib import Path
           image = Path('scm-ipa/Payload/Madeira.app/Madeira.debug.dylib').read_bytes()
-          for marker in (b'[wow-gl-attach] phase=', b'[steam-ui-host]', b'[iosb-register]', b'[async-apc]', b'[guard-protect]'):
+          for marker in (b'[wow-gl-attach] phase=', b'[steam-ui-host]', b'[iosb-register]', b'[async-apc]', b'[guard-protect]',
+                         b'[x18-load] signed-load recovered', b'[steam-cef] request role=browser', b'[steam-cef] request role=crashpad'):
               assert marker in image, 'missing native diagnostic: ' + repr(marker)
           print('PASS native attach/UI/I/O/guard diagnostics included in IPA')
+          import plistlib, struct, uuid, zipfile
+          pos = 32
+          image_uuid = None
+          for _ in range(struct.unpack_from('<I', image, 16)[0]):
+              command, size = struct.unpack_from('<II', image, pos)
+              if command == 0x1b:
+                  image_uuid = str(uuid.UUID(bytes=image[pos+8:pos+24])).upper()
+              pos += size
+          assert image_uuid, 'native image UUID missing'
+          with zipfile.ZipFile('scm-ipa/Madeira.ipa') as ipa:
+              bundle = plistlib.loads(ipa.read('Payload/Madeira.app/Info.plist'))['CFBundleIdentifier']
+          print('::notice title=Steam candidate image::bundle=' + bundle + ' native-UUID=' + image_uuid)
           PY
 
   inspect-native:

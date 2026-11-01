@@ -6981,6 +6981,8 @@ NTSTATUS unixcall_ios_sync_pe_write(void *args)
  * code never touches x18, so iOS zeroing it has no effect.
  */
 
+#include "x18_scalar_load.h"
+
 /* Check if an ARM64 instruction references x18 as a register operand.
  * Returns the role (which field contains x18) or 0 if no x18 reference. */
 #define X18_ROLE_NONE 0
@@ -7412,10 +7414,7 @@ int ios_jit_patch_x18(char *text_rw, char *text_rx, size_t text_size,
 
         /* LDR (unsigned immediate), integer, 32- or 64-bit, x18 as the base.
          * 41 of xtajit64.dll's 115 x18 references are this shape. */
-        int is_int_ldr_imm = (role == X18_ROLE_RN) &&
-            (((insn & 0xFFC00000) == 0xF9400000) ||      /* ldr xT, [x18,#imm] */
-             ((insn & 0xFFC00000) == 0xB9400000)) &&     /* ldr wT, [x18,#imm] */
-            rt != 31 && rt != 18;
+        int is_int_ldr_imm = (role == X18_ROLE_RN) && ios_x18_scalar_load_dest(insn) >= 0;
 
         /* madeira-bcd: ADD/SUB off x18 with a usable destination (see
          * ios_x18_arith_dest): same form as the LDR below. */
@@ -7436,7 +7435,7 @@ int ios_jit_patch_x18(char *text_rw, char *text_rx, size_t text_size,
         }
         else if (is_int_ldr_imm)
         {
-            /* LDR (unsigned immediate) off x18. The destination register is
+            /* Scalar load (including LDRSW/LDRSB/LDRSH) off x18. The destination register is
              * about to be overwritten by this very instruction, so it can be
              * the scratch: nothing to save, nothing to restore.
              *   mrs xRt, TPIDRRO_EL0

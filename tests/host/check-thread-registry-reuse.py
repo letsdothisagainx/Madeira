@@ -160,7 +160,7 @@ static int new_thread(unsigned n)
 static void churn(int with_reclaim)
 {
     enum { TOTAL = 4000, LIVE = 40 };
-    unsigned n, oldest = 1, first_failed = 0, failed = 0, misresolved = 0;
+    unsigned n, oldest = 1, first_failed = 0, failed = 0, misresolved = 0, unresolved = 0;
     reset();
     assert(new_thread(0) == 0);                       /* the session's first thread keeps entry 0 */
     for (n = 1; n <= TOTAL; n++)
@@ -170,7 +170,12 @@ static void churn(int with_reclaim)
         for (live = oldest; live <= n; live++)
         {
             uintptr_t teb = 0; void *tramp = NULL;
-            assert(ios_lookup_thread(port_of(live), &teb, &tramp));
+            if (!ios_lookup_thread(port_of(live), &teb, &tramp))
+            {
+                assert(!teb && !tramp);
+                unresolved++;
+                continue;
+            }
             if (teb != teb_of(live) || tramp != tramp_of(live)) misresolved++;
         }
         if (n - oldest + 1 >= LIVE) set_state(oldest++, 2);
@@ -179,7 +184,7 @@ static void churn(int with_reclaim)
     assert(ios_thread_registry[0].mach_thread == port_of(0) && ios_thread_registry[0].teb == teb_of(0));
     if (with_reclaim)
     {
-        assert(!failed && !misresolved && !full_lines);
+        assert(!failed && !misresolved && !unresolved && !full_lines);
         assert(reuse_lines == 16 + (TOTAL - (IOS_MAX_WINE_THREADS - 1)) / 256);
         assert(mod_refs_calls >= TOTAL + 1);
         printf("PASS: %u threads, %d alive at most: every one registered and resolves to its own TEB "
@@ -188,10 +193,10 @@ static void churn(int with_reclaim)
     else
     {
         assert(first_failed == IOS_MAX_WINE_THREADS && failed == TOTAL - (IOS_MAX_WINE_THREADS - 1));
-        assert(misresolved && full_lines == failed && switch_off_lines == failed && !reuse_lines);
-        printf("PASS: with MADEIRA_THREAD_REUSE=0 the same run reproduces #397: thread %u is not registered, "
-               "%u threads unregistered, %u lookups resolved to the slot-0 TEB\n",
-               first_failed, failed, misresolved);
+        assert(!misresolved && unresolved && full_lines == failed && switch_off_lines == failed && !reuse_lines);
+        printf("PASS: with MADEIRA_THREAD_REUSE=0 thread %u is not registered; "
+               "%u threads unregistered, %u lookups correctly return no TEB\n",
+               first_failed, failed, unresolved);
     }
 }
 
@@ -201,13 +206,18 @@ static void edges(void)
     struct ios_thread_entry before[IOS_MAX_WINE_THREADS];
     reset();
     for (n = 0; n < IOS_MAX_WINE_THREADS; n++) assert(new_thread(n) == (int)n);
+    {
+        uintptr_t teb = teb_of(0); void *tramp = tramp_of(0);
+        assert(!ios_lookup_thread(0xfffffffeu, &teb, &tramp));
+        assert(!teb && !tramp); /* unknown UIKit/debugger port must not borrow slot zero */
+    }
 
     /* every entry live: refused, nothing displaced */
     memcpy(before, ios_thread_registry, sizeof(before));
     assert(new_thread(next++) == -1 && full_lines == 1);
     assert(!memcmp(before, ios_thread_registry, sizeof(before)));
 
-    /* entry 0 is the lookup's fallback: never reused */
+    /* The session's first entry remains reserved, never reused. */
     set_state(0, 2);
     assert(new_thread(next++) == -1 && full_lines == 2);
 

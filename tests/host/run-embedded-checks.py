@@ -6,6 +6,10 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[2]
 commands = [
+    ['python3', 'tests/host/check-x18-loads.py'],
+    ['python3', 'tests/host/check-x18-arith.py'],
+    ['python3', 'tests/host/check-x18-derived-base.py'],
+    ['python3', 'tests/host/check-thread-registry-reuse.py'],
     ['python3', 'tests/host/check-io-status-abi.py'],
     ['python3', 'tests/host/check-steam-cef-policy.py'],
     ['python3', 'tests/host/check-steam-dependencies.py'],

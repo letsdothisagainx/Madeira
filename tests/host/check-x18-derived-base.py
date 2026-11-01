@@ -141,7 +141,7 @@ with tempfile.TemporaryDirectory(prefix='madeira-x18-derived-') as directory:
 
 # --- the emulation the check feeds: x18 == 0, a TEB offset, thread_teb + fault_addr ---
 emu = src[src.index('            if (!handled && state.__x[18] == 0 && thread_teb)\n'):]
-emu = emu[:emu.index('                        switch (insn & 0xffc00000)')]
+emu = emu[:emu.index('                        if (!emulated) switch (insn & 0xffc00000)')]
 assert 'if (!is_exec_fault && fault_addr < 0x10000 &&' in emu, 'the x18 emulation must take only fault addresses below 0x10000'
 assert 'int x18_derived = ios_x18_derived_base( fault_pc, rn );' in emu, 'the handler must ask ios_x18_derived_base'
 assert emu.index('int x18_derived = ios_x18_derived_base( fault_pc, rn );') < emu.index('if (rn == 18 || x18_derived)') \
