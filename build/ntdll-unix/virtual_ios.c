@@ -19906,18 +19906,20 @@ static int ios_protect_page_is_alias(uintptr_t page, size_t size, void *context)
 }
 static int ios_protect_alias_run(uintptr_t base, size_t size, int prot, int alias, void *context)
 {
-    int result;
+    int result, saved_errno;
     (void)context;
     /* The alias was remapped from the blessed pool. Its RW sibling remains
      * writable; the guest view must never become writable or COW-detach. */
     result = alias ? mprotect((void *)base,size,prot) : mprotect_exec((void *)base,size,prot);
+    saved_errno = errno;
     if (alias)
     {
         static unsigned reports;
         if (__atomic_fetch_add(&reports,1,__ATOMIC_RELAXED) < 24)
             dprintf(2,"[alias-prot-v2] host=%p+%#lx page=%#lx physical=RX logical=unchanged result=%d errno=%d\n",
-                    (void *)base,(unsigned long)size,(unsigned long)host_page_size,result,result ? errno : 0);
+                    (void *)base,(unsigned long)size,(unsigned long)host_page_size,result,result ? saved_errno : 0);
     }
+    errno = saved_errno;
     return result;
 }
 static int ios_protect_host_range(void *base, size_t size, int prot)

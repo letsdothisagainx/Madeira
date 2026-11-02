@@ -11,6 +11,7 @@ def function(marker):
  return s[a:end]
 cover=function('int ios_jit_anon_alias_find_cover(')
 host_prot=function('static BYTE get_host_page_vprot(')
+alias_run=function('static int ios_protect_alias_run(')
 assert 'PHYSICAL forced R%s' not in function('static NTSTATUS set_protection(')
 raw=function('static int mprotect_range_raw(')
 assert raw.count('ios_protect_host_range(')==2
@@ -48,6 +49,11 @@ static BYTE logical[256],*pages_vprot[1]={logical};
 #define ROUND_ADDR(a,m) ((void*)((uintptr_t)(a)&~(uintptr_t)(m)))
 ''' +host_prot+r'''
 #undef _WIN64
+static int diagnostic(int fd,const char *format,...){assert(fd==2);(void)format;errno=ERANGE;return 0;}
+static int mprotect_exec(void *base,size_t size,int prot){return mprotect(base,size,prot);}
+#define dprintf diagnostic
+''' +alias_run+r'''
+#undef dprintf
 
 static pthread_mutex_t vm=PTHREAD_MUTEX_INITIALIZER;
 static unsigned applies,alias_calls;static int reject;static uintptr_t window;
@@ -76,6 +82,7 @@ static void* write_neighbors(void *unused){
  return NULL;
 }
 int main(void){
+ errno=0;assert(ios_protect_alias_run(1,PAGE,PROT_READ,1,NULL)==-1&&errno==EINVAL);
  memset(logical,0x23,sizeof(logical));logical[0x11]=0x21;
  BYTE before_metadata[256];memcpy(before_metadata,logical,sizeof(logical));
  assert((get_host_page_vprot((void*)0x10000)&3)==3);
