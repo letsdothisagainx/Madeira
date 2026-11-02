@@ -107,6 +107,7 @@ def check(staged, app, ipa):
     assert b'[alias-prot-v2]' in native and b'[fex-exit-v1]' in native and b'[native-thread-cancel-v1]' in native, 'native protection/retirement/cancellation consumer missing'
     assert b'[alias-prot-compat]' in native and b'[image-alias-retire-v1]' in native and b'[swp-context-v1]' in native, 'stale native alias lifetime/protection producer'
     assert b'[surface-expose-v1]' in native and b'[steam-client-update-v1]' in native, 'stale popup expose or official Steam updater integration'
+    assert b'[child-native-ntdll-v1]' in native and b'[guest-trap-context-v1]' in native, 'stale mixed-architecture child loader or trap diagnostics'
     fex_arena_exports(cpu_data, require_hold_release=True)
     assert (app / 'aarch64-windows/xtajit.dll').read_bytes() == cpu_data, 'Xcode packaged stale FEX'
     guest = (staged.parent.parent / 'i386-windows/kernelbase.dll').read_bytes()

@@ -162,6 +162,13 @@ struct SteamClientUpdateView: View {
                     Text("Your Steam folder, account session and installed games are kept. The previous launcher is backed up.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                if !checkAppEntitlement("com.apple.developer.kernel.extended-virtual-addressing") {
+                    Section("Signing requirement") {
+                        Text("This signed copy is missing Extended Virtual Addressing. The 64-bit Steam browser needs large contiguous virtual reservations that can exceed the standard address map. Re-sign Madeira with a provisioning profile that grants Extended Virtual Addressing, then install it as an update.")
+                        Text("The IPA already requests this capability. Adding more physical memory does not grant it.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
                 Section {
                     if update.busy { HStack { ProgressView(); Text(update.message) } }
                     else { Button("Update Windows Steam") { update.update() } }

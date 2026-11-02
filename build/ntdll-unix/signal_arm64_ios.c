@@ -3308,35 +3308,10 @@ static void *ios_mach_exception_thread( void *arg )
                                         "[int3-guest]   ASCII x%d = \"%s\"  <== text in a register\n", gi, a);
                         }
 
-                        /* iOS-Madeira ml616 [brp-contain]: WHICH PartitionAlloc callsite
-                         * asserted, and on WHAT value.
-                         *
-                         * Chromium's BackupRefPtr refcount assertion is `int3; int3; ud2`
-                         * preceded by a "refcount" diagnostic. It has killed ml602, ml603,
-                         * ml607 and ml615 with a byte-identical signature: after the int3,
-                         * Chrome's OWN handler runs with State.rip = 0xEFEFEFEFEFEFEFEF
-                         * (freed poison), producing the read fault at 0x1e051d9c8dfd8.
-                         *
-                         * The registers here cannot name the offender: the assertion
-                         * routine makes two calls before executing int3, so guest/host R8
-                         * is already clobbered. The values survive on the STACK:
-                         *   [guest RSP+0x38] = the offending refcount value
-                         *   [guest RSP+0x48] = the direct caller's return address
-                         * Five PartitionAlloc callsites can reach this; the return address
-                         * is what distinguishes them.
-                         *
-                         * Self-identifying match, no module base needed: the guest bytes at
-                         * rip-1 are the literal `CC CC 0F 0B` fatal pattern. That is why
-                         * this cannot fire on an ordinary debugger breakpoint.
-                         *
-                         * ⚠️ Probe only — this does NOT contain the crash. Containment is
-                         * deliberately NOT in this build: it must terminate the whole
-                         * steamwebhelper pseudo-process, release FEX holds, and be proven
-                         * to respawn and reach BrowserReady, or it merely renames the
-                         * failure (webhelper owns the entire single-process CEF UI).
-                         *
-                         * ⛔ Do not try to suppress this with --disable-features: we already
-                         * pass PartitionAllocBackupRefPtr and the assertion still runs. */
+                        /* This trap sequence is shared by CHECK/OOM/other
+                         * fatal paths. Raw stack slots have no stable meaning
+                         * without exact-build symbols; do not call them a BRP
+                         * refcount or bypass the exception based on the bytes. */
                         {
                             unsigned char pat[4] = {0, 0, 0, 0};
                             unsigned long long guest_rsp = gregs[4];   /* RAX,RCX,RDX,RBX,RSP,... */
@@ -3355,9 +3330,9 @@ static void *ios_mach_exception_thread( void *arg )
                                           (mach_vm_address_t)(guest_rsp + 0x48), sizeof(caller),
                                           (mach_vm_address_t)&caller, &pg ) == KERN_SUCCESS;
                                 dprintf(STDERR_FILENO,
-                                        "[brp-contain] ml616 BackupRefPtr refcount assertion: int3 at guest 0x%llx "
-                                        "rsp=0x%llx offender=%s0x%llx caller=%s0x%llx pid=%04x tid=%04x "
-                                        "-- caller names WHICH of the 5 PA callsites; NOT contained in this build\n",
+                                        "[guest-trap-context-v1] pattern=cc-cc-0f-0b subsystem=unresolved int3=0x%llx "
+                                        "rsp=0x%llx stack38=%s0x%llx stack48=%s0x%llx pid=%04x tid=%04x "
+                                        "action=forward\n",
                                         (unsigned long long)(grip - 1), guest_rsp,
                                         o_ok ? "" : "<unreadable>", offender,
                                         c_ok ? "" : "<unreadable>", caller,
