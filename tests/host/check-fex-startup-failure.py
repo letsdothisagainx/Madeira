@@ -17,6 +17,32 @@ def run(code,d,name,includes=()):
 with tempfile.TemporaryDirectory() as t:
  d=Path(t);stage=d/'staged'
  subprocess.run(['python3',str(root/'tools/build/stage-fex-compat.py'),'stage',str(stage)],check=True)
+ # FEXCore does not inherit CommonWindows/wow64's PRIVATE Windows/include
+ # directory. Compile the actual added include with the Core target's search
+ # paths, substituting only the platform SDK's windef.h on this Linux host.
+ cmake=(root/'FEX/CMakeLists.txt').read_text()
+ core_cmake=(root/'FEX/FEXCore/Source/CMakeLists.txt').read_text()
+ assert 'include_directories(Source/)' in cmake
+ for entry in ('PRIVATE IncludePrivate/', 'PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/',
+               'PUBLIC "${PROJECT_SOURCE_DIR}/include/"'):
+  assert entry in core_cmake
+ platform=d/'platform-sdk';platform.mkdir();(platform/'windef.h').write_text('#pragma once\n')
+ build=d/'core-build'
+ core_paths=[root/'FEX/Source',build/'Source',root/'FEX/FEXCore/Source/IncludePrivate',
+             root/'FEX/FEXCore/Source',root/'FEX/FEXCore/include',build/'include',
+             build/'FEXCore/Source',build/'generated',platform]
+ core_source=(stage/'FEXCore/Source/Interface/Core/Core.cpp').read_text()
+ added_include=next(line for line in core_source.splitlines() if '#include <Windows/include/wine/debug.h>' in line)
+ header_probe=d/'core-header.cpp'
+ command=[os.environ.get('CXX','c++'),'-std=c++20','-fsyntax-only','-Wall','-Wextra','-Werror','-nostdinc','-D__cdecl=',
+          *['-I'+str(path) for path in core_paths],str(header_probe)]
+ tail='\nint (*raw_output)(const char*) = &__wine_dbg_output;\n'
+ header_probe.write_text('#include <wine/debug.h>'+tail)
+ negative=subprocess.run(command,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+ assert negative.returncode and 'wine/debug.h' in negative.stdout, negative.stdout
+ header_probe.write_text(added_include+tail)
+ subprocess.run(command,check=True)
+ print('PASS actual FEXCore include paths resolve the staged Wine debug declaration; old PRIVATE-only include fails')
  # Compile FEX's actual full pool/retirement implementation against a fake OS
  # allocator. Allocation ownership, iterators and reuse use production code.
  stub=d/'include';utils=stub/'FEXCore/Utils';utils.mkdir(parents=True)

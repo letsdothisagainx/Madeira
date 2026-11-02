@@ -251,7 +251,7 @@
  
  #include <new>
 +#ifdef FEX_IOS_HOST
-+#include <wine/debug.h>
++#include <Windows/include/wine/debug.h>
 +#endif
  #include <cstdint>
  #ifdef ZYDIS_DISASSEMBLER
