@@ -1898,6 +1898,31 @@ NTSTATUS load_builtin( const struct pe_image_info *image_info, UNICODE_STRING *n
             TRACE( "iOS: %s disabled by WINEDLLOVERRIDES\n", debugstr_us(nt_name) );
             return STATUS_DLL_NOT_FOUND;
         }
+
+        /* system32 belongs to the installed session and may point to the
+         * hybrid DLL farm after an AMD64 Steam update. A native ARM64 host
+         * (including an i386 child's WoW64 host) cannot call those x64 entry
+         * points. Resolve Wine's own DLL from the native PE farm instead.
+         * Do not replace application DLLs, explicit AMD64 mappings, or a
+         * hybrid process's imports. Never fall back to the incompatible file
+         * if the matching builtin is absent or cannot be mapped. */
+        if (current_machine == IMAGE_FILE_MACHINE_ARM64 && !ios_is_arm64ec_cur() &&
+            image_info->wine_builtin && image_info->is_hybrid &&
+            image_info->machine == IMAGE_FILE_MACHINE_AMD64 &&
+            (!machine || machine == IMAGE_FILE_MACHINE_ARM64))
+        {
+            static unsigned int notes;
+            NTSTATUS status;
+
+            if (lo == LO_NATIVE) return STATUS_NOT_SUPPORTED;
+            status = find_builtin_dll( nt_name, exp_name, module, size, info,
+                                       limit_low, limit_high, IMAGE_FILE_MACHINE_ARM64,
+                                       IMAGE_FILE_MACHINE_ARM64, FALSE, offset );
+            if (__atomic_fetch_add( &notes, 1, __ATOMIC_RELAXED ) < 16)
+                dprintf( 2, "[child-native-dll-v1] owner=%p source=8664 target=aa64 status=%08x\n",
+                         ios_jit_current_peb(), (unsigned int)status );
+            return status;
+        }
     }
     /* On iOS, all PE DLLs are in the prefix (system32 symlinks to bundle).
      * Skip the builtin .so search — it causes mmap failures on iOS and

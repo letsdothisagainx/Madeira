@@ -6,6 +6,8 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[2]
 commands = [
+    ['python3', 'tests/host/check-child-native-dll.py'],
+    ['python3', 'tests/host/check-process-wow64-owner.py'],
     ['python3', 'tests/host/check-child-ntdll-machine.py'],
     ['python3', 'tests/host/check-steam-client-update.py'],
     ['python3', 'tests/host/check-surface-expose.py'],

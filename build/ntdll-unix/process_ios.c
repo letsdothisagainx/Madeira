@@ -4042,7 +4042,30 @@ NTSTATUS WINAPI NtQueryInformationProcess( HANDLE handle, PROCESSINFOCLASS class
         len = sizeof(ULONG_PTR);
         if (size != len) return STATUS_INFO_LENGTH_MISMATCH;
         if (handle == GetCurrentProcess())
+#ifdef WINE_IOS
+        {
+            static unsigned int reports;
+            TEB *teb = NtCurrentTeb();
+            ULONG_PTR value;
+
+            /* Pseudo-processes share wow_peb, which another child's startup
+             * or retirement can clear or replace.  A native wow64.dll query
+             * must use its own TEB/PEB: returning that session global made
+             * process_init write WOW64INFO at NULL + sizeof(PEB32) (0x480).
+             * A companion WoW TEB proves this is a 32-bit guest; its PEB32 is
+             * the Windows page following this owner's native PEB, exactly as
+             * initialized by init_peb()/init_teb().  Native/AMD64 callers have
+             * no companion TEB and continue to report zero. */
+            value = teb && teb->Peb && get_wow_teb( teb )
+                ? (ULONG_PTR)teb->Peb + page_size : 0;
+            *(ULONG_PTR *)info = value;
+            if (__atomic_fetch_add( &reports, 1, __ATOMIC_RELAXED ) < 16)
+                dprintf( 2, "[process-wow64-v1] teb=%p owner=%p wow-offset=%ld result=%p space=host\n",
+                         teb, teb ? teb->Peb : NULL, teb ? (long)teb->WowTebOffset : 0, (void *)value );
+        }
+#else
             *(ULONG_PTR *)info = is_old_wow64() ? (ULONG_PTR)peb : (ULONG_PTR)wow_peb;
+#endif
         else
         {
             ULONG_PTR val = 0;

@@ -74,3 +74,35 @@ missing provisioning entitlement, prove the secondary loop is absent on the
 iPhone, or establish that Steam/Chromium/CS2 now starts successfully. Re-signing
 with the needed capability, a normal responsive Steam login/Library session,
 and authenticated CS2 process creation remain device acceptance work.
+
+## Follow-up: the 16:58 capture tests the new loader
+
+The next capture matches UUID `6A0F494F-A17F-3B9F-A084-5936FC6A1321`, source
+`c48b103`. The private native ntdll is selected and reports `ready=1` for the
+i386 helper owners. That does not establish successful helper initialization:
+
+* The first native helper faults at `wow64.dll+0x1d124`, storing to `0x480`.
+  `process_init` queried `ProcessWow64Information`, received a null PEB32, then
+  addressed `WOW64INFO` at `PEB32 + 1`. The Unix current-process query still used
+  session-global `wow_peb`, which concurrent child startup/retirement can change.
+  It now uses the calling thread's actual WoW64 TEB and native PEB. Native and
+  AMD64 callers return zero; remote-query behavior is preserved.
+* A later helper calls `kernelbase.dll+0x80004` as ARM64, but the logged bytes are
+  x86 (`48 8b c4 48 89 58 20 55 ...`). A correct private ntdll alone does not fix
+  the prefix's hybrid `system32` DLL selection. The builtin resolver now selects
+  the ARM64 PE version of a Wine hybrid DLL for a native caller, with an explicit
+  machine check. Missing/incompatible replacements fail normally. Application
+  DLLs, i386 DLLs, AMD64 mappings and hybrid siblings keep their existing paths.
+
+The new regression fixtures execute those production query/resolver paths,
+including concurrent process identities, disabled/native overrides, failed
+replacement mappings and unaffected sibling architectures. Package validation
+requires both new diagnostic markers. No allocator or protection budget changes
+are part of this follow-up.
+
+The first Chromium failure still precedes these helper faults: a 32 GiB reserve
+cannot fit the observed map (largest gap 31,744 MiB), and the signature/profile
+still report extended virtual addressing disabled. Both helper owners do reach
+retirement and report zero remaining views. The native-child corrections must be
+retested on the phone; Chromium readiness, Library interaction and CS2 launch
+remain unverified and blocked by the observed address-space shortage.
