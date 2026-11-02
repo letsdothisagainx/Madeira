@@ -719,6 +719,7 @@ struct SteamSettingsSection: View {
                     Text(status).font(.caption).foregroundStyle(.secondary)
                 }
             }
+            Button { open(.steamClientUpdate) } label: { Label("Update Windows Steam", systemImage: "arrow.down.circle") }
             if onboarding.available {
                 Button { onboarding.rerun() } label: { Label("Run setup again", systemImage: "wand.and.stars") }
             }

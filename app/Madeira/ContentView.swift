@@ -1714,6 +1714,8 @@ struct ContentView: View {
                 }
                 Button("All settings") { devSheet = .allSettings }
                     .buttonStyle(.bordered)
+                Button("Update Windows Steam") { devSheet = .steamClientUpdate }
+                    .buttonStyle(.bordered)
                 Button("Enable JIT") {
                     enableJIT()
                 }
@@ -2186,6 +2188,7 @@ struct ContentView: View {
             case .steamSignIn: SteamSignInView()
             case .epicSignIn: EpicSignInView()
             case .dock: MadeiraDockView { startDock($0, compactPool: $1) }
+            case .steamClientUpdate: SteamClientUpdateView()
             case .allSettings: AllSettingsView()
             }
         }
@@ -2697,6 +2700,11 @@ struct ContentView: View {
     /// to prepare code pages. Detach happens after Wine finishes + recovery.
     /// `profile` is a library entry whose launch profile applies to this run.
     private func runWineFullSequence(profile: LibraryEntry? = nil, nativeSteamClient: Bool = false) {
+        guard !SteamClientUpdateModel.shared.busy else {
+            logStore.log("Wait for the Steam launcher update to finish before starting Wine.", level: .error)
+            if profile != nil { LibraryModel.shared.launchFailed() }
+            return
+        }
         guard jit_check_debugged() else {
             logStore.log("JIT not enabled. Press 'Enable JIT' first.", level: .error)
             if profile != nil { LibraryModel.shared.launchFailed() }

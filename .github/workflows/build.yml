@@ -21,7 +21,7 @@ on:
         required: false
         default: ''
       inspect_steam_run_id:
-        description: Inspect cryptnet in an exact prior IPA instead of building (optional run ID)
+        description: Inspect cryptnet in an exact prior IPA (run ID), or 'updater' for Valve's pinned bootstrap
         required: false
         default: ''
 
@@ -467,13 +467,18 @@ jobs:
       MADEIRA_INSPECT_UUID: ${{ inputs.inspect_native_uuid }}
     steps:
       - uses: actions/checkout@v4
+      - name: Verify the genuine 64-bit Steam updater package
+        if: inputs.inspect_steam_run_id == 'updater'
+        run: python3 tools/inspect-steam-updater.py
       - uses: actions/download-artifact@v4
+        if: inputs.inspect_steam_run_id != 'updater'
         with:
           name: Madeira-ipa
           run-id: ${{ inputs.inspect_steam_run_id }}
           github-token: ${{ github.token }}
           path: previous-ipa
       - name: Inspect the exact archived cryptnet swap target
+        if: inputs.inspect_steam_run_id != 'updater'
         run: |
           python3 -m venv "$RUNNER_TEMP/steam-image-tools"
           "$RUNNER_TEMP/steam-image-tools/bin/pip" install capstone==5.0.6

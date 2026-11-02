@@ -106,6 +106,7 @@ extension SteamLibraryDiagnostics {
   assert(SteamLibraryDiagnostics.consoleLibraryRoute(["unrelated /library/home"])==nil)
   let actionStack:[String:Any] = ["callFrames":[["functionName":"OnGameActionShowError","url":"https://steamloopback.host/chunk~2dcc5aaf7.js"]]]
   assert(SteamLibraryDiagnostics.gameActionError([["type":"string","value":"AppError_19"]],stack:actionStack)?.contains("error=AppError_19")==true)
+  assert(SteamLibraryDiagnostics.gameActionError([["type":"string","value":"AppError_47"]],stack:actionStack)?.contains("resource=Steam_AppUpdateError_47 meaning=Steam-client-outdated")==true)
   assert(SteamLibraryDiagnostics.gameActionError([["type":"string","value":"AppError_47 SECRET"]],stack:actionStack)?.contains("error=unavailable")==true)
   assert(SteamLibraryDiagnostics.gameActionError([["type":"string","value":"AppError_76561191234567890"]],stack:actionStack)?.contains("error=unavailable")==true)
   assert(SteamLibraryDiagnostics.gameActionError([["type":"object","description":"AppError_47 SECRET"]],stack:actionStack)?.contains("error=unavailable")==true)

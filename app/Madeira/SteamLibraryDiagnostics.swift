@@ -95,7 +95,8 @@ import Darwin
         // The public callback source's six arguments place gameID at index 2.
         // This is a shape match, not proof of ownership or an installed state.
         let cs2 = args.count == 6 && args[1]["type"] as? String == "number" && args[2]["value"] as? String == "730"
-        return "game-action-error source=OnGameActionShowError error=\(error) cs2-argument-shape=\(cs2) details=excluded"
+        let meaning = error == "AppError_47" ? " resource=Steam_AppUpdateError_47 meaning=Steam-client-outdated" : ""
+        return "game-action-error source=OnGameActionShowError error=\(error) cs2-argument-shape=\(cs2) details=excluded" + meaning
     }
     static func candidatePages(_ targets: [[String: Any]]) -> [[String: Any]] {
         targets.filter { target in

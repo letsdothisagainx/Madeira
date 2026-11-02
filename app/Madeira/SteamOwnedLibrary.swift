@@ -250,6 +250,8 @@ final class SteamOwnedLibrary: ObservableObject {
     private var active: (id: Int, task: Task<Void, Never>)?
     /// A game session runs: downloads wait, and the Steam connection stays closed.
     private var inSession = false
+    /// Includes Wine/JIT launch preparation, before a native process exists.
+    var wineSessionActive: Bool { inSession }
     private var resumeAfterSession = Set<Int>()
     /// Downloads paused because iOS ended Madeira's background time.
     private var resumeAfterBackgroundIDs = Set<Int>()
