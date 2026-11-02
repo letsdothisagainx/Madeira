@@ -150,7 +150,7 @@ int main(void) {
     assert(!ios_fd_probe_events(&unknown,0,POLLIN|POLLOUT,1));
 
     /* Queue/device-style callbacks above an old injection threshold receive
-     * actual readiness, including zero-interest hangup, never fake POLLIN. */
+     * actual readiness, including zero-interest terminal events, never fake POLLIN. */
     struct fd filler[100] = {{0}}, queue = {.user = &queue_user, .open_pid = 0x90};
     for (unsigned i = 0; i < 100; i++) { filler[i].unix_fd = -1; filler[i].poll_index = add_poll_user(&filler[i]); }
     int pq[2]; assert(!socketpair(AF_UNIX,SOCK_STREAM,0,pq));
@@ -163,9 +163,13 @@ int main(void) {
     assert(ios_poll_dispatch_snapshot(&queue_owner,queue_poll.revents) && last_events == POLLIN);
     char qbyte; assert(read(pq[0],&qbyte,1) == 1); close(pq[1]);
     set_fd_events(&queue,0); queue_poll.events = 0; queue_poll.revents = 0;
-    assert(ios_fd_needs_real_poll(queue.poll_index) && poll(&queue_poll,1,0) == 1 && (queue_poll.revents & POLLHUP));
-    assert(ios_poll_dispatch_snapshot(&queue_owner,queue_poll.revents) && (last_events & POLLHUP));
-    remove_poll_user(&queue,queue.poll_index); close(pq[0]);
+    /* Darwin and Linux report stream EOF differently. An invalid descriptor
+     * deterministically supplies a kernel terminal event with interest zero;
+     * explicit HUP/ERR forwarding is checked independently above. */
+    assert(!close(pq[0]));
+    assert(ios_fd_needs_real_poll(queue.poll_index) && poll(&queue_poll,1,0) == 1 && (queue_poll.revents & POLLNVAL));
+    assert(ios_poll_dispatch_snapshot(&queue_owner,queue_poll.revents) && (last_events & POLLNVAL));
+    remove_poll_user(&queue,queue.poll_index);
     for (unsigned i = 0; i < 100; i++) remove_poll_user(&filler[i],filler[i].poll_index);
     now = ios_poll_snapshot(2); now.generation = 0;
     assert(!ios_poll_dispatch_snapshot(&now,POLLIN));
@@ -187,7 +191,7 @@ int main(void) {
     free(poll_users); free(pollfd);
     close(pa[0]); close(pa[1]); close(b_number); close(pb[1]); close(replacement[0]); close(replacement[1]);
     puts("PASS: actual batch dispatch rejects same-slot/same-fd/same-address ABA, honors current masks and zero-interest terminal events, bounds logs, and refuses generation wrap");
-    puts("PASS: typed probes survive low-slot reuse; high-slot queues and unknown owners never receive synthetic readiness; actual queue data/hangup still dispatch");
+    puts("PASS: typed probes survive low-slot reuse; high-slot queues and unknown owners never receive synthetic readiness; actual queue data and zero-interest invalid-FD events still dispatch");
 }
 '''
 assert source.count('ios_poll_dispatch_snapshot( &rp_owner[k], rp[k].revents )') == 2
