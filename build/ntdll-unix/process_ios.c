@@ -1697,9 +1697,26 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
             }
             if (role == MADEIRA_CEF_CRASHPAD)
             {
-                int saved_errno = errno;
-                dprintf( 2, "[steam-cef] request role=crashpad policy=compat; unchanged arguments, normal process creation\n" );
-                errno = saved_errno;
+                /* In the 2026-11-02 iPhone Steam capture the Crashpad handler
+                 * (Wine PID 0084, TID 00c0) spun through thousands of server
+                 * requests/sec without doing crash reporting. It consumed the
+                 * CPU needed by the actual CEF browser, which stopped updating.
+                 * Crashpad is optional diagnostics, NOT a Steam auth helper.
+                 * Keep the real browser and its security checks unchanged.
+                 * An explicit opt-in restores upstream Crashpad for A/B tests. */
+                const char *crashpad = getenv( "MADEIRA_STEAM_CEF_CRASHPAD" );
+                if (!(crashpad && crashpad[0] == '1' && !crashpad[1]))
+                {
+                    int saved_errno = errno;
+                    dprintf( 2, "[steam-cef] request role=crashpad policy=compat result=denied reason=ios-crashpad-server-spin; MADEIRA_STEAM_CEF_CRASHPAD=1 restores\n" );
+                    errno = saved_errno;
+                    return STATUS_ACCESS_DENIED;
+                }
+                {
+                    int saved_errno = errno;
+                    dprintf( 2, "[steam-cef] request role=crashpad policy=compat; unchanged arguments, normal process creation\n" );
+                    errno = saved_errno;
+                }
             }
             /* Append --single-process to the browser instance's command line.
              * The new buffer intentionally leaks (once per helper launch);
