@@ -14916,6 +14916,26 @@ static void delete_view( struct file_view *view ) /* [in] View */
     if ((view->protect & SEC_IMAGE) && ios_jit_image_retire_enabled())
         ios_jit_retire_image( view->base, view->size );
     if (view->protect & SEC_IMAGE) ios_jit_note_image_unmapped( view->base, view->size );
+    /* The last host page can also have an anonymous JIT alias (a PE tail
+     * rounded from 4 KiB to 16 KiB). Its binding dies with this image view,
+     * before unmap_area replaces the backing. Keep the pool storage alive
+     * for in-flight readers, but never let a later image reuse this binding. */
+    if ((view->protect & (SEC_IMAGE | VPROT_SYSTEM)) == SEC_IMAGE)
+    {
+        int saved_errno = errno;
+        size_t span = ROUND_SIZE(0,view->size,host_page_mask);
+        uintptr_t first = 0, end = 0;
+        if (ios_jit_anon_alias_overlaps(view->base,span,&first,&end))
+        {
+            static unsigned reports;
+            if (__atomic_fetch_add(&reports,1,__ATOMIC_RELAXED) < 16)
+                dprintf(2,"[image-alias-retire-v1] image=%p+%#lx host-span=%#lx alias=%#lx..%#lx phase=before-backing-replacement\n",
+                        view->base,(unsigned long)view->size,(unsigned long)span,
+                        (unsigned long)first,(unsigned long)end);
+        }
+        ios_jit_anon_alias_retire_range( view->base, span );
+        errno = saved_errno;
+    }
     ios_swap_release_range( view->base, view->size, 0 );   /* ml1077 */
     if (!(view->protect & VPROT_SYSTEM)) unmap_area( view->base, view->size );
     if (ios_retire_trace_armed) ios_retire_mark( "D1u\n" );   /* unmap_area done */

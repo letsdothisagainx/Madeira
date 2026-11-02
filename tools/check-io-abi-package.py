@@ -105,6 +105,7 @@ def check(staged, app, ipa):
     assert b'[fex-hold-release-v1]' in cpu_data, 'stale FEX terminal hold cleanup'
     assert b'[fex-thread-retire-v1]' in cpu_data, 'stale FEX private thread destruction'
     assert b'[alias-prot-v2]' in native and b'[fex-exit-v1]' in native and b'[native-thread-cancel-v1]' in native, 'native protection/retirement/cancellation consumer missing'
+    assert b'[alias-prot-compat]' in native and b'[image-alias-retire-v1]' in native and b'[swp-context-v1]' in native, 'stale native alias lifetime/protection producer'
     fex_arena_exports(cpu_data, require_hold_release=True)
     assert (app / 'aarch64-windows/xtajit.dll').read_bytes() == cpu_data, 'Xcode packaged stale FEX'
     guest = (staged.parent.parent / 'i386-windows/kernelbase.dll').read_bytes()
