@@ -12,6 +12,7 @@ def function(marker):
 cover=function('int ios_jit_anon_alias_find_cover(')
 host_prot=function('static BYTE get_host_page_vprot(')
 alias_run=function('static int ios_protect_alias_run(')
+mixed_tail=function('static struct file_view *ios_alias_mixed_image_tail(')
 assert 'PHYSICAL forced R%s' not in function('static NTSTATUS set_protection(')
 raw=function('static int mprotect_range_raw(')
 assert raw.count('ios_protect_host_range(')==2
@@ -51,8 +52,11 @@ static BYTE logical[256],*pages_vprot[1]={logical};
 #undef _WIN64
 static int diagnostic(int fd,const char *format,...){assert(fd==2);(void)format;errno=ERANGE;return 0;}
 static int mprotect_exec(void *base,size_t size,int prot){return mprotect(base,size,prot);}
+#define SEC_IMAGE 0x1000000u
+struct file_view {void *base;size_t size;unsigned protect;};
+static struct file_view *find_view(const void *base,size_t size){(void)base;(void)size;return NULL;}
 #define dprintf diagnostic
-''' +alias_run+r'''
+''' +mixed_tail+'\n'+alias_run+r'''
 #undef dprintf
 
 static pthread_mutex_t vm=PTHREAD_MUTEX_INITIALIZER;

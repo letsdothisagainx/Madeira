@@ -19904,20 +19904,43 @@ static int ios_protect_page_is_alias(uintptr_t page, size_t size, void *context)
     (void)context;
     return ios_jit_anon_alias_find_cover((void *)page,size,&rw,&rx);
 }
+/* Controlled startup comparison: use the pre-v2 owner-aware route only for
+ * the captured shape: a whole alias host page containing a partial SEC_IMAGE
+ * tail. A nearby MZ signature alone does not establish image ownership. */
+static struct file_view *ios_alias_mixed_image_tail(uintptr_t base, size_t size)
+{
+    struct file_view *view;
+    uintptr_t image;
+    if (size != host_page_size || (base & (host_page_size-1)) ||
+        !(view = find_view((void *)base,1)) || !(view->protect & SEC_IMAGE)) return NULL;
+    image = (uintptr_t)view->base;
+    if (base < image || base-image >= view->size || view->size-(base-image) >= size) return NULL;
+    return view;
+}
 static int ios_protect_alias_run(uintptr_t base, size_t size, int prot, int alias, void *context)
 {
     int result, saved_errno;
-    (void)context;
-    /* The alias was remapped from the blessed pool. Its RW sibling remains
-     * writable; the guest view must never become writable or COW-detach. */
-    result = alias ? mprotect((void *)base,size,prot) : mprotect_exec((void *)base,size,prot);
+    int requested = context ? *(const int *)context : prot;
+    struct file_view *mixed = alias ? ios_alias_mixed_image_tail(base,size) : NULL;
+    /* Ordinary aliases retain v2 RX protection. Only the selected mixed
+     * tail uses the old owner-aware path for this controlled comparison;
+     * do not infer the kernel's physical protection from its return code. */
+    result = mixed ? mprotect_exec((void *)base,size,requested) :
+             alias ? mprotect((void *)base,size,prot) : mprotect_exec((void *)base,size,prot);
     saved_errno = errno;
     if (alias)
     {
         static unsigned reports;
         if (__atomic_fetch_add(&reports,1,__ATOMIC_RELAXED) < 24)
-            dprintf(2,"[alias-prot-v2] host=%p+%#lx page=%#lx physical=RX logical=unchanged result=%d errno=%d\n",
-                    (void *)base,(unsigned long)size,(unsigned long)host_page_size,result,result ? saved_errno : 0);
+        {
+            if (mixed)
+                dprintf(2,"[alias-prot-control-v1] host=%p+%#lx image=%p+%#lx flags=%#x requested=%d policy=legacy-mprotect-exec logical=unchanged result=%d errno=%d\n",
+                        (void *)base,(unsigned long)size,mixed->base,(unsigned long)mixed->size,
+                        (unsigned)mixed->protect,requested,result,result ? saved_errno : 0);
+            else
+                dprintf(2,"[alias-prot-v2] host=%p+%#lx page=%#lx physical=RX logical=unchanged result=%d errno=%d\n",
+                        (void *)base,(unsigned long)size,(unsigned long)host_page_size,result,result ? saved_errno : 0);
+        }
     }
     errno = saved_errno;
     return result;
@@ -19927,7 +19950,7 @@ static int ios_protect_host_range(void *base, size_t size, int prot)
     if (!(prot & PROT_WRITE) || !ios_jit_anon_alias_overlaps(base,size,NULL,NULL))
         return mprotect_exec(base,size,prot);
     return madeira_protect_alias_writes((uintptr_t)base,size,host_page_size,prot,
-                                        ios_protect_page_is_alias,ios_protect_alias_run,NULL);
+                                        ios_protect_page_is_alias,ios_protect_alias_run,&prot);
 }
 #else
 #define ios_protect_host_range mprotect_exec

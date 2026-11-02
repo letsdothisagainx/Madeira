@@ -15,6 +15,7 @@ commands = [
     ['python3', 'tests/host/check-srv-direct.py'],
     ['python3', 'tests/host/check-srv-eco-follow.py'],
     ['python3', 'tests/host/check-alias-protection.py'],
+    ['python3', 'tests/host/check-steam-startup-control.py'],
     ['python3', 'tests/host/check-fex-thread-retirement.py'],
     ['python3', 'tests/host/check-native-thread-cancel.py'],
     ['python3', 'tests/host/check-fex-view-lifecycle.py'],

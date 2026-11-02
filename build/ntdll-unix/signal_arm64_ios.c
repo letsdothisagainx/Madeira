@@ -2632,6 +2632,35 @@ done:
     errno=saved_errno;
 }
 
+/* Read-only comparison for the controlled protection run. Never infer an
+ * exact guest RIP from x28 alone: match the target's TLS14 frame and owner. */
+static void ios_trace_alias_swap(uintptr_t teb, const arm_thread_state64_t *state,
+                                 uint64_t address, uint64_t rw, unsigned width)
+{
+    static unsigned reports;
+    uint64_t owner=0,thread=0,frame=0,window=0,guest=0,saved=0;
+    struct ios_g32_fault_block block={0};
+    int saved_errno=errno, frame_ok=0, exact=0, saved_ok=0;
+    uint64_t pc=arm_thread_state64_get_pc(*state);
+    if (__atomic_fetch_add(&reports,1,__ATOMIC_RELAXED)>=8) return;
+    int guest_ok=width<=sizeof(guest) && ios_g32_read(address,&guest,width);
+    if (teb && ios_g32_read(teb+offsetof(TEB,Peb),&owner,8) &&
+        (window=ios_wow_base_for_peb((void *)(uintptr_t)owner)) && state->__x[19]==window &&
+        ios_g32_read(teb+offsetof(TEB,TlsSlots)+14*sizeof(void *),&thread,8) && thread &&
+        ios_g32_read(thread,&frame,8) && frame && frame==state->__x[28])
+    {
+        frame_ok=1;
+        saved_ok=ios_g32_read(frame+0x18,&saved,8);
+        exact=ios_g32_fault_block(frame,pc,owner,&block);
+    }
+    dprintf(2,"[swp-context-v1] teb=%#lx owner=%#llx pc=%#llx continuation=%#llx frame=%#llx frame-validated=%d saved-rip=%#llx saved-readable=%d exact-rip=%#llx exact-valid=%d guest=%#llx guest-readable=%d rw=%#llx width=%u snapshot-after-exchange=1\n",
+            (unsigned long)teb,(unsigned long long)owner,(unsigned long long)pc,
+            (unsigned long long)(pc+4),(unsigned long long)state->__x[28],frame_ok,
+            (unsigned long long)saved,saved_ok,(unsigned long long)block.exact,exact,
+            (unsigned long long)guest,guest_ok,(unsigned long long)rw,width);
+    errno=saved_errno;
+}
+
 void ios_trace_first_cxx(const EXCEPTION_RECORD *rec)
 {
     static unsigned reports;
@@ -5488,12 +5517,15 @@ static void *ios_mach_exception_thread( void *arg )
                             {
                                 static int swp_n;
                                 if (swp_n < 8)
+                                {
                                     dprintf(STDERR_FILENO,
                                         "[swp-emul] ml626 #%d insn=0x%08x size=%d Rs=x%d Rt=x%d addr=0x%llx "
                                         "rw=0x%llx in=0x%llx old=0x%llx\n",
                                         ++swp_n, insn, 1 << size_lg2, rs, rt,
                                         (unsigned long long)fault_addr, (unsigned long long)rw_addr,
                                         (unsigned long long)in, (unsigned long long)old);
+                                    ios_trace_alias_swap(thread_teb,&state,fault_addr,rw_addr,1u << size_lg2);
+                                }
                             }
                         }
                     }
