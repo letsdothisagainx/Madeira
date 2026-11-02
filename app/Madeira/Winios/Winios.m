@@ -37,6 +37,7 @@
  * including it here keeps both sides' definitions the same. */
 #include "Winios.h"
 #include "VulkanLayerGeometry.h"
+#include "../../../build/steam-ui/progress.h"
 
 /* csops syscall — CS_DEBUGGED is the flag StikDebug JIT rides on. Declared by
  * hand for the same reason JITAllocator.c does: <sys/codesign.h> is not in the
@@ -1933,15 +1934,60 @@ void winios_window_frame(HWND hwnd, int x, int y, int w, int h, int visible,
 /* Read-only counterpart of [steam-ui] on the UIKit queue. No window text,
  * bitmap contents, Metal allocation or visibility override. The Wine caller
  * has a separate bounded budget for each HWND and kind of transition. */
-/* Main-queue only, bounded to 64 Steam windows and eight frame outcomes each. */
+/* Main-queue only: retain all outcome counts, cap verbose frame lines at eight.
+ * An independent five-second heartbeat remains observable after that log cap. */
 static NSMutableDictionary<NSNumber *, NSMutableArray<NSNumber *> *> *g_steam_frames;
+static dispatch_source_t g_steam_progress_timer;
+static uint64_t winios_progress_ns(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts)) return 0;
+    return (uint64_t)ts.tv_sec*1000000000ull+ts.tv_nsec;
+}
+static double winios_progress_age(uint64_t now, uint64_t then) {
+    return then && now>=then ? (double)(now-then)/1000000.0 : -1;
+}
+static void winios_steam_progress_start(void) {
+    if (g_steam_progress_timer) return;
+    g_steam_progress_timer=dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,0,0,dispatch_get_main_queue());
+    dispatch_source_set_timer(g_steam_progress_timer,dispatch_time(DISPATCH_TIME_NOW,5*NSEC_PER_SEC),5*NSEC_PER_SEC,NSEC_PER_SEC/4);
+    dispatch_source_set_event_handler(g_steam_progress_timer, ^{
+        static unsigned ticks;
+        if (++ticks>96) { dispatch_source_cancel(g_steam_progress_timer); return; }
+        uint64_t now=winios_progress_ns();
+        for (NSNumber *key in g_steam_frames) {
+            NSMutableArray<NSNumber *> *state=g_steam_frames[key];
+            if (!state[2].unsignedLongLongValue || state[5].unsignedIntValue>=12) continue;
+            state[5]=@(state[5].unsignedIntValue+1);
+            uint64_t total=state[2].unsignedLongLongValue, previous=state[6].unsignedLongLongValue;
+            struct madeira_ui_progress_snapshot p={0};
+            int found=winios_ui_progress_snapshot(state[0].unsignedIntValue,state[1].unsignedIntValue,&p);
+            CALayer *layer=g_layers[key];
+            fprintf(stderr,"[steam-progress-v1] pid=%04x tid=%04x hwnd=%p sample=%u frame-outcomes=%llu delta=%llu contents-submitted=%llu frame-age-ms=%.0f poll=%llu poll-age-ms=%.0f flush=%llu dequeued=%llu winproc=%llu/%llu fail=%llu input-winproc=%llu/%llu fail=%llu input-return-age-ms=%.0f input-hwnd=%p input-msg=%x native-found=%d contents=%d hidden=%d attached=%d compositor-attached=%d compositor-hidden=%d\n",
+                    state[0].unsignedIntValue,state[1].unsignedIntValue,(void*)key.unsignedLongLongValue,state[5].unsignedIntValue,
+                    (unsigned long long)total,(unsigned long long)(total-previous),state[3].unsignedLongLongValue,
+                    winios_progress_age(now,state[4].unsignedLongLongValue),
+                    (unsigned long long)p.count[MADEIRA_UI_POLL],winios_progress_age(now,p.last_ns[MADEIRA_UI_POLL]),
+                    (unsigned long long)p.count[MADEIRA_UI_FLUSH],(unsigned long long)p.count[MADEIRA_UI_DEQUEUED],
+                    (unsigned long long)p.count[MADEIRA_UI_DISPATCH_BEGIN],(unsigned long long)p.count[MADEIRA_UI_DISPATCH_RETURN],
+                    (unsigned long long)p.count[MADEIRA_UI_DISPATCH_FAILED],(unsigned long long)p.count[MADEIRA_UI_INPUT_BEGIN],
+                    (unsigned long long)p.count[MADEIRA_UI_INPUT_RETURN],(unsigned long long)p.count[MADEIRA_UI_INPUT_FAILED],
+                    winios_progress_age(now,p.last_ns[MADEIRA_UI_INPUT_RETURN]),(void*)(uintptr_t)p.input_hwnd,p.input_message,found,layer.contents!=nil,layer?(int)layer.hidden:-1,
+                    layer.superlayer!=nil,g_compositor_view.window!=nil,g_compositor_view?(int)g_compositor_view.hidden:-1);
+            state[6]=@(total);
+        }
+    });
+    dispatch_resume(g_steam_progress_timer);
+}
 static void winios_trace_steam_frame(HWND hwnd, const char *outcome, CALayer *layer) {
     NSMutableArray<NSNumber *> *state = g_steam_frames[@((uintptr_t)hwnd)];
-    if (!state || state[2].unsignedIntValue >= 8) return;
-    state[2] = @(state[2].unsignedIntValue + 1);
+    if (!state) return;
+    uint64_t total=state[2].unsignedLongLongValue+1;
+    state[2]=@(total);state[4]=@(winios_progress_ns());
+    if (!strcmp(outcome,"contents-submitted")) state[3]=@(state[3].unsignedLongLongValue+1);
+    if (total>8) return;
     fprintf(stderr, "[steam-frame] pid=%04x tid=%04x hwnd=%p seq=%u outcome=%s contents=%d "
                     "hidden=%d attached=%d compositor-attached=%d compositor-hidden=%d\n",
-            state[0].unsignedIntValue, state[1].unsignedIntValue, hwnd, state[2].unsignedIntValue,
+            state[0].unsignedIntValue, state[1].unsignedIntValue, hwnd, (unsigned)total,
             outcome, layer.contents != nil, layer ? (int)layer.hidden : -1, layer.superlayer != nil,
             g_compositor_view.window != nil, g_compositor_view ? (int)g_compositor_view.hidden : -1);
 }
@@ -1952,7 +1998,8 @@ void winios_ui_surface_trace(void *hwnd, unsigned int pid, unsigned int tid,
         NSNumber *key = @((uintptr_t)hwnd);
         if (!g_steam_frames) g_steam_frames = [NSMutableDictionary new];
         if (!g_steam_frames[key] && g_steam_frames.count < 64)
-            g_steam_frames[key] = [NSMutableArray arrayWithObjects:@(pid), @(tid), @0, nil];
+            g_steam_frames[key] = [NSMutableArray arrayWithObjects:@(pid), @(tid), @0, @0, @0, @0, @0, nil];
+        winios_steam_progress_start();
         CALayer *layer = g_layers[key];
         CAMetalLayer *metal = g_metal_layers[key];
         fprintf(stderr, "[steam-ui-host] pid=%04x tid=%04x hwnd=%p wine-visible=%d surface=%p "

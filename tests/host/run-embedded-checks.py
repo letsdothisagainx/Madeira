@@ -6,6 +6,14 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[2]
 commands = [
+    ['python3', 'tests/host/check-guest32-fault.py'],
+    ['python3', 'tests/host/check-steam-ui-progress.py'],
+    ['python3', 'tests/host/check-wineserver-poll-dispatch.py'],
+    ['python3', 'tests/host/check-inet-poll-cache.py'],
+    ['python3', 'tests/host/check-srv-doorbell.py'],
+    ['python3', 'tests/host/check-srv-fd-reply.py'],
+    ['python3', 'tests/host/check-srv-direct.py'],
+    ['python3', 'tests/host/check-srv-eco-follow.py'],
     ['python3', 'tests/host/check-fex-view-lifecycle.py'],
     ['python3', 'tests/host/check-fex-startup-failure.py'],
     ['python3', 'tests/host/check-vm-failure-trace.py'],

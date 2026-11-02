@@ -369,6 +369,7 @@ struct fd
     unsigned int         cacheable :1;/* can the fd be cached on the client side? */
     unsigned int         fs_locks :1; /* can we use filesystem locks for this fd? */
     int                  poll_index;  /* index of fd in poll array */
+    unsigned long long   poll_generation; /* identity of this poll registration; zero is never live */
     struct async_queue   read_q;      /* async readers of this fd */
     struct async_queue   write_q;     /* async writers of this fd */
     struct async_queue   wait_q;      /* other async waiters of this fd */
@@ -908,6 +909,7 @@ static int nb_users;                        /* count of array entries actually i
 static int active_users;                    /* current number of active users */
 static int allocated_users;                 /* count of allocated entries in the array */
 static struct fd **freelist;                /* list of free entries in the array */
+static unsigned long long ios_poll_generation;
 
 /* The INET classification cache of ios_fd_is_inet(), one entry per poll user slot, at file
  * scope so that add_poll_user() and remove_poll_user() can forget a slot's entry. The
@@ -939,6 +941,142 @@ static int get_next_timeout( struct timespec *ts );
 static inline void fd_poll_event( struct fd *fd, int event )
 {
     fd->fd_ops->poll_event( fd, event );
+}
+
+struct ios_poll_snapshot
+{
+    int user, unix_fd;
+    unsigned long long generation;
+    unsigned int creator_pid, creator_tid;
+};
+static unsigned long long ios_poll_stale, ios_poll_masked, ios_poll_delivered;
+static unsigned long long ios_poll_probe_in, ios_poll_probe_out;
+static unsigned long long ios_poll_hup, ios_poll_error, ios_poll_invalid;
+
+/* Only these owners' poll callbacks perform a nonblocking protocol read/write.
+ * A queue callback merely sets QS_DRIVER, so synthetic readiness there is false
+ * input. A poll slot's index says nothing about its owner after freelist reuse. */
+static int ios_fd_uses_io_probe( const struct fd *fd )
+{
+    const struct type_descr *type;
+    if (!fd || !fd->user || !fd->user->ops) return 0;
+    type = fd->user->ops->type;
+    return type == &thread_type || type == &process_type;
+}
+
+static signed char ios_fd_is_inet( int user, int fd );
+static int ios_fd_needs_real_poll( int user )
+{
+    return !ios_fd_uses_io_probe( poll_users[user] ) ||
+           !(pollfd[user].events & (POLLIN | POLLOUT)) || ios_fd_is_inet( user, pollfd[user].fd );
+}
+
+static int ios_fd_probe_events( const struct fd *fd, int inet, int interests, int full_scan )
+{
+    if (inet || interests < 0 || !ios_fd_uses_io_probe( fd )) return 0;
+    return interests & (POLLOUT | (full_scan ? POLLIN : 0));
+}
+
+static struct ios_poll_snapshot ios_poll_snapshot( int user )
+{
+    struct fd *fd = poll_users[user];
+    return (struct ios_poll_snapshot){ user, pollfd[user].fd, fd->poll_generation, fd->open_pid, fd->open_tid };
+}
+
+/* A preceding callback can remove/reuse another entry in this batch, including
+ * the same integer descriptor and object address. Revalidate the registration
+ * and current mask before using readiness sampled for the earlier owner. */
+static int ios_poll_dispatch_snapshot( const struct ios_poll_snapshot *sample, int events )
+{
+    struct fd *fd = NULL;
+    const char *reason = NULL;
+    int masked = 0, current_fd = -1;
+    unsigned long long generation = 0, dropped;
+    unsigned int pid = 0, tid = 0;
+    if (sample->user <= 0 || sample->user >= nb_users || pollfd[sample->user].fd < 0)
+        reason = "removed-or-disabled";
+    else
+    {
+        current_fd = pollfd[sample->user].fd;
+        fd = poll_users[sample->user];
+        generation = fd->poll_generation;
+        pid = fd->open_pid; tid = fd->open_tid;
+        if (current_fd != sample->unix_fd || !sample->generation || generation != sample->generation)
+            reason = "registration-changed";
+        else
+        {
+            /* Interest zero is still an error/hangup watch. Only fd=-1 fully
+             * disables a Wine poll user. Terminal events need no interest bit. */
+            masked = events & (pollfd[sample->user].events | POLLERR | POLLHUP | POLLNVAL);
+            if (!masked) reason = "interest-changed";
+        }
+    }
+    if (!reason)
+    {
+        if (ios_poll_delivered != ~0ull) ios_poll_delivered++;
+        if ((masked & POLLHUP) && ios_poll_hup != ~0ull) ios_poll_hup++;
+        if ((masked & POLLERR) && ios_poll_error != ~0ull) ios_poll_error++;
+        if ((masked & POLLNVAL) && ios_poll_invalid != ~0ull)
+        {
+            unsigned long long n = ++ios_poll_invalid;
+            if (n <= 4 || !(n & (n - 1)))
+            {
+                int saved_errno = errno;
+                fprintf( stderr, "[srv-poll-invalid-v1] count=%llu user=%d fd=%d generation=%llu creator=%04x/%04x "
+                         "interest=%x ready=%x action=forward-unchanged\n", n, sample->user, current_fd,
+                         generation, pid, tid, pollfd[sample->user].events, masked );
+                errno = saved_errno;
+            }
+        }
+        fd_poll_event( fd, masked );
+        return 1;
+    }
+    if (!strcmp(reason,"interest-changed"))
+    {
+        if (ios_poll_masked != ~0ull) ios_poll_masked++;
+    }
+    else if (ios_poll_stale != ~0ull) ios_poll_stale++;
+    dropped = ios_poll_stale + ios_poll_masked;
+    if (dropped < ios_poll_stale) dropped = ~0ull;
+    if (dropped <= 8 || (dropped && !(dropped & (dropped - 1))))
+    {
+        int saved_errno = errno;
+        fprintf( stderr, "[srv-poll-drop-v1] reason=%s user=%d fd=%d generation=%llu creator=%04x/%04x "
+                 "current-fd=%d generation=%llu creator=%04x/%04x ready=%x stale=%llu masked=%llu\n",
+                 reason, sample->user, sample->unix_fd, sample->generation, sample->creator_pid,
+                 sample->creator_tid, current_fd, generation, pid, tid, events, ios_poll_stale, ios_poll_masked );
+        errno = saved_errno;
+    }
+    return 0;
+}
+
+/* Count live enabled descriptors separately from the poll array's high-water
+ * mark. Creation provenance is not a claim of exclusive process ownership. */
+static void ios_poll_owner_census(void)
+{
+    static unsigned reports;
+    struct { unsigned pid, enabled, armed; } owners[8] = {{0}};
+    unsigned count = 0, other = 0;
+    if (reports >= 12) return;
+    reports++;
+    for (int i = 0; i < nb_users; i++)
+    {
+        unsigned j, pid;
+        if (pollfd[i].fd < 0) continue;
+        pid = poll_users[i]->open_pid;
+        for (j = 0; j < count && owners[j].pid != pid; j++) {}
+        if (j == count)
+        {
+            if (count == 8) { other++; continue; }
+            owners[count++].pid = pid;
+        }
+        owners[j].enabled++;
+        if (pollfd[i].events) owners[j].armed++;
+    }
+    for (unsigned j = 0; j < count; j++)
+        fprintf( stderr, "[srv-poll-owner-v1] creator-pid=%04x enabled-fds=%u data-interest-fds=%u provenance=allocation\n",
+                 owners[j].pid, owners[j].enabled, owners[j].armed );
+    if (other) fprintf( stderr, "[srv-poll-owner-v1] other-enabled-fds=%u\n", other );
 }
 
 #ifdef USE_EPOLL
@@ -1279,6 +1417,8 @@ static inline void main_loop_epoll(void) { }
 static int add_poll_user( struct fd *fd )
 {
     int ret;
+    /* Never wrap an identity into an earlier live registration. */
+    if (ios_poll_generation == ~0ull) { errno = EOVERFLOW; return -1; }
     if (freelist)
     {
         ret = freelist - poll_users;
@@ -1311,6 +1451,7 @@ static int add_poll_user( struct fd *fd )
     pollfd[ret].events = 0;
     pollfd[ret].revents = 0;
     poll_users[ret] = fd;
+    fd->poll_generation = ++ios_poll_generation;
     active_users++;
     ios_fd_inet_forget( ret );   /* a reused slot must be classified again */
     {
@@ -1553,7 +1694,6 @@ void main_loop(void)
         static int ios_syn_top_user = -1, ios_syn_top_n = 0;  /* noisiest poll user */
         static unsigned ios_syn_per_user[64];        /* rolling, low 6 bits of user */
         static int ios_post_inject = 0;  /* trace first N iters after injection */
-        static int ios_client_fd_start = -1;  /* first poll index added by injection */
         static int ios_doorbell = 0;                     /* madeira-bcd: see ios_srv_bell */
         static unsigned long long ios_fullscan_ns = 10000000ull;
         unsigned long long ios_last_full = 0, ios_full_n = 0, ios_pass_n = 0;
@@ -1671,8 +1811,7 @@ void main_loop(void)
                 int injected = __atomic_exchange_n(&g_injected_client_fd, -1, __ATOMIC_SEQ_CST);
                 if (injected >= 0)
                 {
-                    ios_client_fd_start = nb_users;  /* remember where init fds end */
-                    ws_log("[wineserver-fd] INJECTED client fd=%d at iter=%d client_start=%d — calling master_socket_handle_client", injected, ios_iter, ios_client_fd_start);
+                    ws_log("[wineserver-fd] INJECTED client fd=%d at iter=%d poll-highwater=%d — calling master_socket_handle_client", injected, ios_iter, nb_users);
                     master_socket_handle_client(injected);
                     ws_log("[wineserver-fd] master_socket_handle_client returned, nb_users=%d", nb_users);
                     /* Dump fds right after injection */
@@ -1814,10 +1953,22 @@ void main_loop(void)
                     double s = (now_ns - ios_db_report) / 1e9;
                     /* stderr: ws_log stops reaching the session log once the app
                      * sets ws_log_quiet (ContentView), which hid this line in 442 */
+                    unsigned enabled = 0, armed = 0;
+                    for (int u = 0; u < nb_users; u++) if (pollfd[u].fd >= 0)
+                    {
+                        enabled++;
+                        if (pollfd[u].events) armed++;
+                    }
                     fprintf( stderr, "[srv-doorbell] %.0f passes/s, %.0f socket+fd scans/s, %.0f full scans/s, "
-                             "%.0f rung threads/s (%.0f rung again), %d poll users\n",
+                             "%.0f rung threads/s (%.0f rung again), poll-slots-highwater=%d live-objects=%d "
+                             "enabled-fds=%u data-interest-fds=%u delivered=%llu stale=%llu masked=%llu "
+                             "typed-probe-in=%llu typed-probe-out=%llu hup=%llu err=%llu nval=%llu\n",
                              ios_pass_n / s, ios_slow_n / s, ios_full_n / s, ios_bell_threads / s,
-                             ios_bell_again / s, nb_users );
+                             ios_bell_again / s, nb_users, active_users, enabled, armed,
+                             ios_poll_delivered, ios_poll_stale, ios_poll_masked,
+                             ios_poll_probe_in, ios_poll_probe_out, ios_poll_hup, ios_poll_error, ios_poll_invalid );
+                    ios_poll_owner_census();
+                    { extern void ios_srv_request_progress(void); ios_srv_request_progress(); }
                     ios_pass_n = ios_full_n = ios_slow_n = ios_bell_threads = ios_bell_again = 0;
                     ios_db_report = now_ns;
                     {   /* madeira-bcd: MADEIRA_SRV_DIRECT, only when it ran */
@@ -1833,10 +1984,10 @@ void main_loop(void)
             }
             if (!ios_slow_pass) continue;
 
-            /* Real sockets first: zero-timeout poll() gives true INET
-             * event semantics (connect completion, errors, data). See
-             * ios_fd_is_inet comment. Dispatch re-checks fd identity —
-             * fd_poll_event may remove/reuse later poll users. */
+            /* Actual readiness for INET and queue/device/other descriptors.
+             * Only thread/process protocol callbacks use the sandbox's typed
+             * nonblocking-I/O fallback below. Zero-interest error watches stay
+             * in this batch too. Dispatch validates registration and mask. */
             {
                 /* ml160 (#36): this loop used to stop at the FIRST 64 INET
                  * fds (`nrp < 64`), silently dropping every one past that on
@@ -1846,37 +1997,33 @@ void main_loop(void)
                  * ~400 polls, while three LATER blocking connects get ZERO
                  * poll_socket calls and Steam quits after the third.
                  *
-                 * Now batched: poll ALL INET fds, 64 at a time. The counters
-                 * prove whether the old cap was actually being exceeded —
-                 * if inet_seen never exceeds 64, the cap was NOT the bug and
-                 * this change is merely harmless. */
+                 * Keep batching all descriptors requiring actual readiness,
+                 * including non-network queues/devices and error-only watches. */
                 struct pollfd rp[64];
-                int rp_user[64];
+                struct ios_poll_snapshot rp_owner[64];
                 int nrp = 0, k;
-                int inet_seen = 0;
-                static unsigned ios_inet_cap_reports;
-                static int ios_inet_max_seen;
+                int real_seen = 0;
+                static unsigned ios_real_cap_reports;
+                static int ios_real_max_seen;
 
                 for (i = 1; i < nb_users; i++)
                 {
-                    if (pollfd[i].fd < 0 || !pollfd[i].events) continue;
-                    if (!ios_fd_is_inet( i, pollfd[i].fd )) continue;
-                    inet_seen++;
+                    if (pollfd[i].fd < 0) continue; /* zero interest still watches ERR/HUP/NVAL */
+                    if (!ios_fd_needs_real_poll( i )) continue;
+                    real_seen++;
                     rp[nrp].fd = pollfd[i].fd;
                     rp[nrp].events = pollfd[i].events;
                     rp[nrp].revents = 0;
-                    rp_user[nrp++] = i;
+                    rp_owner[nrp++] = ios_poll_snapshot( i );
 
                     if (nrp < 64) continue;
                     if (poll( rp, nrp, 0 ) > 0)
                     {
                         for (k = 0; k < nrp; k++)
                         {
-                            int u = rp_user[k];
                             if (!rp[k].revents) continue;
-                            if (pollfd[u].fd != rp[k].fd) continue;
-                            ios_events_fired++; ios_c_inet++;
-                            fd_poll_event( poll_users[u], rp[k].revents );
+                            if (ios_poll_dispatch_snapshot( &rp_owner[k], rp[k].revents ))
+                            { ios_events_fired++; ios_c_inet++; }
                         }
                     }
                     nrp = 0;
@@ -1885,66 +2032,41 @@ void main_loop(void)
                 {
                     for (k = 0; k < nrp; k++)
                     {
-                        int u = rp_user[k];
                         if (!rp[k].revents) continue;
-                        if (pollfd[u].fd != rp[k].fd) continue;  /* user removed mid-dispatch */
-                        ios_events_fired++; ios_c_inet++;
-                        fd_poll_event( poll_users[u], rp[k].revents );
+                        if (ios_poll_dispatch_snapshot( &rp_owner[k], rp[k].revents ))
+                        { ios_events_fired++; ios_c_inet++; }
                     }
                 }
-                if (inet_seen > ios_inet_max_seen)
+                if (real_seen > ios_real_max_seen)
                 {
-                    ios_inet_max_seen = inet_seen;
-                    if (inet_seen > 48 && ios_inet_cap_reports < 12)
+                    ios_real_max_seen = real_seen;
+                    if (real_seen > 48 && ios_real_cap_reports < 12)
                     {
-                        ios_inet_cap_reports++;
-                        ws_log("[inet-poll] max INET fds with events = %d (nb_users=%d)%s",
-                               inet_seen, nb_users,
-                               inet_seen > 64 ? "  <-- OLD 64-CAP WOULD HAVE DROPPED SOME" : "");
+                        ios_real_cap_reports++;
+                        ws_log("[real-poll] descriptors=%d poll-highwater=%d batches-of=64", real_seen, nb_users);
                     }
                 }
             }
 
-            /* Check non-master fds for events.
-             * Init fds (signal pipes, files): use ioctl(FIONREAD) — works for pipes/files.
-             * Client fds (socketpair, request pipe): always try non-blocking read —
-             * ioctl(FIONREAD) is broken for AF_UNIX sockets on iOS.
-             * INET sockets: handled by the real poll() above — skip here. */
+            /* Protocol pipes and AF_UNIX sockets can be probed safely by their
+             * thread/process callbacks. Actual owners select this fallback;
+             * array positions and creation time do not imply readiness. */
             for (i = 1; i < nb_users; i++)
             {
                 if (pollfd[i].fd >= 0 && pollfd[i].events)
                 {
-                    short revents = 0;
-
-                    if (ios_fd_is_inet( i, pollfd[i].fd )) continue;
-
-                    if (pollfd[i].events & POLLIN)
+                    short revents = ios_fd_probe_events( poll_users[i], ios_fd_is_inet( i, pollfd[i].fd ),
+                                                        pollfd[i].events, ios_full_scan );
+                    if (revents & POLLIN)
                     {
-                        if (ios_client_fd_start >= 0 && i >= ios_client_fd_start)
-                        {
-                            /* Client fd (socketpair/pipe from injection) —
-                             * always try, ioctl broken for AF_UNIX on iOS.
-                             * madeira-bcd: only on a full-scan pass; rung
-                             * request fds were read above */
-                            if (ios_full_scan)
-                            {
-                                revents |= POLLIN;
-                                ios_c_synin++;
-                            }
-                        }
-                        else
-                        {
-                            /* Init fd — ioctl works for pipes and files */
-                            int bytes_avail = 0;
-                            if (ioctl( pollfd[i].fd, FIONREAD, &bytes_avail ) == 0 && bytes_avail > 0)
-                                revents |= POLLIN;
-                        }
+                        ios_c_synin++;
+                        if (ios_poll_probe_in != ~0ull) ios_poll_probe_in++;
                     }
 
-                    if (pollfd[i].events & POLLOUT)
+                    if (revents & POLLOUT)
                     {
-                        revents |= POLLOUT;
                         ios_c_synout++;
+                        if (ios_poll_probe_out != ~0ull) ios_poll_probe_out++;
                     }
 
                     if (revents)

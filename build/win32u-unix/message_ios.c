@@ -36,6 +36,9 @@
 #include "dde.h"
 #include "immdev.h"
 #include "wine/debug.h"
+#ifdef WINE_IOS
+#include "../steam-ui/progress.h"
+#endif
 
 WINE_DEFAULT_DEBUG_CHANNEL(msg);
 WINE_DECLARE_DEBUG_CHANNEL(key);
@@ -504,7 +507,13 @@ static LRESULT dispatch_win_proc_params( struct win_proc_params *params, size_t 
 
     if (thread_info->recursion_count > MAX_WINPROC_RECURSION) return 0;
     thread_info->recursion_count++;
+#ifdef WINE_IOS
+    winios_ui_progress_event(MADEIRA_UI_DISPATCH_BEGIN,params->msg,(uintptr_t)params->hwnd);
+#endif
     status = KeUserModeCallback( NtUserCallWinProc, params, size, &ret_ptr, &ret_len );
+#ifdef WINE_IOS
+    winios_ui_progress_event(!status&&ret_len>=sizeof(result)?MADEIRA_UI_DISPATCH_RETURN:MADEIRA_UI_DISPATCH_FAILED,params->msg,(uintptr_t)params->hwnd);
+#endif
     thread_info->recursion_count--;
 
     if (status) return result;
@@ -3196,6 +3205,9 @@ static int peek_message( MSG *msg, const struct peek_message_filter *filter )
                     TRACE("dropping msg %x\n", info.msg.message );
                     continue;  /* ignore it */
                 }
+#ifdef WINE_IOS
+                if(flags&PM_REMOVE)winios_ui_progress_event(MADEIRA_UI_DEQUEUED,info.msg.message,(uintptr_t)info.msg.hwnd);
+#endif
                 *msg = info.msg;
                 thread_info->client_info.message_pos   = MAKELONG( info.msg.pt.x, info.msg.pt.y );
                 thread_info->client_info.message_time  = info.msg.time;

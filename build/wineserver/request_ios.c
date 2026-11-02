@@ -343,6 +343,25 @@ static void ios_regflush_request(void)
 
 /* madeira-bcd: the ml1055 request census, moved out of call_req_handler unchanged so a
  * direct request (ios_srv_direct_call) is counted the same way. current is thread. */
+static const char *ios_req_name( unsigned req )
+{
+    switch (req)
+    {
+    case REQ_select: return "select";
+    case REQ_event_op: return "event_op";
+    case REQ_close_handle: return "close_handle";
+    case REQ_get_message: return "get_message";
+    case REQ_get_message_reply: return "get_message_reply";
+    case REQ_open_key: return "open_key";
+    case REQ_get_key_value: return "get_key_value";
+    case REQ_get_window_property: return "get_window_property";
+    case REQ_add_completion: return "add_completion";
+    case REQ_remove_completion: return "remove_completion";
+    case REQ_get_thread_completion: return "get_thread_completion";
+    default: return "other";
+    }
+}
+
 static void ios_req_census( struct thread *thread, enum request req )
 {
     /* ml1055: which requests. With the JIT no longer thrashing, ~16% of running
@@ -351,6 +370,9 @@ static void ios_req_census( struct thread *thread, enum request req )
      * names through wine/server/request_trace.h req_names[]. */
     static unsigned long counts[REQ_NB_REQUESTS], total;
     static struct timespec t0;
+    static timeout_t report_at;
+    static unsigned reports;
+    if (reports >= 12) return; /* at most two minutes of default request histograms */
     /* madeira-bcd: and from whom. Four heavy-hitter slots per request
      * (space-saving: a newcomer replaces the smallest and inherits its
      * count), so a storm (set_cursor 2,400/s in build 437) names its
@@ -428,8 +450,8 @@ static void ios_req_census( struct thread *thread, enum request req )
             hh[req][low].tid = tid; hh[req][low].pid = pid; hh[req][low].n++;
         }
     }
-    if (!total) clock_gettime( CLOCK_MONOTONIC, &t0 );
-    if (++total % 200000 == 0)
+    if (!total) { clock_gettime( CLOCK_MONOTONIC, &t0 ); report_at = monotonic_time; }
+    if (++total >= 200000 || monotonic_time - report_at >= 10 * TICKS_PER_SEC)
     {
         struct timespec t1; char line[1400]; int n = 0, k, s; unsigned r;
         clock_gettime( CLOCK_MONOTONIC, &t1 );
@@ -439,13 +461,13 @@ static void ios_req_census( struct thread *thread, enum request req )
             for (r = 0; r < REQ_NB_REQUESTS; r++) if (counts[r] > bn) { bn = counts[r]; best = r; }
             if (!bn) break;
             for (s = 1; s < 4; s++) if (hh[best][s].n > hh[best][top].n) top = s;
-            n += snprintf( line + n, sizeof(line) - n, " req%u=%lu(tid %04x pid %04x ~%lu)", best, bn,
+            n += snprintf( line + n, sizeof(line) - n, " req%u:%s=%lu(tid %04x pid %04x ~%lu)", best, ios_req_name(best), bn,
                            hh[best][top].tid, hh[best][top].pid, hh[best][top].n );
             counts[best] = 0;
         }
         for (r = 0; r < REQ_NB_REQUESTS; r++) counts[r] = 0;
         memset( hh, 0, sizeof(hh) );
-        fprintf( stderr, "[srv-req] ml1055 last 200000 requests in %.1f s:%s\n",
+        fprintf( stderr, "[srv-req-v2] last %lu requests in %.1f s:%s\n", total,
                  (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9, line );
         if (cursor_flags[0] + cursor_flags[1] + cursor_flags[2] + cursor_flags[3] + cursor_flags[4])
         {
@@ -469,8 +491,21 @@ static void ios_req_census( struct thread *thread, enum request req )
             memset( sel_obj, 0, sizeof(sel_obj) );
             sel_multi_sem = 0;
         }
-        t0 = t1;
+        total = 0;
+        reports++;
     }
+}
+
+static unsigned long long ios_request_headers, ios_request_empty, ios_request_eof, ios_request_errors;
+static unsigned long long ios_request_partial;
+void ios_srv_request_progress(void)
+{
+    static unsigned reports;
+    if (reports >= 12) return;
+    reports++;
+    fprintf( stderr, "[srv-request-progress-v1] header-progress=%llu empty-read-probes=%llu partial-payload-waits=%llu "
+             "eof=%llu read-errors=%llu counts=cumulative; empty probes alone are not completed requests\n",
+             ios_request_headers, ios_request_empty, ios_request_partial, ios_request_eof, ios_request_errors );
 }
 
 /* call a request handler */
@@ -736,6 +771,7 @@ void read_request( struct thread *thread )
     {
         if ((ret = read( get_unix_fd( thread->request_fd ), &thread->req,
                          sizeof(thread->req) )) != sizeof(thread->req)) goto error;
+        ios_request_headers++;
         if (!(thread->req_toread = thread->req.request_header.request_size))
         {
             /* no data, handle request at once */
@@ -770,6 +806,7 @@ void read_request( struct thread *thread )
 error:
     if (!ret)  /* closed pipe */
     {
+        ios_request_eof++;
         /* ml586: this kill was previously SILENT — the 0060-family autopsy
          * needs the fd number and tid on every request-channel death */
         fprintf( stderr, "[srv-own] read_request EOF tid=%04x pid=%04x request_unixfd=%d -> kill_thread rev=ml586\n",
@@ -777,13 +814,19 @@ error:
         kill_thread( thread, 0 );
     }
     else if (ret > 0)
+    {
+        ios_request_errors++;
         fatal_protocol_error( thread, "partial read %d\n", ret );
+    }
     else if (errno != EWOULDBLOCK && (EWOULDBLOCK == EAGAIN || errno != EAGAIN))
     {
+        ios_request_errors++;
         fprintf( stderr, "[srv-own] read_request ERR tid=%04x pid=%04x request_unixfd=%d errno=%d rev=ml586\n",
                  thread->id, thread->process->id, get_unix_fd( thread->request_fd ), errno );
         fatal_protocol_error( thread, "read: %s\n", strerror( errno ));
     }
+    else if (thread->req_toread) ios_request_partial++;
+    else ios_request_empty++;
 }
 
 /* receive a file descriptor on the process socket */

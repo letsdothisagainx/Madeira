@@ -3,8 +3,8 @@
 # Madeira Converter Exception: see LICENSE-EXCEPTION.md
 """The poll loop's INET cache forgets a slot when it is reused (build/wineserver/fd_ios.c).
 
-The iOS poll loop gives INET sockets a real poll() and synthesises events for every other
-fd, including an unconditional POLLOUT. ios_fd_is_inet cached that verdict per (poll user
+The iOS poll loop gives INET sockets a real poll() and limits synthetic events to typed
+thread/process protocol callbacks. ios_fd_is_inet cached that verdict per (poll user
 slot, fd number) and nothing cleared it when add_poll_user/remove_poll_user recycled a
 slot. The slot freelist is LIFO and unix fds are allocated lowest-first, so a socket
 created right after a thread exits can get that thread's request-fifo slot and fd number;
@@ -25,7 +25,7 @@ UBSan, and checks on real pipes and sockets:
 Local pipes and unconnected sockets only: no Wine, iOS, device or network traffic.
 """
 from pathlib import Path
-import os, shutil, subprocess, sys, tempfile
+import os, re, shutil, subprocess, sys, tempfile
 
 root = Path(__file__).resolve().parents[2]
 src = (root / 'build/wineserver/fd_ios.c').read_text().replace('\r\n', '\n')
@@ -41,7 +41,10 @@ def require(condition, label):
 
 
 def function(head):
-    start = src.index(head)
+    match = re.search(re.escape(head) + r'\s*\{', src)
+    if not match:
+        raise AssertionError('Function definition missing: ' + head)
+    start = match.start()
     return src[start:src.index('\n}\n', start) + 3]
 
 
@@ -51,6 +54,7 @@ def lines(first, last):
 
 
 poll_arrays = lines('static struct fd **poll_users;', 'static struct fd **freelist;')
+poll_arrays += lines('static unsigned long long ios_poll_generation;', 'static unsigned long long ios_poll_generation;')
 cache = lines('static int *ios_inet_cache_fd;', 'static int ios_inet_cache_size;')
 forget = function('static void ios_fd_inet_forget( int user )')
 family = function('static signed char ios_fd_family_is_inet( int fd )')
@@ -64,7 +68,10 @@ require('ios_fd_inet_forget( ret );' in add and add.index('ios_fd_inet_forget( r
 require('ios_fd_inet_forget( user );' in remove, 'remove_poll_user forgets the slot it frees')
 require('static int *cache_fd;' not in is_inet and 'return 0;' not in is_inet,
         'ios_fd_is_inet keeps no private cache and never answers "not INET" without asking')
-require(src.count('ios_fd_is_inet( i, pollfd[i].fd )') == 2, 'the poll loop still asks it for both passes')
+real_poll = function('static int ios_fd_needs_real_poll( int user )')
+require('ios_fd_is_inet( user, pollfd[user].fd )' in real_poll and
+        'ios_fd_is_inet( i, pollfd[i].fd )' in src,
+        'real-poll selection and typed fallback both consult the existing INET cache')
 
 harness = r'''
 #define _GNU_SOURCE
@@ -79,11 +86,11 @@ harness = r'''
 #include <netinet/in.h>
 #include <unistd.h>
 
-struct fd { int unix_fd; };
+struct fd { int unix_fd; unsigned long long poll_generation; };
 static void init_epoll( void ) { }
 static void remove_epoll_user( struct fd *fd, int user ) { }
 #define ws_log(...) ((void)0)
-static int ios_srv_log_sample(unsigned *n) { return (*n)++ < 8; }
+static int ios_srv_log_sample(unsigned long *n) { return (*n)++ < 8; }
 
 static int realloc_calls, realloc_fail_mask;      /* bit n: the n-th realloc from now fails */
 static void *test_realloc( void *p, size_t n )
@@ -185,7 +192,7 @@ int main( void )
     if (socketpair( AF_UNIX, SOCK_STREAM, 0, sv )) return 2;
     d.unix_fd = sv[0];
     n = add( &d );
-    bad |= check( ios_fd_is_inet( n, sv[0] ) == 0, "an AF_UNIX socketpair is not INET (keeps the synthesised events)" );
+    bad |= check( ios_fd_is_inet( n, sv[0] ) == 0, "an AF_UNIX socketpair is not INET (typed callback policy selects any fallback)" );
 
     /* the cache cannot grow: the fd array's realloc fails, then the verdict array's */
     s = socket( AF_INET, SOCK_STREAM, 0 );

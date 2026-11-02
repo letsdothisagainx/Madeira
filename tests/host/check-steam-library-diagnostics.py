@@ -60,13 +60,24 @@ extension SteamLibraryDiagnostics {
   events=8000
   await receive("{\"id\":\(replyID),\"result\":{\"ok\":true}}",socket:mainSocket)
   assert(replied,"event budget discarded a live command response")
+  await receive("{\"method\":\"Network.webSocketFrameReceived\",\"params\":{\"response\":{\"payloadData\":\"SECRET\"}}}",socket:mainSocket)
+  assert(progress["fixture"]?.wsReceived==1,"traffic counter stopped at event/log budget")
   events=0
   await captureSnapshot("fixture",socket:mainSocket)
+  sampled["fixture"] = .distantPast
+  await captureSnapshot("fixture",socket:mainSocket)
+  assert(progress["fixture"]?.stores==2,"unchanged Store data hid the successful roundtrip")
+  assert(LogStore.shared.lines.filter{$0.contains("target=2 readonly-store ")}.count==1)
   await captureUIState("fixture",socket:sockets["fixture"]!)
   updateRole("fixture",pageURL:"about:blank");assert(!storeTargets.contains("fixture"))
   updateRole("fixture",pageURL:"https://steamloopback.host/index.html");assert(storeTargets.contains("fixture"))
+  let before=LogStore.shared.lines.filter{$0.contains("target=2 progress ")}.count
+  progress["fixture"]?.reportedAt = .distantPast;reportProgress();reportProgress()
+  assert(LogStore.shared.lines.filter{$0.contains("target=2 progress ")}.count==before+1,"progress was not throttled")
+  for _ in 0..<25 {progress["fixture"]?.reportedAt = .distantPast;reportProgress()}
+  assert(LogStore.shared.lines.filter{$0.contains(" progress ")}.count==20,"progress exceeded its independent bound")
   let elapsed=Date().timeIntervalSince(began)
-  stop();return elapsed
+  stop();assert(progress.isEmpty&&commandStarts.isEmpty);return elapsed
  }
 }
 ''')
@@ -104,7 +115,7 @@ extension SteamLibraryDiagnostics {
   let elapsed=await observer.runCDPFixture(URL(string:CommandLine.arguments[1])!)
   assert(elapsed<2.5,"slow auxiliary evaluation serialized the main UI sample")
   let lines=LogStore.shared.lines.joined(separator:"\n")
-  for marker in ["target=2 console-route source=URLTrack route=/library/home","resource status=200","resource status=404","net::ERR_CONNECTION_REFUSED","console-frame function=AppStore.Init","Uncaught (in promise)","websocket handshake-status=101","websocket transport-error","target=2 readonly-store","\"cs2\":true","AppLaunch_MustUpdateClient","target=2 game-action-error source=OnGameActionShowError error=AppError_47 cs2-argument-shape=true details=excluded"] {assert(lines.contains(marker),marker)}
+  for marker in ["target=2 console-route source=URLTrack route=/library/home","resource status=200","resource status=404","net::ERR_CONNECTION_REFUSED","console-frame function=AppStore.Init","Uncaught (in promise)","websocket handshake-status=101","websocket transport-error","target=2 readonly-store","\"cs2\":true","AppLaunch_MustUpdateClient","target=2 game-action-error source=OnGameActionShowError error=AppError_47 cs2-argument-shape=true details=excluded","target=2 progress packets=","store-values=2 ws-tx=0 ws-rx=1","last-command-rtt-ms=","purpose=known-ui-text","send-before-connected"] {assert(lines.contains(marker),marker)}
   assert(LogStore.shared.lines.filter{$0.contains("console kind=warning") && $0.contains("classes=unclassified")}.count==30)
   if CommandLine.arguments[1].hasSuffix("dom-blocked") { assert(lines.contains("readonly-ui-text=unavailable")) }
   else {

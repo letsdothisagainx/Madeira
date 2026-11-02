@@ -43,6 +43,7 @@ static WCHAR driver_load_error[80];
 
 #ifdef WINE_IOS
 #include "../steam-ui/trace.h"
+#include "../steam-ui/progress.h"
 /* winios.drv — Madeira's iOS display/input driver. Lives in
  * app/Madeira/Winios/. Most slots stay NULL so __wine_set_user_driver's
  * SET_USER_FUNC fallback installs the always-success nulldrv_* stubs;
@@ -829,11 +830,50 @@ static void ios_apply_fullscreen_foreground(void)
                  hwnd, (unsigned)pid, fg, (unsigned)fg_pid, ok );
 }
 
+/* Register only actual Steam UI execution; UIKit reads these counters without
+ * calling Wine or sending messages back into a potentially blocked thread. */
+static struct madeira_ui_progress_slot steam_ui_progress[MADEIRA_UI_PROGRESS_SLOTS];
+void winios_ui_progress_event(unsigned kind,unsigned message,uintptr_t hwnd)
+{
+    TEB *teb=NtCurrentTeb();
+    RTL_USER_PROCESS_PARAMETERS *params=teb&&teb->Peb?teb->Peb->ProcessParameters:NULL;
+    static __thread DWORD cached_pid;
+    static __thread int cached_steam;
+    if(!params)return;
+    DWORD pid=(DWORD)(ULONG_PTR)teb->ClientId.UniqueProcess;
+    if(cached_pid!=pid)
+    {
+        cached_pid=pid;
+        cached_steam=madeira_steam_ui_image(params->ImagePathName.Buffer,params->ImagePathName.Length/sizeof(WCHAR));
+    }
+    if(!cached_steam)return;
+    int error=errno;DWORD last_error=teb->LastErrorValue;
+    struct timespec now;
+    if(!clock_gettime(CLOCK_MONOTONIC,&now))
+    {
+        uint64_t ns=(uint64_t)now.tv_sec*1000000000ull+now.tv_nsec;
+        madeira_ui_progress_add(steam_ui_progress,pid,(DWORD)(ULONG_PTR)teb->ClientId.UniqueThread,kind,ns,hwnd,message);
+        if(madeira_ui_input_message(message))
+        {
+            unsigned input=kind==MADEIRA_UI_DISPATCH_BEGIN?MADEIRA_UI_INPUT_BEGIN:
+                           kind==MADEIRA_UI_DISPATCH_RETURN?MADEIRA_UI_INPUT_RETURN:
+                           kind==MADEIRA_UI_DISPATCH_FAILED?MADEIRA_UI_INPUT_FAILED:MADEIRA_UI_PROGRESS_KINDS;
+            if(input<MADEIRA_UI_PROGRESS_KINDS)madeira_ui_progress_add(steam_ui_progress,pid,(DWORD)(ULONG_PTR)teb->ClientId.UniqueThread,input,ns,hwnd,message);
+        }
+    }
+    teb->LastErrorValue=last_error;errno=error;
+}
+int winios_ui_progress_snapshot(uint32_t pid,uint32_t tid,struct madeira_ui_progress_snapshot *out)
+{
+    return madeira_ui_progress_read(steam_ui_progress,pid,tid,out);
+}
+
 /* pProcessEvents: runs on every message poll of a wine thread (message_ios.c
  * process_driver_events), so a window's own thread gets here right after it
  * was shown. */
 static BOOL winios_drv_process_events( DWORD mask )
 {
+    winios_ui_progress_event(MADEIRA_UI_POLL,0,0);
     if (ios_show_foreground) ios_apply_fullscreen_foreground();
     ios_steam_handoff_foreground();
     ios_foreground_if_none( "a message poll" );
@@ -880,6 +920,7 @@ static BOOL winios_surface_flush( struct window_surface *surface, const RECT *re
                                   const BITMAPINFO *color_info, const void *color_bits, BOOL shape_changed,
                                   const BITMAPINFO *shape_info, const void *shape_bits )
 {
+    winios_ui_progress_event(MADEIRA_UI_FLUSH,0,(uintptr_t)(surface?surface->hwnd:NULL));
     /* ml505: attribute the paint. All three children share this ONE surface,
      * so if they paint on different threads the mach thread id separates
      * them — and a single thread painting alternating content rules the

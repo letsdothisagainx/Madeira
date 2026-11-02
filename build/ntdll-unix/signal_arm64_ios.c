@@ -2547,6 +2547,59 @@ static int ios_g32_read( uint64_t addr, void *out, size_t size )
 #include "guest32_cxx.h"
 #include "cef_atexit_context.h"
 
+static int ios_g32_fault_owned(uint64_t address, uint64_t owner)
+{
+    extern int ios_fex_code_owner_matches(uintptr_t pc, void *owner);
+    return ios_fex_code_owner_matches((uintptr_t)address,(void *)(uintptr_t)owner);
+}
+#include "guest32_fault.h"
+
+/* The Mach server has no guest TEB of its own. Validate the TARGET's TLS14
+ * frame and owner before using the non-EC x32 register map. No guest callback,
+ * page-protection change or blocking virtual-memory lock is permitted here. */
+static void ios_trace_wow32_fault(uintptr_t teb, const arm_thread_state64_t *state,
+                                 uint64_t address)
+{
+    static struct { uint64_t frame, pc, address; } seen[8];
+    static unsigned count;
+    uint64_t owner=0,fex=0,frame=0,window,pc=arm_thread_state64_get_pc(*state);
+    struct ios_g32_fault_block block;
+    uint32_t pid=0,tid=0;
+    int saved_errno=errno,have_block;
+    if (!teb ||
+        !ios_g32_read(teb+offsetof(TEB,Peb),&owner,8) ||
+        !(window=ios_wow_base_for_peb((void *)(uintptr_t)owner)) || state->__x[19]!=window ||
+        address<window || address-window>UINT32_MAX ||
+        !ios_g32_read(teb+offsetof(TEB,TlsSlots)+14*sizeof(void *),&fex,8) || !fex ||
+        !ios_g32_read(fex,&frame,8) || !frame || frame!=state->__x[28] ||
+        !ios_g32_fault_owned(pc,owner)) goto done;
+    for (unsigned i=0;i<count;i++)
+        if(seen[i].frame==frame && seen[i].pc==pc && seen[i].address==address) goto done;
+    if(count==8)goto done;
+    seen[count].frame=frame;seen[count].pc=pc;seen[count++].address=address;
+    have_block=ios_g32_fault_block(frame,pc,owner,&block);
+    ios_g32_read(teb+offsetof(TEB,ClientId.UniqueProcess),&pid,4);
+    ios_g32_read(teb+offsetof(TEB,ClientId.UniqueThread),&tid,4);
+    dprintf(2,"[guest32-fault-event] pid=%04x tid=%04x stage=before-exception-dispatch\n",pid,tid);
+    ios_g32_fault_report(teb,window,frame,pc,address,state->__x,&block,have_block);
+    {
+        mach_vm_address_t start=address;
+        mach_vm_size_t size=0;
+        vm_region_basic_info_data_64_t info;
+        mach_msg_type_number_t n=VM_REGION_BASIC_INFO_COUNT_64;
+        mach_port_t object=MACH_PORT_NULL;
+        kern_return_t kr=mach_vm_region(mach_task_self(),&start,&size,VM_REGION_BASIC_INFO_64,
+                                        (vm_region_info_t)&info,&n,&object);
+        int contains=kr==KERN_SUCCESS && start<=address && address-start<size;
+        dprintf(2,"[guest32-fault-map] kr=%d contains=%d base=%#llx size=%#llx prot=%d max=%d\n",
+                kr,contains,(unsigned long long)start,(unsigned long long)size,
+                contains?info.protection:-1,contains?info.max_protection:-1);
+        if(object!=MACH_PORT_NULL)mach_port_deallocate(mach_task_self(),object);
+    }
+done:
+    errno=saved_errno;
+}
+
 void ios_trace_first_cxx(const EXCEPTION_RECORD *rec)
 {
     static unsigned reports;
@@ -6240,13 +6293,26 @@ dispatch_guest_fault:
                     uintptr_t teb_q = 0; void *tramp_q = NULL;
                     ios_lookup_thread(thread, &teb_q, &tramp_q);
                     void *fex_state_q = NULL;
+                    uint64_t q_owner=0,q_window=0,q_thread=0,q_frame=0;
+                    const char *rip_source="arm64ec-saved";
                     if (teb_q)
                     {
-                        void *cpuarea = *(void**)(teb_q + 0x1788);
-                        if (cpuarea) fex_state_q = *(void**)((char*)cpuarea + 0x30);
+                        if (ios_g32_read(teb_q+offsetof(TEB,Peb),&q_owner,8))
+                            q_window=ios_wow_base_for_peb((void *)(uintptr_t)q_owner);
+                        if (q_window)
+                        {
+                            rip_source="wow32-saved";
+                            if (ios_g32_read(teb_q+offsetof(TEB,TlsSlots)+14*sizeof(void *),&q_thread,8) && q_thread &&
+                                ios_g32_read(q_thread,&q_frame,8)) fex_state_q=(void *)(uintptr_t)q_frame;
+                        }
+                        else
+                        {
+                            void *cpuarea = *(void**)(teb_q + 0x1788);
+                            if (cpuarea) fex_state_q = *(void**)((char*)cpuarea + 0x30);
+                        }
                     }
-                    uint64_t state_rip_q = fex_state_q ?
-                        ((uint64_t*)fex_state_q)[0x18 / 8] : 0;
+                    uint64_t state_rip_q=0;
+                    if(fex_state_q)ios_g32_read((uintptr_t)fex_state_q+0x18,&state_rip_q,8);
                     /* First-seen tracker: 32-slot hash by RIP. */
                     static volatile uint64_t seen_rip[32] = {0};
                     static volatile uint32_t seen_count[32] = {0};
@@ -6438,7 +6504,7 @@ dispatch_guest_fault:
                             { hp = rbi.protection; rbase = (unsigned long long)ra; rsize = (unsigned long long)rs; }
                             dprintf(STDERR_FILENO,
                                 "[fault_rip] cnt=%d rip=0x%llx pc=0x%llx addr=0x%llx "
-                                "kr=%llu(%s) entryprot=%d nowprot=%d region=0x%llx+0x%llx%s%s%s rev=ml555\n",
+                                "kr=%llu(%s) entryprot=%d nowprot=%d region=0x%llx+0x%llx%s%s%s rip-source=%s rev=ml555\n",
                                 cnt, (unsigned long long)state_rip_q,
                                 (unsigned long long)fault_pc_check,
                                 (unsigned long long)fault_addr,
@@ -6449,7 +6515,7 @@ dispatch_guest_fault:
                                 entry_prot < 0 ? "  <== UNMAPPED AT ENTRY (wild pointer)" : "",
                                 (entry_prot >= 0 && hp >= 0 && entry_prot != hp)
                                     ? "  <== PROT CHANGED MID-HANDLER (race)" : "",
-                                first_seen ? " [first]" : "");
+                                first_seen ? " [first]" : "",rip_source);
                         }
                     }
                     /* TEMP [rip-leak] task#34 ml64-class: guest RIP inside a
@@ -6662,7 +6728,13 @@ dispatch_guest_fault:
                         unsigned char code[16];
                         mach_vm_size_t g = 0;
 
-                        if (rsp_n < 12 && st28 > 0x100000 &&
+                        /* A 32-bit stack pointer is expected in WoW32; that
+                         * mode's bytes must be read through its guest window. */
+                        uint64_t rsp_owner=0;
+                        int wow32_rsp=thread_teb &&
+                            ios_g32_read(thread_teb+offsetof(TEB,Peb),&rsp_owner,8) &&
+                            ios_wow_base_for_peb((void *)(uintptr_t)rsp_owner);
+                        if (!wow32_rsp && rsp_n < 12 && st28 > 0x100000 &&
                             mach_vm_read_overwrite( mach_task_self(),
                                 (mach_vm_address_t)(st28 + 0x18), sizeof(cs),
                                 (mach_vm_address_t)cs, &g ) == KERN_SUCCESS && g == sizeof(cs) &&
@@ -7374,7 +7446,11 @@ dispatch_guest_fault:
                     void *tramp_out_pre = NULL;
                     ios_lookup_thread(thread, &teb_out_pre, &tramp_out_pre);
                     void *fex_state_pre = NULL;
-                    if (teb_out_pre)
+                    uint64_t pre_owner=0;
+                    int pre_wow32=teb_out_pre &&
+                        ios_g32_read(teb_out_pre+offsetof(TEB,Peb),&pre_owner,8) &&
+                        ios_wow_base_for_peb((void *)(uintptr_t)pre_owner);
+                    if (teb_out_pre && !pre_wow32)
                     {
                         void *cpuarea = *(void**)(teb_out_pre + 0x1788);
                         if (cpuarea) fex_state_pre = *(void**)((char*)cpuarea + 0x30);
@@ -7385,7 +7461,9 @@ dispatch_guest_fault:
                                            state_rip_pre <  0x14007b000) ||
                                           (state_rip_pre >= 0x1400e0000 &&
                                            state_rip_pre <  0x1400e1000);
-                    if (cnt <= 3 || interesting_rip)
+                    /* This register map belongs only to ARM64EC. WoW32 is
+                     * captured separately from the validated x28/TLS14 frame. */
+                    if (!pre_wow32 && fex_state_pre && (cnt <= 3 || interesting_rip))
                     {
                         uintptr_t teb_out = teb_out_pre;
                         void *tramp_out = tramp_out_pre;
@@ -9390,6 +9468,8 @@ static int ios_mach_deliver_guest_exception_inner( thread_t thread, arm_thread_s
                          (unsigned long long)pc, a_insn, (unsigned long long)fault_addr,
                          ua_emu, ua_fex );
         }
+
+        if (!is_align) ios_trace_wow32_fault(thread_teb,state,fault_addr);
 
         /* iOS-Madeira ml613 [av-detail]: THE THREE-WAY DISCRIMINATOR.
          *

@@ -4,6 +4,7 @@ let sampled = false, uiSampled = false; const sockets = new Set();
 const server = http.createServer();
 server.on('upgrade', (request, socket) => {
   sockets.add(socket); socket.on('close', () => sockets.delete(socket));
+  let storeSamples = 0;
   const enabled = new Set(), slow = request.url === '/slow', blocked = request.url === '/dom-blocked';
   const accept = crypto.createHash('sha1').update(request.headers['sec-websocket-key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
   socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ' + accept + '\r\n\r\n');
@@ -40,6 +41,7 @@ server.on('upgrade', (request, socket) => {
       // A hung auxiliary page must not serialize or delay the main UI sample.
       if (slow) continue;
       if (command.params.expression.includes('globalThis.appStore')) {
+        if (++storeSamples > 1) { setTimeout(() => reply(command.id, {result: {value: {store: true, ready: true, count: 155, cs2: true, apps: true, secret: 'SECRET'}}}), 40); continue; }
         for (let i = 0; i < 200; i++) event('Runtime.consoleAPICalled', {type: 'warning', args: [{type: 'string', value: 'startup warning SECRET'}]});
         const frames = {callFrames: [{functionName: 'AppStore.Init', url: 'https://steamloopback.host/chunk.js?token=SECRET', lineNumber: 1, columnNumber: 44}]};
         event('Page.navigatedWithinDocument', {url: 'https://steamloopback.host/index.html?token=SECRET'});
@@ -47,6 +49,7 @@ server.on('upgrade', (request, socket) => {
         event('Runtime.consoleAPICalled', {type: 'log', args: [{type: 'string', value: '[URLTrack] Tracking page view:'}, {type: 'string', value: '/library/home?token=SECRET'}]});
         event('Runtime.consoleAPICalled', {type: 'warning', args: [{type: 'string', value: 'launch error'}, {type: 'number', value: 1}, {type: 'string', value: '730'}, {type: 'string', value: 'LaunchApp'}, {type: 'string', value: 'AppError_47'}, {type: 'string', value: 'SECRET private launch details'}], stackTrace: {callFrames: [{functionName: 'OnGameActionShowError', url: 'https://steamloopback.host/chunk~2dcc5aaf7.js?token=SECRET', lineNumber: 0, columnNumber: 9416209}]}});
         event('Runtime.consoleAPICalled', {type: 'warning', args: [{type: 'string', value: 'A newer version of the Steam Client is required to run this application SECRET'}], stackTrace: frames});
+        event('Runtime.consoleAPICalled', {type: 'error', args: [{type: 'string', value: "Attempted to send message before we're connected:"}, {type: 'string', value: 'SECRET'}], stackTrace: {callFrames: [{functionName: 'BSendMsg', url: 'https://steamloopback.host/chunk~2dcc5aaf7.js?token=SECRET', lineNumber: 0, columnNumber: 7182397}]}});
         event('Runtime.consoleAPICalled', {type: 'error', args: [{type: 'string', value: 'Remote call failed SECRET'}], stackTrace: frames});
         event('Runtime.exceptionThrown', {exceptionDetails: {text: 'Uncaught (in promise)', exception: {description: "TypeError: Cannot read properties of undefined (reading 'get') SECRET"}, stackTrace: frames}});
         event('Network.requestWillBeSent', {requestId: 'lib', request: {url: 'https://steamloopback.host/library.js?token=SECRET'}});

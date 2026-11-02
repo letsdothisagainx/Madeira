@@ -28,6 +28,13 @@ import Darwin
     private var targetLabels: [String: Int] = [:]
     private var storeTargets: Set<String> = []
     private var nextTargetLabel = 0
+    private struct Progress {
+        var packets = 0, replies = 0, stores = 0, wsSent = 0, wsReceived = 0, resources = 0
+        var packetAt: Date?, replyAt: Date?, storeAt: Date?
+        var reportedAt = Date(), lastRTT = -1, purpose = "none"
+    }
+    private var progress: [String: Progress] = [:]
+    private var commandStarts: [Int: (Date, String)] = [:]
     private let session = URLSession(configuration: .ephemeral)
 
     static func safeURL(_ text: String) -> String {
@@ -43,6 +50,7 @@ import Darwin
         if text.contains("A newer version of the Steam Client is required to run this application") { classes.append("AppLaunch_MustUpdateClient") }
         if text.contains("Steam must now be restarted in order to receive the latest update") { classes.append("Steam_ErrorCondition_RestartNeeded") }
         if text.contains("Steam client outdated") { classes.append("Steam_AppUpdateError_47") }
+        if text.contains("Attempted to send message before we're connected:") { classes.append("send-before-connected") }
         if text.contains("An error occurred while launching this game: Update required") || text.contains("An error occurred while launching this game : Update required") { classes.append("GameLaunch_ContentUpdateRequired") }
         if let range = text.range(of: "reading '[A-Za-z_$][A-Za-z0-9_$]{0,63}'", options: .regularExpression) {
             classes.append("undefined-property=" + String(text[range].dropFirst(9).dropLast()))
@@ -121,7 +129,7 @@ import Darwin
         note("target=\(targetLabels[id] ?? 0) \(text)", category: category)
     }
     private func note(_ text: String, category: String = "navigation") {
-        let limit = ["navigation": 25, "state": 20, "network": 24, "failure": 150, "warning": 30, "websocket": 35, "ui": 16][category] ?? 0
+        let limit = ["navigation": 25, "state": 20, "network": 24, "failure": 150, "warning": 30, "websocket": 35, "ui": 16, "progress": 20][category] ?? 0
         guard emitted < 300, categories[category, default: 0] < limit else { return }
         emitted += 1; categories[category, default: 0] += 1
         LogStore.shared.log("[steam-library-v1] \(text)")
@@ -177,10 +185,12 @@ import Darwin
         for socket in sockets.values { socket.cancel(with: .goingAway, reason: nil) }
         sockets.removeAll(); requests.removeAll(); webSockets.removeAll(); sampled.removeAll(); snapshots.removeAll(); sampleCounts.removeAll()
         uiSampled.removeAll(); uiSnapshots.removeAll(); uiSampleCounts.removeAll(); targetLabels.removeAll(); storeTargets.removeAll(); nextTargetLabel = 0
+        progress.removeAll(); commandStarts.removeAll()
         let waiting = Array(replies.values); replies.removeAll(); commands.removeAll(); port = 0; unsetenv("MADEIRA_STEAM_CDP_PORT")
         for reply in waiting { reply([:]) }
     }
     private func discover() async {
+        reportProgress() // Existing traffic only; no additional CEF or Steam calls.
         expireRequests()
         guard let url = URL(string: "http://127.0.0.1:\(port)/json/list") else { return }
         discoveries += 1
@@ -212,16 +222,17 @@ import Darwin
         // Complete outstanding reads now rather than making a closed target's
         // timeout delay discovery of the replacement Steam browser.
         for commandID in Array(commands.keys) where commands[commandID]?.hasPrefix("target=\(label) ") == true {
-            commands.removeValue(forKey: commandID); replies.removeValue(forKey: commandID)?([:])
+            commands.removeValue(forKey: commandID); commandStarts.removeValue(forKey: commandID)
+            replies.removeValue(forKey: commandID)?([:])
         }
         requests = requests.filter { !$0.key.hasPrefix(id + ":") }; webSockets = webSockets.filter { !$0.key.hasPrefix(id + ":") }
         sampled.removeValue(forKey: id); snapshots.removeValue(forKey: id); sampleCounts.removeValue(forKey: id)
         uiSampled.removeValue(forKey: id); uiSnapshots.removeValue(forKey: id); uiSampleCounts.removeValue(forKey: id)
-        targetLabels.removeValue(forKey: id); storeTargets.remove(id)
+        targetLabels.removeValue(forKey: id); storeTargets.remove(id); progress.removeValue(forKey: id)
     }
     private func connect(_ id: String, endpoint: URL, pageURL: String) async {
         let socket = session.webSocketTask(with: endpoint); socket.maximumMessageSize = 2_000_000
-        _ = targetLabel(id); sockets[id] = socket
+        _ = targetLabel(id); sockets[id] = socket; progress[id] = Progress()
         updateRole(id, pageURL: pageURL)
         socket.resume()
         targetNote(id, "page-attached role=\(storeTargets.contains(id) ? "steam-ui" : "blank-popup") url=\(Self.safeURL(pageURL))")
@@ -257,13 +268,17 @@ import Darwin
         await transmit(socket, id: sequence, method: method, params: params)
     }
     private func transmit(_ socket: URLSessionWebSocketTask, id: Int, method: String, params: [String: Any], purpose: String = "protocol") async {
-        guard sockets.values.contains(where: { $0 === socket }) else { replies.removeValue(forKey: id)?([:]); return }
+        guard sockets.values.contains(where: { $0 === socket }) else {
+            commandStarts.removeValue(forKey: id); commands.removeValue(forKey: id); replies.removeValue(forKey: id)?([:]); return
+        }
         let target = sockets.first(where: { $0.value === socket })?.key ?? "closed"
         if commands.count < 128 { commands[id] = "target=\(targetLabels[target] ?? 0) method=\(method) purpose=\(purpose)" }
         guard let data = try? JSONSerialization.data(withJSONObject: ["id": id, "method": method, "params": params]),
-              let text = String(data: data, encoding: .utf8) else { replies.removeValue(forKey: id)?([:]); return }
+              let text = String(data: data, encoding: .utf8) else {
+            commandStarts.removeValue(forKey: id); commands.removeValue(forKey: id); replies.removeValue(forKey: id)?([:]); return
+        }
         do { try await socket.send(.string(text)) }
-        catch { commands.removeValue(forKey: id); replies.removeValue(forKey: id)?([:]) }
+        catch { commands.removeValue(forKey: id); commandStarts.removeValue(forKey: id); replies.removeValue(forKey: id)?([:]) }
     }
     private func command(_ socket: URLSessionWebSocketTask, _ method: String, _ params: [String: Any], purpose: String) async -> [String: Any] {
         guard replies.count < 64, sockets.values.contains(where: { $0 === socket }) else { return [:] }
@@ -271,15 +286,42 @@ import Darwin
         let target = sockets.first(where: { $0.value === socket })?.key ?? "closed"
         let label = targetLabels[target] ?? 0
         return await withCheckedContinuation { continuation in
+            commandStarts[id] = (Date(), purpose)
             replies[id] = { continuation.resume(returning: $0) }
             Task { [weak self] in
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
                 guard let self, let reply = self.replies.removeValue(forKey: id) else { return }
-                self.commands.removeValue(forKey: id)
+                self.commands.removeValue(forKey: id); self.commandStarts.removeValue(forKey: id)
                 self.note("target=\(label) CEF command-timeout method=\(method) purpose=\(purpose)", category: "failure"); reply([:])
             }
             Task { [weak self] in await self?.transmit(socket, id: id, method: method, params: params, purpose: purpose) }
         }
+    }
+    private func reportProgress(now: Date = Date()) {
+        for id in sockets.keys where storeTargets.contains(id) {
+            guard var state = progress[id], now.timeIntervalSince(state.reportedAt) >= 10 else { continue }
+            state.reportedAt = now; progress[id] = state
+            func age(_ date: Date?) -> Int { date.map { max(0, min(600_000, Int(now.timeIntervalSince($0) * 1000))) } ?? -1 }
+            let prefix = "target=\(targetLabels[id] ?? 0) "
+            let pending = commands.values.filter { $0.hasPrefix(prefix) }.count
+            targetNote(id, "progress packets=\(state.packets) replies=\(state.replies) store-values=\(state.stores) ws-tx=\(state.wsSent) ws-rx=\(state.wsReceived) resources-completed=\(state.resources) pending=\(pending) last-packet-ms=\(age(state.packetAt)) last-reply-ms=\(age(state.replyAt)) last-store-ms=\(age(state.storeAt)) last-command-rtt-ms=\(state.lastRTT) purpose=\(state.purpose)", category: "progress")
+        }
+    }
+    private func recordProgress(_ event: [String: Any], target: String) {
+        guard var state = progress[target] else { return }
+        let now = Date(), method = event["method"] as? String ?? ""
+        state.packets += 1; state.packetAt = now
+        if let id = event["id"] as? Int {
+            state.replies += 1; state.replyAt = now
+            if let start = commandStarts.removeValue(forKey: id) {
+                state.lastRTT = max(0, min(600_000, Int(now.timeIntervalSince(start.0) * 1000)))
+                state.purpose = start.1
+            }
+        }
+        if method == "Network.webSocketFrameSent" { state.wsSent += 1 }
+        if method == "Network.webSocketFrameReceived" { state.wsReceived += 1 }
+        if ["Network.loadingFinished", "Network.loadingFailed"].contains(method) { state.resources += 1 }
+        progress[target] = state
     }
     private func frames(_ stack: [String: Any]?, target: String, label: String, category: String = "failure") {
         for frame in (stack?["callFrames"] as? [[String: Any]] ?? []).prefix(6) {
@@ -298,6 +340,10 @@ import Darwin
         guard sockets.values.contains(where: { $0 === socket }) else { return }
         guard let data = text.data(using: .utf8),
               let event = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        let target = sockets.first(where: { $0.value === socket })?.key ?? "closed"
+        // Counters precede the observation/log quotas. A capped frame log or an
+        // unchanged Store snapshot must not be mistaken for a stalled browser.
+        recordProgress(event, target: target)
         if let id = event["id"] as? Int {
             let command = commands.removeValue(forKey: id) ?? "unknown"
             if let error = event["error"] as? [String: Any] { note("CEF command-failed \(command) code=\(error["code"] as? Int ?? 0)", category: "failure") }
@@ -305,7 +351,6 @@ import Darwin
             return
         }
         let method = event["method"] as? String ?? "", p = event["params"] as? [String: Any] ?? [:]
-        let target = sockets.first(where: { $0.value === socket })?.key ?? "closed"
         func key(_ id: String) -> String { target + ":" + id }
         guard Self.observedEvents.contains(method) else { return }
         // Replies, failures and route/error console records have independent
@@ -388,6 +433,7 @@ import Darwin
         if result["exceptionDetails"] != nil {
             if snapshots[id] != "unavailable" { targetNote(id, "readonly-store-snapshot=unavailable side-effect-check=retained", category: "state"); snapshots[id] = "unavailable" }
         } else if let value = (result["result"] as? [String: Any])?["value"] as? [String: Any] {
+            if var state = progress[id] { state.stores += 1; state.storeAt = Date(); progress[id] = state }
             let clean = Self.safeSnapshot(value)
             if snapshots[id] != clean { targetNote(id, "readonly-store \(clean)", category: "state"); snapshots[id] = clean }
         }
