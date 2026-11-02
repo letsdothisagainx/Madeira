@@ -249,7 +249,7 @@ static sigset_t server_block_set;
 # Native declarations and bookkeeping are compiled verbatim.
 a=t.index('struct ios_thread_group\n{')
 b=t.index('\nstatic inline int get_unix_exit_code(',a)
-threads += t[a:b] + '\n' + body(t,'static DECLSPEC_NORETURN void exit_thread(')
+threads += 'static void ios_thread_finish_fex(void) {}\n' + t[a:b] + '\n' + body(t,'static DECLSPEC_NORETURN void exit_thread(')
 threads += r'''
 static void *finished(void *a) { return NULL; }
 static void retire(TEB *teb) {

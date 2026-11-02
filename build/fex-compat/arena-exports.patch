@@ -1,0 +1,15 @@
+diff --git a/Source/Windows/WOW64/libwow64fex.def b/Source/Windows/WOW64/libwow64fex.def
+--- a/Source/Windows/WOW64/libwow64fex.def
++++ b/Source/Windows/WOW64/libwow64fex.def
+@@ -25,6 +25,11 @@ EXPORTS
+   BTCpuUpdateProcessorInformation
+   __wine_get_unix_opcode
+ 
++; Native Wine fills these private data slots before CRT/rpmalloc initialization.
++; Match the established ARM64EC arena contract; end is inclusive.
++  ios_fex_band_base DATA
++  ios_fex_band_end DATA
++
+ ; MADEIRA: the iOS-host extension BTCpuIosSetMonoBridge (the WoW64 counterpart of ARM64EC's
+ ; BTCpu64IosSetMonoBridge) is deliberately NOT listed here. It only exists in an iOS-host build, and
+ ; a DEF entry for a symbol that does not exist is a link error - so it is exported with

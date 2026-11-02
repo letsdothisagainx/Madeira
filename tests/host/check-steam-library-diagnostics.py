@@ -93,12 +93,18 @@ extension SteamLibraryDiagnostics {
   assert(SteamLibraryDiagnostics.consoleLibraryRoute(["[URLTrack] Tracking page view: /library/app/76561191234567890"])==nil)
   assert(SteamLibraryDiagnostics.consoleLibraryRoute(["[URLTrack] Tracking page view: /library/homeSECRET"])==nil)
   assert(SteamLibraryDiagnostics.consoleLibraryRoute(["unrelated /library/home"])==nil)
+  let actionStack:[String:Any] = ["callFrames":[["functionName":"OnGameActionShowError","url":"https://steamloopback.host/chunk~2dcc5aaf7.js"]]]
+  assert(SteamLibraryDiagnostics.gameActionError([["type":"string","value":"AppError_19"]],stack:actionStack)?.contains("error=AppError_19")==true)
+  assert(SteamLibraryDiagnostics.gameActionError([["type":"string","value":"AppError_47 SECRET"]],stack:actionStack)?.contains("error=unavailable")==true)
+  assert(SteamLibraryDiagnostics.gameActionError([["type":"string","value":"AppError_76561191234567890"]],stack:actionStack)?.contains("error=unavailable")==true)
+  assert(SteamLibraryDiagnostics.gameActionError([["type":"object","description":"AppError_47 SECRET"]],stack:actionStack)?.contains("error=unavailable")==true)
+  assert(SteamLibraryDiagnostics.gameActionError([["type":"string","value":"AppError_47"]],stack:["callFrames":[["functionName":"OnGameActionShowError","url":"https://external.example/chunk~2dcc5aaf7.js"]]])==nil)
   let pages=SteamLibraryDiagnostics.candidatePages([["id":"blank","type":"page","url":"about:blank"],["id":"marketing","type":"page","url":"https://store.steampowered.com/marketingmessages/list/"],["id":"index","type":"page","url":"https://steamloopback.host/index.html"],["id":"library","type":"page","url":"https://steamloopback.host/library/home"],["id":"worker","type":"worker","url":"https://steamloopback.host/library/home"]])
   assert(pages.compactMap{$0["id"] as? String}==["library","index","blank"])
   let elapsed=await observer.runCDPFixture(URL(string:CommandLine.arguments[1])!)
   assert(elapsed<2.5,"slow auxiliary evaluation serialized the main UI sample")
   let lines=LogStore.shared.lines.joined(separator:"\n")
-  for marker in ["target=2 console-route source=URLTrack route=/library/home","resource status=200","resource status=404","net::ERR_CONNECTION_REFUSED","console-frame function=AppStore.Init","Uncaught (in promise)","websocket handshake-status=101","websocket transport-error","target=2 readonly-store","\"cs2\":true","AppLaunch_MustUpdateClient"] {assert(lines.contains(marker),marker)}
+  for marker in ["target=2 console-route source=URLTrack route=/library/home","resource status=200","resource status=404","net::ERR_CONNECTION_REFUSED","console-frame function=AppStore.Init","Uncaught (in promise)","websocket handshake-status=101","websocket transport-error","target=2 readonly-store","\"cs2\":true","AppLaunch_MustUpdateClient","target=2 game-action-error source=OnGameActionShowError error=AppError_47 cs2-argument-shape=true details=excluded"] {assert(lines.contains(marker),marker)}
   assert(LogStore.shared.lines.filter{$0.contains("console kind=warning") && $0.contains("classes=unclassified")}.count==30)
   if CommandLine.arguments[1].hasSuffix("dom-blocked") { assert(lines.contains("readonly-ui-text=unavailable")) }
   else {

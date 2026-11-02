@@ -83,6 +83,7 @@ int main(int argc, char **argv)
     uintptr_t lo = 0x7d00000000ULL, hi = lo + 0x10000;
     size_t mask = 0x3fff;
     if (which == 3) hi = lo + 0x400000;
+    if (which == 8) { lo = 0xb40000000ULL; hi = 0xd40000000ULL; }
     ios_fex_arena_base_unix = lo;
     ios_fex_arena_end_unix = hi;
     /* Rejected calls must neither read protections nor consume the cap. */
@@ -119,6 +120,7 @@ int main(int argc, char **argv)
     } else if (which == 5) { view(lo - 0x1000, SIZE_MAX, 3); }
     else if (which == 6) { mask = SIZE_MAX; }
     else if (which == 7) { lo += 0x8000; } /* caller subrange, arena stays whole */
+    else if (which == 8) { lo = 0xc00000000ULL; hi = 0xf00000000ULL; } /* legacy WoW band differs from actual owner */
     ios_fex_arena_census((void *)lo, (void *)hi, 4096, mask);
     assert(length && strstr(output, "(virtual bytes, not residency)"));
     unsigned read_count = reads;
@@ -141,6 +143,7 @@ expected = [
     dict(views=1, covered=0x10000, free=0, committed=0, overlap=0, holes=0, maxgap=0, max_aligned_gap=0),
     dict(views=0, covered=0, free=0x10000, committed=0, overlap=0, holes=1, maxgap=0x10000, max_aligned_gap=0),
     dict(views=0, covered=0, free=0x10000, committed=0, overlap=0, holes=1, maxgap=0x10000, max_aligned_gap=0x10000),
+    dict(views=0, covered=0, free=0x200000000, committed=0, overlap=0, holes=1, maxgap=0x200000000, max_aligned_gap=0x200000000),
 ]
 with tempfile.TemporaryDirectory(prefix='fex-arena-census-') as temp:
     temp = Path(temp)
@@ -162,4 +165,6 @@ with tempfile.TemporaryDirectory(prefix='fex-arena-census-') as temp:
             assert len(result.strip().splitlines()) == 34
         if case == 7:
             assert 'failed_range=0x7d00008000..0x7d00010000' in summary
+        if case == 8:
+            assert 'arena=0xb40000000..0xd40000000' in summary and 'failed_range=0xc00000000..0xf00000000' in summary
 print('PASS: live census clipping, committed accounting, alignment, overlaps, overflow, bucket/output cap and failure-only integration')

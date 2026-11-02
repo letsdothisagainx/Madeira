@@ -1,0 +1,520 @@
+--- a/FEXCore/include/FEXCore/Utils/ThreadPoolAllocator.h
++++ b/FEXCore/include/FEXCore/Utils/ThreadPoolAllocator.h
+@@ -110,12 +110,34 @@
+    *
+    * @return iterator to the internal tracking container
+    */
+-  ContainerType::iterator ClaimBuffer(size_t Size, BufferOwnedFlag* CurrentClientFlag) {
++  std::optional<ContainerType::iterator> TryClaimBuffer(size_t Size, BufferOwnedFlag* CurrentClientFlag) {
+     std::unique_lock lk {AllocationMutex};
+     auto Buffer = ClaimBufferImpl(Size);
++    if (Buffer == ClaimedBuffers.end()) return std::nullopt;
+     (*Buffer)->CurrentClientOwnedFlag = CurrentClientFlag;
+     CurrentClientFlag->store(ClientFlags::FLAG_OWNED);
+     return Buffer;
++  }
++
++  std::optional<ContainerType::iterator> TryResizeBuffer(const ContainerType::iterator& OldBuffer, size_t Size,
++                                                          BufferOwnedFlag* CurrentClientFlag) {
++    std::unique_lock lk {AllocationMutex};
++    if (!IsClientBufferOwned(*CurrentClientFlag) || (*OldBuffer)->CurrentClientOwnedFlag != CurrentClientFlag) return std::nullopt;
++    if ((*OldBuffer)->Size >= Size) return OldBuffer;
++    auto NewBuffer = ClaimBufferImpl(Size);
++    if (NewBuffer == ClaimedBuffers.end()) return std::nullopt;
++    // Replacement exists before the old client is relinquished. The flag is
++    // the member in PoolBufferWithTimedRetirement, never a temporary atomic.
++    UnclaimBufferImpl(OldBuffer);
++    (*NewBuffer)->CurrentClientOwnedFlag = CurrentClientFlag;
++    CurrentClientFlag->store(ClientFlags::FLAG_OWNED);
++    return NewBuffer;
++  }
++
++  ContainerType::iterator ClaimBuffer(size_t Size, BufferOwnedFlag* CurrentClientFlag) {
++    auto Buffer = TryClaimBuffer(Size, CurrentClientFlag);
++    if (!Buffer) fextl::ReportAllocationFailure(alignof(MemoryBuffer), Size);
++    return *Buffer;
+   }
+ 
+   /**
+@@ -227,8 +249,8 @@
+               // We managed to take away ownership
+               // Put it back in the regular pool and come back to it
+               (*it)->CurrentClientOwnedFlag = nullptr;
+-              UnclaimedBuffers.emplace_back(*it);
+-              it = ClaimedBuffers.erase(it);
++              auto Retired = it++;
++              UnclaimedBuffers.splice(UnclaimedBuffers.end(), ClaimedBuffers, Retired);
+               continue;
+             }
+           }
+@@ -284,21 +306,44 @@
+       }
+ 
+       if (BestFit != UnclaimedBuffers.end()) {
+-        MemoryBuffer* Buffer = *BestFit;
+-        UnclaimedBuffers.erase(BestFit);
+-        return ClaimedBuffers.emplace(ClaimedBuffers.end(), Buffer);
++        ClaimedBuffers.splice(ClaimedBuffers.end(), UnclaimedBuffers, BestFit);
++        return BestFit;
+       }
+     }
+ 
+     // Need to allocate a new buffer, couldn't fit
+     auto Data = Alloc(Size);
+-    return ClaimedBuffers.emplace(ClaimedBuffers.end(), new MemoryBuffer {Data, Size, ClockType::now()});
++    if (!Data || Data == reinterpret_cast<void*>(~uintptr_t {})) return ClaimRecentDisownedBuffer(Size);
++    // A failed mapping must never become an owned buffer. Metadata failure
++    // rolls back the backing allocation before the caller can publish state.
++    auto Meta = FEXCore::Allocator::malloc(sizeof(MemoryBuffer));
++    if (!Meta) {
++      Free(Data, Size);
++      return ClaimRecentDisownedBuffer(Size);
++    }
++    auto Buffer = ::new (Meta) MemoryBuffer {Data, Size, ClockType::now()};
++    return ClaimedBuffers.emplace(ClaimedBuffers.end(), Buffer);
++  }
++
++  ContainerType::iterator ClaimRecentDisownedBuffer(size_t Size) {
++    // The five-second delay is a reuse preference, not ownership. Under real
++    // allocation pressure reclaim a sufficiently large DISOWNED buffer using
++    // the same CAS as normal retirement, without allocating a new list node.
++    for (auto It = ClaimedBuffers.begin(); It != ClaimedBuffers.end(); ++It) {
++      auto* Buffer = *It;
++      if (Buffer->Size < Size || !Buffer->CurrentClientOwnedFlag) continue;
++      ClientFlags Expected = ClientFlags::FLAG_DISOWNED;
++      if (Buffer->CurrentClientOwnedFlag->compare_exchange_strong(Expected, ClientFlags::FLAG_FREE)) {
++        Buffer->CurrentClientOwnedFlag = nullptr;
++        return It;
++      }
++    }
++    return ClaimedBuffers.end();
+   }
+ 
+   void UnclaimBufferImpl(ContainerType::iterator Buffer) {
+     (*Buffer)->CurrentClientOwnedFlag = nullptr;
+-    UnclaimedBuffers.emplace_back(*Buffer);
+-    ClaimedBuffers.erase(Buffer);
++    UnclaimedBuffers.splice(UnclaimedBuffers.end(), ClaimedBuffers, Buffer);
+   }
+ 
+   void FreeAllBuffers() {
+@@ -386,7 +431,7 @@
+ private:
+   void* Alloc(size_t Size) override {
+     auto Result = FEXCore::Allocator::VirtualAlloc(Size);
+-    if (Name) {
++    if (Name && Result && Result != reinterpret_cast<void*>(~uintptr_t {})) {
+       FEXCore::Allocator::VirtualName(Name, Result, Size);
+     }
+     return Result;
+@@ -417,6 +462,7 @@
+ private:
+   void* Alloc(size_t Size) override {
+     auto Ptr = FEXCore::Allocator::VirtualAlloc(Size);
++    if (!Ptr || Ptr == reinterpret_cast<void*>(~uintptr_t {})) return nullptr;
+     uintptr_t LastPageAddr = AlignDown(reinterpret_cast<uintptr_t>(Ptr) + Size - 1, FEXCore::Utils::FEX_PAGE_SIZE);
+     if (!FEXCore::Allocator::VirtualProtect(reinterpret_cast<void*>(LastPageAddr), FEXCore::Utils::FEX_PAGE_SIZE,
+                                             FEXCore::Allocator::ProtectOptions::None)) {
+@@ -507,33 +553,38 @@
+    *
+    * @return A usable pointer of type `Type` and the size of the backing store.
+    */
+-  AllocationInfo ReownOrClaimBufferWithSize(std::optional<size_t> NewSize = std::nullopt) {
+-    // Check if we can cheaply re-own a previous buffer
++  std::optional<AllocationInfo> TryReownOrClaimBufferWithSize(std::optional<size_t> NewSize = std::nullopt) {
+     std::optional Buffer =
+       IntrusivePooledAllocator::IsClientBufferOwned(ClientOwnedFlag) ? Info : ThreadAllocator.TryToReownBuffer(Info, Size, &ClientOwnedFlag);
+-
+-    // Ensure the now owned buffer has enough space. If not, unclaim it and proceed to claim a new one
+-    if (NewSize && Buffer && (**Buffer)->Size < NewSize.value()) {
+-      UnclaimBuffer();
+-      Buffer.reset();
+-    }
+-
+-    // Claim a new buffer if needed
+-    Size = NewSize.value_or(Size);
++    const size_t Requested = NewSize.value_or(Size);
++    if (Buffer && (**Buffer)->Size < Requested) {
++      auto Replacement = ThreadAllocator.TryResizeBuffer(*Buffer, Requested, &ClientOwnedFlag);
++      if (!Replacement) return std::nullopt;
++      Buffer = Replacement;
++    }
+     if (!Buffer) {
+-      Buffer = ThreadAllocator.ClaimBuffer(Size, &ClientOwnedFlag);
+-    }
+-
++      Buffer = ThreadAllocator.TryClaimBuffer(Requested, &ClientOwnedFlag);
++      if (!Buffer) return std::nullopt;
++    }
++    // Publish only after a successful claim/resize; failed resize leaves the
++    // old Info, requested Size and member ownership flag intact.
+     Info = *Buffer;
++    Size = Requested;
+ 
+     // Putting a memset here is very handy for using thread sanitizer to find buffer usage races
+     // Leaving this here for future excavation that will definitely occur here
+     // memset((*Info)->Ptr, 0, Size);
+ 
+-    return {
++    return AllocationInfo {
+       .Ptr = reinterpret_cast<Type>((*Info)->Ptr),
+       .Size = (*Info)->Size,
+     };
++  }
++
++  AllocationInfo ReownOrClaimBufferWithSize(std::optional<size_t> NewSize = std::nullopt) {
++    auto Buffer = TryReownOrClaimBufferWithSize(NewSize);
++    if (!Buffer) fextl::ReportAllocationFailure(alignof(Type), NewSize.value_or(Size));
++    return *Buffer;
+   }
+ 
+   Type ReownOrClaimBuffer(std::optional<size_t> NewSize = std::nullopt) {
+--- a/FEXCore/include/FEXCore/fextl/memory.h
++++ b/FEXCore/include/FEXCore/fextl/memory.h
+@@ -32,8 +32,17 @@
+ requires (!std::is_array_v<T>)
+ fextl::unique_ptr<T> make_unique(Args&&... args) {
+   auto ptr = FEXCore::Allocator::aligned_alloc(alignof(T), sizeof(T));
++  if (!ptr) fextl::ReportAllocationFailure(alignof(T), sizeof(T));
+   auto Result = ::new (ptr) T(std::forward<Args>(args)...);
+   return fextl::unique_ptr<T>(Result);
++}
++
++template<class T, class... Args>
++requires (!std::is_array_v<T>)
++fextl::unique_ptr<T> try_make_unique(Args&&... args) {
++  auto ptr = FEXCore::Allocator::aligned_alloc(alignof(T), sizeof(T));
++  if (!ptr) return {};
++  return fextl::unique_ptr<T>(::new (ptr) T(std::forward<Args>(args)...));
+ }
+ 
+ template<class T, class... Args>
+--- a/FEXCore/Source/Interface/IR/IntrusiveIRList.h
++++ b/FEXCore/Source/Interface/IR/IntrusiveIRList.h
+@@ -120,9 +120,15 @@
+   DualIntrusiveAllocatorThreadPool(FEXCore::Utils::IntrusivePooledAllocator& ThreadAllocator, size_t Size)
+     : DualIntrusiveAllocator {Size}
+     , PoolObject {ThreadAllocator, Size * 2} {}
++  bool TryReownOrClaimBuffer() {
++    auto Buffer = PoolObject.TryReownOrClaimBufferWithSize();
++    if (!Buffer) { Data = List = 0; return false; }
++    Data = Buffer->Ptr;
++    List = Data + MemorySize;
++    return true;
++  }
+   void ReownOrClaimBuffer() {
+-    Data = PoolObject.ReownOrClaimBuffer();
+-    List = Data + MemorySize;
++    if (!TryReownOrClaimBuffer()) fextl::ReportAllocationFailure(alignof(uintptr_t), MemorySize * 2);
+   }
+ 
+   void DelayedDisownBuffer() {
+--- a/FEXCore/Source/Interface/IR/IREmitter.h
++++ b/FEXCore/Source/Interface/IR/IREmitter.h
+@@ -25,11 +25,13 @@
+ 
+   virtual ~IREmitter() = default;
+ 
++  bool TryReownOrClaimBuffer() {
++    if (!DualListData.TryReownOrClaimBuffer()) return false;
++    ResetWorkingList();
++    return true;
++  }
+   void ReownOrClaimBuffer() {
+-    DualListData.ReownOrClaimBuffer();
+-
+-    // Reset the working list on new buffer.
+-    ResetWorkingList();
++    if (!TryReownOrClaimBuffer()) fextl::ReportAllocationFailure(alignof(uintptr_t), 16 * 1024 * 1024);
+   }
+ 
+   void DelayedDisownBuffer() {
+--- a/FEXCore/Source/Interface/Core/Frontend.h
++++ b/FEXCore/Source/Interface/Core/Frontend.h
+@@ -26,6 +26,12 @@
+ namespace FEXCore::Frontend {
+ class Decoder final {
+ public:
++  bool TryPrepareBuffer() {
++    auto Buffer = PoolObject.TryReownOrClaimBufferWithSize();
++    if (!Buffer) return false;
++    DecodedBuffer = Buffer->Ptr;
++    return true;
++  }
+   enum class DecodedBlockStatus {
+     SUCCESS,
+     INVALID_INST,
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -9,6 +9,9 @@
+ */
+ 
+ #include <new>
++#ifdef FEX_IOS_HOST
++#include <wine/debug.h>
++#endif
+ #include <cstdint>
+ #ifdef ZYDIS_DISASSEMBLER
+ #include <Zydis/Zydis.h>
+@@ -503,14 +506,28 @@
+   // TODO: This doesn't make sense when the parent thread doesn't outlive its children
+ }
+ 
+-void ContextImpl::InitializeCompiler(FEXCore::Core::InternalThreadState* Thread) {
+-  Thread->OpDispatcher = fextl::make_unique<FEXCore::IR::OpDispatchBuilder>(this, Thread);
++static bool MadeiraCompilerInitFailed(const char* Message) {
++#ifdef FEX_IOS_HOST
++  static std::atomic<unsigned> Reports {};
++  if (Reports.fetch_add(1, std::memory_order_relaxed) < 32) __wine_dbg_output(Message);
++#else
++  (void)Message;
++#endif
++  return false;
++}
++
++bool ContextImpl::InitializeCompiler(FEXCore::Core::InternalThreadState* Thread) {
++  Thread->OpDispatcher = fextl::try_make_unique<FEXCore::IR::OpDispatchBuilder>(this, Thread);
++  if (!Thread->OpDispatcher) return MadeiraCompilerInitFailed("[fex-core-init-v1] stage=OpDispatcher NO_MEMORY; rolling back\n");
+   Thread->OpDispatcher->SetMultiblock(Config.Multiblock);
+   LogMan::Msg::EFmt("[TI-IC] lookupcache");
+-  Thread->LookupCache = fextl::make_unique<FEXCore::LookupCache>(this);
++  Thread->LookupCache = fextl::try_make_unique<FEXCore::LookupCache>(this);
++  if (!Thread->LookupCache || !Thread->LookupCache->GetL1Pointer()) return MadeiraCompilerInitFailed("[fex-core-init-v1] stage=LookupCache NO_MEMORY; rolling back\n");
+   LogMan::Msg::EFmt("[TI-IC] decoder");
+-  Thread->FrontendDecoder = fextl::make_unique<FEXCore::Frontend::Decoder>(Thread);
+-  Thread->PassManager = fextl::make_unique<FEXCore::IR::PassManager>();
++  Thread->FrontendDecoder = fextl::try_make_unique<FEXCore::Frontend::Decoder>(Thread);
++  if (!Thread->FrontendDecoder) return MadeiraCompilerInitFailed("[fex-core-init-v1] stage=FrontendDecoder NO_MEMORY; rolling back\n");
++  Thread->PassManager = fextl::try_make_unique<FEXCore::IR::PassManager>();
++  if (!Thread->PassManager) return MadeiraCompilerInitFailed("[fex-core-init-v1] stage=PassManager NO_MEMORY; rolling back\n");
+   LogMan::Msg::EFmt("[TI-IC] passmanager");
+ 
+   Thread->CurrentFrame->State.L1Pointer = Thread->LookupCache->GetL1Pointer();
+@@ -529,10 +546,22 @@
+   Thread->PassManager->InsertRegisterAllocationPass(this);
+   LogMan::Msg::EFmt("[TI-IC] jitcore");
+   Thread->CPUBackend = FEXCore::CPU::CreateArm64JITCore(this, Thread);
++  if (!Thread->CPUBackend) return MadeiraCompilerInitFailed("[fex-core-init-v1] stage=CPUBackend NO_MEMORY; rolling back\n");
+   LogMan::Msg::EFmt("[TI-IC] jitcore-done");
+ 
+   Thread->PassManager->Finalize();
+-}
++  return true;
++}
++
++#ifdef FEX_IOS_HOST
++extern "C" const char* MadeiraFEXPrepareThread(FEXCore::Core::InternalThreadState* Thread) {
++  if (!Thread || !Thread->CurrentFrame || !Thread->CPUBackend || !Thread->LookupCache || !Thread->FrontendDecoder || !Thread->PassManager)
++    return "compiler-state";
++  if (!Thread->OpDispatcher || !Thread->OpDispatcher->TryReownOrClaimBuffer()) return "OpDispatcher";
++  if (!Thread->FrontendDecoder->TryPrepareBuffer()) return "Frontend";
++  return nullptr;
++}
++#endif
+ 
+ FEXCore::Core::InternalThreadState*
+ ContextImpl::CreateThread(uint64_t InitialRIP, uint64_t StackPointer, const FEXCore::Core::CPUState* NewThreadState) {
+@@ -613,7 +642,10 @@
+   }
+ #endif
+ 
+-  InitializeCompiler(Thread);
++  if (!InitializeCompiler(Thread)) {
++    DestroyThread(Thread);
++    return nullptr;
++  }
+ 
+   Thread->CurrentFrame->State.DeferredSignalRefCount.Store(0);
+ 
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -1494,7 +1494,7 @@
+ }
+ 
+ fextl::unique_ptr<CPUBackend> CreateArm64JITCore(FEXCore::Context::ContextImpl* ctx, FEXCore::Core::InternalThreadState* Thread) {
+-  return fextl::make_unique<Arm64JITCore>(ctx, Thread);
++  return fextl::try_make_unique<Arm64JITCore>(ctx, Thread);
+ }
+ 
+ } // namespace FEXCore::CPU
+--- a/FEXCore/Source/Interface/Core/LookupCache.cpp
++++ b/FEXCore/Source/Interface/Core/LookupCache.cpp
+@@ -70,7 +70,7 @@
+ #else
+     AllocationBase = reinterpret_cast<uintptr_t>(FEXCore::Allocator::VirtualAlloc(AllocationSize, false, false));
+ #endif
+-    LOGMAN_THROW_A_FMT(AllocationBase != -1ULL, "Failed to allocate L1-only LookupCache");
++    if (!AllocationBase || AllocationBase == ~uintptr_t {}) return;
+ 
+     // No L2 regions exist. Leave these pointing at nothing usable so a stray
+     // consumer faults immediately instead of scribbling on the L1 array.
+@@ -90,7 +90,7 @@
+ #else
+     AllocationBase = reinterpret_cast<uintptr_t>(FEXCore::Allocator::VirtualAlloc(TotalCacheSize, false, false));
+ #endif
+-    LOGMAN_THROW_A_FMT(AllocationBase != -1ULL, "Failed to allocate PagePointer");
++    if (!AllocationBase || AllocationBase == ~uintptr_t {}) return;
+     PagePointer = AllocationBase;
+   }
+ 
+@@ -152,6 +152,7 @@
+ }
+ 
+ LookupCache::~LookupCache() {
++  if (!AllocationBase || AllocationBase == ~uintptr_t {}) return;
+   // ml606: free what was actually mapped. PagePointer/TotalCacheSize only
+   // describe the full layout and are wrong (PagePointer is 0) in L1-only mode.
+   FEXCore::Allocator::VirtualFree(reinterpret_cast<void*>(AllocationBase), AllocationSize);
+--- a/FEXCore/Source/Interface/Core/LookupCache.h
++++ b/FEXCore/Source/Interface/Core/LookupCache.h
+@@ -505,7 +505,7 @@
+ 
+   uintptr_t PagePointer;
+   uintptr_t PageMemory;
+-  uintptr_t L1Pointer;
++  uintptr_t L1Pointer {};
+   uintptr_t L1PointerMask;
+ 
+   size_t TotalCacheSize;
+--- a/FEXCore/Source/Interface/Context/Context.h
++++ b/FEXCore/Source/Interface/Context/Context.h
+@@ -488,7 +488,7 @@
+    *
+    * InitializeCompiler is called inside of CreateThread, so you likely don't need this
+    */
+-  void InitializeCompiler(FEXCore::Core::InternalThreadState* Thread);
++  bool InitializeCompiler(FEXCore::Core::InternalThreadState* Thread);
+ 
+   bool SupportsHardwareTSO = false;
+   bool AtomicTSOEmulationEnabled = true;
+--- a/Source/Windows/WOW64/Module.cpp
++++ b/Source/Windows/WOW64/Module.cpp
+@@ -269,6 +269,7 @@
+ 
+ struct FrontendThreadData {
+   bool InLockedRWXRead {};
++  bool MadeiraPrepared {};
+   // MADEIRA ml1430: syscall parking for the code-buffer sweeper (see IosWowSyscallC).
+   // IosInSim is the sweeper's per-thread "may be executing emitted code" byte; it is 0
+   // only while the thread is blocked in an outermost-level syscall whose return can be
+@@ -1539,6 +1540,42 @@
+   }
+ }
+ 
++static void MadeiraRetireThread(TLS TLS, DWORD ThreadTID, bool Self) {
++  {
++    std::scoped_lock Lock(ThreadCreationMutex);
++    auto it = Threads.find(ThreadTID);
++    if (it == Threads.end()) {
++      // Thread already terminated
++      return;
++    }
++
++    Threads.erase(it);
++    if (StatAllocHandler) {
++      StatAllocHandler->DeallocateSlot(TLS.ThreadState()->ThreadStats);
++    }
++  }
++  auto ThreadState = TLS.ThreadState();
++
++#ifdef FEX_IOS_HOST
++  // MADEIRA ml1430: the sweeper's registry points into the frontend data; leave it (and
++  // wait out any sweep in flight) before that is freed. No locks are held here.
++  if (GetFrontendThreadData(ThreadState)->IosSweepRegistered) {
++    IosSweepUnregisterThread(ThreadState);
++  }
++#endif
++  delete GetFrontendThreadData(ThreadState);
++
++  // GDT and LDT are mirrored, only free one.
++  delete[] ThreadState->CurrentFrame->State.segment_arrays[FEXCore::Core::CPUState::SEGMENT_ARRAY_INDEX_GDT];
++
++  FEX::Windows::CallRetStack::DestroyThread(ThreadState);
++  if (Self) TLS.ThreadState() = nullptr;
++  CTX->DestroyThread(ThreadState);
++  if (Self) {
++    FEX::Windows::DeinitCRTThread();
++  }
++}
++
+ void BTCpuThreadTerm(HANDLE Thread, LONG ExitCode) {
+   if (!FEX::Windows::ValidateHandleAccess(Thread, THREAD_TERMINATE)) {
+     return;
+@@ -1578,38 +1615,7 @@
+     return;
+   }
+ 
+-  {
+-    std::scoped_lock Lock(ThreadCreationMutex);
+-    auto it = Threads.find(ThreadTID);
+-    if (it == Threads.end()) {
+-      // Thread already terminated
+-      return;
+-    }
+-
+-    Threads.erase(it);
+-    if (StatAllocHandler) {
+-      StatAllocHandler->DeallocateSlot(TLS.ThreadState()->ThreadStats);
+-    }
+-  }
+-  auto ThreadState = TLS.ThreadState();
+-
+-#ifdef FEX_IOS_HOST
+-  // MADEIRA ml1430: the sweeper's registry points into the frontend data; leave it (and
+-  // wait out any sweep in flight) before that is freed. No locks are held here.
+-  if (GetFrontendThreadData(ThreadState)->IosSweepRegistered) {
+-    IosSweepUnregisterThread(ThreadState);
+-  }
+-#endif
+-  delete GetFrontendThreadData(ThreadState);
+-
+-  // GDT and LDT are mirrored, only free one.
+-  delete[] ThreadState->CurrentFrame->State.segment_arrays[FEXCore::Core::CPUState::SEGMENT_ARRAY_INDEX_GDT];
+-
+-  FEX::Windows::CallRetStack::DestroyThread(ThreadState);
+-  CTX->DestroyThread(ThreadState);
+-  if (Self) {
+-    FEX::Windows::DeinitCRTThread();
+-  }
++  MadeiraRetireThread(TLS, static_cast<DWORD>(ThreadTID), Self);
+ }
+ 
+ void* BTCpuGetBopCode() {
+@@ -1751,7 +1757,37 @@
+       ".seh_endproc;");
+ }
+ 
++#ifdef FEX_IOS_HOST
++// Checked before the first guest dispatch, while no JIT lock is held. Lazy
++// compiler buffers are not charged to threads that never enter simulation.
++extern "C" const char* MadeiraFEXPrepareThread(FEXCore::Core::InternalThreadState* Thread);
++static void MadeiraPrepareFirstDispatch() {
++  const auto TLS = GetTLS();
++  auto* Thread = TLS.ThreadStateIfInitialised();
++  if (Thread && GetFrontendThreadData(Thread)->MadeiraPrepared) return;
++  const char* Failed;
++  {
++    std::scoped_lock Lock(ThreadCreationMutex);
++    Failed = MadeiraFEXPrepareThread(Thread);
++    if (!Failed) GetFrontendThreadData(Thread)->MadeiraPrepared = true;
++  }
++  if (Failed) {
++    // Fixed text through Wine's already linked raw output avoids formatting or
++    // heap allocation while the allocator is failing. No checks are bypassed.
++    static std::atomic<unsigned> FailureReports {};
++    if (FailureReports.fetch_add(1, std::memory_order_relaxed) < 32)
++      IosRawReport("[fex-first-use-v1] tid={:#x} stage={} status=0xc0000017 before first dispatch; retiring current thread", GetCurrentThreadId(), Failed);
++    if (Thread) MadeiraRetireThread(TLS, GetCurrentThreadId(), true);
++    TLS.ThreadState() = nullptr;
++    for (;;) NtTerminateThread(GetCurrentThread(), static_cast<NTSTATUS>(0xc0000017));
++  }
++}
++#endif
++
+ extern "C" void BTCpuSimulateImpl(CONTEXT* entry_context) {
++#ifdef FEX_IOS_HOST
++  MadeiraPrepareFirstDispatch();
++#endif
+   const auto TLS = GetTLS();
+ #ifdef FEX_IOS_HOST
+   // MADEIRA ml1430: a callback can re-enter simulation from inside a parked syscall; it runs

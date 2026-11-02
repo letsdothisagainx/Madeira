@@ -67,6 +67,28 @@ import Darwin
         if route.hasPrefix("/library/app/"), let app = UInt64(route.dropFirst(13)), app > UInt32.max { return nil }
         return route
     }
+    // This native Steam callback was observed with all primitive argument
+    // values filtered out. Retain only its fixed error token; the adjacent
+    // details string may contain paths, usernames or other private data.
+    static func gameActionError(_ args: [[String: Any]], stack: [String: Any]?) -> String? {
+        let frames = stack?["callFrames"] as? [[String: Any]] ?? []
+        guard frames.prefix(8).contains(where: { frame in
+            guard frame["functionName"] as? String == "OnGameActionShowError",
+                  let url = URLComponents(string: frame["url"] as? String ?? "") else { return false }
+            return url.host?.lowercased() == "steamloopback.host" && url.path.hasPrefix("/chunk~") && url.path.hasSuffix(".js")
+        }) else { return nil }
+        var error = "unavailable"
+        for arg in args.prefix(8) where arg["type"] as? String == "string" {
+            guard let value = arg["value"] as? String,
+                  value.range(of: "^AppError_[0-9]{1,3}$", options: .regularExpression) != nil,
+                  let code = Int(value.dropFirst(9)), code <= 255 else { continue }
+            error = "AppError_\(code)"; break
+        }
+        // The public callback source's six arguments place gameID at index 2.
+        // This is a shape match, not proof of ownership or an installed state.
+        let cs2 = args.count == 6 && args[1]["type"] as? String == "number" && args[2]["value"] as? String == "730"
+        return "game-action-error source=OnGameActionShowError error=\(error) cs2-argument-shape=\(cs2) details=excluded"
+    }
     static func candidatePages(_ targets: [[String: Any]]) -> [[String: Any]] {
         targets.filter { target in
             guard target["type"] as? String == "page", target["id"] is String,
@@ -311,6 +333,9 @@ import Darwin
                 targetNote(target, "console-route source=URLTrack route=\(route)")
             }
             let kind = p["type"] as? String ?? ""
+            if let error = Self.gameActionError(args, stack: p["stackTrace"] as? [String: Any]) {
+                targetNote(target, error, category: "failure")
+            }
             if ["error", "warning"].contains(kind) {
                 let classes = args.prefix(8).map { Self.errorClass(($0["value"] as? String) ?? ($0["description"] as? String) ?? "") }
                 let update = classes.contains { $0.contains("AppLaunch_MustUpdateClient") || $0.contains("Steam_ErrorCondition_RestartNeeded") || $0.contains("Steam_AppUpdateError_47") || $0.contains("GameLaunch_ContentUpdateRequired") }

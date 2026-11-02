@@ -45,6 +45,7 @@ server.on('upgrade', (request, socket) => {
         event('Page.navigatedWithinDocument', {url: 'https://steamloopback.host/index.html?token=SECRET'});
         // This normal console event is the only Library route event in this fixture.
         event('Runtime.consoleAPICalled', {type: 'log', args: [{type: 'string', value: '[URLTrack] Tracking page view:'}, {type: 'string', value: '/library/home?token=SECRET'}]});
+        event('Runtime.consoleAPICalled', {type: 'warning', args: [{type: 'string', value: 'launch error'}, {type: 'number', value: 1}, {type: 'string', value: '730'}, {type: 'string', value: 'LaunchApp'}, {type: 'string', value: 'AppError_47'}, {type: 'string', value: 'SECRET private launch details'}], stackTrace: {callFrames: [{functionName: 'OnGameActionShowError', url: 'https://steamloopback.host/chunk~2dcc5aaf7.js?token=SECRET', lineNumber: 0, columnNumber: 9416209}]}});
         event('Runtime.consoleAPICalled', {type: 'warning', args: [{type: 'string', value: 'A newer version of the Steam Client is required to run this application SECRET'}], stackTrace: frames});
         event('Runtime.consoleAPICalled', {type: 'error', args: [{type: 'string', value: 'Remote call failed SECRET'}], stackTrace: frames});
         event('Runtime.exceptionThrown', {exceptionDetails: {text: 'Uncaught (in promise)', exception: {description: "TypeError: Cannot read properties of undefined (reading 'get') SECRET"}, stackTrace: frames}});

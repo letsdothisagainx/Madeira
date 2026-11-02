@@ -5112,10 +5112,12 @@ static void ios_finish_process_memory(void *dead_peb)
     extern void ios_fd_cache_release(void *owner);
     extern void ios_subfloor_release_owner(void *owner);
     extern void ios_jit_reclaim_process(void *owner);
+    extern void ios_fex_reclaim_process_views(void *owner);
     extern void ios_exe_win_mark_ready(void *owner);
     ios_fd_cache_release(dead_peb);
     ios_subfloor_release_owner(dead_peb);
     ios_jit_reclaim_process(dead_peb);
+    ios_fex_reclaim_process_views(dead_peb);
     ios_wow_window_release(dead_peb);
     ios_exe_win_mark_ready(dead_peb);
     wine_log_write("[process-quarantine] peb=%p last Wine thread retired; memory released", dead_peb);
@@ -5185,6 +5187,14 @@ void process_exit_wrapper( int status )
          * helpers and anything the program starts have a slot and never call it. */
         extern void wine_launched_process_did_exit( int status ) __attribute__((weak));
         if (wine_launched_process_did_exit) wine_launched_process_did_exit( status );
+        /* The root bridge longjmps into a C-only successor wait. Keep its TEB,
+         * guest window, JIT images and presentation resources there, but its
+         * completed CPU callbacks cannot use native FEX heaps again. */
+        if (memory_ready)
+        {
+            extern void ios_fex_reclaim_process_views(void *owner);
+            ios_fex_reclaim_process_views(caller_peb);
+        }
         close( fd_socket );
     }
 #else

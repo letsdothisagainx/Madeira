@@ -119,6 +119,8 @@ extern kern_return_t vm_protect(mach_port_t target_task, vm_address_t address,
 #include "unix_private.h"
 #include "ios_wow.h"
 #include "wine/debug.h"
+#include "vm_failure_trace.h"
+extern ULONG_PTR ios_fex_arena_base_unix, ios_fex_arena_end_unix;
 
 /* ml648: the Mono-bridge alias table is defined further down, but the anon-alias
  * teardown paths ABOVE it must retire entries too — an unmapped alias left live
@@ -1452,6 +1454,8 @@ static void *ios_pool_warmer_thread( void *arg )
                         int b;
                         if (prx && raddr >= prx && raddr < prx + pps)      b = B_POOL_RX;
                         else if (prw && raddr >= prw && raddr < prw + pps) b = B_POOL_RW;
+                        else if (ios_fex_arena_base_unix && raddr >= ios_fex_arena_base_unix &&
+                                 raddr < ios_fex_arena_end_unix) b = B_FEX;
                         else if (raddr < 0x1000000000ULL)                  b = B_HOST_LOW;
                         else if (raddr >= 0x7000000000ULL && raddr < 0x7400000000ULL) b = B_GUEST;
                         else if (raddr >= 0x7400000000ULL && raddr < 0x7c00000000ULL) b = B_PA;
@@ -1501,6 +1505,8 @@ static void *ios_pool_warmer_thread( void *arg )
                         const char *bn = NULL;
                         if (prx && raddr >= prx && raddr < prx + pps)      bn = "JIT-POOL-RX";
                         else if (prw && raddr >= prw && raddr < prw + pps) bn = "JIT-POOL-RW";
+                        else if (ios_fex_arena_base_unix && raddr >= ios_fex_arena_base_unix &&
+                                 raddr < ios_fex_arena_end_unix) bn = "FEX-HOST";
                         else if (raddr < 0x1000000000ULL)                  bn = NULL; /* normal host */
                         else if (raddr >= 0x7000000000ULL && raddr < 0x7400000000ULL) bn = "GUEST";
                         else if (raddr >= 0x7400000000ULL && raddr < 0x7c00000000ULL) bn = "CEF-PA-POOL";
@@ -4655,13 +4661,27 @@ void ios_resolve_fex_exports( void )
 static struct { void *peb; unsigned int (*cb)(void *, unsigned long long *, unsigned int *, unsigned int *); }
     ios_hold_release[IOS_HOLD_RELEASE_MAX];
 static int ios_hold_release_n;
+static pthread_mutex_t ios_hold_release_lock = PTHREAD_MUTEX_INITIALIZER;
 
 unsigned int (*ios_hold_release_lookup(void *peb))(void *, unsigned long long *, unsigned int *, unsigned int *)
 {
     int i;
+    unsigned int (*cb)(void *, unsigned long long *, unsigned int *, unsigned int *) = NULL;
+    pthread_mutex_lock(&ios_hold_release_lock);
     for (i = 0; i < ios_hold_release_n; i++)
-        if (ios_hold_release[i].peb == peb) return ios_hold_release[i].cb;
-    return NULL;
+        if (ios_hold_release[i].peb == peb) { cb = ios_hold_release[i].cb; break; }
+    pthread_mutex_unlock(&ios_hold_release_lock);
+    return cb;
+}
+
+static void ios_hold_release_drop(void *owner)
+{
+    int i;
+    pthread_mutex_lock(&ios_hold_release_lock);
+    for (i = 0; i < ios_hold_release_n; i++)
+        if (ios_hold_release[i].peb == owner)
+        { ios_hold_release[i].cb = NULL; ios_hold_release[i].peb = NULL; }
+    pthread_mutex_unlock(&ios_hold_release_lock);
 }
 
 struct ios_register_hold_release_args
@@ -4675,7 +4695,7 @@ struct ios_register_hold_release_args
 NTSTATUS unixcall_ios_register_hold_release(void *args)
 {
     struct ios_register_hold_release_args *p = args;
-    int i;
+    int i, free_slot = -1;
 
     if (!p || p->size != sizeof(*p) || p->version != 1 || !p->peb || !p->callback)
     {
@@ -4684,22 +4704,29 @@ NTSTATUS unixcall_ios_register_hold_release(void *args)
                 p ? p->peb : NULL, p ? p->callback : NULL);
         return STATUS_INVALID_PARAMETER;
     }
+    pthread_mutex_lock(&ios_hold_release_lock);
     for (i = 0; i < ios_hold_release_n; i++)
+    {
         if (ios_hold_release[i].peb == p->peb)
         {
             ios_hold_release[i].cb = p->callback;
+            pthread_mutex_unlock(&ios_hold_release_lock);
             dprintf(2, "[hold-release] ml618 re-registered peb=%p cb=%p slot=%d\n", p->peb, p->callback, i);
             return STATUS_SUCCESS;
         }
-    if (ios_hold_release_n >= IOS_HOLD_RELEASE_MAX)
+        if (!ios_hold_release[i].peb && free_slot < 0) free_slot = i;
+    }
+    if (free_slot < 0 && ios_hold_release_n >= IOS_HOLD_RELEASE_MAX)
     {
+        pthread_mutex_unlock(&ios_hold_release_lock);
         dprintf(2, "[hold-release] ml618 TABLE FULL (%d) — peb=%p will leak holds\n",
                 ios_hold_release_n, p->peb);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
-    ios_hold_release[ios_hold_release_n].peb = p->peb;
-    ios_hold_release[ios_hold_release_n].cb  = p->callback;
-    ios_hold_release_n++;
+    i = free_slot < 0 ? ios_hold_release_n++ : free_slot;
+    ios_hold_release[i].peb = p->peb;
+    ios_hold_release[i].cb  = p->callback;
+    pthread_mutex_unlock(&ios_hold_release_lock);
     dprintf(2, "[hold-release] ml618 registered peb=%p cb=%p (%d live)\n",
             p->peb, p->callback, ios_hold_release_n);
     return STATUS_SUCCESS;
@@ -7657,7 +7684,14 @@ static struct list reserved_areas = LIST_INIT(reserved_areas);
  *
  * stage: 0 none, 1 limits/params, 2 placement scan, 3 anon mmap,
  *        4 vprot table, 5 view struct, 6 fixed-map */
-struct ios_af_rec { int stage; int err; unsigned long long addr, size; };
+struct ios_af_rec {
+    int stage, err;
+    unsigned long long addr, size;
+    const char *reason;
+    unsigned long long conflict_base, conflict_size, conflict_lease;
+    void *conflict_owner;
+    unsigned conflict_protect;
+};
 static __thread struct ios_af_rec ios_af;
 static const char * const ios_af_stage_name[] = {
     "none", "limits/params", "placement-scan", "anon-mmap",
@@ -7668,6 +7702,16 @@ static inline void ios_af_set( int stage, int err, const void *addr, size_t size
     if (ios_af.stage) return;
     ios_af.stage = stage; ios_af.err = err;
     ios_af.addr = (unsigned long long)(uintptr_t)addr; ios_af.size = (unsigned long long)size;
+}
+
+static NTSTATUS ios_af_refuse(const char *reason, const void *addr, size_t size, NTSTATUS status)
+{
+    if (!ios_af.stage)
+    {
+        ios_af_set(6,0,addr,size);
+        ios_af.reason = reason; /* Wine VAD/limits refusal; no Mach call or errno */
+    }
+    return status;
 }
 
 /* ml797: the arena, for the PE side to hand to the emulator as plain data.
@@ -7764,6 +7808,8 @@ struct file_view
     size_t        size;          /* size in bytes */
     unsigned int  protect;       /* protection for all pages at allocation time and SEC_* flags */
     unsigned int  ios_flags;     /* IOS_VIEW_* */
+    void         *ios_fex_owner; /* native FEX data only; never guest/image/JIT aliases */
+    unsigned long long ios_fex_lease;
 };
 #define IOS_VIEW_QUARANTINED 0x4   /* a dead thread's stack held by the stack quarantine */
 
@@ -13406,7 +13452,8 @@ static void ios_fex_arena_census( void *start, void *end, size_t request, size_t
     unsigned nviews = 0, holes = 0, used = 0, other_views = 0, i, j;
     static unsigned printed;
 
-    if (printed || !lo || hi <= lo || (ULONG_PTR)start < lo || (ULONG_PTR)end > hi ||
+    int legacy = (ULONG_PTR)start == 0xc00000000ULL && (ULONG_PTR)end == 0xf00000000ULL;
+    if (printed || !lo || hi <= lo || (!legacy && ((ULONG_PTR)start < lo || (ULONG_PTR)end > hi)) ||
         (ULONG_PTR)start >= (ULONG_PTR)end || !page_size) return;
     printed = 1;
     cursor = lo;
@@ -14828,6 +14875,8 @@ static NTSTATUS create_view( struct file_view **view_ret, void *base, size_t siz
     view->size    = size;
     view->protect = vprot;
     view->ios_flags = 0;
+    view->ios_fex_owner = NULL;
+    view->ios_fex_lease = 0;
     if (use_kernel_writewatch) vprot &= ~VPROT_WRITEWATCH;
     set_page_vprot( base, size, vprot );
 
@@ -14840,6 +14889,7 @@ static NTSTATUS create_view( struct file_view **view_ret, void *base, size_t siz
 }
 
 #ifdef WINE_IOS
+#include "fex_view_ownership.h"
 /***********************************************************************
  *           ios_jit_purge_window
  *
@@ -20213,13 +20263,21 @@ static int ios_thin_placing;
 static NTSTATUS map_fixed_area( void *base, size_t size, int unix_prot )
 {
     struct reserved_area *area;
+    struct file_view *conflict;
     NTSTATUS status;
     char *start = base, *end = (char *)base + ROUND_SIZE( 0, size, host_page_mask );
 
-    if ((UINT_PTR)base & host_page_mask) return STATUS_CONFLICTING_ADDRESSES;
-    if (find_view_range( base, size )) return STATUS_CONFLICTING_ADDRESSES;
+    if ((UINT_PTR)base & host_page_mask) return ios_af_refuse("host-page-alignment",base,size,STATUS_CONFLICTING_ADDRESSES);
+    if ((conflict = find_view_range( base, size )))
+    {
+        NTSTATUS ret = ios_af_refuse("live-view-overlap",base,size,STATUS_CONFLICTING_ADDRESSES);
+        ios_af.conflict_base = (ULONG_PTR)conflict->base; ios_af.conflict_size = conflict->size;
+        ios_af.conflict_owner = conflict->ios_fex_owner; ios_af.conflict_lease = conflict->ios_fex_lease;
+        ios_af.conflict_protect = conflict->protect;
+        return ret;
+    }
 #ifdef WINE_IOS
-    if (ios_wow_guard_conflicts( (ULONG_PTR)base, size )) return STATUS_CONFLICTING_ADDRESSES;
+    if (ios_wow_guard_conflicts( (ULONG_PTR)base, size )) return ios_af_refuse("guest-window-guard",base,size,STATUS_CONFLICTING_ADDRESSES);
     /* Madeira: every address in a thin arena lies inside some thin reservation's
      * range (or the arena's margin), so a fixed map there conflicts, as it would
      * on Windows. Only ios_thin_reserve places heads in it. */
@@ -20229,7 +20287,7 @@ static NTSTATUS map_fixed_area( void *base, size_t size, int unix_prot )
         {
             if (area->base >= (void *)end) break;
             if (area->thin_only && (char *)area->base + area->size > start)
-                return STATUS_CONFLICTING_ADDRESSES;
+                return ios_af_refuse("thin-reservation",base,size,STATUS_CONFLICTING_ADDRESSES);
         }
     }
 #endif
@@ -20422,7 +20480,7 @@ static NTSTATUS map_view( struct file_view **view_ret, void *base, size_t size,
                           unsigned int alloc_type, unsigned int vprot,
                           ULONG_PTR limit_low, ULONG_PTR limit_high, size_t align_mask )
 {
-    ios_af.stage = 0;   /* ml814: this request's attribution starts clean */
+    memset(&ios_af,0,sizeof(ios_af)); /* stage, raw error and address all belong to this attempt */
     int top_down = alloc_type & MEM_TOP_DOWN;
     void *ptr;
     int unix_prot = get_unix_prot( vprot );
@@ -20452,7 +20510,7 @@ static NTSTATUS map_view( struct file_view **view_ret, void *base, size_t size,
         return STATUS_SUCCESS;
     }
 
-    if (limit_high && limit_low >= limit_high) return STATUS_INVALID_PARAMETER;
+    if (limit_high && limit_low >= limit_high) return ios_af_refuse("inverted-limits",base,size,STATUS_INVALID_PARAMETER);
 
     if (use_kernel_writewatch && vprot & VPROT_WRITEWATCH)
         unix_prot = get_unix_prot( vprot & ~VPROT_WRITEWATCH );
@@ -20461,12 +20519,12 @@ static NTSTATUS map_view( struct file_view **view_ret, void *base, size_t size,
 
     if (base)
     {
-        if (is_beyond_limit( base, size, address_space_limit )) return STATUS_WORKING_SET_LIMIT_RANGE;
-        if (limit_low && base < (void *)limit_low) return STATUS_CONFLICTING_ADDRESSES;
-        if (limit_high && is_beyond_limit( base, size, (void *)limit_high )) return STATUS_CONFLICTING_ADDRESSES;
-        if (is_beyond_limit( base, size, host_addr_space_limit )) return STATUS_CONFLICTING_ADDRESSES;
+        if (is_beyond_limit( base, size, address_space_limit )) return ios_af_refuse("windows-address-limit",base,size,STATUS_WORKING_SET_LIMIT_RANGE);
+        if (limit_low && base < (void *)limit_low) return ios_af_refuse("below-request-floor",base,size,STATUS_CONFLICTING_ADDRESSES);
+        if (limit_high && is_beyond_limit( base, size, (void *)limit_high )) return ios_af_refuse("above-request-ceiling",base,size,STATUS_CONFLICTING_ADDRESSES);
+        if (is_beyond_limit( base, size, host_addr_space_limit )) return ios_af_refuse("host-address-limit",base,size,STATUS_CONFLICTING_ADDRESSES);
         /* madeira-bcd: [arena-guard] -- see ios_arena_guard_refuses */
-        if (ios_arena_guard_refuses( base, size, limit_low, limit_high )) return STATUS_CONFLICTING_ADDRESSES;
+        if (ios_arena_guard_refuses( base, size, limit_low, limit_high )) return ios_af_refuse("fex-arena-guard",base,size,STATUS_CONFLICTING_ADDRESSES);
         if ((status = map_fixed_area( base, size, unix_prot ))) return status;
         if (is_beyond_limit( base, size, working_set_limit )) working_set_limit = address_space_limit;
         ptr = base;
@@ -20608,7 +20666,7 @@ static NTSTATUS map_view( struct file_view **view_ret, void *base, size_t size,
             {
                 static unsigned long lf_n;
 
-                if (++lf_n <= 8 || !(lf_n % 512))
+                if (madeira_vm_count_sample(++lf_n,8))
                     dprintf( 2, "[laa] ml1070 #%lu low-half placement %p+0x%lx (guest %p) for a "
                                 "program whose header is not large-address-aware — the raised "
                                 "ceiling stays, the high half is spill only (MADEIRA_LAA_LOWFIRST=0 "
@@ -20796,6 +20854,7 @@ static NTSTATUS map_view( struct file_view **view_ret, void *base, size_t size,
     }
 done:
     status = create_view( view_ret, ptr, size, vprot );
+    if (!status) ios_fex_tag_view(*view_ret,limit_low,limit_high);
     if (status != STATUS_SUCCESS) unmap_area( ptr, size );
     return status;
 }
@@ -22546,6 +22605,8 @@ static NTSTATUS remove_pages_from_view( struct file_view *view, char *base, size
         new_view->size    = (char *)view->base + view->size - (char *)new_view->base;
         new_view->protect = view->protect;
         new_view->ios_flags = view->ios_flags;
+        new_view->ios_fex_owner = view->ios_fex_owner;
+        new_view->ios_fex_lease = view->ios_fex_lease;
 
         unregister_view( view );
         view->size = base - (char *)view->base;
@@ -24068,6 +24129,8 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
     }
     /* madeira-bcd: [sc-rph], before the protections and the JIT-pool copy. */
     ios_sc_render_handler_patch( ptr, total_size, nt, sec, nt_name );
+    if ((status = ios_fex_prepare_image(ptr,total_size,(const IMAGE_NT_HEADERS64 *)nt,sec,
+                                      image_info->is_hybrid || (view->protect & VPROT_ARM64EC)))) goto done;
 
     /* madeira-bcd [x64-image]: decided before any protection is set, so both
      * the section pass and the eager copy loop below see the mark (see
@@ -29812,6 +29875,7 @@ NTSTATUS WINAPI NtAllocateVirtualMemory( HANDLE process, PVOID *ret, ULONG_PTR z
                                          SIZE_T *size_ptr, ULONG type, ULONG protect )
 {
 #ifdef WINE_IOS
+    memset(&ios_af,0,sizeof(ios_af));
     ios_tls38_poll( "valloc" );
 #endif
     static const ULONG type_mask = MEM_COMMIT | MEM_RESERVE | MEM_TOP_DOWN | MEM_WRITE_WATCH | MEM_RESET;
@@ -30771,20 +30835,50 @@ NTSTATUS WINAPI NtAllocateVirtualMemory( HANDLE process, PVOID *ret, ULONG_PTR z
          * it (jumbo_hint/jumbo_size are captured before *ret and *size_ptr are
          * overwritten), the status, and the last raw Mach result.
          *
-         * Uncapped for the first 64 failures, then every 64th: a single failure
-         * is the interesting one, and a storm should not hide it. */
+         * Keep exact totals, but cap details independently of signature
+         * eviction. Overall power-of-two aggregates cannot flood a retry loop. */
         if (st != STATUS_SUCCESS)
         {
-            static unsigned long af_n;
-            unsigned long n = ++af_n;
-            if (n <= 64 || (n % 64) == 0)
-                dprintf( 2, "[alloc-fail] ml814 #%lu status=%08x hint=%p size=0x%llx type=0x%x "
-                            "protect=0x%x tid=%04x | STAGE=%s err=%d at 0x%llx+0x%llx\n",
-                         n, (unsigned)st, jumbo_hint, (unsigned long long)jumbo_size,
-                         (unsigned)type, (unsigned)protect,
-                         NtCurrentTeb() ? (unsigned)(ULONG_PTR)NtCurrentTeb()->ClientId.UniqueThread : 0,
-                         ios_af.stage <= 6 ? ios_af_stage_name[ios_af.stage] : "?",
-                         ios_af.err, ios_af.addr, ios_af.size );
+            static _Thread_local struct madeira_vm_failure_trace trace;
+            static struct madeira_vm_failure_global global;
+            void *owner = ios_jit_current_peb();
+            struct ios_wow_window *window = ios_wow_slot_for_peb(owner);
+            struct madeira_vm_failure_key key = {
+                .owner=(ULONG_PTR)owner, .window=window ? window->base : 0,
+                .generation=window ? window->generation : 0, .size=jumbo_size,
+                .zero_bits=zero_bits, .limit=limit, .alignment=(type & MEM_RESERVE) ? 0x10000 : page_size,
+                .status=st, .type=type, .protect=protect
+            };
+            struct madeira_vm_failure_entry *entry = madeira_vm_failure_note(&trace,&key,(ULONG_PTR)jumbo_hint);
+            struct madeira_vm_failure_report report = madeira_vm_failure_gate(&trace,entry,&global);
+            int saved_errno = errno;
+            if (report.detail)
+                dprintf(2,"[alloc-fail-v2] matching=%llu thread-total=%llu global-total=%llu status=%08x "
+                          "owner=%p window=%p generation=%llu hint=%p first=0x%llx hint-changes=%llu "
+                          "size=0x%llx zero-bits=0x%llx limit=0x%llx alignment=0x%llx type=%x protect=%x tid=%04x "
+                          "stage=%s reason=%s raw-error=%d at=0x%llx+0x%llx conflict=0x%llx+0x%llx "
+                          "conflict-protect=%x conflict-fex-owner=%p conflict-lease=%llu (matching failures; caller retry not inferred)\n",
+                        (unsigned long long)entry->matches,(unsigned long long)report.thread_total,
+                        (unsigned long long)report.global_total,(unsigned)st,owner,(void *)(ULONG_PTR)key.window,
+                        (unsigned long long)key.generation,jumbo_hint,(unsigned long long)entry->first_hint,
+                        (unsigned long long)entry->hint_changes,(unsigned long long)jumbo_size,
+                        (unsigned long long)zero_bits,(unsigned long long)limit,(unsigned long long)key.alignment,(unsigned)type,(unsigned)protect,
+                        NtCurrentTeb() ? (unsigned)(ULONG_PTR)NtCurrentTeb()->ClientId.UniqueThread : 0,
+                        ios_af.stage <= 6 ? ios_af_stage_name[ios_af.stage] : "?",
+                        ios_af.reason ? ios_af.reason : "-",ios_af.err,ios_af.addr,ios_af.size,
+                        ios_af.conflict_base,ios_af.conflict_size,ios_af.conflict_protect,
+                        ios_af.conflict_owner,ios_af.conflict_lease);
+            else if (report.aggregate)
+                dprintf(2,"[alloc-fail-v2] aggregate global-total=%llu thread-total=%llu details-capped=1\n",
+                        (unsigned long long)report.global_total,(unsigned long long)report.thread_total);
+            if (window && (type & MEM_RESERVE) && (ULONG_PTR)jumbo_hint >= window->base &&
+                (ULONG_PTR)jumbo_hint-window->base < IOS_WOW_WINDOW_SIZE &&
+                (entry->matches == 1 || entry->matches == 64))
+            {
+                extern void ios_guest32_trace_current(const char *, const void *);
+                ios_guest32_trace_current(entry->matches == 1 ? "alloc-first" : "alloc-sustained",jumbo_hint);
+            }
+            errno = saved_errno;
         }
         if (!st && ret) ios_vm_note_alloc( *ret, size_ptr ? *size_ptr : 0, type, protect,
                                            ios_req_hint, (UINT64)zero_bits, (UINT64)limit );
@@ -31391,6 +31485,7 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
     USHORT machine = 0;
     unsigned int status;
 #ifdef WINE_IOS
+    memset(&ios_af,0,sizeof(ios_af));
     /* ml284: does ANYTHING allocate/commit executable memory, and where?
      *
      * There is already an exec-allocation probe here using ERR(), but the `virtual` debug

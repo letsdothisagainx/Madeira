@@ -94,6 +94,7 @@ pthread_key_t teb_key = 0;
 struct ios_thread_group
 {
     void *owner;
+    unsigned long long lease;
     unsigned count;
     int exiting;
     int reclaimed;
@@ -101,6 +102,7 @@ struct ios_thread_group
     pthread_t prev_pthread;
 };
 static struct ios_thread_group ios_thread_groups[64];
+static unsigned long long ios_thread_next_lease;
 static pthread_mutex_t ios_thread_group_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t ios_thread_reapers[64];
 static pthread_once_t ios_thread_reapers_once = PTHREAD_ONCE_INIT;
@@ -126,8 +128,43 @@ static struct ios_thread_group *ios_thread_group_locked(void *owner)
         memset(free_slot, 0, sizeof(*free_slot));
         free_slot->count = 1; /* the process's initial thread */
         free_slot->owner = owner;
+        if (!++ios_thread_next_lease) ++ios_thread_next_lease;
+        free_slot->lease = ios_thread_next_lease;
     }
     return free_slot;
+}
+
+/* No registry lock is held across a join, server call or VM operation. A
+ * freshly initialized process owns one initial Wine thread; like count_add,
+ * the allocator may establish that group before the first CreateThread. */
+unsigned long long ios_thread_process_lease(void *owner, int create)
+{
+    struct ios_thread_group *group = NULL;
+    unsigned i;
+    unsigned long long lease = 0;
+    pthread_mutex_lock(&ios_thread_group_mutex);
+    if (create) group = ios_thread_group_locked(owner);
+    else for (i = 0; i < ARRAY_SIZE(ios_thread_groups); ++i)
+        if (ios_thread_groups[i].owner == owner) { group = &ios_thread_groups[i]; break; }
+    if (owner && group && (!create || !group->exiting)) lease = group->lease;
+    pthread_mutex_unlock(&ios_thread_group_mutex);
+    return lease;
+}
+
+unsigned long long ios_thread_process_quiescent_lease(void *owner)
+{
+    unsigned i;
+    unsigned long long lease = 0;
+    pthread_mutex_lock(&ios_thread_group_mutex);
+    for (i = 0; owner && i < ARRAY_SIZE(ios_thread_groups); ++i)
+        if (ios_thread_groups[i].owner == owner)
+        {
+            if (ios_thread_groups[i].exiting && !ios_thread_groups[i].count && ios_thread_groups[i].reclaimed)
+                lease = ios_thread_groups[i].lease;
+            break;
+        }
+    pthread_mutex_unlock(&ios_thread_group_mutex);
+    return lease;
 }
 
 static int ios_thread_count_add(void *owner, int delta)
@@ -144,8 +181,11 @@ static int ios_thread_count_add(void *owner, int delta)
     return result;
 }
 
+static void ios_thread_finish_fex(void);
+
 static unsigned ios_thread_retire_current(void)
 {
+    ios_thread_finish_fex();
     void *owner = NtCurrentTeb() ? NtCurrentTeb()->Peb : NULL;
     struct ios_thread_group *group;
     unsigned count = 1; /* unknown ownership: do not reclaim anyone's memory */
@@ -1243,38 +1283,14 @@ static void contexts_from_server( CONTEXT *context, struct context_data server_c
 /***********************************************************************
  *           pthread_exit_wrapper
  */
-static DECLSPEC_NORETURN void pthread_exit_wrapper( int status )
+/* Complete every owner-dependent CPU callback while this thread still counts
+ * as live. After retirement, another thread may reclaim this process's FEX
+ * data and code. The remaining noreturn tail uses only native C/TEB state. */
+static void ios_thread_finish_fex(void)
 {
-    /* iOS-Madeira ml558: a NATIVE (non-wine) thread can reach here.
-     *
-     * ml557 died exactly this way: a native thread faulted, the [fault-stuck]
-     * breaker diverted it to abort_thread -> here, NtCurrentTeb() was NULL, and
-     * `ntdll_get_thread_data()->alert_fd` faulted at 0x394. That fault storms,
-     * the breaker diverts to abort_thread AGAIN, and we recurse until the stack
-     * is gone -- 5,000+ iterations, sp walking down ~0x70 each time. A thread
-     * with no wine TEB owns no wine fds, so there is simply nothing to close;
-     * exiting quietly is both correct and the only way out of the loop. */
-    if (!NtCurrentTeb())
-    {
-        static unsigned long noteb_n;
-        if (++noteb_n <= 8)
-            dprintf(2, "[pthread-exit] NO WINE TEB (native thread) — closing nothing, "
-                       "exiting cleanly (n=%lu) rev=ml558\n", noteb_n);
-        pthread_exit( UIntToPtr(status) );
-    }
-    close( ntdll_get_thread_data()->alert_fd );
-    close( ntdll_get_thread_data()->wait_fd[0] );
-    close( ntdll_get_thread_data()->wait_fd[1] );
-    close( ntdll_get_thread_data()->reply_fd );
-    close( ntdll_get_thread_data()->request_fd );
-    /* iOS-Madeira (Steam S0): we write the TEB directly into TSD slot 275
-     * (start_thread above) because FEX hardcodes offset 0x898 — but we
-     * don't OWN dynamic key 275. If an Apple framework allocated that key
-     * with an ObjC destructor, pthread's TSD cleanup calls
-     * destructor(TEB) at thread exit → objc_release on a non-object →
-     * crash (seen: every winhttp resolver-thread exit died in
-     * objc_release+0x10 under pthread_exit). NULL values are skipped by
-     * the cleanup loop, so clear the slot before exiting. */
+    static _Thread_local int entered;
+    if (entered || !NtCurrentTeb()) return;
+    entered = 1; /* recursive abort must not call the same faulting callback */
     /* iOS-Madeira ml614: DETECT the leaked FEX hold, but DO NOT CALL INTO FEX.
      *
      * ⛔⛔ ml613 CALLED BTCpu64IosReleaseThreadHolds FROM HERE AND CRASHED EVERY
@@ -1349,6 +1365,40 @@ static DECLSPEC_NORETURN void pthread_exit_wrapper( int status )
                     (r & 8) ? "no-ctx " : "");
         }
     }
+}
+
+static DECLSPEC_NORETURN void pthread_exit_wrapper( int status )
+{
+    /* iOS-Madeira ml558: a NATIVE (non-wine) thread can reach here.
+     *
+     * ml557 died exactly this way: a native thread faulted, the [fault-stuck]
+     * breaker diverted it to abort_thread -> here, NtCurrentTeb() was NULL, and
+     * `ntdll_get_thread_data()->alert_fd` faulted at 0x394. That fault storms,
+     * the breaker diverts to abort_thread AGAIN, and we recurse until the stack
+     * is gone -- 5,000+ iterations, sp walking down ~0x70 each time. A thread
+     * with no wine TEB owns no wine fds, so there is simply nothing to close;
+     * exiting quietly is both correct and the only way out of the loop. */
+    if (!NtCurrentTeb())
+    {
+        static unsigned long noteb_n;
+        if (++noteb_n <= 8)
+            dprintf(2, "[pthread-exit] NO WINE TEB (native thread) — closing nothing, "
+                       "exiting cleanly (n=%lu) rev=ml558\n", noteb_n);
+        pthread_exit( UIntToPtr(status) );
+    }
+    close( ntdll_get_thread_data()->alert_fd );
+    close( ntdll_get_thread_data()->wait_fd[0] );
+    close( ntdll_get_thread_data()->wait_fd[1] );
+    close( ntdll_get_thread_data()->reply_fd );
+    close( ntdll_get_thread_data()->request_fd );
+    /* iOS-Madeira (Steam S0): we write the TEB directly into TSD slot 275
+     * (start_thread above) because FEX hardcodes offset 0x898 — but we
+     * don't OWN dynamic key 275. If an Apple framework allocated that key
+     * with an ObjC destructor, pthread's TSD cleanup calls
+     * destructor(TEB) at thread exit → objc_release on a non-object →
+     * crash (seen: every winhttp resolver-thread exit died in
+     * objc_release+0x10 under pthread_exit). NULL values are skipped by
+     * the cleanup loop, so clear the slot before exiting. */
     {
         /* Drop our own TEB reference through the key that owns the slot.
          * We used to poke raw slot 275 here, which we never owned. */

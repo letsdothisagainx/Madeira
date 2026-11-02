@@ -9,7 +9,18 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[2]
 FILES = ('Source/Windows/WOW64/Module.cpp', 'FEXCore/include/FEXCore/Utils/AllocatorHooks.h',
-         'Source/Windows/Common/InvalidationTracker.cpp')
+         'Source/Windows/Common/InvalidationTracker.cpp',
+         'FEXCore/include/FEXCore/Utils/ThreadPoolAllocator.h',
+         'FEXCore/include/FEXCore/fextl/memory.h',
+         'FEXCore/Source/Interface/IR/IntrusiveIRList.h',
+         'FEXCore/Source/Interface/IR/IREmitter.h',
+         'FEXCore/Source/Interface/Core/Frontend.h',
+         'FEXCore/Source/Interface/Core/Core.cpp',
+         'FEXCore/Source/Interface/Core/JIT/JIT.cpp',
+         'FEXCore/Source/Interface/Core/LookupCache.cpp',
+         'FEXCore/Source/Interface/Core/LookupCache.h',
+         'FEXCore/Source/Interface/Context/Context.h',
+         'Source/Windows/WOW64/libwow64fex.def')
 PATCH = ROOT / 'build/fex-compat/thread-init.patch'
 
 
@@ -27,6 +38,10 @@ def stage(destination, source):
     memory_patch = ROOT / 'build/fex-compat/guest-write.patch'
     subprocess.run(['git', '-C', str(destination), 'apply', '--check', str(memory_patch)], check=True)
     subprocess.run(['git', '-C', str(destination), 'apply', str(memory_patch)], check=True)
+    for name in ('compiler-startup.patch', 'arena-exports.patch'):
+        patch = ROOT / 'build/fex-compat' / name
+        subprocess.run(['git', '-C', str(destination), 'apply', '--check', str(patch)], check=True)
+        subprocess.run(['git', '-C', str(destination), 'apply', str(patch)], check=True)
 
 
 def apply(state, source):

@@ -2575,12 +2575,25 @@ done:
 void ios_guest32_trace_current( const char *tag, const void *target )
 {
     int saved_errno = errno;
-    static unsigned reports[3];
-    unsigned bucket = !strcmp(tag,"cef-assert") ? 0 : !strcmp(tag,"write-memory") ? 1 : 2;
+    static unsigned reports[5];
+    unsigned bucket = !strcmp(tag,"cef-assert") ? 0 : !strcmp(tag,"write-memory") ? 1 :
+                      !strcmp(tag,"alloc-first") ? 3 : !strcmp(tag,"alloc-sustained") ? 4 : 2;
+    unsigned limit = bucket == 1 || bucket >= 3 ? 4 : 2;
     TEB *teb = NtCurrentTeb();
+    ULONG saved_error = teb ? teb->LastErrorValue : 0;
     uint64_t fex = 0, frame = 0, window = ios_wow_base();
     struct ios_g32_origin origin;
-    if (!teb || !window || __atomic_fetch_add(&reports[bucket],1,__ATOMIC_RELAXED) >= (bucket == 1 ? 4 : 2)) goto done;
+    unsigned ticket;
+    /* Allocation failures have their own budgets: early one-off address probes
+     * must not consume the sustained-conflict trace needed to name the caller.
+     * The caller runs after virtual_mutex has been released; reads stay fault
+     * safe and neither execute guest code nor allocate guest/FEX memory. */
+    if (!teb || !window) goto done;
+    ticket = __atomic_load_n( &reports[bucket], __ATOMIC_RELAXED );
+    while (ticket < limit &&
+           !__atomic_compare_exchange_n( &reports[bucket], &ticket, ticket + 1, 0,
+                                         __ATOMIC_RELAXED, __ATOMIC_RELAXED )) {}
+    if (ticket >= limit) goto done;
     if (ios_g32_read((uintptr_t)teb + offsetof(TEB,TlsSlots) + 14*sizeof(void*), &fex,8) && fex &&
         ios_g32_read(fex,&frame,8) && ios_g32_capture(&origin,(uintptr_t)teb,window,frame))
     {
@@ -2592,6 +2605,7 @@ void ios_guest32_trace_current( const char *tag, const void *target )
     }
     else dprintf(2,"[guest32-origin] tag=%s saved context unavailable\n",tag);
 done:
+    if (teb) teb->LastErrorValue = saved_error;
     errno = saved_errno;
 }
 
