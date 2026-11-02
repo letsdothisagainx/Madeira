@@ -1,0 +1,11 @@
+name: Inspect official Steam updater
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 tools/inspect-steam-updater.py
