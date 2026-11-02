@@ -19860,6 +19860,41 @@ int ios_jit_copy_module_for_child(void *module_addr, void *child_peb)
  *
  * Call mprotect on a page range, applying the protections from the per-page byte.
  */
+#ifdef WINE_IOS
+#include "alias_protection.h"
+static int ios_protect_page_is_alias(uintptr_t page, size_t size, void *context)
+{
+    void *rw = NULL, *rx = NULL;
+    (void)context;
+    return ios_jit_anon_alias_find_cover((void *)page,size,&rw,&rx);
+}
+static int ios_protect_alias_run(uintptr_t base, size_t size, int prot, int alias, void *context)
+{
+    int result;
+    (void)context;
+    /* The alias was remapped from the blessed pool. Its RW sibling remains
+     * writable; the guest view must never become writable or COW-detach. */
+    result = alias ? mprotect((void *)base,size,prot) : mprotect_exec((void *)base,size,prot);
+    if (alias)
+    {
+        static unsigned reports;
+        if (__atomic_fetch_add(&reports,1,__ATOMIC_RELAXED) < 24)
+            dprintf(2,"[alias-prot-v2] host=%p+%#lx page=%#lx physical=RX logical=unchanged result=%d errno=%d\n",
+                    (void *)base,(unsigned long)size,(unsigned long)host_page_size,result,result ? errno : 0);
+    }
+    return result;
+}
+static int ios_protect_host_range(void *base, size_t size, int prot)
+{
+    if (!(prot & PROT_WRITE) || !ios_jit_anon_alias_overlaps(base,size,NULL,NULL))
+        return mprotect_exec(base,size,prot);
+    return madeira_protect_alias_writes((uintptr_t)base,size,host_page_size,prot,
+                                        ios_protect_page_is_alias,ios_protect_alias_run,NULL);
+}
+#else
+#define ios_protect_host_range mprotect_exec
+#endif
+
 static int mprotect_range_raw( void *base, size_t size, BYTE set, BYTE clear )
 {
     size_t i, count;
@@ -19876,12 +19911,12 @@ static int mprotect_range_raw( void *base, size_t size, BYTE set, BYTE clear )
         vprot = get_host_page_vprot( addr + count * host_page_size );
         next = get_unix_prot( (vprot & ~clear) | set );
         if (next == prot) continue;
-        if (mprotect_exec( addr, count * host_page_size, prot )) return -1;
+        if (ios_protect_host_range( addr, count * host_page_size, prot )) return -1;
         addr += count * host_page_size;
         prot = next;
         count = 0;
     }
-    return mprotect_exec( addr, count * host_page_size, prot );
+    return ios_protect_host_range( addr, count * host_page_size, prot );
 }
 
 
@@ -19981,46 +20016,8 @@ static NTSTATUS set_protection( struct file_view *view, void *base, SIZE_T size,
         return STATUS_ACCESS_DENIED;
     }
 
-    /* iOS-Madeira ml638 A/B: NEVER MAKE AN ANON-JIT-ALIASED PAGE PHYSICALLY WRITABLE.
-     *
-     * The ULTRAKILL alias [0x705bc80000,0x705bc90000) starts COHERENT — an emulated
-     * store at +0x1368 read back identically through RX and RW. By the crash the two
-     * views hold DIFFERENT Mono methods around +0x337d, and the only events in between
-     * are four NtProtectVirtualMemory transitions over the first 16KB — the same chunk
-     * that holds all 792 tracked writes and the divergence.
-     *
-     * Making the guest VA physically writable lets the kernel privatise / COW-split it
-     * from the pool RW alias: later guest writes land in the private copy while FEX
-     * translates and executes the ORIGINAL pool pages, which still hold the old bytes
-     * and zeros beyond. FEX then runs off the end of the buffer — the deterministic
-     * one-past-the-end c0000005 we keep hitting.
-     *
-     * So: keep Wine's LOGICAL protection exactly as the guest asked (set_vprot above
-     * already recorded it, so NtQueryVirtualMemory still answers correctly), but
-     * re-assert the PHYSICAL protection as R+X. Every guest write then keeps faulting
-     * into the alias store emulator and routing to the RW view, which is the design.
-     * Decommit / release / no-access are untouched — this only refuses to hand out
-     * physical write permission on memory a JIT alias owns.
-     *
-     * ⛔ If this fixes it, the durable form is to stop this page from ever being
-     * physically writable in the first place, not to re-protect after the fact. */
-    if ((vprot & VPROT_WRITE) && !(vprot & VPROT_GUARD))
-    {
-        uintptr_t ov_b = 0, ov_e = 0;
-        extern int ios_jit_anon_alias_overlaps(void *, size_t, uintptr_t *, uintptr_t *);
-        if (ios_jit_anon_alias_overlaps( base, size, &ov_b, &ov_e ))
-        {
-            int keep_exec = (vprot & VPROT_EXEC) || 1;   /* alias pages are executable by construction */
-            int pr = PROT_READ | (keep_exec ? PROT_EXEC : 0);
-            int rc = mprotect( base, size, pr );
-            static int ab_n;
-            if (ab_n < 24)
-                dprintf(2, "[alias-prot] ml638 #%d %p+0x%lx requested prot=0x%x (vprot=0x%x) — logical kept, "
-                           "PHYSICAL forced R%s (mprotect rc=%d) alias=[%p,%p)\n",
-                        ++ab_n, base, (unsigned long)size, (unsigned)protect, vprot,
-                        keep_exec ? "X" : "", rc, (void *)ov_b, (void *)ov_e);
-        }
-    }
+    /* Alias-owned host pages were protected separately by mprotect_range_raw.
+     * Never re-protect this entire guest range based on a partial overlap. */
 
     return STATUS_SUCCESS;
 }
