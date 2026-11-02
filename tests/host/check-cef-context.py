@@ -6,6 +6,13 @@ root=Path(__file__).resolve().parents[2]
 signal=(root/'build/ntdll-unix/signal_arm64_ios.c').read_text()
 start=signal.index('void ios_cef_assert_context(void)');end=signal.index('\n}\n',start)+3
 context=signal[start:end]
+read_start=signal.index('static int ios_g32_read(')
+read_end=signal.index('\n}\n',read_start)+3
+read_helper=signal[read_start:read_end]
+def observer(name):
+ start=signal.index(name)
+ return signal[start:signal.index('\n}\n',start)+3]
+observers=observer('void ios_trace_first_cxx(')+observer('void ios_guest32_trace_current(')
 code=r'''
 #define _GNU_SOURCE
 #include <assert.h>
@@ -38,7 +45,11 @@ static int capture(int fd,const char *fmt,...) {assert(fd==2);va_list ap;va_star
 #define dprintf capture
 static int path_calls;
 static int ios_guest_log_fd_path(int fd,char *path,size_t size) {path_calls++;errno=EINTR;snprintf(path,size,"/private/account/debug.log");return fd==7;}
-''' + signal[signal.index('static int ios_g32_read('):signal.index('/* Read the current thread') ] + context + r'''
+''' + read_helper + r'''
+#include "guest32_origin.h"
+#include "guest32_cxx.h"
+#include "cef_atexit_context.h"
+''' + observers + context + r'''
 #include "cef_log_context.h"
 static void put64(unsigned char *p,uint64_t v) {memcpy(p,&v,8);}
 static void put32(unsigned char *p,uint32_t v) {memcpy(p,&v,4);}
