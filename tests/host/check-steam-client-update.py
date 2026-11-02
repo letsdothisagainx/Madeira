@@ -87,10 +87,10 @@ print("PASS production Steam bootstrap transaction:real i386/AMD64 headers,trunc
 swift = os.environ.get('SWIFTC') or shutil.which('swiftc') or str(Path.home() / '.local/share/swiftly/bin/swiftc')
 with tempfile.TemporaryDirectory(prefix='madeira-steam-update-') as temp:
     p=Path(temp)
-    header='/usr/include/zlib.h'
-    if os.uname().sysname == 'Darwin':
-        header=subprocess.check_output(['xcrun','--show-sdk-path'],text=True).strip()+'/usr/include/zlib.h'
-    (p/'module.modulemap').write_text('module zlib [system] { header "'+header+'" export * link "z" }')
+    # Apple SDKs already provide zlib (including through CoreFoundation).
+    # Linux Swift needs a system module map; redefining it on macOS is invalid.
+    if os.uname().sysname != 'Darwin':
+        (p/'module.modulemap').write_text('module zlib [system] { header "/usr/include/zlib.h" export * link "z" }')
     (p/'Files.swift').write_text('import Foundation\nimport zlib\n'+files)
     (p/'Update.swift').write_text(pure)
     (p/'main.swift').write_text(main)
