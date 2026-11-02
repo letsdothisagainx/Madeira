@@ -30,6 +30,14 @@ code=r'''
 #include <signal.h>
 #include "alias_protection.h"
 #define PAGE 0x4000u
+#ifdef __APPLE__
+// An unsigned macOS host fixture cannot reproduce Madeira's signed JIT
+// entitlement. Exercise real removal of WRITE with R here; Linux exercises
+// the exact RX syscall. The production helper must request RX on both.
+#define HOST_EXEC 0
+#else
+#define HOST_EXEC PROT_EXEC
+#endif
 static struct {uintptr_t user_va,user_va_end,jit_rw_alias,jit_rx_alias;} ios_jit_anon_aliases[2];
 static int ios_jit_anon_alias_count;
 ''' +cover+r'''
@@ -50,7 +58,8 @@ static int apply(uintptr_t page,size_t size,int prot,int alias,void *context){
  (void)context;assert(!(page&(PAGE-1))&&!(size&(PAGE-1))&&size);applies++;
  if(alias){assert(prot==(PROT_READ|PROT_EXEC));alias_calls++;}
  assert((prot&(PROT_WRITE|PROT_EXEC))!=(PROT_WRITE|PROT_EXEC));
- if(reject){errno=EACCES;return -1;}return mprotect((void*)page,size,prot);
+ if(reject){errno=EACCES;return -1;}
+ return mprotect((void*)page,size,(prot&~PROT_EXEC)|((prot&PROT_EXEC)?HOST_EXEC:0));
 }
 static void protect(int prot,size_t size){
  pthread_mutex_lock(&vm);
@@ -72,16 +81,9 @@ int main(void){
  assert((get_host_page_vprot((void*)0x10000)&3)==3);
  assert((get_host_page_vprot((void*)0x14000)&3)==3);
  assert((get_host_page_vprot((void*)0x18000)&3)==3);
- int fd=memfd_create("madeira-alias-test",0);assert(fd>=0&&!ftruncate(fd,9*PAGE));
- // Darwin gives anonymous data mappings a non-executable maximum. Use
- // disjoint file offsets for ordinary pages and the alias's shared backing,
- // so the negative control can exercise RX without a writable/exec mapping.
-#ifdef __APPLE__
- void *space=mmap(NULL,6*PAGE,PROT_READ|PROT_WRITE,MAP_SHARED,fd,3*PAGE);
-#else
  void *space=mmap(NULL,6*PAGE,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
-#endif
  assert(space!=MAP_FAILED);window=((uintptr_t)space+PAGE-1)&~(uintptr_t)(PAGE-1);
+ int fd=memfd_create("madeira-alias-test",0);assert(fd>=0&&!ftruncate(fd,PAGE));
  void *rw=mmap(NULL,PAGE,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);assert(rw!=MAP_FAILED);
  void *rx=mmap((void*)(window+2*PAGE),PAGE,PROT_READ|PROT_EXEC,MAP_SHARED|MAP_FIXED,fd,0);assert(rx==(void*)(window+2*PAGE));
  ios_jit_anon_alias_count=1;
@@ -89,7 +91,7 @@ int main(void){
  // Captured request: 0x9000 bytes; only its last4KiB overlaps a16KiB alias.
  // Old whole-request mprotect rounds to3host pages and kills the first store.
  pid_t child=fork();assert(child>=0);
- if(!child){signal(SIGSEGV,SIG_DFL);signal(SIGBUS,SIG_DFL);if(mprotect((void*)window,0x9000,PROT_READ|PROT_EXEC)){perror("negative-control RX");_exit(2);}*(volatile unsigned*)window=0;_exit(0);}
+ if(!child){signal(SIGSEGV,SIG_DFL);signal(SIGBUS,SIG_DFL);if(mprotect((void*)window,0x9000,PROT_READ|HOST_EXEC)){perror("negative-control protection");_exit(2);}*(volatile unsigned*)window=0;_exit(0);}
  int status;assert(waitpid(child,&status,0)==child&&WIFSIGNALED(status));
  assert(WTERMSIG(status)==SIGSEGV||WTERMSIG(status)==SIGBUS);
  protect(PROT_READ|PROT_WRITE,0x9000);assert(applies==2&&alias_calls==1);
@@ -119,7 +121,10 @@ int main(void){
  assert(madeira_protect_alias_writes(UINTPTR_MAX-PAGE+1,2*PAGE,PAGE,3,owned,apply,NULL)==-1);
  assert(!memcmp(before_metadata,logical,sizeof(logical)));
  munmap(rw,PAGE);munmap(space,6*PAGE);close(fd);
- puts("PASS captured RX spill reproduced; real alias coherence, four concurrent neighbor writers,3000 transitions,SMC/noaccess cycles,guest-window reuse and protection failure propagation; no writable/executable mapping");
+ puts("PASS write-protection spill reproduced; real alias coherence, four concurrent neighbor writers,3000 transitions,SMC/noaccess cycles,guest-window reuse and protection failure propagation; no writable/executable mapping");
+#ifdef __APPLE__
+ puts("NOTE Darwin fixture uses physical R for the write fault; requested alias policy is verified RX. Signed iOS RX reprotection requires the device acceptance run.");
+#endif
 }
 '''
 with tempfile.TemporaryDirectory() as t:

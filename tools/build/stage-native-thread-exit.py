@@ -13,13 +13,27 @@ def stage(source):
         'for (;;) { NtWaitForAlertByThreadId(NULL,NULL); ios_native_cancel_checkpoint(); }',1)
     source=source.replace('            struct timeval tv;\n            NtQuerySystemTime( &now );\n            diff = (when - now.QuadPart + 9) / 10;',
         '            LARGE_INTEGER remaining;\n            ios_native_cancel_checkpoint();\n            NtQuerySystemTime( &now );\n            diff = (when - now.QuadPart + 9) / 10;',1)
+    source=source.replace('        timeout_t when, diff;',
+        '        timeout_t when, diff;\n        int ios_sleep_alerted = 0;',1)
     old='''            tv.tv_sec  = diff / 1000000;
             tv.tv_usec = diff % 1000000;
             if (select( 0, NULL, NULL, NULL, &tv ) != -1) break;'''
     assert old in source
     source=source.replace(old,'''            remaining.QuadPart = -(when-now.QuadPart);
-            NtWaitForAlertByThreadId(NULL,&remaining);
+            if (NtWaitForAlertByThreadId(NULL,&remaining) == STATUS_ALERTED) ios_sleep_alerted = 1;
             ios_native_cancel_checkpoint();''',1)
+    end='''            ios_native_cancel_checkpoint();
+        }
+    }
+    return STATUS_SUCCESS;'''
+    assert source.count(end)==1
+    source=source.replace(end,'''            ios_native_cancel_checkpoint();
+        }
+        /* Non-alertable Sleep must leave an ordinary address alert pending
+         * for the caller's subsequent wait, just as the old select did. */
+        if (ios_sleep_alerted) NtAlertThreadByThreadId(NtCurrentTeb()->ClientId.UniqueThread);
+    }
+    return STATUS_SUCCESS;''',1)
     marker='NTSTATUS WINAPI NtWaitForAlertByThreadId( const void *address, const LARGE_INTEGER *timeout )\n{'
     assert source.count(marker)==1
     helper='''/* A server kill cannot signal these same-task iOS native waits. The

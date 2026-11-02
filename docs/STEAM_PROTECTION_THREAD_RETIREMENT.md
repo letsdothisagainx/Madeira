@@ -54,8 +54,11 @@ helper and alias lookup, four concurrent neighboring writers, 3,000
 transitions, shared RX/RW coherence, read/no-access cycles, 4 KiB metadata,
 protection errors, and alias retirement followed by reuse of the same address.
 No tested mapping combines writable and executable permissions. The host
-fixture models shared backing; it does not reproduce Darwin's exact
-`vm_remap` implementation or prove the later null read is resolved.
+fixture models shared backing. Linux exercises physical RX; an unsigned
+macOS fixture uses physical R for write-fault reproduction because its host
+rejects RX reprotection, while still asserting that the helper requests RX
+for aliases. It does not reproduce signed iOS `vm_remap`/RX reprotection or
+prove the later null read is resolved.
 
 ## Fix 2: retire private CPU state on abnormal native exits
 
@@ -103,7 +106,7 @@ not reclaim anything itself.
 
 `tools/build/stage-native-thread-exit.py` stages cancellation checks at native
 wait boundaries. Nonalertable sleeps use the existing alert wait while
-preserving their deadline and ignoring ordinary alerts. There is no periodic
+preserving their deadline and retaining ordinary alerts for the next wait. There is no periodic
 polling or extra timeout. Before aborting, the current thread removes its own
 abandoned PE64 stack waiter entries from the shared futex table under its
 existing queue locks. Other waiters remain intact. The original termination

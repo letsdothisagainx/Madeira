@@ -33,6 +33,7 @@ typedef struct {LONGLONG QuadPart;} LARGE_INTEGER;
 #define STATUS_THREAD_IS_TERMINATING 0xc000004bu
 #define STATUS_SUCCESS 0
 #define STATUS_TIMEOUT 0x102
+#define STATUS_ALERTED 0x101
 #define TIMEOUT_INFINITE INT64_MAX
 #define SELECT_INTERRUPTIBLE 1
 #define SELECT_ALERTABLE 2
@@ -133,6 +134,8 @@ int main(void){
  pthread_t timer;assert(!pthread_create(&timer,NULL,ordinary_alert,NULL));
  assert(!NtDelayExecution(0,&delay));pthread_join(timer,NULL);NtQuerySystemTime(&after);
  assert(after.QuadPart-before.QuadPart>=350000); // ordinary alert must NOT shorten non-alertable Sleep
+ assert(notified[100]); // Sleep must preserve the ordinary alert for a subsequent address wait
+ assert(NtWaitForAlertByThreadId(NULL,NULL)==STATUS_ALERTED&&!notified[100]);
  puts("PASS actual native kill/lease policy and wait cleanup:64 killed native waiters/infinite sleeps wake without polling,abandoned shared queue nodes removed,all retire;stale identities/lease and ambiguous PID rejected");
 }
 '''
