@@ -78,6 +78,11 @@ static void set_process_startup_state(struct process *p,int state) { (void)p;(vo
 PROCESS_KILLED
 REMOVE_PROCESS_THREAD
 
+static unsigned native_death_calls, native_death_pid, native_death_status;
+void ios_native_process_terminated(unsigned pid,unsigned status) {
+    native_death_calls++;native_death_pid=pid;native_death_status=status;
+}
+
 /* Define the native registry after the actual weak server import, as the
  * production linker does across translation units. */
 #include "steam_handoff.h"
@@ -103,9 +108,12 @@ static void begin(int enabled,int direct) { madeira_child_session_begin(enabled,
 static void last_thread_exit(unsigned pid,int status) {
     struct process p={.id=pid,.exit_code=259,.running_threads=2,.thread_list={.count=2}};
     struct thread t={.proc_entry={.head=&p.thread_list},.exit_code=status};
+    unsigned before=native_death_calls;
     remove_process_thread(&p,&t); assert(p.running_threads==1);
+    assert(native_death_calls==before);
     assert(madeira_live_steam_successors(NULL)>0); /* first thread isn't process death */
     remove_process_thread(&p,&t); assert(!p.running_threads && p.end_time==current_time);
+    assert(native_death_calls==before+1 && native_death_pid==pid && native_death_status==(unsigned)status);
 }
 
 static int server_running=1, wait_ticks, wait_mode;
