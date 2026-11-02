@@ -41,7 +41,7 @@ def stage(destination, source):
     memory_patch = ROOT / 'build/fex-compat/guest-write.patch'
     subprocess.run(['git', '-C', str(destination), 'apply', '--check', str(memory_patch)], check=True)
     subprocess.run(['git', '-C', str(destination), 'apply', str(memory_patch)], check=True)
-    for name in ('compiler-startup.patch', 'arena-exports.patch', 'lookup-blocklist.patch', 'hold-release.patch'):
+    for name in ('compiler-startup.patch', 'arena-exports.patch', 'lookup-blocklist.patch', 'hold-release.patch', 'thread-retire.patch'):
         patch = ROOT / 'build/fex-compat' / name
         subprocess.run(['git', '-C', str(destination), 'apply', '--check', str(patch)], check=True)
         subprocess.run(['git', '-C', str(destination), 'apply', str(patch)], check=True)

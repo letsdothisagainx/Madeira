@@ -132,8 +132,9 @@ registry += body(virtual,'struct ios_register_hold_release_args') + ';\n'
 registry += '\n'.join(body(virtual, s) for s in (
     'unsigned int (*ios_hold_release_lookup(', 'static void ios_hold_release_drop(',
     'static NTSTATUS ios_register_hold_release_kind(', 'NTSTATUS unixcall_ios_register_hold_release(',
-    'int ios_hold_release_wow_owner('))
-wrapper = body(virtual,'NTSTATUS ios_fex_register_wow_hold_release(')
+    'int ios_hold_release_wow_owner(', 'static NTSTATUS ios_register_wow_thread_retire(',
+    'unsigned int (*ios_wow_thread_retire_lookup('))
+wrapper = '\n'.join(body(virtual,x) for x in ('static NTSTATUS ios_fex_register_wow_callback(', 'NTSTATUS ios_fex_register_wow_hold_release(', 'NTSTATUS ios_fex_register_wow_thread_retire('))
 operation = body(process,'case (PROCESSINFOCLASS)MADEIRA_FEX_HOLD_REGISTER_CLASS:')
 native_code = r'''
 #define _GNU_SOURCE
@@ -184,7 +185,7 @@ static unsigned long long ios_thread_process_lease(void *p,int create){assert(p=
 static unsigned long long ios_thread_process_quiescent_lease(void *p){assert(p==current_owner);return quiet_lease;}
 static unsigned ios_jit_mapping_machine(int i){return ios_jit_mappings[i].machine;}
 static const char *ios_pe_module_name(void *p,size_t n){assert(p==image&&n);return module_name;}
-static void *ios_pe_find_export(void *p,const char *name){assert(p==image&&!strcmp(name,"MadeiraBTCpuIosReleaseThreadHolds"));return export_exists?(void*)((uintptr_t)p+export_rva):0;}
+static void *ios_pe_find_export(void *p,const char *name){assert(p==image&&(!strcmp(name,"MadeiraBTCpuIosReleaseThreadHolds")||!strcmp(name,"MadeiraBTCpuIosRetireThread")));return export_exists?(void*)((uintptr_t)p+export_rva):0;}
 static int ios_img_off_is_exec(void *p,size_t n,uintptr_t rva){assert(p==image&&n&&rva==export_rva);return executable;}
 static int ios_pool_range_execable(uintptr_t off,size_t n,unsigned *current,unsigned *maximum){assert(off<ios_jit_pool_size_global&&n==4);*current=protections;*maximum=7;return physical_ok;}
 ''' + wrapper + r'''
@@ -192,6 +193,9 @@ static HANDLE NtCurrentProcess(void){return (void*)(intptr_t)-1;}
 static NTSTATUS native_operation(HANDLE handle,void *info,SIZE_T size){switch(MADEIRA_FEX_HOLD_REGISTER_CLASS){
 ''' + operation + r'''
 }return STATUS_INVALID_PARAMETER;}
+static NTSTATUS retire_operation(HANDLE handle,void *info,SIZE_T size){
+ if(handle!=NtCurrentProcess())return STATUS_INVALID_HANDLE;return ios_fex_register_wow_thread_retire(info,size);
+}
 static void reset(void){
  memset(ios_hold_release,0,sizeof(ios_hold_release));ios_hold_release_n=0;
  memset(ios_fex_owners,0,sizeof(ios_fex_owners));memset(ios_jit_mappings,0,sizeof(ios_jit_mappings));
@@ -206,6 +210,12 @@ static void reset(void){
 static NTSTATUS submit(void){NTSTATUS s=native_operation(NtCurrentProcess(),&input,sizeof(input));assert(!vm_depth);return s;}
 static void rejected(void){assert(submit()!=STATUS_SUCCESS);assert(!ios_hold_release_lookup(current_owner));unsigned long long lease=99;assert(ios_hold_release_wow_owner(current_owner,&lease)==-1&&lease==0);}
 int main(void){unsigned long long lease;
+ reset();assert(retire_operation(NtCurrentProcess(),&input,sizeof(input))==STATUS_INVALID_PARAMETER);
+ assert(!native_operation(NtCurrentProcess(),&input,sizeof(input)));
+ assert(!retire_operation(NtCurrentProcess(),&input,sizeof(input)));
+ assert(ios_wow_thread_retire_lookup(current_owner,77)==(void*)input.callback);
+ assert(!ios_wow_thread_retire_lookup(current_owner,78));
+ ios_hold_release_drop(current_owner);assert(!ios_wow_thread_retire_lookup(current_owner,77));
  reset();assert(native_operation((void*)1,&input,sizeof(input))==STATUS_INVALID_HANDLE);
  assert(native_operation(NtCurrentProcess(),&input,23)==STATUS_INFO_LENGTH_MISMATCH);
  assert(native_operation(NtCurrentProcess(),(void*)1,sizeof(input))==STATUS_ACCESS_VIOLATION);

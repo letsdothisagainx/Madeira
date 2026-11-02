@@ -43,7 +43,7 @@ def run(label, code):
                         '-Wall', '-Wextra', '-Werror=implicit-function-declaration',
                         '-Wno-unused-function', '-fsanitize=address,undefined',
                         '-fno-sanitize-recover=undefined', '-pthread',
-                        str(source), '-o', str(executable)], check=True)
+                        '-I'+str(root/'build/ntdll-unix'), str(source), '-o', str(executable)], check=True)
         result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=30,
                                 env=dict(os.environ, ASAN_OPTIONS='detect_leaks=0'))
         if result.returncode:
@@ -81,6 +81,8 @@ typedef uint32_t NTSTATUS;
 #define STATUS_NO_MEMORY 0xc0000017
 '''
 
+common += '#include \"native_thread_lifetime.h\"\n#include \"fex_hold_release_abi.h\"\n'
+
 lease_code = common + body(thread, 'struct ios_thread_group\n{') + ';\n' + r'''
 static struct ios_thread_group ios_thread_groups[64];
 static unsigned long long ios_thread_next_lease;
@@ -88,10 +90,14 @@ static pthread_mutex_t ios_thread_group_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t ios_thread_reapers[64];
 static pthread_once_t ios_thread_reapers_once = PTHREAD_ONCE_INIT;
 static _Thread_local void *ios_retired_thread_owner;
-struct fake_teb { void *Peb; };
+struct fake_teb { void *Peb; struct {void *UniqueProcess,*UniqueThread;} ClientId; };
+typedef struct fake_teb TEB;
 static _Thread_local struct fake_teb current;
 static struct fake_teb *NtCurrentTeb(void) { return &current; }
 static void ios_thread_finish_fex(void) {}
+static void ios_native_link_current_locked(struct ios_thread_group *g){(void)g;}
+static _Thread_local struct madeira_native_thread ios_native_current;
+static _Thread_local int ios_native_finishing;
 '''
 for marker in ('static void ios_thread_reapers_init(void)',
                'static struct ios_thread_group *ios_thread_group_locked(void *owner)',
@@ -187,6 +193,10 @@ struct fake_teb {
     struct { void *UniqueProcess, *UniqueThread; } ClientId;
     unsigned char remaining[0x1800];
 };
+typedef struct fake_teb TEB;
+static void ios_native_link_current_locked(struct ios_thread_group *g){(void)g;}
+static _Thread_local struct madeira_native_thread ios_native_current;
+static _Thread_local int ios_native_finishing;
 static _Thread_local struct fake_teb current;
 static struct fake_teb *NtCurrentTeb(void) { return &current; }
 static void *const a = (void *)(uintptr_t)0x500310000;
@@ -211,6 +221,7 @@ static unsigned int finish_callback(void *teb, unsigned long long *stamp, unsign
     return 1;
 }
 hold_callback ios_hold_release_lookup(void *owner) { return owner == a ? finish_callback : NULL; }
+hold_callback ios_wow_thread_retire_lookup(void *owner,unsigned long long lease){(void)owner;(void)lease;return NULL;}
 '''
 for marker in ('static struct ios_thread_group *ios_thread_group_locked(void *owner)',
                'unsigned long long ios_thread_process_lease(void *owner, int create)',

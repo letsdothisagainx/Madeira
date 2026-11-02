@@ -16,6 +16,7 @@ assert b'MadeiraBTCpuWriteMemory' in data and b'[fex-guest-write-v1]' in data, '
 assert b'[fex-first-use-v1]' in data, 'stale FEX first-execution allocation checks'
 assert b'[fex-blocklist-v1]' in data, 'stale FEX contiguous block map'
 assert b'[fex-hold-release-v1]' in data, 'stale FEX terminal hold cleanup'
+assert b'[fex-thread-retire-v1]' in data, 'stale FEX private thread destruction'
 runpy.run_path(sys.argv[2])['fex_arena_exports'](data, require_hold_release=True)
 size = struct.unpack_from('<I', data, pe + 24 + 56)[0]
 if len(data) < size: p.write_bytes(data + bytes(size - len(data)))

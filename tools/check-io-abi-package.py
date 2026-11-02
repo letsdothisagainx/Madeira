@@ -38,7 +38,7 @@ def fex_arena_exports(data, require_hold_release=False):
     required = {b'ios_fex_band_base', b'ios_fex_band_end'}
     hold_release = b'MadeiraBTCpuIosReleaseThreadHolds'
     if require_hold_release:
-        required.add(hold_release)
+        required.update({hold_release,b'MadeiraBTCpuIosRetireThread'})
     found = set()
     for i in range(names):
         name_rva = struct.unpack_from('<I', data, offset(strings + i * 4, 4))[0]
@@ -53,7 +53,7 @@ def fex_arena_exports(data, require_hold_release=False):
         assert ordinal < functions, 'invalid FEX arena export ordinal'
         target = struct.unpack_from('<I', data, offset(addresses + ordinal * 4, 4))[0]
         assert target and not directory <= target < directory + directory_size, 'FEX arena export is forwarded'
-        if name == hold_release:
+        if name in {hold_release,b'MadeiraBTCpuIosRetireThread'}:
             assert any(base <= target and target + 4 <= base + raw_size and flags & 0x20000000 and
                        flags & 0x40000000 and not flags & 0x80000000
                        for base, _, _, raw_size, flags in sections), 'FEX hold release must be a file-backed native RX function'
@@ -103,6 +103,8 @@ def check(staged, app, ipa):
     assert b'[fex-first-use-v1]' in cpu_data, 'stale FEX first-execution allocation checks'
     assert b'[fex-blocklist-v1]' in cpu_data, 'stale FEX contiguous block map'
     assert b'[fex-hold-release-v1]' in cpu_data, 'stale FEX terminal hold cleanup'
+    assert b'[fex-thread-retire-v1]' in cpu_data, 'stale FEX private thread destruction'
+    assert b'[alias-prot-v2]' in native and b'[fex-exit-v1]' in native and b'[native-thread-cancel-v1]' in native, 'native protection/retirement/cancellation consumer missing'
     fex_arena_exports(cpu_data, require_hold_release=True)
     assert (app / 'aarch64-windows/xtajit.dll').read_bytes() == cpu_data, 'Xcode packaged stale FEX'
     guest = (staged.parent.parent / 'i386-windows/kernelbase.dll').read_bytes()

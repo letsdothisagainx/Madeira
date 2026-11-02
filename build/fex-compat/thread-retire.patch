@@ -1,0 +1,123 @@
+--- a/Source/Windows/WOW64/Module.cpp
++++ b/Source/Windows/WOW64/Module.cpp
+@@ -354,6 +354,7 @@
+ fextl::unique_ptr<FEXCore::Context::Context> CTX;
+ #ifdef FEX_IOS_HOST
+ static void* MadeiraContextOwnerPEB {};
++extern "C" uint32_t MadeiraBTCpuIosRetireThread(void*,uint64_t*,uint32_t*,uint32_t*);
+ #endif
+ fextl::unique_ptr<FEX::DummyHandlers::DummySignalDelegator> SignalDelegator;
+ fextl::unique_ptr<WowSyscallHandler> SyscallHandler;
+@@ -1170,6 +1171,24 @@
+ }
+ #endif
+ 
++#ifdef FEX_IOS_HOST
++static void MadeiraRegisterOwnThreadRetire() {
++  void* Alias = nullptr;
++  auto Status = NtQueryVirtualMemory(GetCurrentProcess(),reinterpret_cast<void*>(&MadeiraBTCpuIosRetireThread),
++      static_cast<MEMORY_INFORMATION_CLASS>(MADEIRA_FEX_JIT_POOL_ADDRESS_CLASS),&Alias,sizeof(Alias),nullptr);
++  if (!Status && Alias) {
++    using Callback = uint32_t (*)(void*,uint64_t*,uint32_t*,uint32_t*);
++    if (reinterpret_cast<Callback>(Alias)(nullptr,nullptr,nullptr,nullptr) != MADEIRA_FEX_HOLD_RELEASE_SELFTEST)
++      Status = STATUS_INVALID_PARAMETER;
++    else {
++      madeira_fex_hold_registration Request {sizeof(Request),MADEIRA_FEX_HOLD_REGISTER_VERSION,MadeiraContextOwnerPEB,Alias};
++      Status = NtSetInformationProcess(GetCurrentProcess(),static_cast<PROCESSINFOCLASS>(MADEIRA_FEX_THREAD_RETIRE_REGISTER_CLASS),&Request,sizeof(Request));
++    }
++  } else if (!Status) Status = STATUS_INVALID_PARAMETER;
++  IosRawReport("E [fex-thread-retire-v1] register owner={} callback={} status={:#x}",MadeiraContextOwnerPEB,Alias,static_cast<uint32_t>(Status));
++}
++#endif
++
+ void BTCpuProcessInit() {
+   FEX::Windows::InitCRTProcess();
+ 
+@@ -1348,6 +1367,7 @@
+ #ifdef FEX_IOS_HOST
+   MadeiraContextOwnerPEB = reinterpret_cast<__TEB*>(CurrentTEB())->Peb;
+   MadeiraRegisterOwnHoldRelease();
++  MadeiraRegisterOwnThreadRetire();
+ #endif
+ 
+   CTX->SetSignalDelegator(SignalDelegator.get());
+@@ -1628,13 +1648,15 @@
+   }
+ }
+ 
+-static void MadeiraRetireThread(TLS TLS, DWORD ThreadTID, bool Self) {
++static bool MadeiraRetireThread(TLS TLS, DWORD ThreadTID, bool Self, bool TryOnly = false) {
+   {
+-    std::scoped_lock Lock(ThreadCreationMutex);
++    std::unique_lock Lock(ThreadCreationMutex, std::defer_lock);
++    if (TryOnly) { if (!Lock.try_lock()) return false; }
++    else Lock.lock();
+     auto it = Threads.find(ThreadTID);
+-    if (it == Threads.end()) {
++    if (it == Threads.end() || it->second != TLS.ThreadState()) {
+       // Thread already terminated
+-      return;
++      return false;
+     }
+ 
+     Threads.erase(it);
+@@ -1643,6 +1665,7 @@
+     }
+   }
+   auto ThreadState = TLS.ThreadState();
++  if (Self) TLS.ThreadState() = nullptr;
+ 
+ #ifdef FEX_IOS_HOST
+   // MADEIRA ml1430: the sweeper's registry points into the frontend data; leave it (and
+@@ -1657,12 +1680,49 @@
+   delete[] ThreadState->CurrentFrame->State.segment_arrays[FEXCore::Core::CPUState::SEGMENT_ARRAY_INDEX_GDT];
+ 
+   FEX::Windows::CallRetStack::DestroyThread(ThreadState);
+-  if (Self) TLS.ThreadState() = nullptr;
+   CTX->DestroyThread(ThreadState);
+   if (Self) {
+     FEX::Windows::DeinitCRTThread();
+   }
+-}
++  return true;
++}
++
++#ifdef FEX_IOS_HOST
++// Called only by the native terminal tail on THIS Wine thread, while its
++// lease still counts it as live. Foreign-thread requests never free state.
++extern "C" __declspec(dllexport) uint32_t MadeiraBTCpuIosRetireThread(
++    void* TebPtr, uint64_t* OutState, uint32_t* OutDepth, uint32_t* OutFlags) {
++  if (OutState) *OutState = 0;
++  if (OutDepth) *OutDepth = 0;
++  if (OutFlags) *OutFlags = 0;
++  if (!TebPtr) return MADEIRA_FEX_HOLD_RELEASE_SELFTEST;
++  auto* Teb = CurrentTEB();
++  if (TebPtr != Teb) return MADEIRA_FEX_HOLD_RELEASE_FOREIGN_THREAD;
++  if (!MadeiraContextOwnerPEB || reinterpret_cast<__TEB*>(Teb)->Peb != MadeiraContextOwnerPEB)
++    return MADEIRA_FEX_HOLD_RELEASE_FOREIGN_PROCESS;
++  if (!CTX) return MADEIRA_FEX_HOLD_RELEASE_NO_CONTEXT;
++  const auto TLS = ::TLS {Teb};
++  auto* Thread = TLS.ThreadStateIfInitialised();
++  if (!Thread) { FEX::Windows::DeinitCRTThread(); return 0; }
++  if (Thread->CTX != CTX.get()) return MADEIRA_FEX_HOLD_RELEASE_NO_CONTEXT;
++  if (OutState) *OutState = reinterpret_cast<uint64_t>(Thread);
++  const auto Released = MadeiraBTCpuIosReleaseThreadHolds(Teb,nullptr,nullptr,nullptr);
++  const auto Depth = *reinterpret_cast<volatile uint32_t*>(reinterpret_cast<uintptr_t>(Teb)+0x16f0);
++  const auto Stamp = *reinterpret_cast<volatile uint64_t*>(reinterpret_cast<uintptr_t>(Teb)+0x16f8);
++  const auto Emit = *reinterpret_cast<volatile uint64_t*>(reinterpret_cast<uintptr_t>(Teb)+0x16e8);
++  if (OutDepth) *OutDepth = Depth;
++  if (Depth || Stamp || Emit || (Released && Released != MADEIRA_FEX_HOLD_RELEASE_SHARED))
++    return MADEIRA_FEX_THREAD_RETIRE_REFUSED;
++  // A killed compile may have abandoned a private mutex. Never block the
++  // whole pseudo-process or unlock a mutex we cannot prove belongs to us.
++  if (!MadeiraRetireThread(TLS,GetCurrentThreadId(),true,true)) return MADEIRA_FEX_THREAD_RETIRE_BUSY;
++  static std::atomic<unsigned> Reports {};
++  if (Reports.fetch_add(1,std::memory_order_relaxed) < 64)
++    IosRawReport("E [fex-thread-retire-v1] tid={:#x} teb={} state={} callret=freed lookup=freed crt=queued-for-reuse",
++                 GetCurrentThreadId(),Teb,reinterpret_cast<void*>(Thread));
++  return MADEIRA_FEX_THREAD_RETIRED;
++}
++#endif
+ 
+ void BTCpuThreadTerm(HANDLE Thread, LONG ExitCode) {
+   if (!FEX::Windows::ValidateHandleAccess(Thread, THREAD_TERMINATE)) {

@@ -5895,6 +5895,10 @@ size_t server_init_process(void)
     }
 
     set_thread_id( NtCurrentTeb(), pid, tid );
+#ifdef WINE_IOS
+    { extern unsigned long long ios_thread_process_lease(void *,int);
+      ios_thread_process_lease(NtCurrentTeb()->Peb,1); }
+#endif
 
 #ifdef WINE_IOS
     /* First process only (children use server_init_process_child), so the DOS
@@ -5984,6 +5988,10 @@ size_t server_init_process_child( int child_fd_socket )
     if (ret) server_protocol_error( "init_first_thread (child) failed: %x\n", ret );
 
     set_thread_id( NtCurrentTeb(), pid, tid );
+#ifdef WINE_IOS
+    { extern unsigned long long ios_thread_process_lease(void *,int);
+      ios_thread_process_lease(NtCurrentTeb()->Peb,1); }
+#endif
 
     return info_size;
 }

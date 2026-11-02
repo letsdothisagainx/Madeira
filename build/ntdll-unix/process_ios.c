@@ -4307,6 +4307,12 @@ NTSTATUS WINAPI NtSetInformationProcess( HANDLE handle, PROCESSINFOCLASS class, 
         if (handle != NtCurrentProcess()) return STATUS_INVALID_HANDLE;
         return ios_fex_register_wow_hold_release(info,size);
     }
+    case (PROCESSINFOCLASS)MADEIRA_FEX_THREAD_RETIRE_REGISTER_CLASS:
+    {
+        extern NTSTATUS ios_fex_register_wow_thread_retire(const void *, SIZE_T);
+        if (handle != NtCurrentProcess()) return STATUS_INVALID_HANDLE;
+        return ios_fex_register_wow_thread_retire(info,size);
+    }
 #endif
     case ProcessAccessToken:
     {

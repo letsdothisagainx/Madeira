@@ -37,7 +37,7 @@ def run(label, code):
         subprocess.run([os.environ.get('CC', 'cc'), '-std=gnu11', '-g', '-O1', '-Wall',
                         '-Werror=implicit-function-declaration', '-Wno-unused-function',
                         '-fsanitize=address,undefined', '-fno-sanitize-recover=undefined',
-                        '-pthread', str(c), '-o', str(exe)], check=True)
+                        '-pthread', '-I', str(root / 'build/ntdll-unix'), str(c), '-o', str(exe)], check=True)
         result = subprocess.run([str(exe)], text=True, capture_output=True, timeout=30,
                                 env=dict(os.environ, ASAN_OPTIONS='detect_leaks=0'))
         if result.returncode:
@@ -234,7 +234,10 @@ run('private native ntdll startup data never writes another owner or the source 
 
 threads = common + r'''
 #define DECLSPEC_NORETURN __attribute__((noreturn))
-typedef struct { void *Peb; } TEB;
+#include "native_thread_lifetime.h"
+typedef void *HANDLE;
+typedef struct { void *Peb; struct { HANDLE UniqueProcess, UniqueThread; } ClientId; } TEB;
+static NTSTATUS NtAlertThreadByThreadId(HANDLE tid) { (void)tid; return 0; }
 static _Thread_local TEB *test_teb;
 static TEB *NtCurrentTeb(void) { return test_teb; }
 static void ios_trace_steam_helper_exit(const char *event, int status) { (void)event; (void)status; assert(test_teb && test_teb->Peb); }

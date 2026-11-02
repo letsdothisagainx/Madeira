@@ -174,7 +174,7 @@ int main(){
  # and resources have been released before it can retire the native thread.
  module=(stage/'Source/Windows/WOW64/Module.cpp').read_text()
  prep=fn(module,'static void MadeiraPrepareFirstDispatch()')
- cleanup=fn(module,'static void MadeiraRetireThread(')
+ cleanup=fn(module,'static bool MadeiraRetireThread(')
  core=(stage/'FEXCore/Source/Interface/Core/Core.cpp').read_text()
  prepare=fn(core,'extern "C" const char* MadeiraFEXPrepareThread(')
  code=r'''

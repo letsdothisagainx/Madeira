@@ -79,6 +79,8 @@ volatile long long ios_affinity_sets;   /* ml1117 */
 #include "unix_private.h"
 #include "ios_wow.h"
 #include "steam_helper_identity.h"
+#include "fex_hold_release_abi.h"
+#include "native_thread_lifetime.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(thread);
 WINE_DECLARE_DEBUG_CHANNEL(seh);
@@ -96,6 +98,8 @@ struct ios_thread_group
     void *owner;
     unsigned long long lease;
     unsigned count;
+    unsigned pid, exit_status;
+    struct madeira_native_thread *native_threads;
     int exiting;
     int reclaimed;
     void *prev_teb;
@@ -134,6 +138,55 @@ static struct ios_thread_group *ios_thread_group_locked(void *owner)
     return free_slot;
 }
 
+static _Thread_local struct madeira_native_thread ios_native_current;
+static _Thread_local int ios_native_finishing;
+static void ios_native_link_current_locked(struct ios_thread_group *group)
+{
+    TEB *teb=NtCurrentTeb();
+    if (!group || !teb || teb->Peb != group->owner || ios_retired_thread_owner == group->owner) return;
+    unsigned pid=(unsigned)(ULONG_PTR)teb->ClientId.UniqueProcess;
+    unsigned tid=(unsigned)(ULONG_PTR)teb->ClientId.UniqueThread;
+    if (pid && (!group->pid || group->pid==pid))
+    {
+        group->pid=pid;
+        madeira_native_thread_link(&group->native_threads,&ios_native_current,group->owner,group->lease,teb,pid,tid);
+        if (group->exiting) { ios_native_current.exit_status=group->exit_status; __atomic_store_n(&ios_native_current.cancelled,1,__ATOMIC_RELEASE); }
+    }
+}
+int ios_native_thread_cancelled(void)
+{
+    return !ios_native_finishing && __atomic_load_n(&ios_native_current.cancelled,__ATOMIC_ACQUIRE);
+}
+/* Called by the same-task wineserver. Metadata and a normal thread alert;
+ * no CPU callback, foreign unlock, Mach thread termination or reclamation. */
+unsigned ios_native_thread_exit_status(void)
+{
+    return ios_native_current.exit_status;
+}
+void ios_native_thread_terminated(unsigned long long teb,unsigned pid,unsigned tid,unsigned status)
+{
+    unsigned i; int wake=0;
+    pthread_mutex_lock(&ios_thread_group_mutex);
+    for (i=0;i<ARRAY_SIZE(ios_thread_groups);i++)
+    {
+        struct ios_thread_group *g=&ios_thread_groups[i];
+        if (g->owner && g->pid==pid && madeira_native_thread_cancel(g->native_threads,g->owner,g->lease,(void*)(uintptr_t)teb,pid,tid,status))
+        { wake=1; break; }
+    }
+    pthread_mutex_unlock(&ios_thread_group_mutex);
+    if (wake) NtAlertThreadByThreadId((HANDLE)(ULONG_PTR)tid);
+}
+void ios_native_process_terminated(unsigned pid,unsigned status)
+{
+    unsigned i, matches=0; struct ios_thread_group *found=NULL;
+    pthread_mutex_lock(&ios_thread_group_mutex);
+    for (i=0;i<ARRAY_SIZE(ios_thread_groups);i++)
+        if (ios_thread_groups[i].owner && ios_thread_groups[i].pid==pid && ios_thread_groups[i].count)
+        { found=&ios_thread_groups[i]; matches++; }
+    if (matches==1) { found->exit_status=status; found->exiting=1; }
+    pthread_mutex_unlock(&ios_thread_group_mutex);
+}
+
 /* No registry lock is held across a join, server call or VM operation. A
  * freshly initialized process owns one initial Wine thread; like count_add,
  * the allocator may establish that group before the first CreateThread. */
@@ -147,6 +200,7 @@ unsigned long long ios_thread_process_lease(void *owner, int create)
     else for (i = 0; i < ARRAY_SIZE(ios_thread_groups); ++i)
         if (ios_thread_groups[i].owner == owner) { group = &ios_thread_groups[i]; break; }
     if (owner && group && (!create || !group->exiting)) lease = group->lease;
+    if (group) ios_native_link_current_locked(group);
     pthread_mutex_unlock(&ios_thread_group_mutex);
     return lease;
 }
@@ -206,6 +260,7 @@ static void ios_thread_finish_fex(void);
 
 static unsigned ios_thread_retire_current(void)
 {
+    ios_native_finishing=1;
     ios_thread_finish_fex();
     void *owner = NtCurrentTeb() ? NtCurrentTeb()->Peb : NULL;
     struct ios_thread_group *group;
@@ -216,6 +271,7 @@ static unsigned ios_thread_retire_current(void)
         if (ios_retired_thread_owner != owner)
         {
             ios_retired_thread_owner = owner;
+            madeira_native_thread_unlink(&group->native_threads,&ios_native_current);
             if (group->count) --group->count;
         }
         count = group->count;
@@ -1386,6 +1442,33 @@ static void ios_thread_finish_fex(void)
                     (r & 8) ? "no-ctx " : "");
         }
     }
+    /* Abort/pipe EOF bypasses BTCpuThreadTerm. Reclaim the current thread's
+     * private CPU state while its owner/lease and TEB are still live. */
+    {
+        TEB *teb = NtCurrentTeb();
+        unsigned long long lease = ios_thread_process_lease(teb->Peb,0), state = 0;
+        unsigned depth = 0, flags = 0, result = 0, tries = 0;
+        extern unsigned int (*ios_wow_thread_retire_lookup(void *,unsigned long long))
+            (void *,unsigned long long *,unsigned int *,unsigned int *);
+        unsigned int (*retire)(void *,unsigned long long *,unsigned int *,unsigned int *) =
+            ios_wow_thread_retire_lookup(teb->Peb,lease);
+        if (retire)
+        {
+            static unsigned reports;
+            unsigned report = __atomic_fetch_add(&reports,1,__ATOMIC_RELAXED);
+            if (report < 96)
+                dprintf(2,"[fex-exit-v1] phase=enter tid=%04x owner=%p lease=%llu\n",
+                        (unsigned)(ULONG_PTR)teb->ClientId.UniqueThread,teb->Peb,lease);
+            do {
+                result = retire(teb,&state,&depth,&flags);
+                if (result != MADEIRA_FEX_THREAD_RETIRE_BUSY) break;
+                sched_yield();
+            } while (++tries < 16);
+            if (report < 96)
+                dprintf(2,"[fex-exit-v1] phase=return tid=%04x owner=%p lease=%llu state=%#llx result=%#x depth=%u flags=%u tries=%u\n",
+                        (unsigned)(ULONG_PTR)teb->ClientId.UniqueThread,teb->Peb,lease,state,result,depth,flags,tries);
+        }
+    }
 }
 
 static DECLSPEC_NORETURN void pthread_exit_wrapper( int status )
@@ -1743,6 +1826,7 @@ static void start_thread( TEB *teb )
     thread_data->syscall_trace = TRACE_ON(syscall);
     thread_data->pthread_id = pthread_self();
     pthread_setspecific( teb_key, teb );
+    ios_thread_process_lease(teb->Peb,0);
     /* iOS: publish the TEB through our own pthread key so the x18
      * trampolines (mrs TPIDRRO_EL0; ldr TEB) work on this newly-created
      * thread. Without this, worker threads (DXMT command buffers,

@@ -39,7 +39,7 @@ compile_one() {
     local src=$1
     local name=$2
     local source_flags=()
-    if [ "$src" = "$OBJ_DIR/process_lifecycle.c" ]; then
+    if [ "$src" = "$OBJ_DIR/process_lifecycle.c" ] || [ "$src" = "$OBJ_DIR/thread_lifecycle.c" ]; then
         # Staging changes the source directory searched by quoted includes.
         # Preserve process.c's original private server headers (security.h in
         # particular), without changing header lookup for other objects.
@@ -58,6 +58,7 @@ compile_one() {
 # Stage the process-death observer from the pinned source. Always replace its
 # object, including when the rest of the base archive is cached.
 python3 "$BUILD_DIR/stage-steam-lifecycle.py" "$WINE_SRC/server/process.c" "$OBJ_DIR/process_lifecycle.c"
+python3 "$BUILD_DIR/stage-steam-lifecycle.py" "$WINE_SRC/server/thread.c" "$OBJ_DIR/thread_lifecycle.c"
 
 # Patched files: name:source_file:replaces_in_archive
 PATCHED_FILES=(
@@ -99,7 +100,7 @@ PATCHED_FILES=(
     "winstation:$WINE_SRC/server/winstation.c:winstation.o"
     # task#32 Steam: stop_thread Mach-based context capture (iOS signal
     # suspend is dead) lives in the submodule's thread.c
-    "thread:$WINE_SRC/server/thread.c:thread.o"
+    "thread:$OBJ_DIR/thread_lifecycle.c:thread.o"
     # ml1058: in-process synchronisation. The archive's copy was compiled with no
     # ntsync header, i.e. as the all-stubs variant; build the real one against the
     # userspace driver in build/madsync.

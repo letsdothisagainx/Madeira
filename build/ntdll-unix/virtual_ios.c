@@ -4659,7 +4659,8 @@ void ios_resolve_fex_exports( void )
  * would release against the wrong context. */
 #define IOS_HOLD_RELEASE_MAX 32
 static struct { void *peb; unsigned int (*cb)(void *, unsigned long long *, unsigned int *, unsigned int *);
-    unsigned native_wow; unsigned long long lease; }
+    unsigned native_wow; unsigned long long lease;
+    unsigned int (*retire_cb)(void *, unsigned long long *, unsigned int *, unsigned int *); }
     ios_hold_release[IOS_HOLD_RELEASE_MAX];
 static int ios_hold_release_n;
 static pthread_mutex_t ios_hold_release_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -4682,7 +4683,7 @@ static void ios_hold_release_drop(void *owner)
     for (i = 0; i < ios_hold_release_n; i++)
         if (ios_hold_release[i].peb == owner)
         { ios_hold_release[i].cb = NULL; ios_hold_release[i].peb = NULL;
-          ios_hold_release[i].native_wow = 0; ios_hold_release[i].lease = 0; }
+          ios_hold_release[i].native_wow = 0; ios_hold_release[i].lease = 0; ios_hold_release[i].retire_cb = NULL; }
     pthread_mutex_unlock(&ios_hold_release_lock);
 }
 
@@ -4711,6 +4712,7 @@ static NTSTATUS ios_register_hold_release_kind(void *args, unsigned long long wo
     {
         if (ios_hold_release[i].peb == p->peb)
         {
+            if (ios_hold_release[i].lease != wow_lease) ios_hold_release[i].retire_cb = NULL;
             ios_hold_release[i].cb = p->callback;
             ios_hold_release[i].native_wow = wow_lease != 0;
             ios_hold_release[i].lease = wow_lease;
@@ -4736,6 +4738,31 @@ static NTSTATUS ios_register_hold_release_kind(void *args, unsigned long long wo
     dprintf(2, "[hold-release] ml618 registered peb=%p cb=%p (%d live)\n",
             p->peb, p->callback, ios_hold_release_n);
     return STATUS_SUCCESS;
+}
+
+static NTSTATUS ios_register_wow_thread_retire(void *owner, unsigned long long lease, void *callback)
+{
+    unsigned i;
+    NTSTATUS result = STATUS_INVALID_PARAMETER;
+    pthread_mutex_lock(&ios_hold_release_lock);
+    for (i=0; i<(unsigned)ios_hold_release_n; ++i)
+        if (ios_hold_release[i].peb == owner && ios_hold_release[i].native_wow &&
+            ios_hold_release[i].lease == lease && ios_hold_release[i].cb)
+        { ios_hold_release[i].retire_cb = callback; result = STATUS_SUCCESS; break; }
+    pthread_mutex_unlock(&ios_hold_release_lock);
+    return result;
+}
+unsigned int (*ios_wow_thread_retire_lookup(void *owner, unsigned long long lease))
+    (void *, unsigned long long *, unsigned int *, unsigned int *)
+{
+    unsigned i;
+    unsigned int (*callback)(void *,unsigned long long *,unsigned int *,unsigned int *) = NULL;
+    pthread_mutex_lock(&ios_hold_release_lock);
+    for (i=0; i<(unsigned)ios_hold_release_n; ++i)
+        if (ios_hold_release[i].peb == owner && ios_hold_release[i].native_wow && ios_hold_release[i].lease == lease)
+        { callback = ios_hold_release[i].retire_cb; break; }
+    pthread_mutex_unlock(&ios_hold_release_lock);
+    return callback;
 }
 
 NTSTATUS unixcall_ios_register_hold_release(void *args)
@@ -14979,7 +15006,7 @@ static NTSTATUS create_view( struct file_view **view_ret, void *base, size_t siz
 /* A distinct private operation for the native ARM64 WoW CPU producer. It
  * admits only that owner's exact release export after PE->RX translation;
  * no guest function or unredirected ARM64EC entry thunk can be installed. */
-NTSTATUS ios_fex_register_wow_hold_release(const void *info, SIZE_T size)
+static NTSTATUS ios_fex_register_wow_callback(const void *info, SIZE_T size, int retire)
 {
     struct madeira_fex_hold_registration input;
     struct ios_register_hold_release_args registration;
@@ -15026,7 +15053,7 @@ NTSTATUS ios_fex_register_wow_hold_release(const void *info, SIZE_T size)
             !module_name || strcasecmp(module_name,"libwow64fex.dll")) goto done;
         /* This is the already validated private CPU image, while its owner
          * and VM mapping remain live. The producer registers before guest code. */
-        entry = ios_pe_find_export(image,"MadeiraBTCpuIosReleaseThreadHolds");
+        entry = ios_pe_find_export(image,retire ? "MadeiraBTCpuIosRetireThread" : "MadeiraBTCpuIosReleaseThreadHolds");
         rva = (uintptr_t)entry - (uintptr_t)image;
         if (!entry || (rva & 3) || rva >= image_size || image_size-rva < 4 ||
             !ios_img_off_is_exec(image,image_size,rva) ||
@@ -15036,15 +15063,24 @@ NTSTATUS ios_fex_register_wow_hold_release(const void *info, SIZE_T size)
             !ios_pool_range_execable(callback-rx,4,&current,&maximum) ||
             (current & 7) != (VM_PROT_READ | VM_PROT_EXECUTE)) goto done;
         registration = (struct ios_register_hold_release_args){sizeof(registration),1,owner,input.callback};
-        status = ios_register_hold_release_kind(&registration,lease);
+        status = retire ? ios_register_wow_thread_retire(owner,lease,input.callback) :
+                          ios_register_hold_release_kind(&registration,lease);
         why = status ? "callback-table" : "validated-native-wow-export";
     }
 done:
     server_leave_uninterrupted_section(&virtual_mutex,&sigset);
     if (__atomic_fetch_add(&reports,1,__ATOMIC_RELAXED) < 32)
-        dprintf(2,"[hold-release-v2] owner=%p lease=%llu callback=%p status=%08x reason=%s validated-native-wow=%u\n",
-                owner,lease,input.callback,(unsigned)status,why,!status);
+        dprintf(2,"[hold-release-v2] operation=%s owner=%p lease=%llu callback=%p status=%08x reason=%s validated-native-wow=%u\n",
+                retire ? "thread-retire" : "shared-holds",owner,lease,input.callback,(unsigned)status,why,!status);
     return status;
+}
+NTSTATUS ios_fex_register_wow_hold_release(const void *info, SIZE_T size)
+{
+    return ios_fex_register_wow_callback(info,size,0);
+}
+NTSTATUS ios_fex_register_wow_thread_retire(const void *info, SIZE_T size)
+{
+    return ios_fex_register_wow_callback(info,size,1);
 }
 /***********************************************************************
  *           ios_jit_purge_window

@@ -335,6 +335,7 @@ PYCODE
             # MADEIRA_THREAD_QOS (thread_ios.c): ios_eco_apply_self sets a guest
             # thread's QoS through madeira_guest_qos_self, which picks the class
             # given for the thread's name; with the variable unset it passes through.
+            python3 "$REPO_ROOT/tools/build/stage-native-thread-exit.py" "$OBJ_DIR/sync_ios.c"
             compile_one "$OBJ_DIR/sync_ios.c" "sync" -Dpthread_set_qos_class_self_np=madeira_guest_qos_self
             ;;
         *)
