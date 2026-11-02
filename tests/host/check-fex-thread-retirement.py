@@ -16,7 +16,8 @@ with tempfile.TemporaryDirectory() as folder:
  subprocess.run(['python3',str(root/'tools/build/stage-fex-compat.py'),'stage',str(stage)],check=True)
  module=(stage/'Source/Windows/WOW64/Module.cpp').read_text()
  retire=body(module,'static bool MadeiraRetireThread(')
- callback=body(module,'extern "C" __declspec(dllexport) uint32_t MadeiraBTCpuIosRetireThread(')
+ callback=body(module,'extern "C" __declspec(dllexport) uint32_t MadeiraBTCpuIosRetireThread(\n')
+ formatter=body(module,'static void IosRawReport(::fmt::format_string<Args...> Fmt, Args&&... args)')
  callret=body((root/'FEX/Source/Windows/Common/CallRetStack.h').read_text(),'void DestroyThread(')
  crt=body((root/'FEX/Source/Windows/Common/CRT/CRT_iOS.cpp').read_text(),'void DeinitCRTThread()')
  code=r'''
@@ -30,6 +31,8 @@ with tempfile.TemporaryDirectory() as folder:
 #include <algorithm>
 #include <unordered_map>
 #include <thread>
+#define FMT_HEADER_ONLY
+#include <fmt/format.h>
 #include "fex_hold_release_abi.h"
 #define FEX_IOS_HOST 1
 #define __declspec(x)
@@ -72,7 +75,9 @@ struct Context{void DestroyThread(Thread* t){assert(!current->state);delete t;}}
 static std::unique_ptr<Context> CTX=std::make_unique<Context>();
 static void* MadeiraContextOwnerPEB=(void*)0x500310000ull;
 static uint32_t MadeiraBTCpuIosReleaseThreadHolds(void*,uint64_t*,uint32_t*,uint32_t*){return 0;}
-template<class... T>static void IosRawReport(const char*,T...){}
+static void IosRawWrite(const char* text,size_t length){assert(length<1024&&text[length]==0);}
+template<typename... Args>
+''' +formatter+r'''
 static void rpmalloc_thread_finalize(){finalized++;} // queues heap; does NOT unmap its spans
 namespace FEX::Windows {
 ''' +crt+r'''
@@ -141,5 +146,5 @@ int main(){
 }
 '''
  p=d/'check.cpp';p.write_text(code);exe=d/'check'
- subprocess.run([os.environ.get('CXX','c++'),'-std=c++20','-O1','-g','-pthread','-fsanitize=address,undefined','-fno-sanitize-recover=all','-I'+str(root/'build/ntdll-unix'),str(p),'-o',str(exe)],check=True)
+ subprocess.run([os.environ.get('CXX','c++'),'-std=c++20','-O1','-g','-pthread','-fsanitize=address,undefined','-fno-sanitize-recover=all','-I'+str(root/'build/ntdll-unix'),'-I'+str(root/'FEX/External/fmt/include'),str(p),'-o',str(exe)],check=True)
  subprocess.run([str(exe)],check=True)

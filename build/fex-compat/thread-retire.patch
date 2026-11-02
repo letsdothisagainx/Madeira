@@ -4,7 +4,7 @@
  fextl::unique_ptr<FEXCore::Context::Context> CTX;
  #ifdef FEX_IOS_HOST
  static void* MadeiraContextOwnerPEB {};
-+extern "C" uint32_t MadeiraBTCpuIosRetireThread(void*,uint64_t*,uint32_t*,uint32_t*);
++extern "C" __declspec(dllexport) uint32_t MadeiraBTCpuIosRetireThread(void*,uint64_t*,uint32_t*,uint32_t*);
  #endif
  fextl::unique_ptr<FEX::DummyHandlers::DummySignalDelegator> SignalDelegator;
  fextl::unique_ptr<WowSyscallHandler> SyscallHandler;
@@ -114,7 +114,7 @@
 +  static std::atomic<unsigned> Reports {};
 +  if (Reports.fetch_add(1,std::memory_order_relaxed) < 64)
 +    IosRawReport("E [fex-thread-retire-v1] tid={:#x} teb={} state={} callret=freed lookup=freed crt=queued-for-reuse",
-+                 GetCurrentThreadId(),Teb,reinterpret_cast<void*>(Thread));
++                 GetCurrentThreadId(),static_cast<void*>(Teb),reinterpret_cast<void*>(Thread));
 +  return MADEIRA_FEX_THREAD_RETIRED;
 +}
 +#endif
