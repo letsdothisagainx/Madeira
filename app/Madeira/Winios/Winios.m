@@ -38,6 +38,7 @@
 #include "Winios.h"
 #include "VulkanLayerGeometry.h"
 #include "../../../build/steam-ui/progress.h"
+#include "../../../build/steam-ui/window_lifetime.h"
 
 /* csops syscall — CS_DEBUGGED is the flag StikDebug JIT rides on. Declared by
  * hand for the same reason JITAllocator.c does: <sys/codesign.h> is not in the
@@ -504,6 +505,57 @@ static void winios_swapchain_hwnds_reset(void) {
     for (int i = 0; i < WINIOS_SWAP_HWNDS; i++) atomic_store(&g_swap_hwnds[i], 0);
 }
 
+/* Metadata is published by the native wineserver before a client can use its
+ * HWND. The lock is never held across dispatch/UI work or a Wine call. */
+static struct madeira_window_registry g_window_lifetimes;
+static pthread_mutex_t g_window_lifetime_lock=PTHREAD_MUTEX_INITIALIZER;
+extern void winios_drv_native_ids(uint32_t *,uint32_t *);
+static struct madeira_window_ticket winios_capture_window_target(HWND hwnd) {
+    pthread_mutex_lock(&g_window_lifetime_lock);
+    struct madeira_window_ticket t=madeira_window_capture(&g_window_lifetimes,(uintptr_t)hwnd);
+    pthread_mutex_unlock(&g_window_lifetime_lock);return t;
+}
+static struct madeira_window_ticket winios_capture_window(HWND hwnd) {
+    uint32_t pid=0,tid=0;
+    winios_drv_native_ids(&pid,&tid);
+    pthread_mutex_lock(&g_window_lifetime_lock);
+    struct madeira_window_ticket t=madeira_window_capture(&g_window_lifetimes,(uintptr_t)hwnd);
+    pthread_mutex_unlock(&g_window_lifetime_lock);
+    /* A delayed callback from an exited process must not borrow a new owner,
+     * even when the native PEB address or a full HWND has been reused. */
+    return madeira_window_owner(t,pid,tid,0);
+}
+static int winios_window_ticket_matches(struct madeira_window_ticket t,int present) {
+    pthread_mutex_lock(&g_window_lifetime_lock);
+    int valid=present?madeira_window_can_present(&g_window_lifetimes,t):madeira_window_same(&g_window_lifetimes,t);
+    pthread_mutex_unlock(&g_window_lifetime_lock);return valid;
+}
+static void winios_remove_window_ticket(HWND,struct madeira_window_ticket);
+static int winios_prepare_window_ticket(HWND,struct madeira_window_ticket);
+static void winios_reset_window_metadata(HWND);
+uint64_t winios_native_window_create(uint32_t hwnd,uint32_t pid,uint32_t tid) {
+    pthread_mutex_lock(&g_window_lifetime_lock);
+    uint64_t prior=g_window_lifetimes.rows[hwnd&0xffff].serial;
+    uint64_t serial=madeira_window_birth(&g_window_lifetimes,hwnd,pid,tid);
+    pthread_mutex_unlock(&g_window_lifetime_lock);
+    /* The server has not returned the new HWND to its client yet. Clear old
+     * HWND-only metadata here, before legitimate replacement producers run. */
+    if(serial&&serial!=prior)winios_reset_window_metadata((HWND)(uintptr_t)hwnd);
+    return serial;
+}
+void winios_native_window_retire(uint32_t hwnd,uint32_t pid,uint32_t tid,uint64_t serial) {
+    struct madeira_window_ticket t={serial,hwnd,pid,tid,1};
+    pthread_mutex_lock(&g_window_lifetime_lock);
+    int retired=madeira_window_retire(&g_window_lifetimes,t);
+    pthread_mutex_unlock(&g_window_lifetime_lock);
+    if(retired){
+        /* This runs synchronously on the authoritative server before handle
+         * reuse. Never defer HWND-only cleanup until a replacement can exist. */
+        winios_reset_window_metadata((HWND)(uintptr_t)hwnd);
+        winios_remove_window_ticket((HWND)(uintptr_t)hwnd,t);
+    }
+}
+
 static void winios_remove_layer(HWND hwnd);   /* compositor, below */
 
 /* ============================================================ *
@@ -613,7 +665,7 @@ static struct winios_census_window *winios_census_find(HWND hwnd) {
 
 /* Wine thread, from winios_window_frame (the WindowPosChanged hook, which runs
  * on the window's own thread). Records top-level windows only. */
-static void winios_census_note_frame(HWND hwnd, int x, int y, int w, int h, int visible) {
+static void winios_census_note_frame(HWND hwnd, int x, int y, int w, int h, int visible, struct madeira_window_ticket ticket) {
     if (!atomic_load_explicit(&g_census_on, memory_order_relaxed) || !hwnd) return;
     /* win32u calls stay outside the census lock: they take win32u's own. */
     unsigned int pid = 0, style = 0;
@@ -623,6 +675,14 @@ static void winios_census_note_frame(HWND hwnd, int x, int y, int w, int h, int 
     int shown = visible && (style & WINIOS_WS_VISIBLE) && !(style & WINIOS_WS_MINIMIZE) && w > 0 && h > 0;
     int born_minimized = 0;
 
+    /* The owner/image queries above may block while the server retires and
+     * reuses this HWND. Publish under lifetime -> census ordering only after
+     * revalidating; neither lock spans a Wine call. Server cleanup takes these
+     * locks separately, so a completed old publication is cleared by death. */
+    pthread_mutex_lock(&g_window_lifetime_lock);
+    if (!madeira_window_can_present(&g_window_lifetimes,ticket)) {
+        pthread_mutex_unlock(&g_window_lifetime_lock);return;
+    }
     pthread_mutex_lock(&g_census_lock);
     struct winios_census_window *e = winios_census_find(hwnd);
     if (!e && g_census_n < WINIOS_CENSUS_MAX) e = &g_census[g_census_n++];
@@ -645,11 +705,12 @@ static void winios_census_note_frame(HWND hwnd, int x, int y, int w, int h, int 
             born_minimized = 1;
         }
     }
+    if (born_minimized) atomic_store(&g_restore_foreground, (uintptr_t)hwnd);
     pthread_mutex_unlock(&g_census_lock);
-    if (born_minimized) {
+    pthread_mutex_unlock(&g_window_lifetime_lock);
+    if (born_minimized && winios_window_ticket_matches(ticket,1)) {
         /* Posted, not sent: this runs inside the window's WindowPosChanged. */
         int ok = winios_drv_post_restore(hwnd);
-        atomic_store(&g_restore_foreground, (uintptr_t)hwnd);
         fprintf(stderr, "[born-minimized] hwnd=%p pid=%04x restore-posted=%d "
                         "(MADEIRA_RESTORE_BORN_MINIMIZED=0 leaves it minimized)\n", hwnd, pid, ok ? 1 : 0);
         fflush(stderr);
@@ -682,6 +743,15 @@ static void winios_census_forget(HWND hwnd) {
     if (e) { *e = g_census[--g_census_n]; memset(&g_census[g_census_n], 0, sizeof(g_census[0])); }
     pthread_mutex_unlock(&g_census_lock);
 }
+/* Server birth/death only: plain native bookkeeping, no UI or Wine calls.
+ * Call outside the lifetime mutex to keep native lock ordering acyclic. */
+static void winios_reset_window_metadata(HWND hwnd) {
+    uintptr_t pending=(uintptr_t)hwnd;
+    atomic_compare_exchange_strong(&g_restore_foreground,&pending,0);
+    pending=(uintptr_t)hwnd;atomic_compare_exchange_strong(&g_size_game_hwnd,&pending,0);
+    winios_census_forget(hwnd);winios_forget_swapchain_hwnd(hwnd);
+}
+
 
 /* The census ends when the starting screen finds the game's window, often a
  * splash or launcher window; the game's main window can be shown for the
@@ -736,15 +806,6 @@ int winios_window_census(struct winios_census_window *out, int max) {
 
 void winios_pDestroyWindow(HWND hwnd) {
     WLOG("pDestroyWindow hwnd=%p", hwnd);
-    uintptr_t pending = (uintptr_t)hwnd;
-    atomic_compare_exchange_strong(&g_restore_foreground, &pending, 0);
-    pending = (uintptr_t)hwnd;
-    atomic_compare_exchange_strong(&g_size_game_hwnd, &pending, 0);
-    winios_census_forget(hwnd);
-    if (winios_forget_swapchain_hwnd(hwnd)) {   /* madeira-bcd: [swap-win] */
-        fprintf(stderr, "[swap-win] hwnd=%p destroyed (pDestroyWindow) while a swapchain had presented into it\n", hwnd);
-        fflush(stderr);
-    }
     winios_remove_layer(hwnd);
 }
 
@@ -853,14 +914,18 @@ extern void winios_screen_size(int *w, int *h);
 /* MADEIRA_DIRECT_WINDOW_SIZE=1: keep an opted-in presenting window's client
  * at the selected resolution, including an engine resize after startup.
  * Default off; desktop sessions and ordinary windowed games are unchanged. */
-static void winios_request_game_size(void *hwnd, int cw, int ch) {
+static void winios_request_game_size(void *hwnd, int cw, int ch, struct madeira_window_ticket ticket) {
     const char *size = getenv("MADEIRA_DIRECT_WINDOW_SIZE");
     const char *desktop = getenv("MADEIRA_DESKTOP");
     if (!size || strcmp(size, "1") || (desktop && desktop[0] == '1') || !winios_swapchain_hwnd(hwnd)) return;
     int width, height;
     winios_screen_size(&width, &height);
-    if (width > 0 && height > 0 && (cw != width || ch != height))
-        atomic_store(&g_size_game_hwnd, (uintptr_t)hwnd);
+    if (width > 0 && height > 0 && (cw != width || ch != height)) {
+        pthread_mutex_lock(&g_window_lifetime_lock);
+        if (madeira_window_can_present(&g_window_lifetimes,ticket))
+            atomic_store(&g_size_game_hwnd, (uintptr_t)hwnd);
+        pthread_mutex_unlock(&g_window_lifetime_lock);
+    }
 }
 
 #define WINIOS_RING_SIZE 256
@@ -1071,6 +1136,7 @@ BOOL winios_pProcessEvents(DWORD mask) {
  * surface creation, so games never reach these). */
 
 static NSMutableDictionary<NSNumber *, CALayer *> *g_layers;
+static NSMutableDictionary<NSNumber *, NSNumber *> *g_layer_tickets;
 static NSMutableDictionary<NSNumber *, NSValue *> *g_px_rects;  /* hwnd → last px rect */
 static NSMutableDictionary<NSNumber *, NSValue *> *g_surf_sizes; /* hwnd → surface px size */
 static NSMutableDictionary<NSNumber *, CAMetalLayer *> *g_metal_layers; /* hwnd → Metal layer */
@@ -1314,6 +1380,7 @@ static void winios_drop_compositor(const char *why) {
     winios_forget_cursor_layer();
     for (CALayer *l in g_layers.allValues) [l removeFromSuperlayer];
     [g_layers removeAllObjects];
+    [g_layer_tickets removeAllObjects];
     [g_px_rects removeAllObjects];
     [g_surf_sizes removeAllObjects];
     [g_metal_layers removeAllObjects];
@@ -1349,8 +1416,11 @@ static BOOL winios_game_window_shown(NSNumber *key) {
 /* Called by IOSDisplayShim on a wine thread when a swapchain (D3D9/11/12)
  * takes the game layer for an HWND in a game session. */
 void winios_note_game_metal_hwnd(void *hwnd) {
-    winios_request_game_size(hwnd, 0, 0);
+    struct madeira_window_ticket ticket=winios_capture_window(hwnd);
+    if(!winios_window_ticket_matches(ticket,1))return;
+    winios_request_game_size(hwnd, 0, 0, ticket);
     dispatch_async(dispatch_get_main_queue(), ^{
+        if(!winios_prepare_window_ticket(hwnd,ticket))return;
         NSNumber *key = @((uintptr_t)hwnd);
         if (![g_game_input_key isEqual:key]) {
             g_game_input_key = key;
@@ -1368,6 +1438,15 @@ void winios_note_game_metal_hwnd(void *hwnd) {
 /* Called at every Wine session start (WineProcessBridge): a game session
  * starts with no overlay windows and no known Metal windows. */
 void winios_session_reset(void) {
+    /* The app can restart a stopped native server. Retain serials/tombstones,
+     * but end every old live incarnation before the new server returns HWNDs. */
+    pthread_mutex_lock(&g_window_lifetime_lock);
+    madeira_window_end_session(&g_window_lifetimes);
+    pthread_mutex_unlock(&g_window_lifetime_lock);
+    atomic_store(&g_restore_foreground, 0);
+    pthread_mutex_lock(&g_census_lock);
+    g_census_n=0;g_census_images_n=0;memset(g_census,0,sizeof(g_census));
+    pthread_mutex_unlock(&g_census_lock);
     atomic_store(&g_size_game_hwnd, 0);
     atomic_store(&g_close_desktop, 0);
     winios_swapchain_hwnds_reset();   /* [swap-win]: HWND values of the last session mean nothing now */
@@ -1470,7 +1549,30 @@ static void winios_ensure_compositor(void) {
 }
 
 /* main thread only */
-static CALayer *winios_layer_for(HWND hwnd, bool create) {
+/* Main queue, only after the stored incarnation has been matched. */
+static void winios_clear_surface_identity(NSNumber *key) {
+    [g_surf_sizes removeObjectForKey:key];
+    if([g_fit_key isEqual:key]){g_fit_key=nil;g_fit_client_px=CGRectZero;g_fit_view_pt=CGRectZero;}
+}
+/* Main queue: tag metadata as well as layers before a new incarnation writes
+ * anything. This also prevents an old Metal layer/geometry being inherited. */
+static int winios_prepare_window_ticket(HWND hwnd,struct madeira_window_ticket ticket) {
+    if(!winios_window_ticket_matches(ticket,1))return 0;
+    NSNumber *key=@((uintptr_t)hwnd);
+    if(!g_layer_tickets)g_layer_tickets=[NSMutableDictionary new];
+    NSNumber *old=g_layer_tickets[key];
+    if(old&&old.unsignedLongLongValue!=ticket.serial){
+        [g_layers[key] removeFromSuperlayer];[g_layers removeObjectForKey:key];
+        [g_metal_layers[key] removeFromSuperlayer];[g_metal_layers removeObjectForKey:key];
+        [g_px_rects removeObjectForKey:key];[g_client_rects removeObjectForKey:key];
+        winios_clear_surface_identity(key);
+        if([g_game_input_key isEqual:key])g_game_input_key=nil;
+        [g_game_metal removeObject:key];
+    }
+    g_layer_tickets[key]=@(ticket.serial);return 1;
+}
+static CALayer *winios_layer_for(HWND hwnd, bool create, struct madeira_window_ticket ticket) {
+    if(!winios_prepare_window_ticket(hwnd,ticket))return nil;
     NSNumber *key = @((uintptr_t)hwnd);
     CALayer *l = g_layers[key];
     if (!l && create) {
@@ -1483,6 +1585,7 @@ static CALayer *winios_layer_for(HWND hwnd, bool create) {
         l.hidden = YES;
         [g_compositor_view.layer addSublayer:l];
         g_layers[key] = l;
+        g_layer_tickets[key]=@(ticket.serial);
         fprintf(stderr, "[winios] layer created for hwnd=%p (%lu layers)\n",
                 hwnd, (unsigned long)g_layers.count);
         fflush(stderr);
@@ -1491,8 +1594,35 @@ static CALayer *winios_layer_for(HWND hwnd, bool create) {
 }
 
 static void winios_remove_layer(HWND hwnd) {
+    struct madeira_window_ticket ticket=winios_capture_window(hwnd);
+    uint32_t pid=0,tid=0;winios_drv_native_ids(&pid,&tid);
+    ticket=madeira_window_owner(ticket,pid,tid,1);
+    winios_remove_window_ticket(hwnd,ticket);
+}
+static void winios_remove_window_ticket(HWND hwnd,struct madeira_window_ticket ticket) {
     dispatch_async(dispatch_get_main_queue(), ^{
         NSNumber *key = @((uintptr_t)hwnd);
+        uint64_t layer_serial=g_layer_tickets[key].unsignedLongLongValue;
+        pthread_mutex_lock(&g_window_lifetime_lock);
+        int same=madeira_window_same(&g_window_lifetimes,ticket);
+        int cleanup=madeira_window_can_cleanup(&g_window_lifetimes,ticket,layer_serial);
+        pthread_mutex_unlock(&g_window_lifetime_lock);
+        if(!same&&!cleanup)return;
+        /* HWND-only native metadata was already reset synchronously by the
+         * server. A delayed UIKit task must not clear a new client's updates. */
+        if(!cleanup){
+            /* Death can precede the first queued layer creation. Its exact
+             * current metadata still belongs to this retired incarnation. */
+            if(!g_layers[key]&&!g_metal_layers[key]){
+                [g_client_rects removeObjectForKey:key];[g_px_rects removeObjectForKey:key];
+                winios_clear_surface_identity(key);
+                if([g_game_input_key isEqual:key])g_game_input_key=nil;
+                [g_game_metal removeObject:key];
+            }
+            return;
+        }
+        [g_layer_tickets removeObjectForKey:key];
+        winios_clear_surface_identity(key);
         if ([g_game_input_key isEqual:key]) g_game_input_key = nil;
         [g_game_metal removeObject:key];
         [g_client_rects removeObjectForKey:key];
@@ -1504,6 +1634,9 @@ static void winios_remove_layer(HWND hwnd) {
             [g_px_rects removeObjectForKey:key];
             winios_game_cursor_refresh();
         }
+        static unsigned retired_reports;
+        if(ticket.serial&&retired_reports++<64)
+            fprintf(stderr,"[native-window-retire-v1] hwnd=%p pid=%04x tid=%04x ticket=%llu exact-incarnation=1\n",hwnd,ticket.pid,ticket.tid,(unsigned long long)ticket.serial);
         CAMetalLayer *ml = g_metal_layers[key];
         if (ml) {
             [ml removeFromSuperlayer];
@@ -1783,15 +1916,18 @@ static void winios_swap_layer_note(NSNumber *key, const char *why) {
  * view for an HWND in desktop mode. Returns the (unretained) CAMetalLayer;
  * the shim CFRetains it for DXMT's lifetime handling. */
 CAMetalLayer *winios_metal_layer_for_hwnd(void *hwnd) {
+    struct madeira_window_ticket ticket=winios_capture_window(hwnd);
     __block CAMetalLayer *result = nil;
     void (^make)(void) = ^{
+        if(!winios_prepare_window_ticket(hwnd,ticket))return;
         winios_ensure_compositor();
         if (!g_compositor_view) return;
         if (!g_metal_layers) g_metal_layers = [NSMutableDictionary new];
         NSNumber *key = @((uintptr_t)hwnd);
+        CALayer *win = winios_layer_for(hwnd, true, ticket);
+        if(!win)return;
         CAMetalLayer *ml = g_metal_layers[key];
         if (!ml) {
-            CALayer *win = winios_layer_for(hwnd, true);
             MadeiraWindowMetalLayer *wml = [MadeiraWindowMetalLayer layer];
             wml.madeiraHwnd = (uintptr_t)hwnd;
             [wml madeiraSetWindowHidden:win.hidden];
@@ -1824,8 +1960,10 @@ CAMetalLayer *winios_metal_layer_for_hwnd(void *hwnd) {
  * compositor's point placement. Do not change the DXMT-only layer path.
  * Weak layer identities avoid carrying the Vulkan flag across HWND reuse. */
 CAMetalLayer *winios_vulkan_layer_for_hwnd(void *hwnd) {
+    struct madeira_window_ticket ticket=winios_capture_window(hwnd);
     __block CAMetalLayer *result = nil;
     void (^make)(void) = ^{
+        if(!winios_prepare_window_ticket(hwnd,ticket))return;
         CAMetalLayer *ml = winios_metal_layer_for_hwnd(hwnd);
         if (!ml) return;
         if (!g_vulkan_layers) g_vulkan_layers = [NSHashTable weakObjectsHashTable];
@@ -1847,7 +1985,9 @@ CAMetalLayer *winios_vulkan_layer_for_hwnd(void *hwnd) {
 /* Parent show/hide: update existing child layers on the same queue as frames.
  * A hidden child retains its surface and Metal layer for a later parent show. */
 void winios_window_visibility(HWND hwnd, int visible) {
+    struct madeira_window_ticket ticket=winios_capture_window_target(hwnd);
     dispatch_async(dispatch_get_main_queue(), ^{
+        if(!winios_prepare_window_ticket(hwnd,ticket))return;
         if ([g_game_input_key isEqual:@((uintptr_t)hwnd)]) g_game_input_hidden = !visible;
         CALayer *l = g_layers[@((uintptr_t)hwnd)];
         if (!l) return;
@@ -1873,7 +2013,9 @@ void winios_window_visibility(HWND hwnd, int visible) {
  * All Wine queries happened on the caller's Wine thread, not this queue. */
 void winios_window_geometry(HWND hwnd, int x, int y, int w, int h,
                             int cx, int cy, int cw, int ch) {
+    struct madeira_window_ticket ticket=winios_capture_window_target(hwnd);
     dispatch_async(dispatch_get_main_queue(), ^{
+        if(!winios_prepare_window_ticket(hwnd,ticket))return;
         NSNumber *key = @((uintptr_t)hwnd);
         if (!g_client_rects) g_client_rects = [NSMutableDictionary new];
         g_client_rects[key] = [NSValue valueWithCGRect:CGRectMake(cx, cy, cw, ch)];
@@ -1897,11 +2039,14 @@ void winios_window_geometry(HWND hwnd, int x, int y, int w, int h,
  * x/y/w/h = visible rect, cx/cy/cw/ch = client rect, screen desktop pixels. */
 void winios_window_frame(HWND hwnd, int x, int y, int w, int h, int visible,
                          int cx, int cy, int cw, int ch) {
-    winios_request_game_size(hwnd, cw, ch);
+    struct madeira_window_ticket ticket=winios_capture_window_target(hwnd);
+    if(!winios_window_ticket_matches(ticket,1))return;
+    winios_request_game_size(hwnd, cw, ch, ticket);
     /* Here, not in the block below: the census asks win32u about the window,
      * which needs this Wine thread. No-op unless the app turned it on. */
-    winios_census_note_frame(hwnd, x, y, w, h, visible);
+    winios_census_note_frame(hwnd, x, y, w, h, visible, ticket);
     dispatch_async(dispatch_get_main_queue(), ^{
+        if(!winios_prepare_window_ticket(hwnd,ticket))return;
         winios_ensure_compositor();
         if (!g_compositor_view) return;
         NSNumber *key = @((uintptr_t)hwnd);
@@ -1912,7 +2057,8 @@ void winios_window_frame(HWND hwnd, int x, int y, int w, int h, int visible,
             g_px_rects[key] = [NSValue valueWithCGRect:CGRectMake(x, y, w, h)];
             if (!winios_game_window_shown(key)) return;
         }
-        CALayer *l = winios_layer_for(hwnd, true);
+        CALayer *l = winios_layer_for(hwnd, true, ticket);
+        if(!l)return;
         g_px_rects[key] = [NSValue valueWithCGRect:CGRectMake(x, y, w, h)];
         [CATransaction begin];
         [CATransaction setDisableActions:YES];
@@ -1994,7 +2140,9 @@ static void winios_trace_steam_frame(HWND hwnd, const char *outcome, CALayer *la
 
 void winios_ui_surface_trace(void *hwnd, unsigned int pid, unsigned int tid,
                              int wine_visible, void *surface) {
+    struct madeira_window_ticket ticket=winios_capture_window_target(hwnd);
     dispatch_async(dispatch_get_main_queue(), ^{
+        if(!winios_window_ticket_matches(ticket,1))return;
         NSNumber *key = @((uintptr_t)hwnd);
         if (!g_steam_frames) g_steam_frames = [NSMutableDictionary new];
         if (!g_steam_frames[key] && g_steam_frames.count < 64)
@@ -2183,6 +2331,8 @@ void winios_dump_srcbits(const void *bits, int w, int h, int stride) {
  * be cheaper and wrong: it is only valid for the duration of this call. */
 int winios_surface_present(HWND hwnd, int dx, int dy, int dw, int dh,
                            int sw, int sh, int stride, const void *bits, unsigned int alpha_mask) {
+    struct madeira_window_ticket ticket=winios_capture_window(hwnd);
+    if(!winios_window_ticket_matches(ticket,1))return 1;
     if (sw <= 0 || sh <= 0 || !bits) return 1;   /* nothing to paint */
     winios_census_note_present(hwnd);   /* no-op unless the census is on */
     size_t snap_len = (size_t)stride * (size_t)sh;
@@ -2428,6 +2578,7 @@ int winios_surface_present(HWND hwnd, int dx, int dy, int dw, int dh,
         fflush(stderr);
     }
     dispatch_async(dispatch_get_main_queue(), ^{
+        if(!winios_prepare_window_ticket(hwnd,ticket))return;
         winios_ensure_compositor();
         /* ml1028: this block is dispatch_block_t (void). The snapshot copy has
          * already SUCCEEDED by the time we get here, so the function's own
@@ -2444,7 +2595,8 @@ int winios_surface_present(HWND hwnd, int dx, int dy, int dw, int dh,
             if (!g_px_rects[k] && ![g_game_metal containsObject:k]) pending = YES;
             else if (!winios_game_window_shown(k)) { winios_trace_steam_frame(hwnd, "game-filter", g_layers[k]); return; }
         }
-        CALayer *l = winios_layer_for(hwnd, true);
+        CALayer *l = winios_layer_for(hwnd, true, ticket);
+        if(!l)return;
         CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
         CGDataProviderRef dp = CGDataProviderCreateWithCFData((__bridge CFDataRef)data);
         /* UpdateLayeredWindow marks premultiplied BGRA with alpha_mask.

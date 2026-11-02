@@ -14,7 +14,9 @@ assert struct.unpack_from('<H', data, pe + 4)[0] == 0xaa64, 'WOW64 FEX must be A
 assert b'MadeiraBTCpuThreadInit' in data and b'[fex-thread-init-v1]' in data, 'stale FEX CPU producer'
 assert b'MadeiraBTCpuWriteMemory' in data and b'[fex-guest-write-v1]' in data, 'stale FEX native-write producer'
 assert b'[fex-first-use-v1]' in data, 'stale FEX first-execution allocation checks'
-runpy.run_path(sys.argv[2])['fex_arena_exports'](data)
+assert b'[fex-blocklist-v1]' in data, 'stale FEX contiguous block map'
+assert b'[fex-hold-release-v1]' in data, 'stale FEX terminal hold cleanup'
+runpy.run_path(sys.argv[2])['fex_arena_exports'](data, require_hold_release=True)
 size = struct.unpack_from('<I', data, pe + 24 + 56)[0]
 if len(data) < size: p.write_bytes(data + bytes(size - len(data)))
 print('PASS rebuilt ARM64 FEX CPU producer exports checked thread initialization')

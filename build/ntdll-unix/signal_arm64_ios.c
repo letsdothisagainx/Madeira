@@ -1244,6 +1244,31 @@ static int ios_lookup_thread(thread_t mach_thread, uintptr_t *teb_out, void **tr
  * the ml404 __ulock_wait signature (WAITING + x0==0x1000001) — lock address
  * (x1), lock word (owner name for os_unfair_lock), and an 8-frame fp walk.
  * Each thread reported once (dedupe by port), 60 reports max. */
+/* Returns zero only for a fresh positively registered legacy EC snapshot. A
+ * registered native WoW CPU owns its cleanup; registry contention or a stale
+ * stamp is never permission to change another thread's mutex. */
+static int ios_dead_fex_hold_policy( uintptr_t teb, uint64_t sampled_stamp,
+                                     unsigned int *depth, uint64_t *srw,
+                                     void **owner, unsigned long long *lease )
+{
+    extern int ios_hold_release_wow_owner(void *, unsigned long long *);
+    uint64_t words[3] = {0}, peb = 0;
+    mach_vm_size_t got = 0;
+    *depth = 0; *srw = 0; *owner = NULL; *lease = 0;
+    if (!teb || teb > UINTPTR_MAX - 0x1700 ||
+        mach_vm_read_overwrite(mach_task_self(),teb+0x16e8,sizeof(words),
+                               (mach_vm_address_t)words,&got) != KERN_SUCCESS || got != sizeof(words)) return -1;
+    got = 0;
+    if (mach_vm_read_overwrite(mach_task_self(),teb+offsetof(TEB,Peb),sizeof(peb),
+                               (mach_vm_address_t)&peb,&got) != KERN_SUCCESS || got != sizeof(peb) || !peb) return -1;
+    *owner = (void *)(uintptr_t)peb;
+    int policy = ios_hold_release_wow_owner(*owner,lease);
+    if (policy) return policy;
+    if (!sampled_stamp || words[2] != sampled_stamp || !(uint32_t)words[1]) return -2;
+    *depth = (uint32_t)words[1]; *srw = words[0];
+    return 0;
+}
+
 static void ios_lock_census(void)
 {
     static int total_logged;
@@ -1321,10 +1346,10 @@ static void ios_lock_census(void)
                  * the live generation — do NOT touch it. */
                 if (ti_kr != KERN_SUCCESS && held)
                 {
-                    static uint64_t reaped_tebs[16];
-                    static int reaped_n;
+                    static uint64_t handled_tebs[16];
+                    static int handled_n;
                     int r, live = 0, already = 0;
-                    for (r = 0; r < reaped_n; r++) if (reaped_tebs[r] == (uint64_t)cteb) already = 1;
+                    for (r = 0; r < handled_n; r++) if (handled_tebs[r] == (uint64_t)cteb) already = 1;
                     for (r = 0; r < count && !live; r++)
                     {
                         struct thread_basic_info lbi;
@@ -1335,26 +1360,33 @@ static void ios_lock_census(void)
                                          (thread_info_t)&lbi, &lcnt ) == KERN_SUCCESS)
                             live = 1;
                     }
-                    if (!already && !live && reaped_n < 16)
+                    if (!already && !live && handled_n < 16)
                     {
                         extern void ios_wpm_reap_shared( unsigned long long mutex_addr, unsigned int depth,
                                                          unsigned long long dead_teb );
                         extern void ios_srw_reap_exclusive( unsigned long long lock_addr, unsigned long long dead_teb );
-                        uint32_t depth = 1;
+                        uint32_t depth = 0;
                         uint64_t srw_stamp = 0;
-                        mach_vm_read_overwrite( mach_task_self(), (mach_vm_address_t)(cteb + 0x16f0), 4,
-                                                (mach_vm_address_t)&depth, &mgot );
-                        if (!depth) depth = 1;
-                        /* ml446: slot 6 = &CodeBufferWriteMutex while the JIT
-                         * emission section holds it (JIT.cpp stamp) */
-                        mach_vm_read_overwrite( mach_task_self(), (mach_vm_address_t)(cteb + 0x16e8), 8,
-                                                (mach_vm_address_t)&srw_stamp, &mgot );
-                        reaped_tebs[reaped_n++] = (uint64_t)cteb;
-                        dprintf(2, "[lock-reap] dead port=0x%x tid=%04x teb=0x%llx stamp=0x%llx depth=%u srw=0x%llx — reaping rev=ml446\n",
-                                cand, ctid, (unsigned long long)cteb, (unsigned long long)held, depth,
-                                (unsigned long long)srw_stamp);
-                        ios_wpm_reap_shared( held, depth, (unsigned long long)cteb );
-                        if (srw_stamp) ios_srw_reap_exclusive( srw_stamp, (unsigned long long)cteb );
+                        void *owner = NULL;
+                        unsigned long long lease = 0;
+                        int policy = ios_dead_fex_hold_policy(cteb,held,&depth,&srw_stamp,&owner,&lease);
+                        /* Cache the observation as handled even when no release
+                         * is allowed. Dropping a callback at process retirement
+                         * must not turn this same stale sample into permission. */
+                        handled_tebs[handled_n++] = (uint64_t)cteb;
+                        if (policy)
+                            dprintf(2,"[lock-reap-v2] port=%#x tid=%04x teb=%p owner=%p lease=%llu stamp=%#llx "
+                                      "reason=%s action=own-thread-cleanup-only\n", cand,ctid,(void *)cteb,owner,lease,
+                                    (unsigned long long)held,policy==1?"registered-native-wow":
+                                    policy==-2?"stale-hold-snapshot":"registry-or-metadata-unavailable");
+                        else
+                        {
+                            dprintf(2, "[lock-reap] dead port=0x%x tid=%04x teb=0x%llx stamp=0x%llx depth=%u srw=0x%llx — legacy EC reap rev=ml446\n",
+                                    cand, ctid, (unsigned long long)cteb, (unsigned long long)held, depth,
+                                    (unsigned long long)srw_stamp);
+                            ios_wpm_reap_shared( held, depth, (unsigned long long)cteb );
+                            if (srw_stamp) ios_srw_reap_exclusive( srw_stamp, (unsigned long long)cteb );
+                        }
                     }
                     else if (!already && live)
                         dprintf(2, "[lock-reap] dead port=0x%x teb=0x%llx stamp=0x%llx SKIPPED (teb recycled to live thread) rev=ml445\n",
@@ -9128,6 +9160,33 @@ static int ios_bound_fex_guest_fault(ucontext_t *context, uintptr_t teb,
     return 0;
 }
 
+/* Observe only after a dispatch frame has been written. A recoverable exception
+ * can resume its original native compile frame, whose RAII guards still own
+ * these locks. The Mach exception-server thread must never release them. */
+static void ios_note_fex_hold_delivery( uintptr_t thread_teb, uint32_t code, uint64_t pc, uint64_t fault_addr )
+{
+    static unsigned reports;
+    uint64_t stamp = 0, owner = 0;
+    uint32_t depth = 0, tid = 0;
+    unsigned ticket;
+    int saved_errno = errno;
+    if (!thread_teb || thread_teb > UINTPTR_MAX - 0x1700 ||
+        !ios_g32_read(thread_teb + 0x16f8, &stamp, sizeof(stamp)) || !stamp ||
+        !ios_g32_read(thread_teb + 0x16f0, &depth, sizeof(depth))) goto done;
+    ticket = __atomic_load_n(&reports, __ATOMIC_RELAXED);
+    while (ticket < 16 && !__atomic_compare_exchange_n(&reports, &ticket, ticket + 1, 0,
+                                                     __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
+    if (ticket >= 16) goto done;
+    ios_g32_read(thread_teb + offsetof(TEB, Peb), &owner, sizeof(owner));
+    ios_g32_read(thread_teb + offsetof(TEB, ClientId.UniqueThread), &tid, sizeof(tid));
+    dprintf(2, "[deliver-hold-v2] phase=frame-prepared teb=%p peb=%p tid=%04x code=%08x pc=%#llx addr=%#llx "
+               "recorded-stamp=%#llx recorded-depth=%u action=preserve-for-dispatch release-authority=current-thread-terminal-boundary\n",
+            (void*)thread_teb, (void*)(uintptr_t)owner, tid, code, (unsigned long long)pc,
+            (unsigned long long)fault_addr, (unsigned long long)stamp, depth);
+done:
+    errno = saved_errno;
+}
+
 static int ios_mach_deliver_guest_exception_inner( thread_t thread, arm_thread_state64_t *state,
                                                    arm_neon_state64_t *neon, int have_neon,
                                                    int exception, uintptr_t fault_addr,
@@ -9323,30 +9382,6 @@ static int ios_mach_deliver_guest_exception_inner( thread_t thread, arm_thread_s
             return 0;
         }
         thread_teb = (uintptr_t)teb;
-    }
-
-    /* iOS-Madeira ml413 (#60/#66): xtajit64 stamps TEB->Instrumentation[8]
-     * (+0x16f8) with the mutex address while a thread holds a FEX shared lock
-     * (CodeInvalidationMutex read hold during CompileCode). Redirecting such a
-     * thread to KiUserExceptionDispatcher abandons the compile without
-     * unwinding — the read hold leaks and every later writer/reader parks
-     * forever (the ml413 wedge: word=0x40010001). Log-only for now: prove or
-     * refute this path before changing delivery behavior. */
-    {
-        static int deliver_hold_logs;
-        uint64_t held_lock = 0;
-        if (thread_teb)
-            held_lock = *(volatile uint64_t *)((char *)(uintptr_t)thread_teb + 0x16f8);
-        if (held_lock && deliver_hold_logs < 16)
-        {
-            deliver_hold_logs++;
-            dprintf( 2, "[deliver-hold] teb=0x%llx tid=%04x HOLDS FEX shared lock @0x%llx at guest redirect "
-                        "(pc=0x%llx addr=0x%llx) — this delivery leaks the read hold\n",
-                     (unsigned long long)thread_teb,
-                     *(volatile unsigned int *)((char *)(uintptr_t)thread_teb + 0x48),
-                     (unsigned long long)held_lock,
-                     (unsigned long long)pc, (unsigned long long)fault_addr );
-        }
     }
 
     /* fabricate a ucontext over the fetched thread state so the existing
@@ -9729,6 +9764,7 @@ dispatch:
     REGn_sig(18, &uc) = thread_teb;
 
     *state = mc.__ss;
+    ios_note_fex_hold_delivery(thread_teb, rec.ExceptionCode, pc, fault_addr);
     ios_note_guest_delivery( (uint64_t)thread );   /* restarts [fault-stuck] */
 
     if (deliver_logs < 24 || (deliver_logs % 100) == 0)

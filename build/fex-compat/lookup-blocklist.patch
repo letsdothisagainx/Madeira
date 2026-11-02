@@ -1,0 +1,37 @@
+--- a/FEXCore/Source/Interface/Core/LookupCache.h
++++ b/FEXCore/Source/Interface/Core/LookupCache.h
+@@ -110,7 +110,20 @@
+     fextl::vector<uint64_t> CodePages;
+   };
+ 
++#if defined(FEX_IOS_HOST) && defined(_WIN32) && !defined(ARCHITECTURE_arm64ec)
++  // Each value is 40 bytes on this target. The contiguous map doubles its
++  // value vector from 20 to 40 MiB at 524289 entrypoints, requiring both
++  // buffers to coexist. A fragmented native arena can have hundreds of MiB
++  // free while no such contiguous allocation fits. The library's segmented
++  // map keeps the same hashing/allocator/API, with bounded value AND bucket
++  // segments. All map access and publication retain the existing locks.
++  using BlockListType = ankerl::unordered_dense::segmented_map<
++    uint64_t, BlockEntry, std::hash<uint64_t>, std::equal_to<uint64_t>,
++    fextl::FEXAlloc<std::pair<uint64_t, BlockEntry>>>;
++  BlockListType BlockList;
++#else
+   fextl::robin_map<uint64_t, BlockEntry> BlockList;
++#endif
+ 
+   fextl::map<uint64_t, fextl::vector<uint64_t>> CodePages;
+ 
+--- a/FEXCore/Source/Interface/Core/LookupCache.cpp
++++ b/FEXCore/Source/Interface/Core/LookupCache.cpp
+@@ -21,6 +21,11 @@
+ namespace FEXCore {
+ GuestToHostMap::GuestToHostMap()
+   : BlockLinks_mbr {"FEXMem_BlockLinks"} {
++#if defined(FEX_IOS_HOST) && defined(_WIN32) && !defined(ARCHITECTURE_arm64ec)
++  static std::atomic<unsigned> Reports {};
++  if (Reports.fetch_add(1, std::memory_order_relaxed) < 16)
++    LogMan::Msg::EFmt("[fex-blocklist-v1] entrypoint map uses bounded value/bucket segments; existing allocator and locks retained");
++#endif
+   BlockLinks_pma = fextl::make_unique<std::pmr::polymorphic_allocator<std::byte>>(&BlockLinks_mbr);
+   // Setup our PMR map.
+   BlockLinks = BlockLinks_pma->new_object<BlockLinksMapType>();

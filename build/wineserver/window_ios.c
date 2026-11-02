@@ -52,9 +52,19 @@ enum property_type
 };
 
 
+#ifdef WINE_IOS
+#include "../steam-ui/window_lifetime.h"
+extern uint64_t winios_native_window_create(uint32_t,uint32_t,uint32_t) __attribute__((weak));
+extern void winios_native_window_retire(uint32_t,uint32_t,uint32_t,uint64_t) __attribute__((weak));
+#endif
+
 struct window
 {
     struct object    obj;             /* object header */
+#ifdef WINE_IOS
+    uint64_t ios_native_serial;
+    uint32_t ios_native_pid,ios_native_tid;
+#endif
     struct window   *parent;          /* parent window */
     user_handle_t    owner;           /* owner of this window */
     struct list      children;        /* list of children in Z-order */
@@ -695,6 +705,10 @@ static struct window *create_window( struct window *parent, struct window *owner
     }
 
     if (!(win = alloc_object( &window_ops ))) goto failed;
+#ifdef WINE_IOS
+    win->ios_native_serial=0;
+    win->ios_native_pid=current->process->id;win->ios_native_tid=current->id;
+#endif
     win->parent         = parent ? (struct window *)grab_object( parent ) : NULL;
     win->owner          = owner ? owner->handle : 0;
     win->thread         = current;
@@ -774,6 +788,12 @@ static struct window *create_window( struct window *parent, struct window *owner
     }
 
     current->desktop_users++;
+#ifdef WINE_IOS
+    /* Publish only a successful server window. The bridge stores metadata;
+     * it never invokes Wine or UIKit synchronously from the server thread. */
+    if(winios_native_window_create)
+        win->ios_native_serial=winios_native_window_create(win->handle,win->ios_native_pid,win->ios_native_tid);
+#endif
     return win;
 
 failed:
@@ -2175,6 +2195,12 @@ void free_window_handle( struct window *win )
     struct window *child, *next;
 
     assert( win->handle );
+#ifdef WINE_IOS
+    /* Forced thread/process death bypasses the client pDestroyWindow hook.
+     * Retire its exact native incarnation before the server frees the handle. */
+    if(winios_native_window_retire&&win->ios_native_serial)
+        winios_native_window_retire(win->handle,win->ios_native_pid,win->ios_native_tid,win->ios_native_serial);
+#endif
 
     /* hide the window */
     if (is_visible(win))

@@ -30,22 +30,26 @@ with tempfile.TemporaryDirectory() as temp:
     wow[0xa0:0xa0+len(b'madeira-io-abi-v2')] = b'madeira-io-abi-v2'
     wow.extend(b'[wow-thread-init-v1][wow-break-deliver-v1]MadeiraBTCpuWriteMemory[wow-query-zero-v1][wow-group-attribute-v1]')
     (t/'app/Madeira/aarch64-windows/wow64.dll').write_bytes(wow)
-    cpu = bytearray(0x600)
+    cpu = bytearray(0x700)
     cpu[:0x98] = wow[:0x98]
-    struct.pack_into('<H', cpu, 0x86, 1)  # one writable DATA section
+    struct.pack_into('<H', cpu, 0x86, 2)  # writable DATA and native RX code
     struct.pack_into('<H', cpu, 0x94, 240)
     struct.pack_into('<H', cpu, 0x98, 0x20b)
     struct.pack_into('<II', cpu, 0x98 + 112, 0x1000, 0x100)
     cpu[0x188:0x190] = b'.data\0\0\0'
     struct.pack_into('<IIII', cpu, 0x190, 0x400, 0x1000, 0x400, 0x200)
     struct.pack_into('<I', cpu, 0x188 + 36, 0xc0000040)
-    struct.pack_into('<IIHHIIIIIII', cpu, 0x200, 0, 0, 0, 0, 0, 1, 2, 2, 0x1040, 0x1050, 0x1060)
-    struct.pack_into('<II', cpu, 0x240, 0x1200, 0x1208)
-    struct.pack_into('<II', cpu, 0x250, 0x1080, 0x10a0)
-    struct.pack_into('<HH', cpu, 0x260, 0, 1)
-    for offset, name in [(0x280, b'ios_fex_band_base\0'), (0x2a0, b'ios_fex_band_end\0')]:
+    cpu[0x1b0:0x1b8] = b'.text\0\0\0'
+    struct.pack_into('<IIII', cpu, 0x1b8, 0x100, 0x1400, 0x100, 0x600)
+    struct.pack_into('<I', cpu, 0x1b0 + 36, 0x60000020)
+    struct.pack_into('<IIHHIIIIIII', cpu, 0x200, 0, 0, 0, 0, 0, 1, 3, 3, 0x1040, 0x1050, 0x1060)
+    struct.pack_into('<III', cpu, 0x240, 0x1200, 0x1208, 0x1400)
+    struct.pack_into('<III', cpu, 0x250, 0x1080, 0x10a0, 0x10c0)
+    struct.pack_into('<HHH', cpu, 0x260, 0, 1, 2)
+    for offset, name in [(0x280, b'ios_fex_band_base\0'), (0x2a0, b'ios_fex_band_end\0'),
+                         (0x2c0, b'MadeiraBTCpuIosReleaseThreadHolds\0')]:
         cpu[offset:offset + len(name)] = name
-    cpu.extend(b'MadeiraBTCpuThreadInit[fex-thread-init-v1]MadeiraBTCpuWriteMemory[fex-guest-write-v1][fex-first-use-v1]')
+    cpu.extend(b'MadeiraBTCpuThreadInit[fex-thread-init-v1]MadeiraBTCpuWriteMemory[fex-guest-write-v1][fex-first-use-v1][fex-blocklist-v1][fex-hold-release-v1]')
     (t/'app/Madeira/aarch64-windows/xtajit.dll').write_bytes(cpu)
     guest = bytearray(wow)
     struct.pack_into('<H',guest,0x84,0x14c)
@@ -56,7 +60,7 @@ with tempfile.TemporaryDirectory() as temp:
     bodies = {
       'xcodebuild': '''mkdir -p "$TEST_APP/arm64ec-windows" "$TEST_APP/i386-windows" "$TEST_APP/x86_64-vcruntime" "$TEST_APP/aarch64-windows"
 cp "$ROOT/app/Madeira/aarch64-windows/wow64.dll" "$ROOT/app/Madeira/aarch64-windows/xtajit.dll" "$TEST_APP/aarch64-windows/"
-printf '[io-abi] v2 native-owned IOSB scopes active[wow-write][guest32-symbols][guest32-cxx-first-v1][cef-atexit-v1][steam-handoff-v1]_madeira_child_server_exited[fex-owner-v1] pre-crt[fex-owner-v1] retired[guest32-fault-v1][steam-progress-v1]_winios_ui_progress_snapshot[srv-poll-drop-v1]poll-slots-highwater=' > "$TEST_APP/Madeira.debug.dylib"
+printf '[io-abi] v2 native-owned IOSB scopes active[wow-write][guest32-symbols][guest32-cxx-first-v1][cef-atexit-v1][steam-handoff-v1]_madeira_child_server_exited[fex-owner-v1] pre-crt[fex-owner-v1] retired[fex-owner-census-v2][hold-release-v2][deliver-hold-v2][native-window-retire-v1]_winios_native_window_create_winios_native_window_retire[guest32-fault-v1][steam-progress-v1]_winios_ui_progress_snapshot[srv-poll-drop-v1]poll-slots-highwater=' > "$TEST_APP/Madeira.debug.dylib"
 cp "$ROOT/app/Madeira/i386-windows/kernelbase.dll" "$TEST_APP/i386-windows/"
 printf fixture > "$TEST_APP/Madeira"
 printf fixture > "$TEST_APP/prefix-template.tar.gz"
@@ -102,7 +106,7 @@ done
     invalid_cpu[0x280] = ord('x')
     (t/'app/Madeira/aarch64-windows/xtajit.dll').write_bytes(invalid_cpu)
     result=run()
-    assert result.returncode and 'FEX arena DATA exports missing' in result.stderr, result.stderr
+    assert result.returncode and 'FEX compatibility exports missing' in result.stderr, result.stderr
     invalid_cpu = bytearray(cpu)
     struct.pack_into('<I', invalid_cpu, 0x188 + 36, 0xe0000040)
     (t/'app/Madeira/aarch64-windows/xtajit.dll').write_bytes(invalid_cpu)
@@ -114,6 +118,19 @@ done
     assert result.returncode and 'private writable non-executable DATA' in result.stderr, result.stderr
     (t/'app/Madeira/aarch64-windows/xtajit.dll').write_bytes(cpu)
     print('PASS missing or executable FEX arena DATA exports fail final IPA validation')
+    for export, message in [(0x1200, 'native RX function'), (0x10c0, 'export is forwarded')]:
+        invalid_cpu = bytearray(cpu)
+        struct.pack_into('<I', invalid_cpu, 0x248, export)
+        (t/'app/Madeira/aarch64-windows/xtajit.dll').write_bytes(invalid_cpu)
+        result=run()
+        assert result.returncode and message in result.stderr, result.stderr
+    invalid_cpu = bytearray(cpu)
+    struct.pack_into('<I', invalid_cpu, 0x1b0 + 36, 0xe0000020)
+    (t/'app/Madeira/aarch64-windows/xtajit.dll').write_bytes(invalid_cpu)
+    result=run()
+    assert result.returncode and 'native RX function' in result.stderr, result.stderr
+    (t/'app/Madeira/aarch64-windows/xtajit.dll').write_bytes(cpu)
+    print('PASS writable, non-executable and forwarded FEX hold-release callbacks fail final IPA validation')
     (t/'app/Madeira/aarch64-windows/xtajit.dll').write_bytes(wow)
     result=run()
     assert result.returncode and 'stale FEX CPU producer' in result.stderr, result.stderr

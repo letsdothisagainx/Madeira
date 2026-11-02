@@ -98,9 +98,9 @@ require('winios_drv_foreground_if_owner((HWND)fg)' in events and 'atomic_compare
         "a restored born-minimized window is brought to the front by its own thread's event pump")
 destroy = winios[winios.index('void winios_pDestroyWindow(HWND hwnd) {'):]
 destroy = destroy[:destroy.index('\n}\n')]
-require('atomic_compare_exchange_strong(&g_restore_foreground, &pending, 0)' in destroy and 'winios_census_forget(hwnd)' in destroy,
+require('winios_remove_layer(hwnd)' in destroy and 'winios_census_forget(hwnd)' in winios and 'winios_reset_window_metadata' in winios,
         'a destroyed window leaves the census and any pending front request')
-require(winios.count('winios_census_note_frame(hwnd, x, y, w, h, visible);') == 1 and
+require(winios.count('winios_census_note_frame(hwnd, x, y, w, h, visible, ticket);') == 1 and
         winios.count('winios_census_note_present(hwnd);') == 1 and winios.count('winios_census_note_metal((HWND)hwnd);') == 1,
         'the census is fed by the frame, GDI flush and swapchain hooks')
 require('#include "Winios.h"' in winios, 'Winios.m includes the header Swift reads the census struct from')
@@ -339,6 +339,7 @@ with tempfile.TemporaryDirectory(prefix='madeira-dock-start-') as tmp:
 
 # ------------------------------------------------------------------ 2. C census
 census = winios[winios.index('#define WINIOS_WS_VISIBLE'):winios.index('void winios_pDestroyWindow(HWND hwnd)')]
+census += '\n#define winios_census_note_frame(h,x,y,w,v,shown) winios_census_note_frame(h,x,y,w,v,shown,madeira_window_capture(&g_window_lifetimes,(uintptr_t)(h)))\n'
 
 c_prelude = r'''
 #include <pthread.h>
@@ -349,6 +350,12 @@ c_prelude = r'''
 #include <string.h>
 #include "Winios.h"
 typedef void *HWND;
+#include "window_lifetime.h"
+static struct madeira_window_registry g_window_lifetimes;
+static pthread_mutex_t g_window_lifetime_lock=PTHREAD_MUTEX_INITIALIZER;
+static _Atomic(uintptr_t) g_size_game_hwnd;
+static int winios_forget_swapchain_hwnd(HWND hwnd){(void)hwnd;return 1;}
+static int winios_window_ticket_matches(struct madeira_window_ticket t,int present){(void)present;return madeira_window_can_present(&g_window_lifetimes,t);}
 
 /* Stubbed driver helpers (build/win32u-unix/driver_ios.c): a table of fake windows. */
 struct fake { HWND hwnd; unsigned style; int top; unsigned pid; };
@@ -591,7 +598,7 @@ else:
         for name, flags in [('asan', ['-fsanitize=address,undefined', '-fno-sanitize-recover=undefined']), ('tsan', ['-fsanitize=thread'])]:
             exe = tmp / ('census-' + name)
             r = subprocess.run([CC, '-std=gnu11', '-O1', '-g', '-Wall', '-Wno-unused-function', '-Werror=implicit-function-declaration',
-                                '-I', str(app / 'Winios'), *flags, str(tmp / 'census.c'), '-o', str(exe), '-lpthread'])
+                                '-I', str(app / 'Winios'), '-I', str(root / 'build/steam-ui'), *flags, str(tmp / 'census.c'), '-o', str(exe), '-lpthread'])
             require(r.returncode == 0, f'census compiles ({name})')
             if r.returncode:
                 continue

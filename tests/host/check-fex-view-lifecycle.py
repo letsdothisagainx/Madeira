@@ -50,6 +50,7 @@ def run(label, code):
             print(result.stdout + result.stderr)
             raise AssertionError(f'{label}: exit {result.returncode}')
     print('PASS: ' + label)
+    return result
 
 
 common = r'''
@@ -96,6 +97,7 @@ for marker in ('static void ios_thread_reapers_init(void)',
                'static struct ios_thread_group *ios_thread_group_locked(void *owner)',
                'unsigned long long ios_thread_process_lease(void *owner, int create)',
                'unsigned long long ios_thread_process_quiescent_lease(void *owner)',
+               'unsigned long long ios_thread_process_snapshot(void *owner, unsigned *threads, int *exiting, int *reclaimed)',
                'static int ios_thread_count_add(void *owner, int delta)',
                'static unsigned ios_thread_retire_current(void)',
                'int ios_thread_process_exit_ready(void *owner)',
@@ -105,6 +107,13 @@ lease_code += r'''
 int main(void) {
     void *a = (void *)(uintptr_t)0x500310000, *b = (void *)(uintptr_t)0x600310000;
     void *unknown = (void *)(uintptr_t)0x700310000;
+    unsigned threads = 99;
+    int exiting = 99, reclaimed = 99;
+    assert(!ios_thread_process_snapshot(NULL, &threads, &exiting, &reclaimed));
+    assert(!threads && !exiting && !reclaimed);
+    threads = 99; exiting = reclaimed = 99;
+    assert(!ios_thread_process_snapshot(unknown, &threads, &exiting, &reclaimed));
+    assert(!threads && !exiting && !reclaimed);
     assert(!ios_thread_process_lease(NULL, 0));
     assert(!ios_thread_process_lease(NULL, 1));
     assert(!ios_thread_process_lease(unknown, 0));
@@ -113,23 +122,35 @@ int main(void) {
     unsigned long long first = ios_thread_process_lease(a, 1);
     unsigned long long sibling = ios_thread_process_lease(b, 1);
     assert(first && sibling && first != sibling);
+    assert(ios_thread_process_snapshot(a, &threads, &exiting, &reclaimed) == first);
+    assert(threads == 1 && !exiting && !reclaimed);
     assert(ios_thread_process_lease(a, 0) == first);
     assert(!ios_thread_process_quiescent_lease(a));
     assert(ios_thread_count_add(a, 1) == 2);
+    assert(ios_thread_process_snapshot(a, &threads, &exiting, &reclaimed) == first);
+    assert(threads == 2 && !exiting && !reclaimed);
     current.Peb = a;
     assert(!ios_thread_process_exit_ready(a));
+    assert(ios_thread_process_snapshot(a, &threads, &exiting, &reclaimed) == first);
+    assert(threads == 1 && exiting && !reclaimed);
     assert(!ios_thread_process_quiescent_lease(a)); /* another native Wine thread alive */
     assert(!ios_thread_process_lease(a, 1)); /* don't mint a new lease during shutdown */
     ios_retired_thread_owner = NULL; /* the owner's second native pthread */
     assert(ios_thread_process_exit_ready(a));
     assert(ios_thread_process_quiescent_lease(a) == first);
+    assert(ios_thread_process_snapshot(a, &threads, &exiting, &reclaimed) == first);
+    assert(!threads && exiting && reclaimed);
     assert(ios_thread_process_lease(b, 0) == sibling && !ios_thread_process_quiescent_lease(b));
     assert(!ios_thread_process_exit_ready(a)); /* idempotent completion; no count underflow */
     assert(ios_thread_process_quiescent_lease(a) == first);
     assert(ios_thread_process_forget(a));
     assert(!ios_thread_process_lease(a, 0) && !ios_thread_process_quiescent_lease(a));
+    assert(!ios_thread_process_snapshot(a, &threads, &exiting, &reclaimed));
+    assert(!threads && !exiting && !reclaimed);
     unsigned long long reused = ios_thread_process_lease(a, 1);
     assert(reused && reused != first); /* same PEB address, different process lifetime */
+    assert(ios_thread_process_snapshot(a, &threads, &exiting, &reclaimed) == reused);
+    assert(threads == 1 && !exiting && !reclaimed); /* current generation, never stale shutdown state */
     assert(!ios_thread_process_quiescent_lease(a));
     assert(ios_thread_process_lease(b, 0) == sibling);
     for (unsigned i = 0; i < ARRAY_SIZE(ios_thread_groups); ++i) {
@@ -138,6 +159,9 @@ int main(void) {
     }
     assert(!ios_thread_process_lease(unknown, 1)); /* full ownership registry fails closed */
     assert(!ios_thread_process_quiescent_lease(unknown));
+    threads = 99; exiting = reclaimed = 99;
+    assert(!ios_thread_process_snapshot(unknown, &threads, &exiting, &reclaimed));
+    assert(!threads && !exiting && !reclaimed);
     /* Zero count without a completed exiting/reclaimed lifecycle isn't proof. */
     ios_thread_groups[0].count = 0;
     ios_thread_groups[0].exiting = 0;
@@ -191,6 +215,7 @@ hold_callback ios_hold_release_lookup(void *owner) { return owner == a ? finish_
 for marker in ('static struct ios_thread_group *ios_thread_group_locked(void *owner)',
                'unsigned long long ios_thread_process_lease(void *owner, int create)',
                'unsigned long long ios_thread_process_quiescent_lease(void *owner)',
+               'unsigned long long ios_thread_process_snapshot(void *owner, unsigned *threads, int *exiting, int *reclaimed)',
                'static int ios_thread_count_add(void *owner, int delta)',
                'static void ios_thread_finish_fex(void)\n{',
                'static unsigned ios_thread_retire_current(void)',
@@ -220,13 +245,21 @@ int main(void) {
     assert(!pthread_create(&plain, NULL, plain_worker, NULL));
     assert(!pthread_join(plain, NULL));
     assert(!ios_thread_process_quiescent_lease(a)); /* held CPU callback still contributes a native thread */
+    unsigned native_threads = 99;
+    int exiting = 99, reclaimed = 99;
+    assert(ios_thread_process_snapshot(a, &native_threads, &exiting, &reclaimed) == lease);
+    assert(native_threads == 1 && exiting && !reclaimed);
     assert(ios_thread_process_lease(b, 0) == sibling && !ios_thread_process_quiescent_lease(b));
+    assert(ios_thread_process_snapshot(b, &native_threads, &exiting, &reclaimed) == sibling);
+    assert(native_threads == 1 && !exiting && !reclaimed);
     pthread_mutex_lock(&callback_mutex);
     callback_can_return = 1;
     pthread_cond_broadcast(&callback_cond);
     pthread_mutex_unlock(&callback_mutex);
     assert(!pthread_join(held, NULL));
     assert(ios_thread_process_quiescent_lease(a) == lease);
+    assert(ios_thread_process_snapshot(a, &native_threads, &exiting, &reclaimed) == lease);
+    assert(!native_threads && exiting && reclaimed);
     assert(callback_calls == 1);
     return 0;
 }
@@ -608,7 +641,33 @@ int main(void) {
     return 0;
 }
 '''
-run('Private pre-CRT FEX DATA exports, process-owned VAD splitting/reuse and quiescent reclamation preserve foreign/system/placeholder/quarantined mappings', vad_code)
+vad_result = run('Private pre-CRT FEX DATA exports, process-owned VAD splitting/reuse and quiescent reclamation preserve foreign/system/placeholder/quarantined mappings', vad_code)
+
+# The retirement diagnostics explicitly distinguish what was freed from the
+# protected residuals. Nonzero freed totals must never read as leaked views.
+retirements = []
+for line in vad_result.stderr.splitlines():
+    if '[fex-owner-v1] retired ' not in line:
+        continue
+    fields = dict(re.findall(r'([a-z-]+)=([^\s]+)', line))
+    retirements.append(fields)
+assert retirements
+first_retirement = retirements[0]
+expected_first = {
+    'before-views': 13, 'before-reserved': 0x2090000,
+    'freed-views': 3, 'freed-reserved': 0x1ff0000,
+    'freed-logical-committed': 0xff0000,
+    'remaining-views': 10, 'remaining-reserved': 0xa0000,
+    'remaining-reclaimable': 0, 'retained-unsafe': 10,
+}
+for key, value in expected_first.items():
+    assert int(first_retirement[key], 0) == value, (key, value, first_retirement)
+for fields in retirements:
+    assert int(fields['before-views'], 0) == int(fields['freed-views'], 0) + int(fields['remaining-views'], 0)
+    assert int(fields['before-reserved'], 0) == int(fields['freed-reserved'], 0) + int(fields['remaining-reserved'], 0)
+    assert int(fields['remaining-reclaimable'], 0) == 0
+assert any(int(fields['freed-views'], 0) >= 132 and int(fields['remaining-views'], 0) == 0 for fields in retirements)
+print('PASS retirement totals distinguish freed mappings from protected residuals; fully reclaimed helper generations report zero remaining views')
 
 # The shipped 64-bit CPU image is an AMD64 ARM64X hybrid, rather than carrying
 # the ARM64EC machine value. Keep this real image variant in the acceptance

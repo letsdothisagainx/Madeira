@@ -11,7 +11,8 @@ from pathlib import Path
 root = Path(__file__).resolve().parents[2]
 src = (root / 'build/ntdll-unix/signal_arm64_ios.c').read_text()
 header = root / 'build/ntdll-unix/fault_replay.h'
-helpers = src[src.index('#include "fault_replay.h"'):src.index('static int ios_mach_deliver_guest_exception_inner(', src.index('#include "fault_replay.h"'))]
+last_helper = src.index('static int ios_bound_fex_guest_fault(', src.index('#include "fault_replay.h"'))
+helpers = src[src.index('#include "fault_replay.h"'):src.index('\n}\n', last_helper) + 3]
 helpers = helpers.replace('#include "fault_replay.h"', '#include "'+str(header)+'"')
 harness = r'''
 #include <assert.h>

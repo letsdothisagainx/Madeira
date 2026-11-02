@@ -4658,7 +4658,8 @@ void ios_resolve_fex_exports( void )
  * FEX context and its own CodeInvalidationMutex. Using one global callback
  * would release against the wrong context. */
 #define IOS_HOLD_RELEASE_MAX 32
-static struct { void *peb; unsigned int (*cb)(void *, unsigned long long *, unsigned int *, unsigned int *); }
+static struct { void *peb; unsigned int (*cb)(void *, unsigned long long *, unsigned int *, unsigned int *);
+    unsigned native_wow; unsigned long long lease; }
     ios_hold_release[IOS_HOLD_RELEASE_MAX];
 static int ios_hold_release_n;
 static pthread_mutex_t ios_hold_release_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -4680,7 +4681,8 @@ static void ios_hold_release_drop(void *owner)
     pthread_mutex_lock(&ios_hold_release_lock);
     for (i = 0; i < ios_hold_release_n; i++)
         if (ios_hold_release[i].peb == owner)
-        { ios_hold_release[i].cb = NULL; ios_hold_release[i].peb = NULL; }
+        { ios_hold_release[i].cb = NULL; ios_hold_release[i].peb = NULL;
+          ios_hold_release[i].native_wow = 0; ios_hold_release[i].lease = 0; }
     pthread_mutex_unlock(&ios_hold_release_lock);
 }
 
@@ -4692,7 +4694,7 @@ struct ios_register_hold_release_args
     void *callback;
 };
 
-NTSTATUS unixcall_ios_register_hold_release(void *args)
+static NTSTATUS ios_register_hold_release_kind(void *args, unsigned long long wow_lease)
 {
     struct ios_register_hold_release_args *p = args;
     int i, free_slot = -1;
@@ -4710,6 +4712,8 @@ NTSTATUS unixcall_ios_register_hold_release(void *args)
         if (ios_hold_release[i].peb == p->peb)
         {
             ios_hold_release[i].cb = p->callback;
+            ios_hold_release[i].native_wow = wow_lease != 0;
+            ios_hold_release[i].lease = wow_lease;
             pthread_mutex_unlock(&ios_hold_release_lock);
             dprintf(2, "[hold-release] ml618 re-registered peb=%p cb=%p slot=%d\n", p->peb, p->callback, i);
             return STATUS_SUCCESS;
@@ -4726,10 +4730,37 @@ NTSTATUS unixcall_ios_register_hold_release(void *args)
     i = free_slot < 0 ? ios_hold_release_n++ : free_slot;
     ios_hold_release[i].peb = p->peb;
     ios_hold_release[i].cb  = p->callback;
+    ios_hold_release[i].native_wow = wow_lease != 0;
+    ios_hold_release[i].lease = wow_lease;
     pthread_mutex_unlock(&ios_hold_release_lock);
     dprintf(2, "[hold-release] ml618 registered peb=%p cb=%p (%d live)\n",
             p->peb, p->callback, ios_hold_release_n);
     return STATUS_SUCCESS;
+}
+
+NTSTATUS unixcall_ios_register_hold_release(void *args)
+{
+    return ios_register_hold_release_kind(args,0); /* established EC protocol */
+}
+
+/* A Mach census may observe metadata, never wait for a registry writer or
+ * invoke another thread's CPU callback. Busy means unknown, not permission. */
+int ios_hold_release_wow_owner(void *owner, unsigned long long *lease)
+{
+    int i, result = -1;
+    if (lease) *lease = 0;
+    if (!owner) return -1;
+    if (pthread_mutex_trylock(&ios_hold_release_lock)) return -1;
+    for (i = 0; i < ios_hold_release_n; i++)
+        if (ios_hold_release[i].peb == owner && ios_hold_release[i].cb)
+        {
+            if (!ios_hold_release[i].native_wow) result = 0; /* positively registered EC */
+            else if (ios_hold_release[i].lease)
+            { if (lease) *lease = ios_hold_release[i].lease; result = 1; }
+            break;
+        }
+    pthread_mutex_unlock(&ios_hold_release_lock);
+    return result;
 }
 
 /* A child pseudo-process's emulator must know the child's OWN ntdll copy.
@@ -13438,6 +13469,7 @@ static int get_unix_prot( BYTE vprot )
  *           dump_view
  */
 #ifdef WINE_IOS
+extern unsigned long long ios_thread_process_snapshot(void *, unsigned *, int *, int *);
 /* Called with virtual_mutex held, only after a constrained FEX allocation
  * fails. Count live views, rather than ALLOC/COMMIT events (which count the
  * same span repeatedly). Read only Wine's native protection bookkeeping;
@@ -13445,11 +13477,19 @@ static int get_unix_prot( BYTE vprot )
 static void ios_fex_arena_census( void *start, void *end, size_t request, size_t align_mask )
 {
     struct fex_va_bucket { size_t size, bytes, committed; unsigned flags, views; } buckets[32] = {{0}};
+    struct fex_owner_bucket {
+        void *owner; unsigned long long lease;
+        ULONG_PTR first, last;
+        size_t bytes, committed;
+        unsigned views, categories[7];
+    } owners[16] = {{0}};
     struct file_view *view;
     ULONG_PTR lo = ios_fex_arena_base_unix, hi = ios_fex_arena_end_unix, cursor;
     size_t covered = 0, committed = 0, overlap = 0, biggest = 0, aligned_biggest = 0;
     size_t other_bytes = 0, other_committed = 0;
     unsigned nviews = 0, holes = 0, used = 0, other_views = 0, i, j;
+    unsigned owner_used = 0, owner_overflow_views = 0;
+    size_t owner_overflow_bytes = 0;
     static unsigned printed;
 
     int legacy = (ULONG_PTR)start == 0xc00000000ULL && (ULONG_PTR)end == 0xf00000000ULL;
@@ -13496,6 +13536,25 @@ static void ios_fex_arena_census( void *start, void *end, size_t request, size_t
             }
             p += bytes;
         }
+        for (i = 0; i < owner_used; i++)
+            if (owners[i].owner == view->ios_fex_owner && owners[i].lease == view->ios_fex_lease) break;
+        if (i == owner_used && owner_used < ARRAY_SIZE(owners))
+        {
+            owners[i].owner = view->ios_fex_owner; owners[i].lease = view->ios_fex_lease;
+            owners[i].first = b; owner_used++;
+        }
+        if (i < owner_used)
+        {
+            unsigned category = 6;
+            if (view->size == 0x1000000) category = (view->protect & VPROT_COMMITTED) ? 1 : 0;
+            else if (view->size == 0x802000) category = 2;
+            else if (view->size == 0x200000) category = 3;
+            else if (view->size == 0x900000) category = 4;
+            else if (view->size == 0x800000) category = 5;
+            owners[i].views++; owners[i].bytes += e-b; owners[i].committed += vc;
+            owners[i].last = e; owners[i].categories[category]++;
+        }
+        else { owner_overflow_views++; owner_overflow_bytes += e-b; }
         for (i = 0; i < used; i++)
             if (buckets[i].size == view->size && buckets[i].flags == view->protect) break;
         if (i == used && used < ARRAY_SIZE(buckets))
@@ -13550,6 +13609,31 @@ static void ios_fex_arena_census( void *start, void *end, size_t request, size_t
     if (other_views)
         dprintf( 2, "[fex-va] other_sizes views=%u reserved=0x%llx committed=0x%llx\n",
                  other_views, (unsigned long long)other_bytes, (unsigned long long)other_committed );
+    /* The tree is authoritative for live reservations. Thread state is a
+     * metadata snapshot, not permission to reclaim a dying process here.
+     * Size classes identify VAD shapes; no heap payload or guessed name is read. */
+    for (i = 0; i < owner_used; i++)
+    {
+        unsigned threads;
+        int exiting, reclaimed;
+        unsigned long long current = ios_thread_process_snapshot(owners[i].owner,&threads,&exiting,&reclaimed);
+        const char *state = !owners[i].owner ? "unowned" : !current ? "unknown-lease" :
+            current != owners[i].lease ? "stale-lease" : !exiting ? "active" : threads ? "retiring-live" :
+            reclaimed ? "quiescent-pending-reap" : "retiring-not-ready";
+        dprintf(2,"[fex-owner-census-v2] reason=first-allocation-failure owner=%p lease=%llu current-lease=%llu "
+                  "state=%s native-threads=%u exiting=%u cleanup-ready=%u live-views=%u live-reserved=0x%llx "
+                  "live-logical-committed=0x%llx extent=%p..%p "
+                  "size-classes(res16,commit16,802000,200000,900000,800000,other)=%u,%u,%u,%u,%u,%u,%u "
+                  "(allocation flags; virtual bytes, not physical residency)\n",
+                owners[i].owner,owners[i].lease,current,state,threads,exiting,reclaimed,owners[i].views,
+                (unsigned long long)owners[i].bytes,(unsigned long long)owners[i].committed,
+                (void *)owners[i].first,(void *)owners[i].last,
+                owners[i].categories[0],owners[i].categories[1],owners[i].categories[2],owners[i].categories[3],
+                owners[i].categories[4],owners[i].categories[5],owners[i].categories[6]);
+    }
+    if (owner_overflow_views)
+        dprintf(2,"[fex-owner-census-v2] owner-table-overflow live-views=%u live-reserved=0x%llx\n",
+                owner_overflow_views,(unsigned long long)owner_overflow_bytes);
 }
 
 /* madeira-bcd: how close the FEX arena is to full while things still work.
@@ -14890,6 +14974,78 @@ static NTSTATUS create_view( struct file_view **view_ret, void *base, size_t siz
 
 #ifdef WINE_IOS
 #include "fex_view_ownership.h"
+#include "fex_hold_release_abi.h"
+
+/* A distinct private operation for the native ARM64 WoW CPU producer. It
+ * admits only that owner's exact release export after PE->RX translation;
+ * no guest function or unredirected ARM64EC entry thunk can be installed. */
+NTSTATUS ios_fex_register_wow_hold_release(const void *info, SIZE_T size)
+{
+    struct madeira_fex_hold_registration input;
+    struct ios_register_hold_release_args registration;
+    void *owner = ios_jit_current_peb(), *image = NULL;
+    unsigned long long lease;
+    unsigned i;
+    int mapping, selected = -1, fallback = -1;
+    NTSTATUS status = STATUS_INVALID_PARAMETER;
+    const char *why = "unregistered-owner";
+    sigset_t sigset;
+    static unsigned reports;
+    if (size != sizeof(input)) return STATUS_INFO_LENGTH_MISMATCH;
+    if (!info || !ios_safe_read((uintptr_t)info,&input,sizeof(input))) return STATUS_ACCESS_VIOLATION;
+    if (input.size != sizeof(input) || input.version != MADEIRA_FEX_HOLD_REGISTER_VERSION ||
+        !input.peb || !input.callback || input.peb != owner) return STATUS_INVALID_PARAMETER;
+    server_enter_uninterrupted_section(&virtual_mutex,&sigset);
+    lease = ios_thread_process_lease(owner,0);
+    if (!lease || ios_thread_process_quiescent_lease(owner) == lease) goto done;
+    for (i = 0; i < IOS_FEX_OWNERS; i++)
+        if (ios_fex_owners[i].owner == owner && ios_fex_owners[i].lease == lease)
+        { image = ios_fex_owners[i].image; break; }
+    if (!image) goto done;
+    why = "cpu-image-or-rx-export";
+    /* A retained predecessor can share pe_base with a new process copy.
+     * Match translation's owner preference, but never its permissive foreign
+     * fallback: registration gives native code access to this CPU context. */
+    for (mapping = 0; mapping < ios_jit_mapping_count; mapping++)
+    {
+        if (!ios_jit_mappings[mapping].size || ios_jit_mappings[mapping].unmapped ||
+            ios_jit_mappings[mapping].pe_base != image) continue;
+        if (ios_jit_mappings[mapping].owner_peb == owner) { selected = mapping; break; }
+        if (!ios_jit_mappings[mapping].owner_peb && ios_jit_mappings[mapping].map_peb == owner && fallback < 0)
+            fallback = mapping;
+    }
+    mapping = selected >= 0 ? selected : fallback;
+    if (mapping >= 0)
+    {
+        void *entry;
+        uintptr_t rva, callback = (uintptr_t)input.callback, rx = (uintptr_t)ios_jit_rx_base_global;
+        unsigned current = 0, maximum = 0;
+        size_t image_size = ios_jit_mappings[mapping].size;
+        const char *module_name = ios_pe_module_name(image,image_size);
+        if (ios_jit_mapping_machine(mapping) != IMAGE_FILE_MACHINE_ARM64 ||
+            !module_name || strcasecmp(module_name,"libwow64fex.dll")) goto done;
+        /* This is the already validated private CPU image, while its owner
+         * and VM mapping remain live. The producer registers before guest code. */
+        entry = ios_pe_find_export(image,"MadeiraBTCpuIosReleaseThreadHolds");
+        rva = (uintptr_t)entry - (uintptr_t)image;
+        if (!entry || (rva & 3) || rva >= image_size || image_size-rva < 4 ||
+            !ios_img_off_is_exec(image,image_size,rva) ||
+            callback != (uintptr_t)ios_jit_mappings[mapping].jit_base+rva ||
+            !rx || callback < rx || callback-rx >= ios_jit_pool_size_global ||
+            ios_jit_pool_size_global-(callback-rx) < 4 ||
+            !ios_pool_range_execable(callback-rx,4,&current,&maximum) ||
+            (current & 7) != (VM_PROT_READ | VM_PROT_EXECUTE)) goto done;
+        registration = (struct ios_register_hold_release_args){sizeof(registration),1,owner,input.callback};
+        status = ios_register_hold_release_kind(&registration,lease);
+        why = status ? "callback-table" : "validated-native-wow-export";
+    }
+done:
+    server_leave_uninterrupted_section(&virtual_mutex,&sigset);
+    if (__atomic_fetch_add(&reports,1,__ATOMIC_RELAXED) < 32)
+        dprintf(2,"[hold-release-v2] owner=%p lease=%llu callback=%p status=%08x reason=%s validated-native-wow=%u\n",
+                owner,lease,input.callback,(unsigned)status,why,!status);
+    return status;
+}
 /***********************************************************************
  *           ios_jit_purge_window
  *

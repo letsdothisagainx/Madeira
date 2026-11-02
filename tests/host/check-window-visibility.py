@@ -36,7 +36,7 @@ refresh = function(driver, "static void winios_drv_refresh_children(")
 predicate = function(wine, "BOOL is_window_visible( HWND hwnd )")
 
 # A late GDI flush or swapchain must not make a new layer visible by default.
-layer = function(app, "static CALayer *winios_layer_for(HWND hwnd, bool create) {")
+layer = function(app, "static CALayer *winios_layer_for(HWND hwnd, bool create, struct madeira_window_ticket ticket) {")
 assert layer.index("l.hidden = YES;") < layer.index("[g_compositor_view.layer addSublayer:l];")
 present = function(app, "int winios_surface_present(")
 assert "l.hidden = NO" not in present

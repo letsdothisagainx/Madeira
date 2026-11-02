@@ -868,6 +868,15 @@ int winios_ui_progress_snapshot(uint32_t pid,uint32_t tid,struct madeira_ui_prog
     return madeira_ui_progress_read(steam_ui_progress,pid,tid,out);
 }
 
+/* Wine-thread identity only, no server/window query. Native UIKit does not
+ * call this from the server birth/death bridge. */
+void winios_drv_native_ids(uint32_t *pid,uint32_t *tid)
+{
+    TEB *teb=NtCurrentTeb();
+    *pid=teb?(uint32_t)(ULONG_PTR)teb->ClientId.UniqueProcess:0;
+    *tid=teb?(uint32_t)(ULONG_PTR)teb->ClientId.UniqueThread:0;
+}
+
 /* pProcessEvents: runs on every message poll of a wine thread (message_ios.c
  * process_driver_events), so a window's own thread gets here right after it
  * was shown. */

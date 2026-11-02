@@ -10,7 +10,7 @@ function = source[start:end]
 app = (root / "app/Madeira/Winios/Winios.m").read_text()
 start = app.index("static void winios_request_game_size(")
 request = app[start:app.index("\n}", start) + 2]
-assert "winios_request_game_size(hwnd, cw, ch);" in app
+assert "winios_request_game_size(hwnd, cw, ch, ticket);" in app
 harness = r"""
 #include <assert.h>
 #include <stdint.h>
@@ -21,7 +21,12 @@ harness = r"""
 static _Atomic(uintptr_t) g_size_game_hwnd;
 static int winios_swapchain_hwnd(void *h) { return h == (void *)1; }
 static void winios_screen_size(int *w, int *h) { *w = 1280; *h = 720; }
+#include <pthread.h>
+#include "window_lifetime.h"
+static struct madeira_window_registry g_window_lifetimes;
+static pthread_mutex_t g_window_lifetime_lock=PTHREAD_MUTEX_INITIALIZER;
 REQUEST
+#define winios_request_game_size(h,w,v) winios_request_game_size(h,w,v,madeira_window_capture(&g_window_lifetimes,(uintptr_t)(h)))
 typedef void *HWND;
 typedef int BOOL;
 #define TRUE 1
@@ -75,5 +80,5 @@ int main(void) {
 """.replace("FUNCTION", function).replace("REQUEST", request)
 with tempfile.TemporaryDirectory() as folder:
  path=Path(folder); (path/"test.c").write_text(harness)
- subprocess.run(["cc","-std=c11","-D_POSIX_C_SOURCE=200809L",str(path/"test.c"),"-o",str(path/"test")],check=True)
+ subprocess.run(["cc","-std=c11","-D_POSIX_C_SOURCE=200809L","-pthread","-I"+str(root/"build/steam-ui"),str(path/"test.c"),"-o",str(path/"test")],check=True)
  subprocess.run([str(path/"test")],check=True)

@@ -95,7 +95,7 @@ require(before(raise_fn, 'ios_note_guest_delivery( (uint64_t)pthread_mach_thread
                'send_debug_event( rec, context, TRUE, TRUE );'),
         'setup_raise_exception restarts the count of the thread it raises on')
 require(deliver_fn.count('ios_note_guest_delivery(') == 1
-        and '*state = mc.__ss;\n    ios_note_guest_delivery( (uint64_t)thread );' in deliver_fn
+        and deliver_fn.rindex('*state = mc.__ss;') < deliver_fn.index('ios_note_guest_delivery(')
         and before(deliver_fn, 'mach_vm_write( mach_task_self()', 'ios_note_guest_delivery('),
         'the Mach-path delivery restarts the count only once the dispatch frame is written')
 require(src.count('ios_note_guest_delivery(') == 3, 'two delivery points, and no other caller')

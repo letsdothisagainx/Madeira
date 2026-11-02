@@ -1,0 +1,258 @@
+--- a/Source/Windows/WOW64/Module.cpp
++++ b/Source/Windows/WOW64/Module.cpp
+@@ -63,6 +63,9 @@
+ #include <wine/unixlib.h>
+ 
+ #include "IosTeb.h"
++#ifdef FEX_IOS_HOST
++#include "fex_hold_release_abi.h"
++#endif
+ 
+ using FEX::Windows::WOW64::CurrentTEB;
+ 
+@@ -349,6 +352,9 @@
+ } // namespace BridgeInstrs
+ 
+ fextl::unique_ptr<FEXCore::Context::Context> CTX;
++#ifdef FEX_IOS_HOST
++static void* MadeiraContextOwnerPEB {};
++#endif
+ fextl::unique_ptr<FEX::DummyHandlers::DummySignalDelegator> SignalDelegator;
+ fextl::unique_ptr<WowSyscallHandler> SyscallHandler;
+ fextl::unique_ptr<FEX::Windows::StatAlloc> StatAllocHandler;
+@@ -1086,6 +1092,84 @@
+ }
+ #endif
+ 
++
++#ifdef FEX_IOS_HOST
++/* Native ARM64 only. Called by this same dying Wine thread, or at the
++ * no-return allocation-failure boundary. Never release a suspended foreign
++ * thread's locks or release locks before a resumable exception dispatch. */
++extern "C" __declspec(dllexport) uint32_t MadeiraBTCpuIosReleaseThreadHolds(
++    void* TebPtr, uint64_t* OutStamp, uint32_t* OutDepth, uint32_t* OutFlags) {
++  if (OutStamp) *OutStamp = 0;
++  if (OutDepth) *OutDepth = 0;
++  if (OutFlags) *OutFlags = 0;
++  if (!TebPtr) return MADEIRA_FEX_HOLD_RELEASE_SELFTEST;
++  auto* Teb = CurrentTEB();
++  if (TebPtr != Teb) return MADEIRA_FEX_HOLD_RELEASE_FOREIGN_THREAD;
++  if (!MadeiraContextOwnerPEB || reinterpret_cast<__TEB*>(Teb)->Peb != MadeiraContextOwnerPEB)
++    return MADEIRA_FEX_HOLD_RELEASE_FOREIGN_PROCESS;
++  if (!CTX) return MADEIRA_FEX_HOLD_RELEASE_NO_CONTEXT;
++  auto* Thread = TLS {Teb}.ThreadStateIfInitialised();
++  if (!Thread || Thread->CTX != CTX.get()) return MADEIRA_FEX_HOLD_RELEASE_NO_CONTEXT;
++  auto* Depth = reinterpret_cast<volatile uint32_t*>(reinterpret_cast<uintptr_t>(Teb) + 0x16f0);
++  auto* Stamp = reinterpret_cast<volatile uint64_t*>(reinterpret_cast<uintptr_t>(Teb) + 0x16f8);
++  const auto DepthVal = *Depth;
++  const auto StampVal = *Stamp;
++  if (OutStamp) *OutStamp = StampVal;
++  if (OutDepth) *OutDepth = DepthVal;
++  const bool Exclusive = Thread->FrontendPtr && GetFrontendThreadData(Thread)->InLockedRWXRead;
++  if (OutFlags) *OutFlags = Exclusive ? 1u : 0u;
++  // ReadFile's exclusive pair needs its own After path; it is not a shared
++  // hold and this callback must not guess how to unlock it.
++  if (Exclusive) return MADEIRA_FEX_HOLD_RELEASE_INVALID_DEPTH;
++  if (!StampVal && !DepthVal) return 0;
++  auto& Mutex = CTX->GetCodeInvalidationMutex();
++  if (StampVal != Mutex.IosStampAddress()) return MADEIRA_FEX_HOLD_RELEASE_FOREIGN_STAMP;
++  // TEB depth aggregates all WPM locks. For nested holds require a complete
++  // matching record in THIS mutex's existing ring; missing/mixed records
++  // fail closed, including depth one with a stale stamp or missing record.
++  if (!DepthVal || DepthVal > 16 || Mutex.MadeiraSharedHoldsForTEB(reinterpret_cast<uint64_t>(Teb)) != DepthVal)
++    return MADEIRA_FEX_HOLD_RELEASE_INVALID_DEPTH;
++  for (uint32_t i = 0; i < DepthVal; i++) Mutex.unlock_shared();
++  return MADEIRA_FEX_HOLD_RELEASE_SHARED;
++}
++
++static void MadeiraReleaseOwnThreadHolds(const char* Stage) {
++  uint64_t Stamp = 0;
++  uint32_t Depth = 0, Flags = 0;
++  const auto Result = MadeiraBTCpuIosReleaseThreadHolds(CurrentTEB(), &Stamp, &Depth, &Flags);
++  static std::atomic<unsigned> Reports {};
++  if ((Stamp || Depth || Flags) && Reports.fetch_add(1, std::memory_order_relaxed) < 32)
++    IosRawReport("E [fex-hold-release-v1] stage={} result={:#x} stamp={:#x} depth={} flags={:#x} self=1",
++                 Stage, Result, Stamp, Depth, Flags);
++}
++
++extern "C" void MadeiraFEXReleaseCurrentThreadHoldsForFatalAllocation() {
++  // ReportAllocationFailure cannot return into the interrupted C++ scopes.
++  // Releasing here keeps the original fatal assertion and avoids leaving a
++  // dead reader when Wine subsequently ends this process's native threads.
++  MadeiraReleaseOwnThreadHolds("fatal-allocation");
++}
++
++static void MadeiraRegisterOwnHoldRelease() {
++  void* Alias = nullptr;
++  auto Status = NtQueryVirtualMemory(GetCurrentProcess(), reinterpret_cast<void*>(&MadeiraBTCpuIosReleaseThreadHolds),
++      static_cast<MEMORY_INFORMATION_CLASS>(MADEIRA_FEX_JIT_POOL_ADDRESS_CLASS), &Alias, sizeof(Alias), nullptr);
++  if (!Status && Alias) {
++    using Callback = uint32_t (*)(void*, uint64_t*, uint32_t*, uint32_t*);
++    if (reinterpret_cast<Callback>(Alias)(nullptr, nullptr, nullptr, nullptr) != MADEIRA_FEX_HOLD_RELEASE_SELFTEST)
++      Status = STATUS_INVALID_PARAMETER;
++    else {
++      const madeira_fex_hold_registration Registration {sizeof(madeira_fex_hold_registration),
++          MADEIRA_FEX_HOLD_REGISTER_VERSION, MadeiraContextOwnerPEB, Alias};
++      Status = NtSetInformationProcess(GetCurrentProcess(), static_cast<PROCESSINFOCLASS>(MADEIRA_FEX_HOLD_REGISTER_CLASS),
++          const_cast<madeira_fex_hold_registration*>(&Registration), sizeof(Registration));
++    }
++  } else if (!Status) Status = STATUS_INVALID_PARAMETER;
++  IosRawReport("E [fex-hold-release-v1] register-native-wow owner={} callback={} status={:#x}",
++               MadeiraContextOwnerPEB, Alias, static_cast<uint32_t>(Status));
++}
++#endif
++
+ void BTCpuProcessInit() {
+   FEX::Windows::InitCRTProcess();
+ 
+@@ -1261,6 +1345,10 @@
+     auto HostFeatures = FEX::Windows::CPUFeatures::FetchHostFeatures(IsWine, FEXCore::HostFeatures::HostTypeEnum::Wow64);
+     CTX = FEXCore::Context::Context::CreateNewContext(HostFeatures);
+   }
++#ifdef FEX_IOS_HOST
++  MadeiraContextOwnerPEB = reinterpret_cast<__TEB*>(CurrentTEB())->Peb;
++  MadeiraRegisterOwnHoldRelease();
++#endif
+ 
+   CTX->SetSignalDelegator(SignalDelegator.get());
+   CTX->SetSyscallHandler(SyscallHandler.get());
+@@ -1615,6 +1703,9 @@
+     return;
+   }
+ 
++#ifdef FEX_IOS_HOST
++  if (Self) MadeiraReleaseOwnThreadHolds("thread-term");
++#endif
+   MadeiraRetireThread(TLS, static_cast<DWORD>(ThreadTID), Self);
+ }
+ 
+--- a/FEXCore/include/FEXCore/Utils/WritePriorityMutex.h
++++ b/FEXCore/include/FEXCore/Utils/WritePriorityMutex.h
+@@ -21,6 +21,10 @@
+ #include <FEXCore/Utils/LogManager.h>
+ 
+ #include <FEXCore/Utils/SpinWaitLock.h>
++
++#if defined(FEX_IOS_HOST) && defined(_WIN32) && !defined(ARCHITECTURE_arm64ec)
++extern "C" uint32_t IosTebTsdOffset;
++#endif
+ 
+ namespace FEXCore::Utils::WritePriorityMutex {
+ 
+@@ -363,6 +367,20 @@
+   uint64_t IosStampAddress() const {
+     return reinterpret_cast<uint64_t>(&Futex);
+   }
++
++#if defined(FEX_IOS_HOST) && defined(_WIN32) && !defined(ARCHITECTURE_arm64ec)
++  // Diagnostic ownership proof only; no new mutex fields or altered ABI.
++  uint32_t MadeiraSharedHoldsForTEB(uint64_t Teb) {
++    if (!Teb) return 0;
++    const auto Tid = *reinterpret_cast<const uint32_t*>(Teb + 0x48);
++    if (!Tid) return 0;
++    uint32_t Count = 0;
++    for (size_t i = 0; i < 16; i++)
++      Count += std::atomic_ref<uint64_t>(ReadHolderTeb[i]).load(std::memory_order_acquire) == Teb &&
++               std::atomic_ref<uint32_t>(ReadHolderTid[i]).load(std::memory_order_acquire) == Tid;
++    return Count;
++  }
++#endif
+ 
+ private:
+ 
+@@ -434,7 +452,12 @@
+     if (HolderDumps.fetch_add(1, std::memory_order_relaxed) < 12) {
+       for (size_t i = 0; i < 16; i++) {
+         if (ReadHolderTeb[i]) {
+-          LogMan::Msg::EFmt("[fexlock]   read-holder[{}] teb={:x} tid={:04x}", i, ReadHolderTeb[i], ReadHolderTid[i]);
++#if defined(FEX_IOS_HOST) && !defined(ARCHITECTURE_arm64ec)
++          const auto HolderTid = std::atomic_ref<uint32_t>(ReadHolderTid[i]).load(std::memory_order_acquire);
++#else
++          const auto HolderTid = ReadHolderTid[i];
++#endif
++          LogMan::Msg::EFmt("[fexlock]   read-holder[{}] teb={:x} tid={:04x}", i, ReadHolderTeb[i], HolderTid);
+         }
+       }
+     }
+@@ -715,6 +738,15 @@
+ 
+   static uint64_t IosSelfTeb() {
+     uint64_t Teb = 0;
++#if defined(FEX_IOS_HOST) && !defined(ARCHITECTURE_arm64ec)
++    // iOS can clear x18 during a host call. Match Module.cpp's stable TSD
++    // source so release decrements the same thread's depth and stamp.
++    uintptr_t Tsd;
++    __asm volatile("mrs %0, TPIDRRO_EL0" : "=r"(Tsd));
++    Tsd &= ~uintptr_t(7);
++    if (::IosTebTsdOffset) Teb = *reinterpret_cast<uint64_t*>(Tsd + ::IosTebTsdOffset);
++    if (Teb) return Teb;
++#endif
+ #ifdef ARCHITECTURE_arm64
+     __asm volatile("mov %0, x18" : "=r"(Teb));
+ #endif
+@@ -736,7 +768,11 @@
+     for (size_t i = 0; i < 16; i++) {
+       uint64_t ExpectedSlot = 0;
+       if (std::atomic_ref<uint64_t>(ReadHolderTeb[i]).compare_exchange_strong(ExpectedSlot, Teb, std::memory_order_acq_rel)) {
++#if defined(FEX_IOS_HOST) && !defined(ARCHITECTURE_arm64ec)
++        std::atomic_ref<uint32_t>(ReadHolderTid[i]).store(*reinterpret_cast<uint32_t*>(Teb + 0x48), std::memory_order_release);
++#else
+         ReadHolderTid[i] = *reinterpret_cast<uint32_t*>(Teb + 0x48);
++#endif
+         return;
+       }
+     }
+@@ -752,8 +788,18 @@
+       *reinterpret_cast<uint64_t*>(Teb + 0x16f8) = 0;
+     }
+     for (size_t i = 0; i < 16; i++) {
+-      if (std::atomic_ref<uint64_t>(ReadHolderTeb[i]).load(std::memory_order_relaxed) == Teb) {
++      if (std::atomic_ref<uint64_t>(ReadHolderTeb[i]).load(std::memory_order_relaxed) == Teb
++#if defined(FEX_IOS_HOST) && !defined(ARCHITECTURE_arm64ec)
++          // A retired thread may leave an unprovable hold behind. Reusing its
++          // TEB address must not clear that incarnation's record instead of ours.
++          && std::atomic_ref<uint32_t>(ReadHolderTid[i]).load(std::memory_order_acquire) == *reinterpret_cast<const uint32_t*>(Teb + 0x48)
++#endif
++          ) {
++#if defined(FEX_IOS_HOST) && !defined(ARCHITECTURE_arm64ec)
++        std::atomic_ref<uint32_t>(ReadHolderTid[i]).store(0, std::memory_order_release);
++#else
+         ReadHolderTid[i] = 0;
++#endif
+         std::atomic_ref<uint64_t>(ReadHolderTeb[i]).store(0, std::memory_order_release);
+         return;
+       }
+--- a/FEXCore/Source/Utils/Allocator.cpp
++++ b/FEXCore/Source/Utils/Allocator.cpp
+@@ -386,6 +386,10 @@
+ extern uintptr_t ios_fex_band_base;
+ extern uintptr_t ios_fex_band_end;
+ }
++#endif
++
++#if defined(FEX_IOS_HOST) && defined(_WIN32) && !defined(ARCHITECTURE_arm64ec)
++extern "C" void MadeiraFEXReleaseCurrentThreadHoldsForFatalAllocation();
+ #endif
+ 
+ namespace fextl {
+@@ -438,6 +442,9 @@
+       "written through\n");
+   Buf[i] = 0;
+ 
++#if defined(FEX_IOS_HOST) && defined(_WIN32) && !defined(ARCHITECTURE_arm64ec)
++  MadeiraFEXReleaseCurrentThreadHoldsForFatalAllocation();
++#endif
+   LogMan::Msg::EFmt("{}", Buf);
+   FEX_TRAP_EXECUTION;
+   __builtin_unreachable();
+--- a/Source/Windows/WOW64/CMakeLists.txt
++++ b/Source/Windows/WOW64/CMakeLists.txt
+@@ -33,6 +33,8 @@
+ # already makes. Unlike ARM64EC, this is NOT working around an EC-mangling linker crash, so the
+ # upstream link line is kept verbatim for every non-iOS build.
+ if (FEX_IOS_HOST_BUILD)
++  # Madeira-owned private ABI; do not generate or commit a copy inside FEX.
++  target_include_directories(wow64fex PRIVATE "${CMAKE_SOURCE_DIR}/../build/ntdll-unix")
+   target_link_options(wow64fex PRIVATE -static)
+ else()
+   target_link_options(wow64fex PRIVATE -static -nostdlib -nostartfiles -nodefaultlibs -lc++ -lc++abi -lunwind)

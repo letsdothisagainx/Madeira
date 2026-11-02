@@ -20,6 +20,9 @@ FILES = ('Source/Windows/WOW64/Module.cpp', 'FEXCore/include/FEXCore/Utils/Alloc
          'FEXCore/Source/Interface/Core/LookupCache.cpp',
          'FEXCore/Source/Interface/Core/LookupCache.h',
          'FEXCore/Source/Interface/Context/Context.h',
+         'FEXCore/include/FEXCore/Utils/WritePriorityMutex.h',
+         'FEXCore/Source/Utils/Allocator.cpp',
+         'Source/Windows/WOW64/CMakeLists.txt',
          'Source/Windows/WOW64/libwow64fex.def')
 PATCH = ROOT / 'build/fex-compat/thread-init.patch'
 
@@ -38,7 +41,7 @@ def stage(destination, source):
     memory_patch = ROOT / 'build/fex-compat/guest-write.patch'
     subprocess.run(['git', '-C', str(destination), 'apply', '--check', str(memory_patch)], check=True)
     subprocess.run(['git', '-C', str(destination), 'apply', str(memory_patch)], check=True)
-    for name in ('compiler-startup.patch', 'arena-exports.patch'):
+    for name in ('compiler-startup.patch', 'arena-exports.patch', 'lookup-blocklist.patch', 'hold-release.patch'):
         patch = ROOT / 'build/fex-compat' / name
         subprocess.run(['git', '-C', str(destination), 'apply', '--check', str(patch)], check=True)
         subprocess.run(['git', '-C', str(destination), 'apply', str(patch)], check=True)

@@ -65,6 +65,7 @@
 #include <setjmp.h>
 #include <stdint.h>
 #include "steam_cef_policy.h"
+#include "fex_hold_release_abi.h"
 #include <sys/stat.h>
 #endif
 
@@ -4299,6 +4300,14 @@ NTSTATUS WINAPI NtSetInformationProcess( HANDLE handle, PROCESSINFOCLASS class, 
 
     switch (class)
     {
+#ifdef WINE_IOS
+    case (PROCESSINFOCLASS)MADEIRA_FEX_HOLD_REGISTER_CLASS:
+    {
+        extern NTSTATUS ios_fex_register_wow_hold_release(const void *, SIZE_T);
+        if (handle != NtCurrentProcess()) return STATUS_INVALID_HANDLE;
+        return ios_fex_register_wow_hold_release(info,size);
+    }
+#endif
     case ProcessAccessToken:
     {
         const PROCESS_ACCESS_TOKEN *token = info;

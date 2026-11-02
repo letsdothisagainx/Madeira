@@ -126,7 +126,9 @@ void ios_fex_reclaim_process_views(void *owner)
     unsigned long long lease = ios_thread_process_quiescent_lease(owner);
     struct file_view *batch[128], *view;
     size_t bytes = 0, committed = 0;
+    size_t remaining_bytes = 0;
     unsigned count = 0, n, i;
+    unsigned remaining = 0, retained_unsafe = 0;
     sigset_t sigset;
     static unsigned reports;
     if (!owner || !lease) return; /* unknown, live, non-exiting or incomplete cleanup */
@@ -156,6 +158,14 @@ void ios_fex_reclaim_process_views(void *owner)
             count++;
         }
     } while (n == ARRAY_SIZE(batch));
+    WINE_RB_FOR_EACH_ENTRY(view,&views_tree,struct file_view,entry)
+    {
+        if (view->ios_fex_owner != owner || view->ios_fex_lease != lease) continue;
+        remaining++; remaining_bytes += view->size;
+        if (!is_view_valloc(view) ||
+            (view->protect & (SEC_IMAGE | VPROT_SYSTEM | VPROT_PLACEHOLDER | VPROT_FREE_PLACEHOLDER | VPROT_EXEC | VPROT_ARM64EC)) ||
+            (view->ios_flags & IOS_VIEW_QUARANTINED)) retained_unsafe++;
+    }
     for (i=0; i<IOS_FEX_OWNERS; i++)
         if (ios_fex_owners[i].owner == owner && ios_fex_owners[i].lease == lease)
             memset(&ios_fex_owners[i],0,sizeof(ios_fex_owners[i]));
@@ -163,6 +173,11 @@ void ios_fex_reclaim_process_views(void *owner)
     ios_hold_release_drop(owner);
     server_leave_uninterrupted_section(&virtual_mutex,&sigset);
     if (__atomic_fetch_add(&reports,1,__ATOMIC_RELAXED) < 64)
-        dprintf(2,"[fex-owner-v1] retired owner=%p lease=%llu native-threads=0 views=%u reserved=0x%llx logical-committed=0x%llx (not physical residency) arena-held=1\n",
-                owner,lease,count,(unsigned long long)bytes,(unsigned long long)committed);
+        dprintf(2,"[fex-owner-v1] retired owner=%p lease=%llu native-threads=0 before-views=%u before-reserved=0x%llx "
+                  "freed-views=%u freed-reserved=0x%llx freed-logical-committed=0x%llx "
+                  "remaining-views=%u remaining-reserved=0x%llx remaining-reclaimable=%u retained-unsafe=%u "
+                  "(virtual bytes, not physical residency) arena-held=1\n",
+                owner,lease,count+remaining,(unsigned long long)(bytes+remaining_bytes),count,
+                (unsigned long long)bytes,(unsigned long long)committed,remaining,(unsigned long long)remaining_bytes,
+                remaining-retained_unsafe,retained_unsafe);
 }

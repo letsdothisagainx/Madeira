@@ -167,6 +167,27 @@ unsigned long long ios_thread_process_quiescent_lease(void *owner)
     return lease;
 }
 
+/* Diagnostic snapshot only: never create a group or infer that a server-side
+ * process exit means its native CPU callbacks have finished. */
+unsigned long long ios_thread_process_snapshot(void *owner, unsigned *threads, int *exiting, int *reclaimed)
+{
+    unsigned i;
+    unsigned long long lease = 0;
+    *threads = 0; *exiting = 0; *reclaimed = 0;
+    pthread_mutex_lock(&ios_thread_group_mutex);
+    for (i = 0; owner && i < ARRAY_SIZE(ios_thread_groups); i++)
+        if (ios_thread_groups[i].owner == owner)
+        {
+            lease = ios_thread_groups[i].lease;
+            *threads = ios_thread_groups[i].count;
+            *exiting = ios_thread_groups[i].exiting;
+            *reclaimed = ios_thread_groups[i].reclaimed;
+            break;
+        }
+    pthread_mutex_unlock(&ios_thread_group_mutex);
+    return lease;
+}
+
 static int ios_thread_count_add(void *owner, int delta)
 {
     struct ios_thread_group *group;

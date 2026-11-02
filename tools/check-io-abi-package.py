@@ -9,8 +9,8 @@ PRODUCER = b'madeira-io-abi-v2'
 CONSUMER = b'[io-abi] v2 native-owned IOSB scopes active'
 
 
-def fex_arena_exports(data):
-    """Require real writable DATA exports, not matching strings in a stale PE."""
+def fex_arena_exports(data, require_hold_release=False):
+    """Require real DATA/code exports, not matching strings in a stale PE."""
     pe = struct.unpack_from('<I', data, 0x3c)[0]
     assert data[:2] == b'MZ' and data[pe:pe + 4] == b'PE\0\0', 'invalid FEX PE headers'
     count = struct.unpack_from('<H', data, pe + 6)[0]
@@ -36,6 +36,9 @@ def fex_arena_exports(data):
     functions, names, addresses, strings, ordinals = fields[6:]
     assert names <= functions <= 65536, 'invalid FEX export counts'
     required = {b'ios_fex_band_base', b'ios_fex_band_end'}
+    hold_release = b'MadeiraBTCpuIosReleaseThreadHolds'
+    if require_hold_release:
+        required.add(hold_release)
     found = set()
     for i in range(names):
         name_rva = struct.unpack_from('<I', data, offset(strings + i * 4, 4))[0]
@@ -50,10 +53,15 @@ def fex_arena_exports(data):
         assert ordinal < functions, 'invalid FEX arena export ordinal'
         target = struct.unpack_from('<I', data, offset(addresses + ordinal * 4, 4))[0]
         assert target and not directory <= target < directory + directory_size, 'FEX arena export is forwarded'
-        assert any(base <= target and target + 8 <= base + size and flags & 0x80000000 and not flags & 0x30000000
-                   for base, size, _, _, flags in sections), 'FEX arena export must be private writable non-executable DATA'
+        if name == hold_release:
+            assert any(base <= target and target + 4 <= base + raw_size and flags & 0x20000000 and
+                       flags & 0x40000000 and not flags & 0x80000000
+                       for base, _, _, raw_size, flags in sections), 'FEX hold release must be a file-backed native RX function'
+        else:
+            assert any(base <= target and target + 8 <= base + size and flags & 0x80000000 and not flags & 0x30000000
+                       for base, size, _, _, flags in sections), 'FEX arena export must be private writable non-executable DATA'
         found.add(name)
-    assert found == required, 'FEX arena DATA exports missing'
+    assert found == required, 'FEX compatibility exports missing'
 
 
 def producer(data):
@@ -72,6 +80,10 @@ def check(staged, app, ipa):
     assert CONSUMER in native, 'native IOSB consumer missing from linked image'
     assert b'[steam-handoff-v1]' in native and b'_madeira_child_server_exited' in native, 'native Steam restart consumer missing'
     assert b'[fex-owner-v1] pre-crt' in native and b'[fex-owner-v1] retired' in native, 'native FEX ownership lifecycle missing'
+    assert b'[fex-owner-census-v2]' in native, 'native FEX live-owner census missing'
+    assert b'[hold-release-v2]' in native and b'[deliver-hold-v2]' in native, 'native FEX hold-release boundary missing'
+    assert b'[native-window-retire-v1]' in native, 'native dead-window layer cleanup missing'
+    assert b'_winios_native_window_create' in native and b'_winios_native_window_retire' in native, 'native window lifecycle bridge missing'
     assert b'[guest32-fault-v1]' in native, 'native WoW32 first-fault diagnostics missing'
     assert b'[steam-progress-v1]' in native and b'_winios_ui_progress_snapshot' in native, 'native Steam UI progress diagnostics missing'
     assert b'[srv-poll-drop-v1]' in native and b'poll-slots-highwater=' in native, 'native wineserver readiness validation missing'
@@ -89,7 +101,9 @@ def check(staged, app, ipa):
     assert b'MadeiraBTCpuThreadInit' in cpu_data and b'[fex-thread-init-v1]' in cpu_data, 'stale FEX CPU producer'
     assert b'MadeiraBTCpuWriteMemory' in cpu_data and b'[fex-guest-write-v1]' in cpu_data, 'stale FEX native-write producer'
     assert b'[fex-first-use-v1]' in cpu_data, 'stale FEX first-execution allocation checks'
-    fex_arena_exports(cpu_data)
+    assert b'[fex-blocklist-v1]' in cpu_data, 'stale FEX contiguous block map'
+    assert b'[fex-hold-release-v1]' in cpu_data, 'stale FEX terminal hold cleanup'
+    fex_arena_exports(cpu_data, require_hold_release=True)
     assert (app / 'aarch64-windows/xtajit.dll').read_bytes() == cpu_data, 'Xcode packaged stale FEX'
     guest = (staged.parent.parent / 'i386-windows/kernelbase.dll').read_bytes()
     assert struct.unpack_from('<H', guest, struct.unpack_from('<I', guest, 0x3c)[0] + 4)[0] == 0x14c
