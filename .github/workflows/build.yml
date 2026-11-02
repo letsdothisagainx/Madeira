@@ -433,6 +433,17 @@ jobs:
           path: previous-ipa
       - name: Inspect the native instruction from the reported build
         run: |
+          unzip -q previous-ipa/Madeira.ipa 'Payload/Madeira.app/Madeira' -d previous-ipa
+          codesign -d --entitlements :- previous-ipa/Payload/Madeira.app/Madeira > previous-ipa/requested-entitlements.plist 2>/dev/null
+          python3 - <<'PYVERIFY'
+          import plistlib
+          from pathlib import Path
+          e = plistlib.loads(Path('previous-ipa/requested-entitlements.plist').read_bytes())
+          for key in ('com.apple.developer.kernel.extended-virtual-addressing', 'com.apple.developer.kernel.increased-memory-limit', 'get-task-allow'):
+              print('DELIVERED IPA: ' + key + '=' + str(e.get(key)))
+              assert e.get(key) is True, 'delivered IPA missing requested entitlement: ' + key
+          print('PASS actual delivered main executable requests extended VA, increased memory and debugging')
+          PYVERIFY
           python3 -m venv "$RUNNER_TEMP/native-image-tools"
           "$RUNNER_TEMP/native-image-tools/bin/pip" install capstone==5.0.6
           "$RUNNER_TEMP/native-image-tools/bin/python" tests/host/check-native-apc-image.py
