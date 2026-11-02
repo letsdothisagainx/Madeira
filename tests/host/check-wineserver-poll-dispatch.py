@@ -95,6 +95,7 @@ static void fd_poll_event(struct fd *fd, int event) {
         set_fd_events(&b, POLLIN);
     }
 }
+#undef fprintf
 int main(void) {
     int pa[2], pb[2]; assert(!socketpair(AF_UNIX,SOCK_STREAM,0,pa));
     assert(!socketpair(AF_UNIX,SOCK_STREAM,0,pb));
@@ -162,13 +163,33 @@ int main(void) {
     struct ios_poll_snapshot queue_owner = ios_poll_snapshot(queue.poll_index);
     assert(ios_poll_dispatch_snapshot(&queue_owner,queue_poll.revents) && last_events == POLLIN);
     char qbyte; assert(read(pq[0],&qbyte,1) == 1); close(pq[1]);
-    set_fd_events(&queue,0); queue_poll.events = 0; queue_poll.revents = 0;
-    /* Darwin and Linux report stream EOF differently. An invalid descriptor
-     * deterministically supplies a kernel terminal event with interest zero;
-     * explicit HUP/ERR forwarding is checked independently above. */
+    /* Obtain a kernel terminal event while requesting POLLIN. Darwin may skip
+     * descriptors with events=0, so that kernel behavior is not asserted here.
+     * Separately change CURRENT Wine interest to zero before dispatch, proving
+     * error-only watches retain terminal events and reject stale data bits. */
+    queue_poll.events = POLLIN; queue_poll.revents = 0;
     assert(!close(pq[0]));
-    assert(ios_fd_needs_real_poll(queue.poll_index) && poll(&queue_poll,1,0) == 1 && (queue_poll.revents & POLLNVAL));
-    assert(ios_poll_dispatch_snapshot(&queue_owner,queue_poll.revents) && (last_events & POLLNVAL));
+    int terminal_result = poll(&queue_poll,1,0);
+    int terminal_errno = errno;
+    if (terminal_result != 1 || !(queue_poll.revents & POLLNVAL))
+        fprintf(stderr,"terminal fixture: poll=%d errno=%d fd=%d events=%x revents=%x expected-POLLNVAL=%x\n",
+                terminal_result,terminal_errno,queue_poll.fd,queue_poll.events,queue_poll.revents,POLLNVAL);
+    assert(terminal_result == 1);
+    assert(queue_poll.revents & POLLNVAL);
+    set_fd_events(&queue,0);
+    int zero_interest_selected = ios_fd_needs_real_poll(queue.poll_index);
+    if (!zero_interest_selected)
+        fprintf(stderr,"terminal fixture: zero-interest collection rejected user=%d fd=%d events=%x\n",
+                queue.poll_index,pollfd[queue.poll_index].fd,pollfd[queue.poll_index].events);
+    assert(zero_interest_selected);
+    int terminal_dispatched = ios_poll_dispatch_snapshot(&queue_owner,queue_poll.revents | POLLIN);
+    if (!terminal_dispatched || !(last_events & POLLNVAL) || (last_events & POLLIN))
+        fprintf(stderr,"terminal fixture: dispatch=%d forwarded=%x sampled=%x current-interest=%x generation=%llu/%llu\n",
+                terminal_dispatched,last_events,queue_poll.revents,pollfd[queue.poll_index].events,
+                queue_owner.generation,queue.poll_generation);
+    assert(terminal_dispatched);
+    assert(last_events & POLLNVAL);
+    assert(!(last_events & POLLIN));
     remove_poll_user(&queue,queue.poll_index);
     for (unsigned i = 0; i < 100; i++) remove_poll_user(&filler[i],filler[i].poll_index);
     now = ios_poll_snapshot(2); now.generation = 0;
@@ -191,7 +212,7 @@ int main(void) {
     free(poll_users); free(pollfd);
     close(pa[0]); close(pa[1]); close(b_number); close(pb[1]); close(replacement[0]); close(replacement[1]);
     puts("PASS: actual batch dispatch rejects same-slot/same-fd/same-address ABA, honors current masks and zero-interest terminal events, bounds logs, and refuses generation wrap");
-    puts("PASS: typed probes survive low-slot reuse; high-slot queues and unknown owners never receive synthetic readiness; actual queue data and zero-interest invalid-FD events still dispatch");
+    puts("PASS: typed probes survive low-slot reuse; queues require actual readiness; sampled kernel terminal events survive zero current Wine interest while stale data bits are stripped");
 }
 '''
 assert source.count('ios_poll_dispatch_snapshot( &rp_owner[k], rp[k].revents )') == 2
