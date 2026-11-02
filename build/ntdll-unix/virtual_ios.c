@@ -19908,8 +19908,29 @@ static int ios_protect_alias_run(uintptr_t base, size_t size, int prot, int alia
 {
     int result, saved_errno;
     (void)context;
-    /* The alias was remapped from the blessed pool. Its RW sibling remains
-     * writable; the guest view must never become writable or COW-detach. */
+    /* Steam startup regression (2026-11-02): reprotecting an already-owned
+     * dual-mapped JIT page detached/collided with a neighbouring PE image
+     * during cryptnet.dll init. The subsequent SWP write and guest RIP=0
+     * crashed Steam before its browser was created. Wine has already updated
+     * the guest's logical protection and the live JIT alias uses its own
+     * write-through/SMC tracking. Preserve its existing native mapping,
+     * as in the earlier [alias-own] path; never remap or reclassify it here.
+     * Keep a strict opt-in to compare on-device without changing the ABI.
+     * Non-owned pages and PROT_NONE/release paths retain their old behavior. */
+    if (alias)
+    {
+        const char *strict = getenv("MADEIRA_ALIAS_PROT_FORCE_RX");
+        if (!(strict && !strcmp(strict,"1")))
+        {
+            int prior_errno = errno;
+            static unsigned reports;
+            if (__atomic_fetch_add(&reports,1,__ATOMIC_RELAXED) < 24)
+                dprintf(2,"[alias-prot-compat] host=%p+%#lx page=%#lx physical=preserved logical=unchanged reason=live-jit-alias\n",
+                        (void *)base,(unsigned long)size,(unsigned long)host_page_size);
+            errno = prior_errno;
+            return 0;
+        }
+    }
     result = alias ? mprotect((void *)base,size,prot) : mprotect_exec((void *)base,size,prot);
     saved_errno = errno;
     if (alias)
