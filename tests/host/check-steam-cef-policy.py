@@ -65,9 +65,18 @@ int main(void) {
     check(image,"steamwebhelper.exe --type=renderer --sandbox=enabled","valve",0,0);
     check(image,command,NULL,1,0);
     check(image,"steamwebhelper.exe --type=renderer",NULL,0,STATUS_ACCESS_DENIED);
+    /* Crashpad is optional and its Windows handler spins under iOS Wine;
+     * the browser stays enabled. Exact env opt-in restores unchanged launch. */
+    unsetenv("MADEIRA_STEAM_CEF_CRASHPAD");
+    check(image,"steamwebhelper.exe --type=crashpad-handler --database=fixture",NULL,0,STATUS_ACCESS_DENIED);
+    check(image,"steamwebhelper.exe \"--type=crashpad-handler\" --database=fixture",NULL,0,STATUS_ACCESS_DENIED);
+    check(image,"steamwebhelper.exe --type=renderer --type=crashpad-handler",NULL,0,STATUS_ACCESS_DENIED);
+    setenv("MADEIRA_STEAM_CEF_CRASHPAD","1",1);
     check(image,"steamwebhelper.exe --type=crashpad-handler --database=fixture",NULL,0,0);
     check(image,"steamwebhelper.exe \"--type=crashpad-handler\" --database=fixture",NULL,0,0);
-    check(image,"steamwebhelper.exe --type=renderer --type=crashpad-handler",NULL,0,0);
+    setenv("MADEIRA_STEAM_CEF_CRASHPAD","true",1);
+    check(image,"steamwebhelper.exe --type=crashpad-handler",NULL,0,STATUS_ACCESS_DENIED);
+    unsetenv("MADEIRA_STEAM_CEF_CRASHPAD");
     check(image,"steamwebhelper.exe --type=crashpad-handler --type=renderer",NULL,0,STATUS_ACCESS_DENIED);
     check(image,"steamwebhelper.exe --type=crashpad-handler-extra",NULL,0,STATUS_ACCESS_DENIED);
     check(image,"steamwebhelper.exe --type=renderer --log-file=\"C:\\--type=crashpad-handler\"",NULL,0,STATUS_ACCESS_DENIED);
@@ -77,7 +86,7 @@ int main(void) {
     check("C:\\steamwebhelper.exe\\game.exe",command,NULL,0,0);
     check("notsteamwebhelper.exe",command,NULL,0,0);
     check(image,command,"unknown",1,0);
-    puts("PASS real browser rewrite uses valid logging; crashpad arguments and normal creation preserved; quoted/duplicate/substrings classified; Valve policy and security settings preserved");
+    puts("PASS real browser rewrite; Crashpad blocked by default after measured iOS server spin, exact opt-in restores unchanged launch; Valve policy and security settings preserved");
 }
 '''.replace('BLOCK',block)
 with tempfile.TemporaryDirectory(prefix='madeira-cef-policy-') as temp:
