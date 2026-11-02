@@ -106,3 +106,36 @@ still report extended virtual addressing disabled. Both helper owners do reach
 retirement and report zero remaining views. The native-child corrections must be
 retested on the phone; Chromium readiness, Library interaction and CS2 launch
 remain unverified and blocked by the observed address-space shortage.
+
+## Follow-up: native cleanup re-entered the active syscall frame
+
+The 17:33 capture tests UUID `E119B5B7-610A-3A97-BB6B-EA289FDC6C86`, source
+`4693944`. The WoW64 queries now return each child's own PEB32, and native DLL
+replacement succeeds. Neither the earlier `0x480` write nor the x86 kernelbase
+entry fault recurs. A separate cleanup fault is now exposed:
+
+1. The 32-bit OpenGL helper cannot import its genuinely missing SDL2.dll and
+   terminates with `c0000135`. The 32-bit Vulkan helper separately returns 1.
+2. Unix exit calls the registered FEX retirement callback directly.
+3. The callback frees its call/return stack and decommits an allocator span,
+   issuing `NtFreeVirtualMemory` from inside the still-active Unix exit call.
+4. The ARM64 syscall dispatcher reloads the same TEB syscall frame and switches
+   onto its stack, overwriting the active caller. The native ntdll stub's RET
+   then has LR=0; the capture repeats native PC=0 faults before retirement.
+
+The retirement callback's native ARM64 address was valid. The error was the
+missing Unix-to-PE transition, not an EC dispatcher slot requiring fabrication.
+Both hold-release and retirement callbacks now use Wine's existing nested user
+callback transition. It chains a fresh syscall frame, executes the PE callback
+on the owned native user stack, and restores the caller's frame and registers
+before owner retirement. Invalid stack/owner contexts refuse the callback with
+bounded diagnostics. The reused transition also initializes its fresh restore
+flags and correctly packs FPCR/FPSR into separate halves of its saved word.
+
+Regression tests execute the production wrapper and ARM64 transitions with
+nested syscalls, dirty reused kernel-stack memory, preserved outer frames and
+registers, and rejected invalid stacks. This does not supply the missing SDL2
+dependency or remove Chromium's genuine 32 GiB reservation failure. Extended VA
+is still absent from this capture's signature/profile; Library and CS2 cannot
+be called fixed. The next phone run must validate cleanup without a null-PC loop
+and independently establish a sufficient signed address map for Chromium.

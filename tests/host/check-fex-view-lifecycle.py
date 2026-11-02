@@ -222,6 +222,12 @@ static unsigned int finish_callback(void *teb, unsigned long long *stamp, unsign
 }
 hold_callback ios_hold_release_lookup(void *owner) { return owner == a ? finish_callback : NULL; }
 hold_callback ios_wow_thread_retire_lookup(void *owner,unsigned long long lease){(void)owner;(void)lease;return NULL;}
+/* This fixture isolates owner quiescence. The separate native-callback test
+ * executes the production stack/frame transition. */
+unsigned int ios_call_fex_callback(hold_callback cb,void *teb,unsigned long long *stamp,
+                                   unsigned int *depth,unsigned int *flags) {
+    return cb(teb,stamp,depth,flags);
+}
 '''
 for marker in ('static struct ios_thread_group *ios_thread_group_locked(void *owner)',
                'unsigned long long ios_thread_process_lease(void *owner, int create)',

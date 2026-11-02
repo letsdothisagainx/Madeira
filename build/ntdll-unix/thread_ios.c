@@ -1365,6 +1365,9 @@ static void contexts_from_server( CONTEXT *context, struct context_data server_c
  * data and code. The remaining noreturn tail uses only native C/TEB state. */
 static void ios_thread_finish_fex(void)
 {
+    extern unsigned int ios_call_fex_callback(
+        unsigned int (*)(void *, unsigned long long *, unsigned int *, unsigned int *),
+        void *, unsigned long long *, unsigned int *, unsigned int * );
     static _Thread_local int entered;
     if (entered || !NtCurrentTeb()) return;
     entered = 1; /* recursive abort must not call the same faulting callback */
@@ -1415,12 +1418,13 @@ static void ios_thread_finish_fex(void)
         {
             /* ml618: RELEASE IT. The callback is the arm64ec_redirect_ptr()-resolved
              * ARM64 alias registered by the PE side and self-tested there, so this
-             * native call is legal — unlike ml613, which bound base+RVA (the raw x64
+             * callback target is legal — unlike ml613, which bound base+RVA (the raw x64
              * entry thunk) and died on every launch.
              *
              * PEB-keyed: pick the callback belonging to THIS pseudo-process, because
              * each has its own FEX context and its own CodeInvalidationMutex.
-             * Runs while the TEB is still valid and before TSD 275 is cleared. */
+             * Runs while the TEB is still valid and before TSD 275 is cleared.
+             * The Unix-to-PE bridge also isolates any nested Wine syscall. */
             extern unsigned int (*ios_hold_release_lookup(void *peb))(void *, unsigned long long *,
                                                                       unsigned int *, unsigned int *);
             void *peb = NtCurrentTeb()->Peb;
@@ -1429,7 +1433,7 @@ static void ios_thread_finish_fex(void)
             unsigned long long stamp = 0;
             unsigned int depth = 0, flags = 0, r = 0;
 
-            if (cb) r = cb( NtCurrentTeb(), &stamp, &depth, &flags );
+            if (cb) r = ios_call_fex_callback( cb, NtCurrentTeb(), &stamp, &depth, &flags );
 
             dprintf(2, "[exit-hold] ml618 tid=%04x peb=%p stamp=0x%llx depth=%u rwx_read=%u -> %s"
                        "released=0x%x (%s%s%s%s)\n",
@@ -1443,7 +1447,9 @@ static void ios_thread_finish_fex(void)
         }
     }
     /* Abort/pipe EOF bypasses BTCpuThreadTerm. Reclaim the current thread's
-     * private CPU state while its owner/lease and TEB are still live. */
+     * private CPU state while its owner/lease and TEB are still live.
+     * Retirement's VirtualFree calls must enter through a fresh syscall frame,
+     * rather than switch back onto this active Unix exit stack. */
     {
         TEB *teb = NtCurrentTeb();
         unsigned long long lease = ios_thread_process_lease(teb->Peb,0), state = 0;
@@ -1460,7 +1466,7 @@ static void ios_thread_finish_fex(void)
                 dprintf(2,"[fex-exit-v1] phase=enter tid=%04x owner=%p lease=%llu\n",
                         (unsigned)(ULONG_PTR)teb->ClientId.UniqueThread,teb->Peb,lease);
             do {
-                result = retire(teb,&state,&depth,&flags);
+                result = ios_call_fex_callback(retire,teb,&state,&depth,&flags);
                 if (result != MADEIRA_FEX_THREAD_RETIRE_BUSY) break;
                 sched_yield();
             } while (++tries < 16);

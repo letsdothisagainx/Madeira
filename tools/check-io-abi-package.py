@@ -109,6 +109,7 @@ def check(staged, app, ipa):
     assert b'[surface-expose-v1]' in native and b'[steam-client-update-v1]' in native, 'stale popup expose or official Steam updater integration'
     assert b'[child-native-ntdll-v1]' in native and b'[guest-trap-context-v1]' in native, 'stale mixed-architecture child loader or trap diagnostics'
     assert b'[child-native-dll-v1]' in native and b'[process-wow64-v1]' in native, 'stale native child imports or owner-aware WoW64 PEB query'
+    assert b'[fex-callback-v1]' in native, 'stale direct Unix-to-PE FEX cleanup callback'
     fex_arena_exports(cpu_data, require_hold_release=True)
     assert (app / 'aarch64-windows/xtajit.dll').read_bytes() == cpu_data, 'Xcode packaged stale FEX'
     guest = (staged.parent.parent / 'i386-windows/kernelbase.dll').read_bytes()

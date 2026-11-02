@@ -386,6 +386,7 @@ jobs:
           "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-scm-rpc-abi.py --producer "$farm/sechost.dll" --runtime "$farm/rpcrt4.dll"
           git submodule update --init --depth 1 wine
           "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-x18-loads.py --emulate
+          "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-fex-native-callback.py --emulate
           unzip -q scm-ipa/Madeira.ipa 'Payload/Madeira.app/i386-windows/madeira-wow64-*' 'Payload/Madeira.app/Madeira.debug.dylib' -d scm-ipa
           "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-wow64-probe-image.py scm-ipa/Payload/Madeira.app/i386-windows
           "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-native-apc-image.py

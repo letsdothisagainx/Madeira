@@ -101,6 +101,7 @@
 #include "winternl.h"
 #include "wine/asm.h"
 #include "unix_private.h"
+#include "fex_hold_release_abi.h"
 #include "ios_wow.h"
 #include "wine/debug.h"
 
@@ -10016,7 +10017,7 @@ __ASM_GLOBAL_FUNC( call_user_mode_callback,
                    "mov x18, x4\n\t"              /* teb */
                    "mrs x1, fpcr\n\t"
                    "mrs x2, fpsr\n\t"
-                   "bfi x1, x2, #0, #32\n\t"
+                   "bfi x1, x2, #32, #32\n\t" /* FPCR low, FPSR high */
                    "ldr x2, [x18]\n\t"            /* teb->Tib.ExceptionList */
                    "stp x1, x2, [x29, #0xb0]\n\t"
 
@@ -10025,6 +10026,7 @@ __ASM_GLOBAL_FUNC( call_user_mode_callback,
                    "str x1, [x18, #0x378]\n\t"    /* thread_data->syscall_frame */
                    "add x8, x29, #0xd0\n\t"
                    "stp x7, x8, [x1, #0x110]\n\t" /* frame->prev_frame,syscall_cfa */
+                   "str wzr, [x1, #0x10c]\n\t"   /* fresh frame->restore_flags */
                    "ldr w11, [x18, #0x380]\n\t"   /* thread_data->syscall_trace */
                    "cbnz x11, 1f\n\t"
                    /* switch to user stack */
@@ -10104,6 +10106,79 @@ __ASM_GLOBAL_FUNC( user_mode_callback_return,
                    "ldp x29, x30, [sp], #0xd0\n\t"
                    "ret" )
 
+
+#ifdef WINE_IOS
+/* A native ARM64 PE callback can issue Wine syscalls. Calling it directly
+ * from a Unix syscall reuses the active syscall_frame and overwrites its
+ * caller's kernel stack. Use Wine's existing user-callback transition: it
+ * chains a fresh frame below this C call and runs the PE code on the real
+ * user stack. No FEX callback runs after its owner has retired. */
+struct ios_fex_callback_args
+{
+    unsigned int (*callback)(void *, unsigned long long *, unsigned int *, unsigned int *);
+    void *teb;
+    unsigned long long *state;
+    unsigned int *depth;
+    unsigned int *flags;
+};
+
+extern void ios_fex_callback_dispatcher(void);
+__ASM_GLOBAL_FUNC( ios_fex_callback_dispatcher,
+                   "mov x19, x18\n\t" /* retain the TEB across PE/syscall calls */
+                   "ldr x16, [sp]\n\t" /* callback_stack_layout.args */
+                   "ldr x4, [x16]\n\t" /* native ARM64 callback */
+                   "ldp x0, x1, [x16, #8]\n\t"
+                   "ldp x2, x3, [x16, #24]\n\t"
+                   "blr x4\n\t"
+                   "mov w2, w0\n\t" /* callback result is the return status */
+                   "mov x0, #0\n\t"
+                   "mov x1, #0\n\t"
+                   "mov x3, x19\n\t"
+                   "b " __ASM_NAME("user_mode_callback_return") )
+
+unsigned int ios_call_fex_callback(
+    unsigned int (*callback)(void *, unsigned long long *, unsigned int *, unsigned int *),
+    void *teb_ptr, unsigned long long *state, unsigned int *depth, unsigned int *flags )
+{
+    TEB *teb = NtCurrentTeb();
+    struct syscall_frame *frame = teb ? get_syscall_frame() : NULL;
+    const SIZE_T needed = sizeof(struct callback_stack_layout) + sizeof(struct ios_fex_callback_args) + 16;
+    struct callback_stack_layout *stack;
+    struct ios_fex_callback_args args = { callback, teb_ptr, state, depth, flags };
+    ULONG_PTR sp;
+    void *ret_ptr = NULL;
+    ULONG ret_len = 0;
+
+    if (!callback || !teb || teb_ptr != teb || !frame ||
+        frame->sp < needed || frame->sp > (ULONG_PTR)teb->Tib.StackBase)
+        goto refused;
+    sp = (frame->sp - needed) & ~(ULONG_PTR)15;
+    if (sp < (ULONG_PTR)teb->Tib.StackLimit ||
+        (char *)ntdll_get_thread_data()->kernel_stack + min_kernel_stack > (char *)&frame ||
+        (char *)&frame >= (char *)ntdll_get_thread_data()->kernel_stack + kernel_stack_size)
+        goto refused;
+
+    stack = (struct callback_stack_layout *)sp;
+    memset( stack, 0, sizeof(*stack) );
+    stack->args = stack->args_data;
+    stack->len = sizeof(args);
+    stack->lr = frame->lr;
+    stack->sp = frame->sp;
+    stack->pc = frame->pc;
+    memcpy( stack->args_data, &args, sizeof(args) );
+    return call_user_mode_callback( sp, &ret_ptr, &ret_len,
+                                    ios_fex_callback_dispatcher, teb );
+
+refused:
+    {
+        static unsigned int reports;
+        if (__atomic_fetch_add( &reports, 1, __ATOMIC_RELAXED ) < 16)
+            dprintf( 2, "[fex-callback-v1] refused callback=%p teb=%p expected=%p frame=%p\n",
+                     callback, teb_ptr, teb, frame );
+    }
+    return MADEIRA_FEX_THREAD_RETIRE_REFUSED;
+}
+#endif
 
 /***********************************************************************
  *           user_mode_abort_thread
