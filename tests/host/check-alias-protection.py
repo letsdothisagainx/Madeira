@@ -72,9 +72,16 @@ int main(void){
  assert((get_host_page_vprot((void*)0x10000)&3)==3);
  assert((get_host_page_vprot((void*)0x14000)&3)==3);
  assert((get_host_page_vprot((void*)0x18000)&3)==3);
- void *space=mmap(NULL,6*PAGE,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);assert(space!=MAP_FAILED);
- window=((uintptr_t)space+PAGE-1)&~(uintptr_t)(PAGE-1);
- int fd=memfd_create("madeira-alias-test",0);assert(fd>=0&&!ftruncate(fd,PAGE));
+ int fd=memfd_create("madeira-alias-test",0);assert(fd>=0&&!ftruncate(fd,9*PAGE));
+ // Darwin gives anonymous data mappings a non-executable maximum. Use
+ // disjoint file offsets for ordinary pages and the alias's shared backing,
+ // so the negative control can exercise RX without a writable/exec mapping.
+#ifdef __APPLE__
+ void *space=mmap(NULL,6*PAGE,PROT_READ|PROT_WRITE,MAP_SHARED,fd,3*PAGE);
+#else
+ void *space=mmap(NULL,6*PAGE,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+#endif
+ assert(space!=MAP_FAILED);window=((uintptr_t)space+PAGE-1)&~(uintptr_t)(PAGE-1);
  void *rw=mmap(NULL,PAGE,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);assert(rw!=MAP_FAILED);
  void *rx=mmap((void*)(window+2*PAGE),PAGE,PROT_READ|PROT_EXEC,MAP_SHARED|MAP_FIXED,fd,0);assert(rx==(void*)(window+2*PAGE));
  ios_jit_anon_alias_count=1;
@@ -82,7 +89,7 @@ int main(void){
  // Captured request: 0x9000 bytes; only its last4KiB overlaps a16KiB alias.
  // Old whole-request mprotect rounds to3host pages and kills the first store.
  pid_t child=fork();assert(child>=0);
- if(!child){signal(SIGSEGV,SIG_DFL);signal(SIGBUS,SIG_DFL);assert(!mprotect((void*)window,0x9000,PROT_READ|PROT_EXEC));*(volatile unsigned*)window=0;_exit(0);}
+ if(!child){signal(SIGSEGV,SIG_DFL);signal(SIGBUS,SIG_DFL);if(mprotect((void*)window,0x9000,PROT_READ|PROT_EXEC)){perror("negative-control RX");_exit(2);}*(volatile unsigned*)window=0;_exit(0);}
  int status;assert(waitpid(child,&status,0)==child&&WIFSIGNALED(status));
  assert(WTERMSIG(status)==SIGSEGV||WTERMSIG(status)==SIGBUS);
  protect(PROT_READ|PROT_WRITE,0x9000);assert(applies==2&&alias_calls==1);
