@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Candidate only: not part of the app target and never selects a browser.
+// Verified official browser cache, prepared before Wine starts.
 import Foundation
 #if canImport(FoundationNetworking)
 import FoundationNetworking
@@ -20,8 +20,9 @@ enum SteamBrowserRuntimeFiles {
     }
     struct Key: Equatable, Sendable {
         let name: String, sha256: String, bytes: Int?
-        init(name: String, sha256: String, bytes: Int? = nil) {
-            self.name = name; self.sha256 = sha256; self.bytes = bytes
+        let machine: UInt16
+        init(name: String, sha256: String, bytes: Int? = nil, machine: UInt16 = 0x014c) {
+            self.name = name; self.sha256 = sha256; self.bytes = bytes; self.machine = machine
         }
     }
     struct GeneratedFile: Equatable, Sendable {
@@ -57,7 +58,11 @@ enum SteamBrowserRuntimeFiles {
             Key(name: "steamwebhelper.exe", sha256: "8dba99d204779a30a88a794d1a88d7e76355d004d876ed4bb29da7c3d5a4fc70"),
             Key(name: "libcef.dll", sha256: "b2dc73b55ca1d6a44a594e97b4ddd57bd19e79b2d09521faf2dfb83f51e2a94e"),
             Key(name: "chrome_elf.dll", sha256: "0c91bfdbb22d20ea153869a3dc7379d54a7380faee300d0fd6809fce491a3677"),
-            Key(name: "SDL3.dll", sha256: "db01ec466db9c4e19cc5fe8c878ac89bc1b6057136432554842b3cd4dca88669", bytes: 2_432_152)
+            Key(name: "SDL3.dll", sha256: "db01ec466db9c4e19cc5fe8c878ac89bc1b6057136432554842b3cd4dca88669", bytes: 2_432_152),
+            // Valve includes this AMD64 diagnostic component in its I386 CEF
+            // archive. Preserve the genuine file; it is not a browser DLL swap.
+            Key(name: "msdia140.dll", sha256: "484dee047c0f2a6e556056ad994ef6a9b846a676a067883257c7122c46c97d66",
+                bytes: 2_245_784, machine: 0x8664)
         ], marker: officialMarker)
     static let ownerName = ".madeira-browser-owner-v1"
     static let ownerBytes = Data("org.madeira.SteamBrowserRuntime/v1\n".utf8)
@@ -123,6 +128,9 @@ enum SteamBrowserRuntimeFiles {
     static func executable(_ name: String) -> Bool {
         ["exe", "dll"].contains(URL(fileURLWithPath: name).pathExtension.lowercased())
     }
+    static func expectedMachine(_ name: String, recipe: Recipe) -> UInt16 {
+        recipe.keys.first(where: { recipe.prefix + $0.name == name })?.machine ?? 0x014c
+    }
     static func core(_ file: URL, steamRoot: URL, recipe: Recipe, digest: DigestFile) throws {
         guard file.standardizedFileURL != steamRoot.standardizedFileURL, inside(file, steamRoot) else {
             throw Failure.changedCore
@@ -173,7 +181,7 @@ enum SteamBrowserRuntimeFiles {
             guard name.hasPrefix(recipe.prefix), name.count > recipe.prefix.count,
                   name.lowercased() != (recipe.prefix + recipe.marker.name).lowercased(),
                   seen.insert(name.lowercased()).inserted, records.count < recipe.expectedFiles else { throw Failure.invalid }
-            if executable(name), machine(bytes) != 0x014c { throw Failure.invalid }
+            if executable(name), machine(bytes) != expectedMachine(name, recipe: recipe) { throw Failure.invalid }
             let hash = digest(bytes)
             if let key = recipe.keys.first(where: { recipe.prefix + $0.name == name }) {
                 guard key.sha256 == hash, key.bytes.map({ $0 == bytes.count }) ?? true else { throw Failure.invalid }
@@ -271,7 +279,7 @@ enum SteamBrowserRuntimeFiles {
                 guard item == generatedRecord(recipe: recipe),
                       try Data(contentsOf: target) == recipe.marker.bytes else { throw Failure.invalid }
             }
-            if executable(item.name), machine(try Data(contentsOf: target, options: .mappedIfSafe)) != 0x014c {
+            if executable(item.name), machine(try Data(contentsOf: target, options: .mappedIfSafe)) != expectedMachine(item.name, recipe: recipe) {
                 throw Failure.invalid
             }
         }
@@ -377,16 +385,29 @@ enum SteamBrowserRuntimeFiles {
         // and any completed or conflicting cache version are always retained.
         defer { if fm.fileExists(atPath: stage.path) { try? fm.removeItem(at: stage) } }
         var records: [Files.FileRecord] = []
+        progress("[steam-browser-cache-v3] recipe=\(recipe.id) action=prepare")
         for (index, package) in recipe.packages.enumerated() {
             try Task.checkCancellation()
             progress("Preparing Steam browser (\(index + 1) of \(recipe.packages.count))…")
-            let temporary = try await SteamBrowserDownload.download(package)
-            defer { try? fm.removeItem(at: temporary) }
-            guard idle() else { throw Files.Failure.active }
-            guard try hash(temporary) == package.sha256 else { throw Files.Failure.invalid }
-            let archive = try Data(contentsOf: temporary, options: .mappedIfSafe)
-            try Files.appendArchive(archive, package: package, recipe: recipe, stage: stage,
-                                    records: &records, digest: hashData, idle: idle)
+            var step = "download"
+            do {
+                let temporary = try await SteamBrowserDownload.download(package)
+                defer { try? fm.removeItem(at: temporary) }
+                guard idle() else { throw Files.Failure.active }
+                step = "sha256"
+                guard try hash(temporary) == package.sha256 else { throw Files.Failure.invalid }
+                step = "extract"
+                let archive = try Data(contentsOf: temporary, options: .mappedIfSafe)
+                try Files.appendArchive(archive, package: package, recipe: recipe, stage: stage,
+                                        records: &records, digest: hashData, idle: idle)
+                progress("[steam-browser-cache-v3] package=\(index + 1) stage=verified records=\(records.count)")
+            } catch {
+                let issue = error as NSError
+                // Fixed stages and numeric codes only: no URLs, account data,
+                // response bodies or user paths are copied into diagnostics.
+                progress("[steam-browser-cache-v3] package=\(index + 1) stage=\(step) result=failed code=\(issue.code)")
+                throw error
+            }
         }
         try Task.checkCancellation()
         return try Files.commit(stage: stage, destination: final, recipe: recipe, records: records,
