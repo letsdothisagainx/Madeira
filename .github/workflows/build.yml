@@ -4,6 +4,15 @@ on:
 permissions:
   contents: read
 jobs:
+  swift-cache:
+    runs-on: xcode-27
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile full verified browser cache and exercise Swift transaction fixtures
+        run: python3 work/browser-cache/check-browser-cache.py --require-swift
   runtime:
     runs-on: ubuntu-24.04
     timeout-minutes: 30

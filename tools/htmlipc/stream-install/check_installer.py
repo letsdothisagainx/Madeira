@@ -34,7 +34,7 @@ def load_pe(uc,base,p,data):
         if n:uc.mem_protect(base+s.VirtualAddress,n,permissions(s.Characteristics))
 out=[]
 image_base_rva=genuine.OPTIONAL_HEADER.get_field_absolute_offset('ImageBase')
-for mode in range(16):
+for mode in range(20):
     uc=Uc(UC_ARCH_X86,UC_MODE_64);base=pe.OPTIONAL_HEADER.ImageBase
     load_pe(uc,base,pe,pe.get_memory_mapped_image());load_pe(uc,module,genuine,bytes(mapped))
     pin=bytearray(original)
@@ -43,7 +43,11 @@ for mode in range(16):
     if mode==5:uc.mem_write(module+0x17f428,b'X')
     if mode==7:uc.mem_write(module+0x132340,struct.pack('<Q',module+0x58bf1))
     if mode==10:uc.mem_write(module+0x1000,b'X')
-    if mode==11:uc.mem_write(module+image_base_rva,struct.pack('<Q',module))
+    if mode in (11,17,18):uc.mem_write(module+image_base_rva,struct.pack('<Q',module))
+    if mode==16:uc.mem_write(module+image_base_rva,struct.pack('<Q',module+0x10000))
+    if mode==17:uc.mem_write(module+0x40,b'X')
+    if mode==18:uc.mem_write(module+0x1000,b'X')
+    if mode==19:uc.mem_write(module+image_base_rva,struct.pack('<Q',module&0xffffffff))
     if mode==12:uc.mem_protect(module,4096,UC_PROT_READ|UC_PROT_WRITE)
     if mode==13:uc.mem_protect(module+0x1000,4096,UC_PROT_READ)
     if mode==15:uc.mem_write(module+0x121ce0,b'X')
@@ -63,8 +67,8 @@ for mode in range(16):
     rsp=stack+size-0x28;uc.mem_write(rsp,struct.pack('<Q',stop));uc.reg_write(UC_X86_REG_RSP,rsp)
     uc.emu_start(symbols['run_tests'],stop,count=1500000000)
     result=uc.reg_read(UC_X86_REG_RAX);assert result==0,(mode,result)
-    assert uc.mem_read(module+0x1000,0x11ed24)==(b'X'+bytes(mapped[0x1001:0x11fd24]) if mode==10 else bytes(mapped[0x1000:0x11fd24]))
-    if mode not in (0,9):
+    assert uc.mem_read(module+0x1000,0x11ed24)==(b'X'+bytes(mapped[0x1001:0x11fd24]) if mode in (10,18) else bytes(mapped[0x1000:0x11fd24]))
+    if mode not in (0,9,11):
         if mode!=7:assert uc.mem_read(module+0x132340,56)==bytes(mapped[0x132340:0x132378])
         expected_path=(b'X'+bytes(mapped[0x121ce1:0x121d05]) if mode==15 else bytes(mapped[0x121ce0:0x121d05]))
         assert uc.mem_read(module+0x121ce0,37)==expected_path
@@ -73,7 +77,7 @@ for mode in range(16):
     stage,rva,expected,actual,ep,ap,actual_size,count,query_flags=struct.unpack('<IIQQIIQII',uc.mem_read(symbols['last_diagnostic'],48))
     diagnostic={'stage':stage,'rva':hex(rva),'expected_bytes':hex(expected),'actual_bytes':hex(actual),
         'expected_protection':ep,'actual_protection':ap,'actual_image_size':actual_size,'byte_count':count,'query_flags':query_flags}
-    if mode in (5,7,10,11,12,13,14,15):
+    if mode in (5,7,10,12,13,14,15,16,17,18,19):
         assert not transitions,mode
         assert actual_size==(0x19c001 if mode==14 else 0x19c000)
         if mode==14:assert (expected,actual,count)==(0x19c000,0x19c001,0)
@@ -82,7 +86,8 @@ for mode in range(16):
             reference=original[rva:rva+8] if stage in (2,3) else mapped[rva:rva+8]
             assert expected==int.from_bytes(reference,'little'),(mode,diagnostic,reference.hex())
             assert actual==int.from_bytes(uc.mem_read(module+rva,8),'little')
-        if mode==11:assert rva==image_base_rva+4 and stage==3
+        if mode in (16,19):assert image_base_rva<=rva<image_base_rva+8 and stage==3
+        if mode==17:assert rva==0x40 and stage==3
         if mode==12:assert (stage,rva,ep,ap,query_flags)==(2,0,2,4,32)
         if mode==13:assert (stage,rva,ep,ap,query_flags)==(5,0x1000,0x20,2,32)
     out.append({'mode':mode,'result':result,'diagnostic':diagnostic,'data_page_transitions':transitions});print('PASS',mode,flush=True)

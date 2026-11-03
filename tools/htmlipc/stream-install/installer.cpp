@@ -143,8 +143,18 @@ Result install_loaded(Installer *s,void *module,Size image_size,const U16 *name,
     if(!module||image_size!=0x19c000){diagnose(s,Stage::ModuleSize,0,0x19c000,image_size);return fail(s,Error::WrongImage);}
     s->module=module;PE p;if(!pin(s->config,p))return fail(s,Error::PinMismatch);
     if(!query_span(s,module,p.headers,2,module,Stage::HeaderProtection)){snapshot(s,p,true);return fail(s,Error::WrongImage);}
-    for(U32 i=0;i<p.headers;++i)if(static_cast<U8*>(module)[i]!=p.f[i]){
-        diagnose(s,Stage::HeaderBytes,i,0,0,0,2,2);snapshot(s,p,true);return fail(s,Error::WrongImage);}
+    /* Wine's SEC_IMAGE mapper rewrites OptionalHeader.ImageBase to map_addr
+     * while applying dynamic-base relocations (ntdll/unix/virtual.c). Windows
+     * may retain the preferred base. Accept exactly those two representations,
+     * never an arbitrary changed header or a base supplied by the image itself.
+     * The original SHA-pinned file still supplies all relocation expectations. */
+    U32 image_base_rva=p.optional+24;U64 mapped_base=reinterpret_cast<U64>(module);
+    bool header_rebased=u64(static_cast<U8*>(module)+image_base_rva)==mapped_base;
+    for(U32 i=0;i<p.headers;++i){
+        U8 expected=(header_rebased&&i>=image_base_rva&&i-image_base_rva<8)?
+            U8(mapped_base>>((i-image_base_rva)*8)):p.f[i];
+        if(static_cast<U8*>(module)[i]!=expected){
+            diagnose(s,Stage::HeaderBytes,i,0,0,0,2,2);snapshot(s,p,true);return fail(s,Error::WrongImage);}}
     /* Verify the complete mapped .text/.rdata/.pdata against the original
      * SHA-pinned file. Normalize only PE DIR64 relocations and loader IAT.
      * Mutable .data is checked separately for the exact RTTI type names. */

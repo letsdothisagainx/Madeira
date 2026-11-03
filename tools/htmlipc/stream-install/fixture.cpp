@@ -46,7 +46,8 @@ extern "C" U64 run_tests(){
     if(test_mode==5)return result.error==Error::WrongMetadata&&state.diagnostic.stage==Stage::Metadata&&state.diagnostic.rva==0x17f428?0:8;
     if(test_mode==7)return result.error==Error::WrongImage&&state.diagnostic.stage==Stage::Relocation&&state.diagnostic.rva==0x132340?0:9;
     if(test_mode==10)return result.error==Error::WrongImage&&state.diagnostic.stage==Stage::SectionBytes&&state.diagnostic.rva==0x1000?0:42;
-    if(test_mode==11)return result.error==Error::WrongImage&&state.diagnostic.stage==Stage::HeaderBytes?0:43;
+    if(test_mode==16||test_mode==17||test_mode==19)return result.error==Error::WrongImage&&state.diagnostic.stage==Stage::HeaderBytes?0:43;
+    if(test_mode==18)return result.error==Error::WrongImage&&state.diagnostic.stage==Stage::SectionBytes&&state.diagnostic.rva==0x1000?0:49;
     if(test_mode==12)return result.error==Error::WrongImage&&state.diagnostic.stage==Stage::HeaderProtection&&state.diagnostic.rva==0?0:44;
     if(test_mode==13)return result.error==Error::WrongImage&&state.diagnostic.stage==Stage::SectionProtection&&state.diagnostic.rva==0x1000?0:45;
     if(test_mode==14)return result.error==Error::WrongImage&&state.diagnostic.stage==Stage::ModuleSize&&state.diagnostic.actual_image_size==0x19c001?0:46;
