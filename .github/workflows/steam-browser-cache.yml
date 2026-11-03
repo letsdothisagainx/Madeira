@@ -9,6 +9,10 @@ on:
       - app/Madeira/SteamRuntime.swift
       - tests/host/check-steam-browser-cache.py
       - tests/integration/check-official-steam-browser-cache.py
+      - build/htmlipc/stream-install/**
+      - build/htmlipc/runtime/runtime_provider.cpp
+      - tests/host/check-htmlipc-controller.py
+      - tests/host/htmlipc/test_controller_protection.cpp
       - .github/workflows/steam-browser-cache.yml
   pull_request:
     paths:
@@ -16,12 +20,25 @@ on:
       - app/Madeira/SteamRuntime.swift
       - tests/host/check-steam-browser-cache.py
       - tests/integration/check-official-steam-browser-cache.py
+      - build/htmlipc/stream-install/**
+      - build/htmlipc/runtime/runtime_provider.cpp
+      - tests/host/check-htmlipc-controller.py
+      - tests/host/htmlipc/test_controller_protection.cpp
       - .github/workflows/steam-browser-cache.yml
 
 permissions:
   contents: read
 
 jobs:
+  controller-image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Test committed image ownership and exact writable data protections
+        run: python3 tests/host/check-htmlipc-controller.py
   browser-cache:
     runs-on: xcode-27
     timeout-minutes: 15

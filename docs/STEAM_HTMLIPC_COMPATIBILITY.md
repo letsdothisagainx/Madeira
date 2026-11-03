@@ -44,8 +44,23 @@ and altered files are rejected. CI exercises the production Swift with all three
 genuine pinned archives, atomic completion, reuse and tamper rejection in
 addition to the small malformed-archive and transaction fixtures.
 
+Controller validation also accepts `PAGE_WRITECOPY` for the writable controller
+object in the already verified image. Wine maps non-shared writable PE sections
+with that logical protection; requiring only `PAGE_READWRITE` rejected that
+legitimate mapping. This exception is restricted to that object, with the same
+committed `MEM_IMAGE`, allocation-base and 42-entry vtable checks. Code, hook and
+readonly-data validation retains its exact protections. Validation changes no
+page permissions. Unexpected owners, private/reserved memory, failed queries,
+changed vtables and executable/writable protections remain rejected. The first
+controller mismatch emits a bounded numeric diagnostic after releasing the
+registry lock.
+
 Host tests and a successful IPA build do not validate the iPhone runtime. The
-isolated genuine Steam probe has loaded the I386 helper and CEF libraries after
-the ImageBase correction, but has not yet verified a rendered login form. Native
-startup, responsive authenticated Library navigation, five-minute stability and
-CS2 process creation remain required device acceptance tests.
+isolated genuine Steam probe now loads the I386 helper and CEF libraries and
+establishes shared-memory IPC after the copy-on-write correction. It then fails
+explicitly on current command 54 (`CMsgSetBrowserViewDomainRequestMapping`), which
+the frozen helper does not implement. That global helper-side routing policy
+has not been translated; mapping it to an old per-browser file route would not
+preserve its access policy or child BrowserView lifecycle. It remains a real
+startup blocker. Rendered login, responsive authenticated Library navigation,
+five-minute stability and CS2 process creation are not verified.

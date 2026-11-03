@@ -47,7 +47,7 @@ static const U8 *at(const PE &p,U32 rva,Size n){
 static bool pin(const Config &c,PE &p){
     if(!parse(c,p))return false;U8 actual[32];sha256(c.pinned_file,c.pinned_file_size,actual);return equal(actual,digest,32);
 }
-static bool query_span(Installer *s,const void *address,Size bytes,U32 expected,void *allocation,Stage stage=Stage::None){
+static bool query_span(Installer *s,const void *address,Size bytes,U32 expected,void *allocation,Stage stage=Stage::None,bool writable_image_cow=false){
     U64 cursor=reinterpret_cast<U64>(address),end=cursor+bytes;
     if(end<cursor){diagnose(s,stage,U32(cursor-reinterpret_cast<U64>(s->module)),0,0,0,expected,0,2);return false;}
     while(cursor<end){Region r{};U32 rva=U32(cursor-reinterpret_cast<U64>(s->module));
@@ -55,7 +55,8 @@ static bool query_span(Installer *s,const void *address,Size bytes,U32 expected,
             diagnose(s,stage,rva,0,0,0,expected,0,1);return false;}
         U64 b=reinterpret_cast<U64>(r.base),z=b+r.size;
         U32 flags=0;if(b>cursor||z<=cursor||z<b)flags|=2;if(r.state!=0x1000)flags|=4;
-        if(r.type!=0x1000000)flags|=8;if(r.allocation!=allocation)flags|=16;if(r.protect!=expected)flags|=32;
+        if(r.type!=0x1000000)flags|=8;if(r.allocation!=allocation)flags|=16;
+        if(r.protect!=expected&&!(writable_image_cow&&expected==4&&r.protect==8))flags|=32;
         if(flags){diagnose(s,stage,rva,0,0,0,expected,r.protect,flags);return false;}
         cursor=z<end?z:end;
     }return true;
@@ -195,10 +196,17 @@ Result install_loaded(Installer *s,void *module,Size image_size,const U16 *name,
 void note_unloaded(Installer *s,void *module){if(s&&s->module==module)fail(s,Error::ModuleUnloaded,0,false);}
 bool validate_live_controller(Installer *s,void *controller){
     if(!s||s->phase!=Phase::Installed||!s->module||controller!=static_cast<U8*>(s->module)+controller_object_rva)return false;
-    if(!query_span(s,controller,8,4,s->module))return false;
-    U8 *base=static_cast<U8*>(s->module);if(u64(static_cast<U8*>(controller))!=reinterpret_cast<U64>(base)+controller_vtable_rva)return false;
+    // Wine maps writable, non-shared SEC_IMAGE data as PAGE_WRITECOPY.
+    // Accept it only here, with the same committed-image/allocation checks.
+    // Code, hook and readonly data validations retain their exact protections.
+    if(!query_span(s,controller,8,4,s->module,Stage::SectionProtection,true))return false;
+    U8 *base=static_cast<U8*>(s->module);
+    if(u64(static_cast<U8*>(controller))!=reinterpret_cast<U64>(base)+controller_vtable_rva){
+        diagnose(s,Stage::Metadata,controller_object_rva,reinterpret_cast<U64>(base)+controller_vtable_rva,u64(static_cast<U8*>(controller)),8);return false;}
     PE p;if(!parse(s->config,p))return false;
-    for(U32 i=0;i<42;++i){const U8 *original=at(p,controller_vtable_rva+i*8,8);if(!original||u64(base+controller_vtable_rva+i*8)!=u64(original)+reinterpret_cast<U64>(base)-p.base)return false;}
+    for(U32 i=0;i<42;++i){const U8 *original=at(p,controller_vtable_rva+i*8,8);if(!original)return false;
+        if(u64(base+controller_vtable_rva+i*8)!=u64(original)+reinterpret_cast<U64>(base)-p.base){
+            diagnose(s,Stage::Metadata,controller_vtable_rva+i*8,u64(original)+reinterpret_cast<U64>(base)-p.base,u64(base+controller_vtable_rva+i*8),8);return false;}}
     return true;
 }
 }

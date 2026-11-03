@@ -405,7 +405,7 @@ jobs:
               assert marker in image, 'missing native diagnostic: ' + repr(marker)
           assert b'SEGV LOOP FATAL' not in image, 'legacy fault-skipping path is still bundled'
           print('PASS native attach/UI/I/O/guard/process-isolation diagnostics included in IPA')
-          import plistlib, struct, uuid, zipfile
+          import os, plistlib, struct, uuid, zipfile
           pos = 32
           image_uuid = None
           for _ in range(struct.unpack_from('<I', image, 16)[0]):
@@ -415,7 +415,10 @@ jobs:
               pos += size
           assert image_uuid, 'native image UUID missing'
           with zipfile.ZipFile('scm-ipa/Madeira.ipa') as ipa:
-              bundle = plistlib.loads(ipa.read('Payload/Madeira.app/Info.plist'))['CFBundleIdentifier']
+              info = plistlib.loads(ipa.read('Payload/Madeira.app/Info.plist'))
+              bundle = info['CFBundleIdentifier']
+          assert info['MadeiraBuild'].endswith(' source=' + os.environ['GITHUB_SHA']), 'IPA source revision differs from workflow commit'
+          print('::notice title=IPA source revision::' + info['MadeiraBuild'])
           print('::notice title=Steam candidate image::bundle=' + bundle + ' native-UUID=' + image_uuid)
           PY
 

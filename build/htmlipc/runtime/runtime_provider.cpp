@@ -86,6 +86,7 @@ static void *published_module;
 static bool registry_quarantined;
 static bool installed_announced;
 static bool install_error_announced;
+static bool controller_error_announced;
 static Wide executable_path[32768];
 static Wide steam_directory[32768],cache_directory[32768];
 static U32 steam_root_length;
@@ -266,6 +267,7 @@ static Entry *make_entry_locked(install::Installer *i,void *controller,void *to,
 static Lease acquire(void *stream,Operation op,const Originals &original){
     __atomic_fetch_add(&calls,U64(1),__ATOMIC_RELAXED);
     Lease result{};Error error=Error::None;U32 thread=GetCurrentThreadId();
+    install::Diagnostic controller_diagnostic{};
     if(!pin_source()){report(Error::SourcePinFailed);return {nullptr,{},true,false,false,thread,false};}
     if(!lock_registry())return {nullptr,{},true,false,false,thread,false};
     Entry *e=nullptr;
@@ -279,12 +281,21 @@ static Lease acquire(void *stream,Operation op,const Originals &original){
         void *from=*reinterpret_cast<void **>(controller+0x178);
         if(stream!=to&&stream!=from){unlock_registry();return result;}
         result.owned=true;
-        if(!install::validate_live_controller(i,controller))error=Error::ControllerInvalid;
+        if(!install::validate_live_controller(i,controller)){
+            controller_diagnostic=i->diagnostic;error=Error::ControllerInvalid;
+        }
         else if(!to||!from||to==from)error=Error::PartialPublication;
         else if(!stream_valid(i,to)||!stream_valid(i,from))error=Error::StreamInvalid;
         else e=make_entry_locked(i,controller,to,from,original,&error);
     }
-    if(error!=Error::None){unlock_registry();report(error);return {e,{},true,false,false,thread,false};}
+    if(error!=Error::None){
+        unlock_registry();
+        if(error==Error::ControllerInvalid){bool expected=false;
+            if(__atomic_compare_exchange_n(&controller_error_announced,&expected,true,false,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE))
+                announce_install_diagnostic(controller_diagnostic);
+        }
+        report(error);return {e,{},true,false,false,thread,false};
+    }
     result.owned=true;result.entry=e;result.scope=e->scope;result.thread=thread;
     bool reentrant_available=op==Operation::Available&&waiting(e,thread);
     if(__atomic_load_n(&e->quarantined,__ATOMIC_ACQUIRE)||
