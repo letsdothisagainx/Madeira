@@ -1,141 +1,116 @@
-# 64-bit Steam: signing limit and reverse mixed-mode child loader
+# Windows Steam: verified fixes and the remaining address-space limit
 
-The next uploaded capture (Wine launch at 15:52:13 on 2026-11-02) matches
-IPA UUID `3DF3028A-A24D-3CE5-9C3D-B98583BAD5E6`, source `fb62aab`, Actions
-[41463797862](https://github.com/letsdothisagainx/Madeira/actions/runs/41463797862).
-Steam is now AMD64 and requests `cef.win64/steamwebhelper.exe` with build ID
-`1792618285`. AppID 730's local manifest and executable remain present.
+## Current device evidence
 
-## First failure: real address-space exhaustion
+The 19:06 capture on iPhone18,3 / iOS 26.6.1 matches native UUID
+`653A3A58-4AF4-3DD7-A9B7-0A2701A87F73`, source `809f8dc`.
+Both installed entitlements and the embedded profile now grant extended virtual
+addressing. `TASK_VM_INFO.max_address` remains `0xfc0000000` (63 GiB), before
+Wine starts as well as during guest allocation. The first Chromium reservation
+still fails: its largest available gap is 32,000 MiB, below the temporary
+32 GiB request. The screenshot's readable “Steamwebhelper is not responding”
+dialog does not establish a working browser or Library.
 
-Both installed entitlements and the embedded provisioning profile report
-`extended-va=0` / `profile-extended-va=0`. The kernel map ends at
-`0xfc0000000` (63 GiB). The largest free interval is about 25 GiB. The first
-64-bit webhelper fails three fixed 16 GiB random-address requests and then
-two contiguous `0x7ffff0000` reservations (32 GiB minus 64 KiB), returning
-`STATUS_NO_MEMORY`.
+The prior native helper fixes are verified in these captures:
 
-`chrome_elf.dll+0xdc104` deliberately traps during initialization; Wine then
-reports initialization failed with breakpoint status `80000003`. This precedes
-browser readiness and any CS2 process. It is not evidence that CS2's executable
-or login data disappeared. It is not physical RAM exhaustion.
+* Fresh native ntdll selection works in both architecture directions.
+* Per-thread WoW64 queries return the owner's actual PEB32. The previous
+  `wow64.dll` null-relative `0x480` write is absent.
+* Native Wine system DLL selection avoids executing hybrid x86 entry points
+  as ARM64; the previous kernelbase fault is absent.
+* Both native FEX retirement callbacks return `result=0x100`, and their owners
+  retire/reclaim. The previous native PC=0 teardown loop is absent.
 
-The delivered IPA already requests
-`com.apple.developer.kernel.extended-virtual-addressing` in
-`app/Madeira/Madeira.entitlements`. Its absence in both the installed signature
-and provisioning profile is a signing/profile limitation; another identical
-entitlement entry or a larger FEX RAM budget cannot grant it. The iPhone signing
-workflow must retain that entitlement and use a provisioning profile that grants
-it. The update screen now surfaces that requirement. The app does not fabricate
-a reservation, shrink Chromium's returned allocation, disable its checks, or
-claim that a profile change has already happened. An extended map is necessary
-for this observed layout; successful browser startup still needs a device run.
+Library responsiveness and authenticated CS2 process creation remain unverified.
 
-## Second failure: hybrid ntdll copied into a native child
+## Correction: extended VA did not promise a 512 GiB map
 
-An i386 child (TID `00bc`, PEB `0x400310000`) then runs native `wow64.dll`.
-Its native call reaches a private copy of the session's hybrid ntdll at
-`ntdll.dll+0x923d4`. The logged instruction stream contains x86 bytes
-`48 8b c4 48 89 58 20 55 ...`, interpreted as ARM64. Illegal-instruction
-delivery recurses through a null read in that same foreign loader copy.
+Earlier guidance incorrectly attributed the 63 GiB ceiling to missing EVA and
+implied that re-signing would provide a larger map. The new device evidence
+rules that out. Public Apple XNU source explains the observed behavior:
 
-`wine_ios_child_main` supported the forward architecture transition only:
-an AMD64 child under a native ARM64 session got a fresh hybrid ntdll. All other
-children cloned the session ntdll. After Steam migrated to AMD64, that clone
-source was hybrid, although an i386 child's native host and a pure ARM64 child
-need native ARM64 ntdll.
+* [kern_exec.c](https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/kern/kern_exec.c#L3578)
+  treats JIT permission, increased memory and EVA as alternative reasons to
+  request the same jumbo map.
+* [vm_map.c](https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/osfmk/vm/vm_map.c#L21677)
+  describes that policy as 64 GB.
+* [vm_param.h](https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/osfmk/mach/arm/vm_param.h#L153)
+  defines `MACH_VM_JUMBO_ADDRESS` as `0xfc0000000`, exactly the measured limit.
 
-The loader now records the actual session ntdll PE machine once, independently
-of the temporarily mutable startup image information. It clones only compatible
-native loader images. In either cross-architecture direction it maps a fresh,
-process-owned ntdll of the correct architecture, wires and syncs dispatchers,
-TSD offset and FEX arena exports, and publishes its callbacks only after required
-exports and machine/CHPE validation succeed. A WoW64 host receives its own
-guest32 startup block in its private native ntdll. Parent images and surviving
-siblings remain unchanged. No FEX submodule, allocator budget, installed game,
-prefix, Steam executable or authentication file is changed by this patch.
+These public sources predate iOS 26.6.1, but their constant and behavior match
+independent task-info and allocation probes. Increased memory was already
+present before EVA was added. A larger private kernel entitlement is not a
+supported developer-app solution and must not be added or spoofed.
 
-The common `cc cc 0f 0b` trap sequence does not identify a BackupRefPtr assertion.
-The old unconditional label and interpretation of two raw stack slots were
-incorrect for this capture. Diagnostics now report the bytes and raw offsets
-with `subsystem=unresolved`, preserving normal exception delivery.
+The delivered IPA's actual main executable requests EVA, increased memory and
+get-task-allow; [41544564638](https://github.com/letsdothisagainx/Madeira/actions/runs/41544564638)
+verified those values and the exact UUID without rebuilding it. Further signing
+changes are not the next compatibility fix on this device. The in-app update
+screen's earlier signing advice has been corrected accordingly.
 
-## Validation
+## Exact Chromium allocation contract
 
-The new test compiles the production selector and private loader. It checks
-both transition directions, repeated native WoW64 owners, immutable parent and
-surviving child data, private startup blocks, EC-only dispatch swaps and
-metadata redirects, and failed mappings/machines/exports before publication.
-Existing process/alias ownership and thread-retirement checks remain applicable.
-The final package gate requires the new child-loader and neutral trap markers.
+[41552679648](https://github.com/letsdothisagainx/Madeira/actions/runs/41552679648)
+inspected Valve's hash-verified current Win64 packages, without rebuilding the
+Madeira IPA. The extracted chrome_elf.dll matches the captured FEX module
+identity `chrome_elf.dll-c19aa5b303d01ae8`:
 
-This patch addresses the secondary native child defect. It does not solve the
-missing provisioning entitlement, prove the secondary loop is absent on the
-iPhone, or establish that Steam/Chromium/CS2 now starts successfully. Re-signing
-with the needed capability, a normal responsive Steam login/Library session,
-and authenticated CS2 process creation remain device acceptance work.
+* AMD64, image size `0x166000`, Chromium `126.0.6478.183`.
+* SHA-256 `6358830f96f36efa7516b3277cf69c1f132f97d4d93c365ccf061a7cf11e1e39`.
+* PDB GUID `AAFBA60F-A38A-0B1C-4C4C-44205044422E`, age 1. No PDB function-name
+  symbolication was obtained; the following evidence is from actual machine
+  instructions and PE unwind boundaries.
 
-## Follow-up: the 16:58 capture tests the new loader
+The initializer at RVA `0x417f0` requests a 16 GiB pool aligned to 16 GiB, then a
+second 16 GiB pool with a preceding 64 KiB guard. It registers each pool with
+size 16 GiB. Total retained space is 32 GiB plus the guard. The first failed
+`0x7ffff0000` request is temporary alignment over-allocation for the first
+16 GiB pool, not a retained 32 GiB first pool. The second pool's fallback would
+temporarily require 32 GiB.
 
-The next capture matches UUID `6A0F494F-A17F-3B9F-A084-5936FC6A1321`, source
-`c48b103`. The private native ntdll is selected and reports `ready=1` for the
-i386 helper owners. That does not establish successful helper initialization:
+This matches Chromium 126's three fixed random-address attempts followed by
+[over-reserve and trim](https://github.com/chromium/chromium/blob/126.0.6478.183/base/allocator/partition_allocator/src/partition_alloc/page_allocator.cc#L240).
+Windows uses ordinary VirtualAlloc; the inspected implementation has no
+VirtualAlloc2 aligned-allocation route. Under the measured map, after retaining
+a 16 GiB-aligned pool at 16–32 GiB, the upper tail is only 31 GiB; after placing
+it at 32–48 GiB, the lower usable range is at most 28 GiB. Moving the FEX arena
+alone therefore cannot finish this fallback sequence. Arbitrary fixed requests
+must not be relocated, reservations fabricated, or Chromium checks disabled.
+The saved `nrip=chrome_elf+0x4e0ca` is an error/lock-helper return, not a
+symbolicated allocation caller.
 
-* The first native helper faults at `wow64.dll+0x1d124`, storing to `0x480`.
-  `process_init` queried `ProcessWow64Information`, received a null PEB32, then
-  addressed `WOW64INFO` at `PEB32 + 1`. The Unix current-process query still used
-  session-global `wow_peb`, which concurrent child startup/retirement can change.
-  It now uses the calling thread's actual WoW64 TEB and native PEB. Native and
-  AMD64 callers return zero; remote-query behavior is preserved.
-* A later helper calls `kernelbase.dll+0x80004` as ARM64, but the logged bytes are
-  x86 (`48 8b c4 48 89 58 20 55 ...`). A correct private ntdll alone does not fix
-  the prefix's hybrid `system32` DLL selection. The builtin resolver now selects
-  the ARM64 PE version of a Wine hybrid DLL for a native caller, with an explicit
-  machine check. Missing/incompatible replacements fail normally. Application
-  DLLs, i386 DLLs, AMD64 mappings and hybrid siblings keep their existing paths.
+The current Win64 manifest (version `1792618285`, ostype `win10`) has one CEF
+package and one webhelper package; no newer OS-specific alternative was missed.
+Its core references `bin/cef/cef.win64/steamwebhelper.exe`. No verified compatible
+current 32-bit CEF route was found. Legacy flags or the old installed cef.win7
+folder must not be selected merely because historical workarounds mention them.
 
-The new regression fixtures execute those production query/resolver paths,
-including concurrent process identities, disabled/native overrides, failed
-replacement mappings and unaffected sibling architectures. Package validation
-requires both new diagnostic markers. No allocator or protection budget changes
-are part of this follow-up.
+## Cleanup bridge and validation
 
-The first Chromium failure still precedes these helper faults: a 32 GiB reserve
-cannot fit the observed map (largest gap 31,744 MiB), and the signature/profile
-still report extended virtual addressing disabled. Both helper owners do reach
-retirement and report zero remaining views. The native-child corrections must be
-retested on the phone; Chromium readiness, Library interaction and CS2 launch
-remain unverified and blocked by the observed address-space shortage.
+The native retirement callback issues NtFreeVirtualMemory. Previously a direct
+Unix-to-PE call reused the active syscall frame and kernel stack, overwriting
+the exit caller and restoring LR=0. Native hold-release and retirement now use
+Wine's existing nested user-callback transition: a fresh chained frame and the
+owned native user stack. Invalid owner/stack contexts refuse with bounded
+diagnostics. Fresh restore flags and FPCR/FPSR packing are initialized correctly.
 
-## Follow-up: native cleanup re-entered the active syscall frame
+All 79 host checks, compilation and final ABI checks passed in
+[41540474630](https://github.com/letsdothisagainx/Madeira/actions/runs/41540474630).
+The ARM64 regression executes the actual callback and syscall dispatchers,
+reproduces the old PC=0 failure, and validates repeated nested frees, dirty
+stacks, owners, trace modes and preserved nonvolatile state. These results do
+not prove native Steam Library or CS2 success.
 
-The 17:33 capture tests UUID `E119B5B7-610A-3A97-BB6B-EA289FDC6C86`, source
-`4693944`. The WoW64 queries now return each child's own PEB32, and native DLL
-replacement succeeds. Neither the earlier `0x480` write nor the x86 kernelbase
-entry fault recurs. A separate cleanup fault is now exposed:
+## Legitimate CS2 launch path available for testing
 
-1. The 32-bit OpenGL helper cannot import its genuinely missing SDL2.dll and
-   terminates with `c0000135`. The 32-bit Vulkan helper separately returns 1.
-2. Unix exit calls the registered FEX retirement callback directly.
-3. The callback frees its call/return stack and decommits an allocator span,
-   issuing `NtFreeVirtualMemory` from inside the still-active Unix exit call.
-4. The ARM64 syscall dispatcher reloads the same TEB syscall frame and switches
-   onto its stack, overwriting the active caller. The native ntdll stub's RET
-   then has LR=0; the capture repeats native PC=0 faults before retirement.
+The latest capture confirms AppID 730's manifest and executable are present,
+but contains no `native-steam-play-v1`, `-applaunch`, cs2.exe or game-action-error
+event. It does not test a CS2 launch or establish current core authentication.
 
-The retirement callback's native ARM64 address was valid. The error was the
-missing Unix-to-PE transition, not an EC dispatcher slot requiring fabrication.
-Both hold-release and retirement callbacks now use Wine's existing nested user
-callback transition. It chains a fresh syscall frame, executes the PE callback
-on the owned native user stack, and restores the caller's frame and registers
-before owner retirement. Invalid stack/owner contexts refuse the callback with
-bounded diagnostics. The reused transition also initializes its fresh restore
-flags and correctly packs FPCR/FPSR into separate halves of its saved word.
-
-Regression tests execute the production wrapper and ARM64 transitions with
-nested syscalls, dirty reused kernel-stack memory, preserved outer frames and
-registers, and rejected invalid stacks. This does not supply the missing SDL2
-dependency or remove Chromium's genuine 32 GiB reservation failure. Extended VA
-is still absent from this capture's signature/profile; Library and CS2 cannot
-be called fixed. The next phone run must validate cleanup without a null-PC loop
-and independently establish a sufficient signed address map for Chromium.
+The existing route is Madeira Library → CS2 → Game details → Steam → Start with
+→ Steam client → Play. Close the current Wine session first; relaunch Madeira
+if its one-session guard requests it. NativeSteamPlay validates the existing
+manifest, install directory and Steam library registration, then starts genuine
+`steam.exe -applaunch 730`. Steam handles authentication, ownership and launch.
+This route's behavior while Chromium fails remains unverified. It does not
+replace the native Library, fake authentication or bypass VAC.

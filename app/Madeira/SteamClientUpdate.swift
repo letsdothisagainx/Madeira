@@ -158,14 +158,14 @@ struct SteamClientUpdateView: View {
         NavigationStack {
             Form {
                 Section {
-                    Text("The discontinued 32-bit Steam client can reject games with ‘Steam client outdated’. Download Valve's genuine 64-bit launcher, then start Windows Steam to complete its official update.")
+                    Text("An outdated Steam client can reject games with ‘Steam client outdated’. Download Valve's genuine 64-bit launcher, then start Windows Steam to complete its official update.")
                     Text("Your Steam folder, account session and installed games are kept. The previous launcher is backed up.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 if !checkAppEntitlement("com.apple.developer.kernel.extended-virtual-addressing") {
-                    Section("Signing requirement") {
-                        Text("This signed copy is missing Extended Virtual Addressing. The 64-bit Steam browser needs large contiguous virtual reservations that can exceed the standard address map. Re-sign Madeira with a provisioning profile that grants Extended Virtual Addressing, then install it as an update.")
-                        Text("The IPA already requests this capability. Adding more physical memory does not grant it.")
+                    Section("Address-space limits") {
+                        Text("This copy lacks Extended Virtual Addressing, but increased-memory or JIT permission can already select the same iOS address-space limit. A missing entitlement alone does not diagnose a Steam startup failure.")
+                        Text("The 64-bit browser also needs large aligned reservations. Enabling this entitlement does not guarantee that it can initialize.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                 }
