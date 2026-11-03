@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import zipfile
 import struct
+import plistlib
 root = Path(__file__).resolve().parents[2]
 entry = (root/'tools/build-ipa.sh').read_text()
 assert entry.index('"$ROOT/tools/build/setup-llvm-mingw.sh"') < entry.index('"$ROOT/build/madeira-dock/build.sh"') < entry.index('"$ROOT/tools/build/package-ipa.sh"')
@@ -84,6 +85,11 @@ with tempfile.TemporaryDirectory() as temp:
     (t/'tools/check-io-abi-package.py').write_text((root/'tools/check-io-abi-package.py').read_text())
     bodies = {
       'xcodebuild': '''mkdir -p "$TEST_APP/arm64ec-windows" "$TEST_APP/i386-windows" "$TEST_APP/x86_64-vcruntime" "$TEST_APP/aarch64-windows"
+python3 - "$TEST_APP/Info.plist" <<'PY_FIXTURE_INFO'
+import plistlib, sys
+from pathlib import Path
+Path(sys.argv[1]).write_bytes(plistlib.dumps({'CFBundleIdentifier':'test.madeira.fixture', 'CFBundleShortVersionString':'0.1.3', 'CFBundleVersion':'4'}))
+PY_FIXTURE_INFO
 cp "$ROOT/app/Madeira/aarch64-windows/wow64.dll" "$ROOT/app/Madeira/aarch64-windows/xtajit.dll" "$TEST_APP/aarch64-windows/"
 cp "$ROOT/app/Madeira/aarch64-windows/services.exe" "$TEST_APP/aarch64-windows/"
 if [ "${STALE_SCM:-}" = 1 ]; then printf 'old SCM' > "$TEST_APP/aarch64-windows/services.exe"; fi
@@ -124,16 +130,23 @@ done
     }
     for name, body in bodies.items():
         p=commands/name; p.write_text('#!/bin/sh\nset -eu\n'+body); p.chmod(0o755)
-    env=dict(os.environ, ROOT=str(t), TEST_APP=str(t/'app/DerivedData/Build/Products/Debug-iphoneos/Madeira.app'), PATH=str(commands)+os.pathsep+os.environ['PATH'])
+    revision = '0123456789abcdef0123456789abcdef01234567'
+    env=dict(os.environ, ROOT=str(t), GITHUB_SHA=revision, TEST_APP=str(t/'app/DerivedData/Build/Products/Debug-iphoneos/Madeira.app'), PATH=str(commands)+os.pathsep+os.environ['PATH'])
     def run(extra=None):
         return subprocess.run(['bash',str(package)],env=dict(env,**(extra or {})),capture_output=True,text=True)
     result=run(); assert result.returncode == 0, result.stdout+result.stderr
     with zipfile.ZipFile(t/'dist/Madeira.ipa') as archive:
+        info = plistlib.loads(archive.read('Payload/Madeira.app/Info.plist'))
+        assert info['MadeiraBuild'] == 'v0.1.3 (4) source=' + revision
+        assert info['CFBundleIdentifier'] == 'test.madeira.fixture'
         for resource in ['dockhost.exe','dock-notices.txt','madeira-steam-service.exe','madeira-scm-probe.exe']:
             assert archive.read('Payload/Madeira.app/arm64ec-windows/'+resource) == (service_fixture if resource == 'madeira-steam-service.exe' else b'fixture')
     with zipfile.ZipFile(t/'dist/Madeira.ipa') as archive:
         for resource in ['madeira-wow64-probe.exe','madeira-wow64-module-probe.dll']:
             assert archive.read('Payload/Madeira.app/i386-windows/'+resource)==b'fixture'
+    result=run({'GITHUB_SHA':'invalid-revision'})
+    assert result.returncode and 'invalid source revision' in result.stderr, result.stderr
+    print('PASS exact source revision is packaged in the existing build label; invalid revisions fail closed and bundle ID is preserved')
     for resource,expected in [('madeira-htmlipc-bridge.dll',bridge),('madeira-htmlipc-bridge.manifest.json',json.dumps(bridge_manifest).encode())]:
         with zipfile.ZipFile(t/'dist/Madeira.ipa') as archive:
             assert archive.read('Payload/Madeira.app/arm64ec-windows/'+resource)==expected
