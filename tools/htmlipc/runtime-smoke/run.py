@@ -139,7 +139,8 @@ def main(root, artifacts):
               'authentication_attempted': False, 'library_or_game_launch_validated': False,
               'client_arguments': CLIENT_ARGUMENTS, 'graphics_control': False, 'bridge_installed': False,
               'bridge_connected': False, 'bridge_failure': [], 'missing_dlls': [],
-              'bridge_loader_entry': False, 'version_load_events': []}
+              'bridge_loader_entry': False, 'version_load_events': [],
+              'image_mismatch': []}
     xvfb = subprocess.Popen(['Xvfb', ':109', '-screen', '0', '1280x800x24', '-nolisten', 'tcp'],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     processes = [xvfb]
@@ -199,6 +200,8 @@ def main(root, artifacts):
                 report['bridge_connected'] |= 'MADEIRA_HTMLIPC connected pid=' in raw_now
                 install_failures = re.findall(r'MADEIRA_HTMLIPC install-error pid=(\d+) code=(\d+)', raw_now)
                 if install_failures:
+                    report['image_mismatch'] = re.findall(
+                        r'MADEIRA_HTMLIPC image-mismatch stage=(\d+) rva=(\d+) expected=(\d+) actual=(\d+) bytes=(\d+) expected-protection=(\d+) actual-protection=(\d+) image-size=(\d+) query-flags=(\d+)', raw_now)[:1]
                     report['bridge_failure'] = ['install', *install_failures[0]]
                     report['result'] = 'failed-source-bridge-installation'
                     break
