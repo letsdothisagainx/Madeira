@@ -12,6 +12,8 @@ import json
 import re
 import struct
 import urllib.request
+import urllib.error
+import time
 import zipfile
 from pathlib import Path, PurePosixPath
 
@@ -83,6 +85,21 @@ def machine(data):
     return struct.unpack_from('<H', data, offset + 4)[0]
 
 
+def open_official(url):
+    for attempt in range(3):
+        try:
+            return urllib.request.urlopen(url, timeout=30)
+        except urllib.error.HTTPError as error:
+            if error.code not in (429, 500, 502, 503, 504) or attempt == 2:
+                raise
+            print('OFFICIAL_CDN_RETRY', attempt + 1, error.code, flush=True)
+        except (urllib.error.URLError, TimeoutError):
+            if attempt == 2: raise
+            print('OFFICIAL_CDN_RETRY', attempt + 1, 'connection', flush=True)
+        time.sleep(attempt + 1)
+    raise AssertionError('bounded retry fell through')
+
+
 def fetch(name, size=None):
     cache = Path(os.environ['MADEIRA_VALVE_ARCHIVE_CACHE']) if os.environ.get('MADEIRA_VALVE_ARCHIVE_CACHE') else None
     cached = cache / name if cache else None
@@ -91,7 +108,7 @@ def fetch(name, size=None):
         assert len(existing) == size
         return existing
     # Redirects remain HTTPS and at an official steamstatic.com CDN host.
-    with urllib.request.urlopen(ORIGIN + name, timeout=90) as response:
+    with open_official(ORIGIN + name) as response:
         from urllib.parse import urlparse
         url = urlparse(response.url)
         assert url.scheme == 'https' and url.hostname.endswith('.steamstatic.com')
@@ -100,9 +117,6 @@ def fetch(name, size=None):
     assert len(blob) <= limit
     if size is not None:
         assert len(blob) == size
-    if size is not None and cached:
-        cache.mkdir(parents=True, exist_ok=True)
-        cached.write_bytes(blob)
     return blob
 
 
@@ -141,8 +155,13 @@ def stage(root, current_manifest_path, current_manifest_sha, mode, bridge_dll=No
     unpacked = 0
     browser_files = {}
     for label, (name, size, sha) in selected:
+        print('PINNED_ARCHIVE', label, name, flush=True)
         blob = fetch(name, size)
         assert digest(blob) == sha
+        if os.environ.get('MADEIRA_VALVE_ARCHIVE_CACHE'):
+            cache = Path(os.environ['MADEIRA_VALVE_ARCHIVE_CACHE'])
+            cache.mkdir(parents=True, exist_ok=True)
+            (cache / name).write_bytes(blob)
         report['archives'].append({'label': label, 'file': name, 'size': size, 'sha256': sha})
         with zipfile.ZipFile(io.BytesIO(blob)) as archive:
             for member in archive.infolist():

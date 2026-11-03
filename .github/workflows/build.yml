@@ -21,6 +21,11 @@ jobs:
           sudo dpkg --add-architecture i386
           sudo timeout 120 apt-get update -qq
           sudo timeout 600 apt-get install -y --no-install-recommends wine wine64 wine32:i386 xvfb openbox scrot x11-utils tesseract-ocr python3-opencv ca-certificates winbind fonts-wine fonts-liberation binutils-mingw-w64-x86-64 libgl1-mesa-dri libgl1-mesa-dri:i386 libgl1:i386 libx11-6:i386 libxext6:i386 libxcursor1:i386 libxi6:i386 libxrandr2:i386 libxrender1:i386 libxcomposite1:i386 libvulkan1 libvulkan1:i386 mesa-vulkan-drivers mesa-vulkan-drivers:i386
+      - uses: actions/cache/restore@v4
+        with:
+          path: .valve-package-cache
+          key: valve-htmlipc-v1-1792618285-1769731672-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: valve-htmlipc-v1-1792618285-1769731672-
       - name: Prepare pinned source compiler and exact read-only fixture
         run: |
           python3 -m venv "$RUNNER_TEMP/htmlipc-tools"
@@ -41,6 +46,11 @@ jobs:
       - name: Run actual source-adapted client; stop on first compatibility error
         run: |
           timeout 360 /usr/bin/python3 tools/htmlipc/runtime-smoke/run.py --root "$RUNNER_TEMP/bridge" --artifacts "$RUNNER_TEMP/runtime-artifacts/bridge" || test "$?" = 2
+      - uses: actions/cache/save@v4
+        if: always() && hashFiles('.valve-package-cache/**') != ''
+        with:
+          path: .valve-package-cache
+          key: valve-htmlipc-v1-1792618285-1769731672-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Collect only bounded fixture and static-label runtime evidence
         if: always()
         run: |
