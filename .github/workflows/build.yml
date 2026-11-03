@@ -1,122 +1,28 @@
-name: Inspect exact Valve and stock CEF ABI
+name: Read verified CEF ABI report
 on:
   workflow_dispatch:
 permissions:
   contents: read
+  actions: read
 jobs:
   inspect:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
     steps:
-      - run: python3 -m pip install pefile==2024.8.26 unicorn==2.1.4
-      - name: Inspect hash-pinned official CEF without executing DLL initialization
+      - name: Read previously verified ABI artifact only
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          python3 - <<'PYINSPECT'
-          """Read-only identity/ABI inspection of official archives; never execute DllMain."""
-          from pathlib import Path
-          import base64,hashlib,io,json,struct,tarfile,urllib.request,urllib.parse,uuid,zipfile
-          import pefile
-          from unicorn import Uc,UC_ARCH_X86,UC_MODE_64
-          from unicorn.x86_const import UC_X86_REG_RCX,UC_X86_REG_RSP,UC_X86_REG_RAX,UC_X86_REG_RIP
-          
-          OUT=Path('cef-abi-report.json')
-          VALVE_FILE='bins_cef_win64.zip.0bad5abe29375d80e5bb0eedf714329369140164'
-          VALVE_SHA='e5e660226cc586c3cbc9a225f92e041664f228f83ef210574e39967c82c691cc'
-          STOCK_VERSION='126.2.18+g3647d39+chromium-126.0.6478.183'
-          report={}
-          def fetch(url):
-           with urllib.request.urlopen(url,timeout=150) as r:return r.read()
-          def digest(data,algorithm='sha256'):return hashlib.new(algorithm,data).hexdigest()
-          def file_nodes(text):
-           tokens=[a if a else b for a,b in __import__('re').findall(r'"([^"\r\n]*)"|([{}])',text)]
-           pos=0
-           def parse():
-            nonlocal pos
-            d={}
-            while pos<len(tokens):
-             key=tokens[pos];pos+=1
-             if key=='}':return d
-             value=tokens[pos];pos+=1
-             d[key]=parse() if value=='{' else value
-            return d
-           def walk(node,path=()):
-            if isinstance(node,dict):
-             if 'file' in node:yield path,node
-             for k,v in node.items():yield from walk(v,path+(k,))
-           return list(walk(parse()))
-          def archive_members(blob,kind):
-           if kind=='zip':
-            with zipfile.ZipFile(io.BytesIO(blob)) as z:
-             return {n:z.read(n) for n in z.namelist() if n.lower().endswith(('/libcef.dll','/chrome_elf.dll','/steamwebhelper.exe','/cef_api_hash.h','/cef_version.h')) or n.lower() in ('libcef.dll','chrome_elf.dll','steamwebhelper.exe')}
-           with tarfile.open(fileobj=io.BytesIO(blob),mode='r:bz2') as z:
-            return {m.name:z.extractfile(m).read() for m in z if m.isfile() and m.name.lower().endswith(('/libcef.dll','/chrome_elf.dll','/cef_api_hash.h','/cef_version.h'))}
-          def pure_exports(pe,names):
-           exports={e.name.decode():e.address for e in pe.DIRECTORY_ENTRY_EXPORT.symbols if e.name}
-           assert pe.FILE_HEADER.Machine==0x8664
-           base=pe.OPTIONAL_HEADER.ImageBase;image=pe.get_memory_mapped_image();size=(len(image)+0xfff)&~0xfff
-           cpu=Uc(UC_ARCH_X86,UC_MODE_64);cpu.mem_map(base,size);cpu.mem_write(base,image)
-           stack=0x200000000000;cpu.mem_map(stack,0x20000);sentinel=stack+0x1f000
-           def invoke(name,arg):
-            sp=stack+0x10000-8;cpu.mem_write(sp,struct.pack('<Q',sentinel));cpu.reg_write(UC_X86_REG_RSP,sp);cpu.reg_write(UC_X86_REG_RCX,arg)
-            cpu.emu_start(base+exports[name],sentinel,timeout=1000000,count=1000)
-            assert cpu.reg_read(UC_X86_REG_RIP)==sentinel,'pure export did not return within 1000 instructions'
-            return cpu.reg_read(UC_X86_REG_RAX)
-           api={}
-           for name in names:
-            if name=='cef_api_hash':
-             for arg in range(3):
-              pointer=invoke(name,arg);assert base<=pointer<base+size
-              value=bytes(cpu.mem_read(pointer,128)).split(b'\0')[0].decode('ascii');assert len(value)==40 and all(c in '0123456789abcdef' for c in value)
-              api[str(arg)]=value
-            elif name=='cef_version_info':api[name]=[invoke(name,arg)&0xffffffff for arg in range(8)]
-           return api
-          
-          def identity(label,name,data):
-           p=pefile.PE(data=data);exports={e.name.decode():e.forwarder.decode() if e.forwarder else None for e in getattr(p,'DIRECTORY_ENTRY_EXPORT',type('E',(),{'symbols':[]})).symbols if e.name};imports={}
-           for e in getattr(p,'DIRECTORY_ENTRY_IMPORT',[]):imports[e.dll.decode().lower()]=sorted(i.name.decode() if i.name else '#'+str(i.ordinal) for i in e.imports)
-           pdb=[]
-           for e in getattr(p,'DIRECTORY_ENTRY_DEBUG',[]):
-            if e.struct.Type==2:
-             b=p.get_data(e.struct.AddressOfRawData,e.struct.SizeOfData)
-             if b[:4]==b'RSDS':pdb.append({'guid':str(uuid.UUID(bytes_le=b[4:20])).upper(),'age':struct.unpack_from('<I',b,20)[0],'basename':b[24:].split(b'\0')[0].decode(errors='replace').replace('\\','/').split('/')[-1]})
-           versions={}
-           for group in getattr(p,'FileInfo',[]):
-            for entry in group:
-             for table in getattr(entry,'StringTable',[]):versions.update({k.decode():v.decode(errors='replace') for k,v in table.entries.items() if k in [b'FileVersion',b'ProductVersion',b'LastChange']})
-           out={'member':name,'sha256':digest(data),'machine':hex(p.FILE_HEADER.Machine),'image_size':hex(p.OPTIONAL_HEADER.SizeOfImage),'timestamp':hex(p.FILE_HEADER.TimeDateStamp),'pdb':pdb,'version':versions,'exports':exports,'imports':imports}
-           if name.lower().endswith('libcef.dll'):out['api']=pure_exports(p,['cef_api_hash','cef_version_info'])
-           report[label]=out;print('IDENTITY',label,json.dumps({k:v for k,v in out.items() if k not in ['exports','imports']}),flush=True)
-           return out
-          manifest=fetch('https://client-update.akamai.steamstatic.com/steam_client_win64');nodes=file_nodes(manifest.decode())
-          assert any(n['file']==VALVE_FILE and n.get('sha2')==VALVE_SHA for _,n in nodes),'pinned CEF is absent/different in current official manifest'
-          report['valve_manifest']={'sha256':digest(manifest),'cef_file':VALVE_FILE,'cef_archive_sha256':VALVE_SHA}
-          valve=fetch('https://client-update.akamai.steamstatic.com/'+VALVE_FILE);assert digest(valve)==VALVE_SHA
-          for name,data in archive_members(valve,'zip').items():identity('valve_'+name.rsplit('/',1)[-1],name,data)
-          del valve
-          helper_nodes=[(path,n) for path,n in nodes if n.get('file','').startswith('bins_webhelpers_win64.zip.')]
-          assert len(helper_nodes)==1,[(p,n['file']) for p,n in helper_nodes]
-          path,helper=helper_nodes[0];blob=fetch('https://client-update.akamai.steamstatic.com/'+helper['file']);assert digest(blob)==helper['sha2'];report['helper_archive']={'file':helper['file'],'sha256':digest(blob)}
-          for name,data in archive_members(blob,'zip').items():
-           if name.lower().endswith('steamwebhelper.exe'):identity('valve_steamwebhelper.exe',name,data)
-          del blob
-          # Official Spotify distribution index supplies the archive checksum and source version.
-          try:
-           index_blob=fetch('https://cef-builds.spotifycdn.com/index.json');index=json.loads(index_blob);versions=index['windows64']['versions'];version=next(v for v in versions if v['cef_version']==STOCK_VERSION)
-           chosen=next(x for x in version['files'] if x['type']=='minimal');stock=fetch('https://cef-builds.spotifycdn.com/'+urllib.parse.quote(chosen['name'],safe=''))
-           assert digest(stock,'sha1')==chosen['sha1'];report['stock_archive']={'source':'Spotify CEF index','cef_version':STOCK_VERSION,'index_sha256':digest(index_blob),'file':chosen['name'],'index_sha1':chosen['sha1'],'sha256':digest(stock)};members=archive_members(stock,'tar')
-          except Exception as error:
-           print('SPOTIFY_FALLBACK',type(error).__name__,str(error)[:180],flush=True)
-           package='chromiumembeddedframework.runtime.win-x64';url=f'https://api.nuget.org/v3-flatcontainer/{package}/126.2.18/{package}.126.2.18.nupkg';stock=fetch(url);expected=fetch(url+'.sha512').decode().strip();assert base64.b64encode(hashlib.sha512(stock).digest()).decode()==expected
-           report['stock_archive']={'source':'CefSharp CEF NuGet package','version':'126.2.18','url':url,'official_sha512':expected,'sha256':digest(stock)};members=archive_members(stock,'zip')
-          for name,data in members.items():
-           if name.lower().endswith('.dll'):identity('stock_'+name.rsplit('/',1)[-1],name,data)
-           elif name.lower().endswith('.h'):report['stock_'+name.rsplit('/',1)[-1]]=data.decode(errors='replace')
-          v,s=report['valve_libcef.dll'],report['stock_libcef.dll'];h=report['valve_steamwebhelper.exe'];needed=h['imports'].get('libcef.dll',[])
-          report['comparison']={'platform_hash_equal':v['api']['0']==s['api']['0'],'universal_hash_equal':v['api']['1']==s['api']['1'],'commit_equal':v['api']['2']==s['api']['2'],'cef_versions_equal':v['api']['cef_version_info']==s['api']['cef_version_info'],'helper_libcef_imports':needed,'helper_imports_missing_from_stock':sorted(set(needed)-set(s['exports'])),'valve_only_exports':sorted(set(v['exports'])-set(s['exports'])),'stock_only_exports':sorted(set(s['exports'])-set(v['exports'])),'chrome_elf_export_set_equal':set(report['valve_chrome_elf.dll']['exports'])==set(report['stock_chrome_elf.dll']['exports'])}
-          print('COMPARISON',json.dumps(report['comparison'],sort_keys=True),flush=True);OUT.write_text(json.dumps(report,indent=2,sort_keys=True)+'\n');print('REPORT',OUT.name,flush=True)
-          PYINSPECT
-      - uses: actions/upload-artifact@v4
-        with:
-          name: cef-abi-report
-          path: cef-abi-report.json
-          if-no-files-found: error
+          python3 - <<'PY'
+          import subprocess,io,zipfile,json,hashlib
+          data=subprocess.check_output(['gh','api','repos/letsdothisagainx/Madeira/actions/artifacts/13203068345/zip'])
+          assert hashlib.sha256(data).hexdigest()=='cc891c56c10b4c9536a69e2b73151b456ee9ef8aff86a265c1e2d86b067712c6'
+          with zipfile.ZipFile(io.BytesIO(data)) as z: report=json.loads(z.read('cef-abi-report.json'))
+          for key in ['stock_archive','valve_manifest','helper_archive']:print('ARCHIVE',key,json.dumps(report[key],sort_keys=True))
+          stock=report['stock_chrome_elf.dll']['exports']
+          for key in ['valve_chrome_elf.dll','stock_chrome_elf.dll']:print('ELF_EXPORTS',key,json.dumps(report[key]['exports'],sort_keys=True))
+          for key in ['valve_libcef.dll','valve_steamwebhelper.exe']:
+           imports=report[key]['imports'].get('chrome_elf.dll',[])
+           print('ELF_IMPORTS',key,json.dumps(imports),'MISSING_STOCK',json.dumps(sorted(set(imports)-set(stock))))
+          print('FULL_REPORT',json.dumps(report,sort_keys=True))
+          PY
