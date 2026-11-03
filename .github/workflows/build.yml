@@ -444,6 +444,19 @@ jobs:
               assert e.get(key) is True, 'delivered IPA missing requested entitlement: ' + key
           print('PASS actual delivered main executable requests extended VA, increased memory and debugging')
           PYVERIFY
+          python3 - <<'PYBUNDLES'
+          import plistlib, zipfile
+          with zipfile.ZipFile('previous-ipa/Madeira.ipa') as z:
+              main = plistlib.loads(z.read('Payload/Madeira.app/Info.plist'))['CFBundleIdentifier']
+              print('DELIVERED IPA parent bundle ID: ' + main)
+              children = [n for n in z.namelist() if n.startswith('Payload/Madeira.app/PlugIns/') and n.endswith('.appex/Info.plist')]
+              assert children, 'missing JIT extension'
+              for n in children:
+                  child = plistlib.loads(z.read(n))['CFBundleIdentifier']
+                  print('DELIVERED IPA extension bundle ID: ' + child)
+                  assert child.startswith(main + '.'), 'extension must use a distinct child identifier'
+              print('PASS original IPA extension bundle identifiers retain the correct parent prefix and distinct suffix')
+          PYBUNDLES
           python3 -m venv "$RUNNER_TEMP/native-image-tools"
           "$RUNNER_TEMP/native-image-tools/bin/pip" install capstone==5.0.6
           "$RUNNER_TEMP/native-image-tools/bin/python" tests/host/check-native-apc-image.py
