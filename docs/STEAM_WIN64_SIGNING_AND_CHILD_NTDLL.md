@@ -177,3 +177,38 @@ paths. It is included in the Actions host gate. Device acceptance still requires
 the root command processor to start, the service to become ready, genuine Steam
 to accept `-applaunch 730`, and CS2 to create its real process. The independent
 Win64 Chromium address-space blocker remains unresolved.
+
+## The 20:49 capture reaches the real service's update handoff
+
+UUID `3556F6F5-C95F-3343-931F-F41BB8B1F899` matches the IPA built from
+`a43e51a684553d76ca43efae992d2814c6c84d06` in Actions 41559954039. The root
+probe is now `aa64`, kernel32 loads, and both service children publish valid
+private native startup exports. The capture contains no unhandled native fault.
+It does not reach steam.exe or cs2.exe.
+
+The original SteamService.exe (PID 0048) reports an official service version
+update from `000a0029001a0019` to `000b000f0046001b`, creates
+`SteamServiceTmp.exe /Update` (PID 0054), then exits zero before connecting its
+SCM dispatch pipe. Wine's `process_send_start_message` correctly fails that
+initial start with error 1053 when the original process exits. This is not a
+30-second elapsed timeout. Madeira's preparation helper immediately propagates
+1053, so its batch exits and the session stops while the updater is still alive.
+
+Service preparation now keeps the original process identity while the SCM start
+is pending. An update handoff requires the configured service's exact image,
+its held process handle, clean exit, and an actual new child at the expected
+SteamServiceTmp.exe path with matching parent and creation generation. It waits
+for that specific updater within a deadline, checks its real exit status,
+reopens the service and retries startup once. Old service handles are closed
+before waiting so Valve can legitimately replace its service registration.
+Only a genuine queried SERVICE_RUNNING state permits the Steam launch to
+continue. Other failures, foreign helpers, timeouts and a second failed start
+remain failures. No service keys, Valve code, authentication or VAC checks are
+modified, and unrelated children are not kept alive.
+
+The helper emits `update-handoff-v1` once. Packaging requires that marker and
+byte identity between staged, bundled and zipped helpers, since a resource-only
+change need not change the native Mach-O UUID. Tests cover the update handoff
+and failures with production policy code. Real on-device service readiness,
+Steam's `-applaunch 730` result and CS2 process creation remain unverified. The
+independent current Win64 Chromium address-space constraint is unchanged.

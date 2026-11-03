@@ -118,11 +118,15 @@ def check(staged, app, ipa):
     assert b'[wpm-call-v1]' in guest, 'stale guest32 memory API producer'
     assert b'[steam-arch-v1]' in guest, 'stale Steam architecture observation producer'
     assert (app / 'i386-windows/kernelbase.dll').read_bytes() == guest, 'Xcode packaged stale guest32 caller'
+    service = (staged.parent.parent / 'arm64ec-windows/madeira-steam-service.exe').read_bytes()
+    assert b'update-handoff-v1' in service, 'stale Steam service update handoff helper'
+    assert (app / 'arm64ec-windows/madeira-steam-service.exe').read_bytes() == service, 'Xcode packaged stale Steam service helper'
     with zipfile.ZipFile(ipa) as archive:
         assert archive.read('Payload/Madeira.app/aarch64-windows/wow64.dll') == expected, 'ZIP producer differs'
         assert archive.read('Payload/Madeira.app/Madeira.debug.dylib') == native, 'ZIP native consumer differs'
         assert archive.read('Payload/Madeira.app/aarch64-windows/xtajit.dll') == cpu_data, 'ZIP FEX producer differs'
         assert archive.read('Payload/Madeira.app/i386-windows/kernelbase.dll') == guest, 'ZIP guest32 caller differs'
+        assert archive.read('Payload/Madeira.app/arm64ec-windows/madeira-steam-service.exe') == service, 'ZIP Steam service helper differs'
     print('PASS final IPA contains matching native IOSB consumer and byte-identical rebuilt ARM64 WoW64 producer')
 
 

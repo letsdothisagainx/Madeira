@@ -23,6 +23,9 @@ with tempfile.TemporaryDirectory() as temp:
         p = t/relative
         if relative.endswith(('.a','.exe','.dll','.txt')):
             p.parent.mkdir(parents=True, exist_ok=True); p.write_bytes(b'fixture')
+    service_fixture = b'fixture update-handoff-v1'
+    service_path = t/'app/Madeira/arm64ec-windows/madeira-steam-service.exe'
+    service_path.write_bytes(service_fixture)
     # A minimal architecture/marker fixture tests the gate, not executable Wine.
     wow = bytearray(256)
     wow[:2] = b'MZ'; struct.pack_into('<I', wow, 0x3c, 0x80)
@@ -69,6 +72,7 @@ printf fixture > "$TEST_APP/x86_64-vcruntime/vcruntime140.dll"
 for resource in dockhost.exe dock-notices.txt madeira-steam-service.exe madeira-scm-probe.exe; do
   if [ "${OMIT_RESOURCE:-}" != "$resource" ]; then cp "$ROOT/app/Madeira/arm64ec-windows/$resource" "$TEST_APP/arm64ec-windows/"; fi
 done
+if [ "${STALE_SERVICE:-}" = 1 ]; then printf 'old update-handoff-v1' > "$TEST_APP/arm64ec-windows/madeira-steam-service.exe"; fi
 for resource in madeira-wow64-probe.exe madeira-wow64-module-probe.dll; do
   if [ "${OMIT_RESOURCE:-}" != "$resource" ]; then cp "$ROOT/app/Madeira/i386-windows/$resource" "$TEST_APP/i386-windows/"; fi
 done
@@ -84,7 +88,7 @@ done
     result=run(); assert result.returncode == 0, result.stdout+result.stderr
     with zipfile.ZipFile(t/'dist/Madeira.ipa') as archive:
         for resource in ['dockhost.exe','dock-notices.txt','madeira-steam-service.exe','madeira-scm-probe.exe']:
-            assert archive.read('Payload/Madeira.app/arm64ec-windows/'+resource) == b'fixture'
+            assert archive.read('Payload/Madeira.app/arm64ec-windows/'+resource) == (service_fixture if resource == 'madeira-steam-service.exe' else b'fixture')
     with zipfile.ZipFile(t/'dist/Madeira.ipa') as archive:
         for resource in ['madeira-wow64-probe.exe','madeira-wow64-module-probe.dll']:
             assert archive.read('Payload/Madeira.app/i386-windows/'+resource)==b'fixture'
@@ -95,13 +99,20 @@ done
         p=t/'app/Madeira/arm64ec-windows'/resource; p.write_bytes(b'')
         result=run()
         assert result.returncode != 0 and 'required build artifact missing' in result.stderr, result.stderr
-        p.write_bytes(b'fixture')
+        p.write_bytes(service_fixture if resource == 'madeira-steam-service.exe' else b'fixture')
     for resource in ['madeira-wow64-probe.exe','madeira-wow64-module-probe.dll']:
         result=run({'OMIT_RESOURCE':resource}); assert result.returncode and 'required bundle resource missing' in result.stderr
         p=t/'app/Madeira/i386-windows'/resource; p.write_bytes(b'')
         result=run();assert result.returncode and 'required build artifact missing' in result.stderr
         p.write_bytes(b'fixture')
     print('PASS missing bundle resources and empty staging outputs fail packaging')
+    service_path.write_bytes(b'old helper')
+    result=run()
+    assert result.returncode and 'stale Steam service update handoff helper' in result.stderr, result.stderr
+    service_path.write_bytes(service_fixture)
+    result=run({'STALE_SERVICE':'1'})
+    assert result.returncode and 'Xcode packaged stale Steam service helper' in result.stderr, result.stderr
+    print('PASS stale service handoff helper and stale Xcode resource copy fail final IPA validation')
     invalid_cpu = bytearray(cpu)
     invalid_cpu[0x280] = ord('x')
     (t/'app/Madeira/aarch64-windows/xtajit.dll').write_bytes(invalid_cpu)
