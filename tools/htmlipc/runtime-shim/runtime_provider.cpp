@@ -258,7 +258,7 @@ static Lease acquire(void *stream,Operation op,const Originals &original){
         void *from=*reinterpret_cast<void **>(controller+0x178);
         if(stream!=to&&stream!=from){unlock_registry();probe_stream(stream,to,from,U32(op));return result;}
         result.owned=true;
-        if(!install::validate_live_controller(i,controller))error=Error::ControllerInvalid;
+        if(!install::validate_live_controller(i,controller)){announce_install_diagnostic(i->diagnostic);error=Error::ControllerInvalid;}
         else if(!to||!from||to==from)error=Error::PartialPublication;
         else if(!stream_valid(i,to)||!stream_valid(i,from))error=Error::StreamInvalid;
         else e=make_entry_locked(i,controller,to,from,original,&error);

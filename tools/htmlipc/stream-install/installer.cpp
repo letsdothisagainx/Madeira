@@ -195,10 +195,10 @@ Result install_loaded(Installer *s,void *module,Size image_size,const U16 *name,
 void note_unloaded(Installer *s,void *module){if(s&&s->module==module)fail(s,Error::ModuleUnloaded,0,false);}
 bool validate_live_controller(Installer *s,void *controller){
     if(!s||s->phase!=Phase::Installed||!s->module||controller!=static_cast<U8*>(s->module)+controller_object_rva)return false;
-    if(!query_span(s,controller,8,4,s->module))return false;
-    U8 *base=static_cast<U8*>(s->module);if(u64(static_cast<U8*>(controller))!=reinterpret_cast<U64>(base)+controller_vtable_rva)return false;
+    if(!query_span(s,controller,8,4,s->module,Stage::SectionProtection))return false;
+    U8 *base=static_cast<U8*>(s->module);if(u64(static_cast<U8*>(controller))!=reinterpret_cast<U64>(base)+controller_vtable_rva){diagnose(s,Stage::Metadata,controller_object_rva,reinterpret_cast<U64>(base)+controller_vtable_rva,u64(static_cast<U8*>(controller)),8);return false;}
     PE p;if(!parse(s->config,p))return false;
-    for(U32 i=0;i<42;++i){const U8 *original=at(p,controller_vtable_rva+i*8,8);if(!original||u64(base+controller_vtable_rva+i*8)!=u64(original)+reinterpret_cast<U64>(base)-p.base)return false;}
+    for(U32 i=0;i<42;++i){const U8 *original=at(p,controller_vtable_rva+i*8,8);if(!original)return false;if(u64(base+controller_vtable_rva+i*8)!=u64(original)+reinterpret_cast<U64>(base)-p.base){diagnose(s,Stage::Metadata,controller_vtable_rva+i*8,u64(original)+reinterpret_cast<U64>(base)-p.base,u64(base+controller_vtable_rva+i*8),8);return false;}}
     return true;
 }
 }
