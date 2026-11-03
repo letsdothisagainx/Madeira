@@ -8,12 +8,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: python3 -m pip install pefile==2024.8.26 capstone==5.0.6
-      - name: Inspect official hash-pinned chrome_elf allocation code
+      - run: python3 -m pip install pefile==2024.8.26 capstone==5.0.6 xxhash==3.5.0
+      - name: Inspect official hash-pinned Chrome allocator and supported Steam flags
         run: |
           python3 - <<'PYINSPECT'
           from pathlib import Path
-          import urllib.request,hashlib,zipfile,struct,uuid,pefile,capstone
+          import urllib.request,hashlib,zipfile,struct,uuid,pefile,capstone,bisect,xxhash
           url='https://client-update.akamai.steamstatic.com/bins_cef_win64.zip.0bad5abe29375d80e5bb0eedf714329369140164'
           data=urllib.request.urlopen(url,timeout=120).read()
           assert hashlib.sha256(data).hexdigest()=='e5e660226cc586c3cbc9a225f92e041664f228f83ef210574e39967c82c691cc'
@@ -21,28 +21,104 @@ jobs:
           with zipfile.ZipFile('cef.zip') as z:
            names=[n for n in z.namelist() if n.lower().endswith('chrome_elf.dll')];assert len(names)==1
            image=z.read(names[0]);Path('chrome_elf.dll').write_bytes(image)
-          p=pefile.PE(data=image);print('FILE',names[0],'MACHINE',hex(p.FILE_HEADER.Machine),'SIZE',hex(p.OPTIONAL_HEADER.SizeOfImage),'SHA256',hashlib.sha256(image).hexdigest())
+          p=pefile.PE(data=image);print('FILE',names[0],'MACHINE',hex(p.FILE_HEADER.Machine),'SIZE',hex(p.OPTIONAL_HEADER.SizeOfImage),'TIMESTAMP',hex(p.FILE_HEADER.TimeDateStamp),'SHA256',hashlib.sha256(image).hexdigest())
+          identity=xxhash.xxh3_64_intdigest(b'chrome_elf.dll')^((p.OPTIONAL_HEADER.SizeOfImage<<32)|p.FILE_HEADER.TimeDateStamp)
+          print('FEX_MODULE_ID','chrome_elf.dll-'+format(identity,'016x'));assert identity==0xc19aa5b303d01ae8
+          for group in getattr(p,'FileInfo',[]):
+           for entry in group:
+            if hasattr(entry,'StringTable'):
+             for table in entry.StringTable:print('VERSION',table.entries)
           for e in getattr(p,'DIRECTORY_ENTRY_DEBUG',[]):
            if e.struct.Type==2:
             b=p.get_data(e.struct.AddressOfRawData,e.struct.SizeOfData)
             if b[:4]==b'RSDS':print('PDB',str(uuid.UUID(bytes_le=b[4:20])).upper(),'AGE',struct.unpack_from('<I',b,20)[0],'PATH',b[24:].split(b'\0')[0].decode(errors='replace'))
+          imports={}
           for e in getattr(p,'DIRECTORY_ENTRY_IMPORT',[]):
            for x in e.imports:
-            if x.name and any(v in x.name.lower() for v in (b'virtualalloc',b'virtualfree',b'getsysteminfo',b'getnativesysteminfo')):print('IMPORT',e.dll.decode(),x.name.decode(),hex(x.address-p.OPTIONAL_HEADER.ImageBase))
-          md=capstone.Cs(capstone.CS_ARCH_X86,capstone.CS_MODE_64);md.detail=True
-          for center in [0x4e0ca,0xe1927,0xdc104]:
-           begin=max(0,center-0x90);print('\nNEAR RVA',hex(center))
-           for ins in md.disasm(p.get_data(begin,0x160),begin):
-            print(f'{ins.address:08x} {ins.bytes.hex():20s} {ins.mnemonic:8s} {ins.op_str}')
-          print('POOL CONSTANT LOCATIONS')
-          for value in [0x400000000,0x7ffff0000,0x200000000]:
-           needle=struct.pack('<Q',value)
-           at=0;hits=[]
-           while True:
-            i=image.find(needle,at)
-            if i<0:break
-            try:hits.append(hex(p.get_rva_from_offset(i)))
-            except:pass
-            at=i+1
-           print(hex(value),hits[:40])
+            if x.name:imports[x.address-p.OPTIONAL_HEADER.ImageBase]=x.name.decode()
+          md=capstone.Cs(capstone.CS_ARCH_X86,capstone.CS_MODE_64);md.detail=True;md.skipdata=True
+          ins=[]
+          for s in p.sections:
+           if s.Characteristics&0x20000000:ins.extend(md.disasm(s.get_data()[:s.Misc_VirtualSize],s.VirtualAddress))
+          funcs=sorted((e.struct.BeginAddress,e.struct.EndAddress) for e in p.DIRECTORY_ENTRY_EXCEPTION)
+          begins=[a for a,b in funcs]
+          def function(at):
+           i=bisect.bisect_right(begins,at)-1
+           if i>=0 and at<funcs[i][1]:return funcs[i]
+           return (at&~15,(at&~15)+0x100)
+          def direct_target(i):
+           return i.operands[0].imm if i.id and i.mnemonic=='call' and i.operands and i.operands[0].type==capstone.x86.X86_OP_IMM else None
+          selected={}
+          for i in ins:
+           if not i.id:continue
+           if i.mnemonic=='call' and i.operands and i.operands[0].type==capstone.x86.X86_OP_MEM:
+            m=i.operands[0].mem
+            if m.base==capstone.x86.X86_REG_RIP:
+             target=i.address+i.size+m.disp;name=imports.get(target)
+             if name in ('VirtualAlloc','VirtualFree'):
+              f=function(i.address);print('IAT_CALL',name,hex(i.address),'FUNCTION',hex(f[0]),hex(f[1]));selected[f[0]]=(f,name)
+           for o in i.operands:
+            if o.type==capstone.x86.X86_OP_IMM and o.imm in (0x400000000,0x7ffff0000):
+             f=function(i.address);print('POOL_IMMEDIATE',hex(o.imm),'AT',hex(i.address),'FUNCTION',hex(f[0]),hex(f[1]));selected[f[0]]=(f,'pool-immediate')
+          leafs=set(selected)
+          for i in ins:
+           t=direct_target(i)
+           if t in leafs:
+            f=function(i.address);print('DIRECT_CALLER',hex(i.address),'TARGET',hex(t),'FUNCTION',hex(f[0]),hex(f[1]));selected[f[0]]=(f,'IAT-wrapper-caller')
+          for a,(f,why) in sorted(selected.items()):
+           print('FUNCTION',hex(f[0]),hex(f[1]),why)
+           body=[i for i in ins if f[0]<=i.address<f[1]]
+           if len(body)>240:
+            keep=set()
+            for j,i in enumerate(body):
+             if direct_target(i) in leafs or any(o.type==capstone.x86.X86_OP_IMM and o.imm in (0x400000000,0x7ffff0000,0x10000) for o in i.operands):keep.update(range(max(0,j-12),min(len(body),j+18)))
+            body=[i for j,i in enumerate(body) if j in keep]
+           for i in body[:300]:print(f'{i.address:08x} {i.bytes.hex():20s} {i.mnemonic:8s} {i.op_str}')
+          
+          # Read-only inspection of Valve's current hash-pinned Windows core package.
+          import hashlib, io, re, struct, urllib.request, urllib.error, zipfile
+          from pathlib import Path
+          ORIGIN = 'https://client-update.akamai.steamstatic.com/'
+          PACKAGE = 'bins_win64.zip.1f91da2609327de9658146b01307e89a13cc1ef8'
+          SIZE = 64309479
+          HASH = 'f34b0d5924d0cca4c81775ed2fef0aee1ca060e2daa5c24270711267786c0236'
+          def fetch(name, limit):
+              with urllib.request.urlopen(ORIGIN + name, timeout=120) as r:
+                  assert r.status == 200 and r.url == ORIGIN + name
+                  b = r.read(limit + 1)
+              assert len(b) <= limit
+              return b
+          for name in ('steam_client_win32', 'steam_client_win32_win7'):
+              try:
+                  data=fetch(name, 2<<20); text=data.decode()
+                  version=re.search(r'"version"\s+"([0-9]+)"',text)
+                  print('CEF32-OFFICIAL-MANIFEST',name,'version='+str(version[1] if version else None),'sha256='+hashlib.sha256(data).hexdigest())
+                  for match in re.finditer(r'"(bins_cef_[^"]+|bins_webhelpers_[^"]+)"\s*\{([^}]+)\}',text):
+                      print('CEF32-MANIFEST-PACKAGE',match[1],re.sub(r'\s+',' ',match[2])[:520])
+              except urllib.error.HTTPError as e:
+                  print('CEF32-OFFICIAL-MANIFEST',name,'HTTP',e.code)
+          data=fetch(PACKAGE,SIZE)
+          assert len(data)==SIZE and hashlib.sha256(data).hexdigest()==HASH
+          print('CURRENT-CORE-PACKAGE',PACKAGE,'bytes='+str(len(data)),'sha256='+HASH)
+          flags=('cef-force-32bit','allosarches','cef.win7','cef.win64','cef.win32','32-bit steamwebhelper','32bit steamwebhelper')
+          found={f:[] for f in flags}
+          with zipfile.ZipFile(io.BytesIO(data)) as z:
+              assert sum(i.file_size for i in z.infolist()) < 600<<20
+              entries=[n for n in z.namelist() if n.lower().endswith(('.dll','.exe'))]
+              print('CURRENT-CORE-ENTRIES',', '.join(entries))
+              for n in entries:
+                  b=z.read(n)
+                  hits=[]
+                  for encoding,pat in [('ascii',rb'[\x20-\x7e]{5,}'),('utf-16-le',rb'(?:[\x20-\x7e]\0){5,}')]:
+                      for m in re.finditer(pat,b):
+                          s=m[0].decode(encoding); low=s.lower()
+                          terms=[f for f in flags if f in low]
+                          if terms:
+                              hits.append((m.start(),encoding,s[:320]))
+                              for f in terms:found[f].append(n)
+                  if hits:
+                      pe=struct.unpack_from('<I',b,0x3c)[0];machine=struct.unpack_from('<H',b,pe+4)[0]
+                      print('CURRENT-CORE-MATCH',n,'machine='+hex(machine),'sha256='+hashlib.sha256(b).hexdigest())
+                      for off,enc,s in hits[:35]:print('CURRENT-CORE-STRING',n,hex(off),enc,s)
+              for f,names in found.items():print('CURRENT-CORE-FLAG-SUMMARY',f,sorted(set(names)))
           PYINSPECT
