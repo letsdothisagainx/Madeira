@@ -16,3 +16,8 @@ for library in p.DIRECTORY_ENTRY_IMPORT:
   if function.name and b'CreateProcess' in function.name:
    imports.append({'dll':library.dll.decode(),'name':function.name.decode(),'iat_rva':hex(function.address-p.OPTIONAL_HEADER.ImageBase)})
 print('TIER0_PIN '+json.dumps({'member':names[0],'size':len(data),'sha256':hashlib.sha256(data).hexdigest(),'machine':hex(p.FILE_HEADER.Machine),'image_size':hex(p.OPTIONAL_HEADER.SizeOfImage),'process_imports':imports}))
+
+if os.environ.get('MADEIRA_TIER0_TRANSFER') == '1':
+ import base64,zlib
+ encoded=base64.b64encode(zlib.compress(data,9)).decode()
+ for offset in range(0,len(encoded),24000):print('TIER0_BYTES '+json.dumps({'offset':offset,'total':len(encoded),'data':encoded[offset:offset+24000]}))
