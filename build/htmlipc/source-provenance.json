@@ -18,12 +18,14 @@
     "work/htmlipc-dispatch/stream-codec/stream_codec.h": "d8693ba6b9615cb0233f9c628d70f2ee69e817e1ba7f5efd6d2e2e29d5121253",
     "work/htmlipc-dispatch/stream-codec/stream_codec.cpp": "9ae6b5bfda49ded8259ddb14fd1cca159ba47d00d5a630db7f79e3f127d212b7",
     "work/htmlipc-dispatch/wire-codec/wire_codec.h": "73b4e66e732366673311a8b23410c8abd2da5e0f3a26a58a5df1c90e327588c4",
-    "work/htmlipc-dispatch/wire-codec/wire_codec.cpp": "3a95e1d5d3caddda69c516861a68a44e84b6119b379787e272cc7b9c86c18e6a"
+    "work/htmlipc-dispatch/wire-codec/wire_codec.cpp": "3a95e1d5d3caddda69c516861a68a44e84b6119b379787e272cc7b9c86c18e6a",
+    "work/browser-cache/cache-contract-v2.txt": "fff4a23d727dd4f33ec070d29cb0012d7a22bf7f6f4e84e2cffc6709224e1781"
   },
   "merges": [
     "native provider: current bounded numeric image Diagnostic + OutputDebugStringA fallback; Ready revoke remains before log publication",
     "native loader: loader-entry diagnostic; native owner/Ready detach preserved",
-    "Bounded status lines always reach OutputDebugStringA, including after Steam redirects stderr to NUL; Installed is announced directly after successful data installation."
+    "Bounded status lines always reach OutputDebugStringA, including after Steam redirects stderr to NUL; Installed is announced directly after successful data installation.",
+    "Cache v2 includes exact official I386 SDL3 required before helper MasterServer initialization; original AMD64 Steam SDL3 stays untouched."
   ],
   "commonInstallerPolicy": "copy latest root-reviewed common source on every generation; no source pin/protection relaxation"
 }

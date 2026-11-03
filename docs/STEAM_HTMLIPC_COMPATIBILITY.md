@@ -26,6 +26,9 @@ AMD64 export. Missing readiness, wrong architecture and stale ownership fail
 closed. Existing Steam restart and process-retirement behavior remains in place.
 
 The app prepares a size/hash/architecture-verified cache before starting Wine.
+It also selects the exact official I386 SDL3.dll from the matching frozen core
+archive into the helper directory. The original AMD64 Steam SDL3.dll is kept;
+the 78-file CEF/helper subset alone lacked this required delayed dependency.
 Archive extraction, atomic completion, reuse and owned bridge installation have
 focused tests. It does not replace Steam's core, authentication files, original
 CEF tree, game manifests or CS2 files.
