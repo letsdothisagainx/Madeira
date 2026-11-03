@@ -7868,6 +7868,8 @@ struct file_view
     unsigned int  ios_flags;     /* IOS_VIEW_* */
     void         *ios_fex_owner; /* native FEX data only; never guest/image/JIT aliases */
     unsigned long long ios_fex_lease;
+    void         *ios_cef_owner; /* private native Steam CEF image backing only */
+    unsigned long long ios_cef_lease;
 };
 #define IOS_VIEW_QUARANTINED 0x4   /* a dead thread's stack held by the stack quarantine */
 
@@ -15008,6 +15010,8 @@ static NTSTATUS create_view( struct file_view **view_ret, void *base, size_t siz
     view->ios_flags = 0;
     view->ios_fex_owner = NULL;
     view->ios_fex_lease = 0;
+    view->ios_cef_owner = NULL;
+    view->ios_cef_lease = 0;
     if (use_kernel_writewatch) vprot &= ~VPROT_WRITEWATCH;
     set_page_vprot( base, size, vprot );
 
@@ -15021,6 +15025,7 @@ static NTSTATUS create_view( struct file_view **view_ret, void *base, size_t siz
 
 #ifdef WINE_IOS
 #include "fex_view_ownership.h"
+#include "cef_image_ownership.h"
 #include "fex_hold_release_abi.h"
 
 /* A distinct private operation for the native ARM64 WoW CPU producer. It
@@ -24921,6 +24926,11 @@ static NTSTATUS virtual_map_image( HANDLE mapping, void **addr_ptr, SIZE_T *size
 #endif
         if (is_builtin && !offset) add_builtin_module( view->base, NULL );
 #ifdef WINE_IOS
+        /* Private CEF data belongs to the helper's process generation as well
+         * as its JIT copy. A failed DLL initialization otherwise retains the
+         * original dirty PE pages after the pool/FEX reapers have completed. */
+        if (!is_builtin && !offset && !image_info->is_hybrid && !ios_map_resource_view)
+            ios_cef_tag_private_image( view, nt_name );
         /* For builtin images on iOS: eagerly trigger the JIT copy for each
          * EXEC section. Normally Wine relies on an mprotect(PROT_EXEC) call
          * from somewhere downstream to activate section execution, but for

@@ -69,7 +69,20 @@ with tempfile.TemporaryDirectory() as temp:
 cp "$ROOT/app/Madeira/aarch64-windows/wow64.dll" "$ROOT/app/Madeira/aarch64-windows/xtajit.dll" "$TEST_APP/aarch64-windows/"
 cp "$ROOT/app/Madeira/aarch64-windows/services.exe" "$TEST_APP/aarch64-windows/"
 if [ "${STALE_SCM:-}" = 1 ]; then printf 'old SCM' > "$TEST_APP/aarch64-windows/services.exe"; fi
-printf '[wow-placement-v1][wow-native-export-v1][fex-callback-v2][child-native-dll-v1][process-wow64-v1][child-native-ntdll-v1][guest-trap-context-v1][surface-expose-v1][steam-client-update-v1][alias-prot-compat][image-alias-retire-v1][swp-context-v1][alias-prot-v2][fex-exit-v1][native-thread-cancel-v1][io-abi] v2 native-owned IOSB scopes active[wow-write][guest32-symbols][guest32-cxx-first-v1][cef-atexit-v1][steam-handoff-v1]_madeira_child_server_exited[fex-owner-v1] pre-crt[fex-owner-v1] retired[fex-owner-census-v2][hold-release-v2][deliver-hold-v2][native-window-retire-v1]_winios_native_window_create_winios_native_window_retire[guest32-fault-v1][steam-progress-v1]_winios_ui_progress_snapshot[srv-poll-drop-v1]poll-slots-highwater=' > "$TEST_APP/Madeira.debug.dylib"
+printf '[native-group-retire-v1][wow-placement-v1][wow-native-export-v1][fex-callback-v2][child-native-dll-v1][process-wow64-v1][child-native-ntdll-v1][guest-trap-context-v1][surface-expose-v1][steam-client-update-v1][alias-prot-compat][image-alias-retire-v1][swp-context-v1][alias-prot-v2][fex-exit-v1][native-thread-cancel-v1][io-abi] v2 native-owned IOSB scopes active[wow-write][guest32-symbols][guest32-cxx-first-v1][cef-atexit-v1][steam-handoff-v1]_madeira_child_server_exited[fex-owner-v1] pre-crt[fex-owner-v1] retired[fex-owner-census-v2][hold-release-v2][deliver-hold-v2][native-window-retire-v1]_winios_native_window_create_winios_native_window_retire[guest32-fault-v1][steam-progress-v1]_winios_ui_progress_snapshot[srv-poll-drop-v1]poll-slots-highwater=' > "$TEST_APP/Madeira.debug.dylib"
+printf '[cef-image-owner-v1][guest-breakpoint64-v1]' >> "$TEST_APP/Madeira.debug.dylib"
+if [ "${STALE_CEF_IMAGE:-}" = 1 ]; then
+  sed 's/\\[cef-image-owner-v1\\]//g' "$TEST_APP/Madeira.debug.dylib" > "$TEST_APP/native.stale"
+  mv "$TEST_APP/native.stale" "$TEST_APP/Madeira.debug.dylib"
+fi
+if [ "${STALE_GUEST64_BREAK:-}" = 1 ]; then
+  sed 's/\\[guest-breakpoint64-v1\\]//g' "$TEST_APP/Madeira.debug.dylib" > "$TEST_APP/native.stale"
+  mv "$TEST_APP/native.stale" "$TEST_APP/Madeira.debug.dylib"
+fi
+if [ "${STALE_NATIVE_GROUP:-}" = 1 ]; then
+  sed 's/\\[native-group-retire-v1\\]//g' "$TEST_APP/Madeira.debug.dylib" > "$TEST_APP/native.stale"
+  mv "$TEST_APP/native.stale" "$TEST_APP/Madeira.debug.dylib"
+fi
 if [ "${STALE_WOW_PLACEMENT:-}" = 1 ]; then
   sed 's/\\[wow-placement-v1\\]//g' "$TEST_APP/Madeira.debug.dylib" > "$TEST_APP/native.stale"
   mv "$TEST_APP/native.stale" "$TEST_APP/Madeira.debug.dylib"
@@ -106,6 +119,14 @@ done
     result=run({'STALE_WOW_PLACEMENT':'1'})
     assert result.returncode and 'stale native WoW64-segment placement' in result.stderr, result.stderr
     print('PASS stale native WoW64-segment placement fails final IPA validation')
+    result=run({'STALE_NATIVE_GROUP':'1'})
+    assert result.returncode and 'stale native process-group retirement' in result.stderr, result.stderr
+    print('PASS stale native process-group retirement fails final IPA validation')
+    result=run({'STALE_CEF_IMAGE':'1'})
+    assert result.returncode and 'stale private CEF image retirement' in result.stderr, result.stderr
+    result=run({'STALE_GUEST64_BREAK':'1'})
+    assert result.returncode and 'stale AMD64 guest breakpoint diagnostics' in result.stderr, result.stderr
+    print('PASS stale CEF backing retirement and AMD64 trap diagnostics fail final IPA validation')
     for resource in ['dockhost.exe','dock-notices.txt','madeira-steam-service.exe','madeira-scm-probe.exe']:
         result=run({'OMIT_RESOURCE':resource})
         assert result.returncode != 0 and 'required bundle resource missing' in result.stderr, result.stderr

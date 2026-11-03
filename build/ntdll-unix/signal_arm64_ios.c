@@ -2846,6 +2846,41 @@ static int ios_verified_guest_breakpoint( uint64_t pc, uint64_t frame, uintptr_t
     return 1;
 }
 
+/* ARM64EC stores the AMD64 frame in CHPE's CPU area, not WoW64 TLS14.
+ * A generated INT3 still goes through the unchanged debugger/SIGTRAP/FEX
+ * dispatch chain. Recognizing it here only avoids misreporting the native
+ * BRK as an unhandled CPU instruction and dumping an otherwise valid JIT.
+ * In particular, this does not resume past a Chromium CHECK or consume it. */
+static int ios_verified_guest64_breakpoint( uint64_t pc, uint64_t frame, uintptr_t teb )
+{
+    extern int ios_fex_code_owner_matches(uintptr_t pc, void *owner);
+    uint32_t insn = 0;
+    uint64_t self = 0, owner = 0, area = 0, current = 0, thread = 0, rip = 0, rsp = 0;
+    unsigned char simulation = 0, opcode = 0;
+    if (!teb || !frame || (pc & 3) ||
+        !ios_fault_read(pc, &insn, sizeof(insn)) || insn != 0xd4200000 ||
+        !ios_fault_read(teb + offsetof(TEB, Tib.Self), &self, sizeof(self)) || self != teb ||
+        !ios_fault_read(teb + offsetof(TEB, Peb), &owner, sizeof(owner)) || !owner ||
+        ios_wow_base_for_peb((void *)(uintptr_t)owner) ||
+        !ios_fex_code_owner_matches(pc, (void *)(uintptr_t)owner) ||
+        !ios_fault_read(teb + offsetof(TEB, ChpeV2CpuAreaInfo), &area, sizeof(area)) || !area ||
+        !ios_fault_read(area + offsetof(CHPE_V2_CPU_AREA_INFO, InSimulation), &simulation, sizeof(simulation)) || !simulation ||
+        !ios_fault_read(area + offsetof(CHPE_V2_CPU_AREA_INFO, EmulatorData[0]), &current, sizeof(current)) || current != frame ||
+        !ios_fault_read(area + offsetof(CHPE_V2_CPU_AREA_INFO, EmulatorData[1]), &thread, sizeof(thread)) || !thread ||
+        !ios_fault_read(thread, &current, sizeof(current)) || current != frame ||
+        !ios_fault_read(frame + 0x18, &rip, sizeof(rip)) || rip < 0x10000 ||
+        !ios_fault_read(frame + 0x40, &rsp, sizeof(rsp)) || rsp < 0x10000 ||
+        !ios_fault_read(rip - 1, &opcode, sizeof(opcode)) || opcode != 0xcc) return 0;
+    {
+        static unsigned reports;
+        if (__atomic_fetch_add(&reports, 1, __ATOMIC_RELAXED) < 16)
+            dprintf(2, "[guest-breakpoint64-v1] pc=%p owner=%p frame=%p rip=%p rsp=%p opcode=cc action=forward-to-guest-dispatch\n",
+                    (void *)(uintptr_t)pc, (void *)(uintptr_t)owner, (void *)(uintptr_t)frame,
+                    (void *)(uintptr_t)(rip - 1), (void *)(uintptr_t)rsp);
+    }
+    return 1;
+}
+
 static void *ios_mach_exception_thread( void *arg )
 {
     mach_port_t port = (mach_port_t)(uintptr_t)arg;
@@ -3365,7 +3400,8 @@ static void *ios_mach_exception_thread( void *arg )
         {
             uintptr_t fault_addr = (uintptr_t)req->code[1];
             if (req->exception == EXC_BREAKPOINT &&
-                ios_verified_guest_breakpoint( arm_thread_state64_get_pc(state), state.__x[28], thread_teb ))
+                (ios_verified_guest_breakpoint( arm_thread_state64_get_pc(state), state.__x[28], thread_teb ) ||
+                 ios_verified_guest64_breakpoint( arm_thread_state64_get_pc(state), state.__x[28], thread_teb )))
                 goto send_exception_reply;
 #ifdef WINE_IOS
             /* ml939: THE SUB-FLOOR SERVICE BELONGS HERE, NOT IN segv_handler.

@@ -387,3 +387,72 @@ checks pass. The IPA artifact is 13205004492; its native UUID is
 `E1BBFC97-C862-3D6D-92E4-DE11B0810733`. This build verifies the source correction,
 not Steam readiness: it contains no demonstrated fix for the captured CEF
 failure and must not be presented as a working Steam/CS2 build.
+
+## The 05:11 capture proves the trap and a separate CEF backing leak
+
+`madeira-log(20261103-051156).txt` has native UUID
+`E1BBFC97-C862-3D6D-92E4-DE11B0810733`, matching source `581758f` and
+Actions 41578723650. Fourteen browser attempts repeat the same failure before
+any CEF page is ready. This supersedes the older black-dialog investigation.
+
+Exact-image inspection [41584493073](https://github.com/letsdothisagainx/Madeira/actions/runs/41584493073)
+checks the archive hash, the chrome_elf SHA-256 listed above and its captured
+FEX module identity. The initializer at RVA `0x417f0` requests the first 16 GiB
+pool. Three exact high-address attempts fail, followed by two unhinted
+`0x7ffff0000` temporary reservations. The second unhinted attempt is Chromium's
+normal retry after releasing its emergency reservation, not a Madeira-created
+restart. No first pool succeeds and the BRP pool allocation is not reached.
+
+The null result takes `0x41833 -> 0x418e0 -> 0xdc080`. The recorded allocation
+error is Windows `ERROR_NOT_ENOUGH_MEMORY` (8); the instruction at `0xdc0df`
+calls the distinct `HandlePoolAllocFailureOutOfVASpace` leaf at `0xdc0f0`.
+Its trap is `INT3` at `0xdc104`; bytes there are `cc cc 0f 0b`. The following
+UD2 is not executed. The stack value `0x2f` is the source line retained by
+`PA_NO_CODE_FOLDING`, not Steam's unrelated AppError_47.
+
+FEX's INT3 lowering records SIGTRAP/BP and the next guest RIP, then enters the
+dispatcher ARM `BRK #0`. Wine's intermediate native `C000001D` is reconstructed
+by the existing FEX exception converter as guest `80000003` at `RIP-1`, exactly
+`chrome_elf+0xdc104`. Wine receives that guest exception, fails DLL initialization
+and terminates the helper. This is not evidence of an unsupported x86 opcode.
+Static initialization callers are traced, but their complete C++ constructor
+names were not symbolicated. The allocation trace's `nrip=+0x4e0ca` follows a
+lock-release helper and must not be presented as the allocation callsite.
+
+The original images are a separate proven lifetime bug. For example, a private
+libcef image at `0x3bdca0000` has size `0xd3ca000`; after its owner retires, the
+physical map still shows 128 MiB and 48 MiB of dirty resident original backing.
+FEX owner views all return to zero, and pool copies are reused, so neither fact
+proves that the original image backing was freed. Footprint reaches 5,544 MiB.
+
+The source patch tags only full, private AMD64 libcef/chrome_elf image views in
+native steamwebhelper with their immutable owner lease. After CPU callbacks,
+JIT copies and FEX data retire, it uses normal Wine view deletion while the
+original generation is still registered. Live, shared, builtin, hybrid,
+resource, foreign and referenced images are retained. A rounded 16 KiB host
+span must also exclude other Wine views and anonymous aliases; real 4 KiB tail
+canaries verify that the cleanup cannot erase a neighbour. Physical reduction on
+the iPhone remains unmeasured; diagnostics report logical image bytes only.
+
+Native process-group and identity slots also lacked the WoW teardown path that
+recycles them. The patch releases quiescent native metadata after all memory
+cleanup, validates generation during delayed thread exits and serializes
+identity writers. Pending native reapers/TEB handoffs remain protected. Tests
+reproduce the old 64-slot exhaustion and identity-publication race, then run
+160 lifetimes, concurrent registrations and recycled-PEB cases.
+
+AMD64 generated INT3 diagnostics now use the producer's CHPE CPU-area frame and
+thread pointers, owned FEX code and the actual guest `cc` byte. Recognized
+events still return failure to the Mach handler so the unchanged guest exception
+chain runs; no trap is skipped or asserted initialization marked successful.
+The actual FEX exception converter and ARM64EC RIP adjustment are regression
+tested separately from this diagnostic observer. Native HLT, UD2, stale/foreign
+state and genuine native faults retain their existing diagnostic path.
+
+No CEF flags, security checks, DLL binaries, physical/JIT budgets, authentication
+or installed files are changed. `--single-process` and `--jitless` are already
+present in the capture; the failure occurs before V8. Windows PA pool sizes are
+compiled constants, unlike Chromium's iOS build. No safe current-binary runtime
+adaptation was established, and a smaller chrome_elf alone would leave libcef's
+independent allocator unchanged. These teardown/diagnostic fixes do not establish
+successful browser initialization, responsive Library or authenticated CS2 launch.

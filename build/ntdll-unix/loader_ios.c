@@ -325,6 +325,10 @@ struct ios_proc_ident
 };
 static struct ios_proc_ident ios_proc_idents[IOS_MAX_PROC_IDENTS];
 static int ios_proc_ident_count;
+/* Native process retirement can run alongside a successor's bootstrap.
+ * Serialize slot writers while keeping signal/Mach-side identity lookups
+ * lock-free and preserving the existing metadata-before-owner publication. */
+static pthread_mutex_t ios_proc_ident_writer_lock = PTHREAD_MUTEX_INITIALIZER;
 
 extern void *ios_jit_current_peb(void);
 extern void ios_unix_fatal_exit(int status, const char *why) __attribute__((noreturn));
@@ -351,7 +355,10 @@ int ios_is_arm64ec_cur(void)
 
 void ios_register_proc_ident( void *peb_id, const SECTION_IMAGE_INFORMATION *info )
 {
-    int idx = ios_proc_ident_count, i;
+    int idx, i;
+
+    pthread_mutex_lock( &ios_proc_ident_writer_lock );
+    idx = ios_proc_ident_count;
 
     /* prefer a slot released by a dead pseudo-process (ios_proc_ident_release)
      * — without this the registry fills up over a long multi-process session
@@ -362,6 +369,7 @@ void ios_register_proc_ident( void *peb_id, const SECTION_IMAGE_INFORMATION *inf
 
     if (idx >= IOS_MAX_PROC_IDENTS)
     {
+        pthread_mutex_unlock( &ios_proc_ident_writer_lock );
         dprintf(2, "[proc-ident] registry FULL — %p keeps session identity\n", peb_id);
         return;
     }
@@ -373,6 +381,7 @@ void ios_register_proc_ident( void *peb_id, const SECTION_IMAGE_INFORMATION *inf
     ios_proc_idents[idx].peb = peb_id;
     __sync_synchronize();
     if (idx == ios_proc_ident_count) ios_proc_ident_count = idx + 1;
+    pthread_mutex_unlock( &ios_proc_ident_writer_lock );
     dprintf(2, "[proc-ident] peb=%p Machine=0x%x (slot %d)\n",
             peb_id, info->Machine, idx);
 }
@@ -385,12 +394,14 @@ void ios_register_proc_ident( void *peb_id, const SECTION_IMAGE_INFORMATION *inf
  * then answer for the new process with the dead one's main-image info and its
  * private (already tombstoned) ntdll copy, which is how a stale identity turns
  * into a wrong pe_dir, a wrong is_arm64ec() and a call into freed pool memory.
- * Called from the guest-window teardown (virtual_ios.c). */
+ * Called from guest-window teardown or final quiescent native-process cleanup. */
 void ios_proc_ident_release( void *peb_id )
 {
-    int i, n = ios_proc_ident_count;
+    int i, n;
 
     if (!peb_id) return;
+    pthread_mutex_lock( &ios_proc_ident_writer_lock );
+    n = ios_proc_ident_count;
     for (i = 0; i < n; i++)
     {
         if (ios_proc_idents[i].peb != peb_id) continue;
@@ -401,9 +412,11 @@ void ios_proc_ident_release( void *peb_id )
         memset( &ios_proc_idents[i].wow_init, 0, sizeof(ios_proc_idents[i].wow_init) );
         memset( &ios_proc_idents[i].funcs, 0, sizeof(ios_proc_idents[i].funcs) );
         memset( &ios_proc_idents[i].info, 0, sizeof(ios_proc_idents[i].info) );
+        pthread_mutex_unlock( &ios_proc_ident_writer_lock );
         dprintf(2, "[proc-ident] released peb=%p (slot %d)\n", peb_id, i);
         return;
     }
+    pthread_mutex_unlock( &ios_proc_ident_writer_lock );
     dprintf(2, "[proc-ident] release: peb=%p was not registered\n", peb_id);
 }
 
