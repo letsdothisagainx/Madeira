@@ -1,22 +1,22 @@
-name: Inspect exact HTML boundary functions
+name: Inspect exact browser domain and response contracts
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  inspect-htmlipc:
+  inspect-domain:
     runs-on: ubuntu-latest
     timeout-minutes: 6
     steps:
       - uses: actions/checkout@v4
-      - name: Inspect only missing exact HTML boundary functions
+      - name: Inspect exact official binaries without execution
         run: |
-          python3 -m venv "$RUNNER_TEMP/htmlipc-tools"
-          "$RUNNER_TEMP/htmlipc-tools/bin/pip" install pefile==2024.8.26 capstone==5.0.6
-          "$RUNNER_TEMP/htmlipc-tools/bin/python" tools/inspect-controller-fast.py
+          python3 -m venv "$RUNNER_TEMP/domain-tools"
+          "$RUNNER_TEMP/domain-tools/bin/pip" install pefile==2024.8.26 capstone==5.0.6
+          "$RUNNER_TEMP/domain-tools/bin/python" tools/run-domain-inspection.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: exact-controller-boundary-report
-          path: controller-fast-report.json
+          name: exact-domain-contract-report
+          path: domain-report.json
           retention-days: 3
