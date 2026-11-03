@@ -1,4 +1,4 @@
-name: Inspect exact HTMLIPC descriptors and official beta allocator
+name: Check official Win32 beta browser manifest only
 on:
   workflow_dispatch:
 permissions:
@@ -6,375 +6,38 @@ permissions:
 jobs:
   inspect:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 3
     steps:
-      - run: python3 -m pip install pefile==2024.8.26 capstone==5.0.6 protobuf==5.29.5
-      - name: Static pinned descriptor and official beta inspection only
+      - name: Compare known official Win32 manifests without downloading archives
         run: |
-          python3 - <<'PYINSPECT'
-          #!/usr/bin/env python3
-          """Extract exact embedded HTML IPC descriptor metadata without executing a PE.
-          
-          Provenance: the marker technique is documented in kuscholar/iDeck
-          tools/audit-steam-browser-schema.py at c969c9a4a3bbae5bd1b7baf7e1c2559c23d6acc3.
-          Unlike that audit, this retains nested descriptors/options and validates the
-          whole FileDescriptorProto, including syntax, through its C-string terminator.
-          The framing is observed serialized data, not a compiler-declared length xref.
-          Metadata equality alone proves neither transport compatibility nor security.
-          
-          Requires google.protobuf. Only reads the input and writes the requested JSON.
-          """
-          from __future__ import annotations
-          
-          import argparse
-          import hashlib
-          import json
-          from pathlib import Path
-          import re
-          import struct
-          
-          from google.protobuf import descriptor_pb2
-          from google.protobuf.message import DecodeError
-          
-          MARKER = b"\x0a\x12htmlmessages.proto"
-          MAX_FILE = 512 * 1024 * 1024
-          MAX_DESCRIPTOR = 512 * 1024
-          MAX_FIELDS = 32768
-          MAX_DEPTH = 32
-          MACHINES = {"i386": 0x14C, "amd64": 0x8664}
-          IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}\Z")
-          
-          
-          def sha256(value: bytes) -> str:
-              return hashlib.sha256(value).hexdigest()
-          
-          
-          def varint(data: bytes, pos: int, end: int) -> tuple[int, int]:
-              value = 0
-              for shift in range(0, 70, 7):
-                  if pos >= end:
-                      raise ValueError("truncated descriptor varint")
-                  byte = data[pos]
-                  pos += 1
-                  if shift == 63 and byte > 1:
-                      raise ValueError("descriptor varint exceeds uint64")
-                  value |= (byte & 127) << shift
-                  if byte < 128:
-                      return value, pos
-              raise ValueError("invalid descriptor varint")
-          
-          
-          def wire_fields(data: bytes, *, terminated: bool = False):
-              """Yield (tag, wire, value) and exact offsets; never scan inside payloads."""
-              pos = 0
-              count = 0
-              while pos < len(data):
-                  start = pos
-                  key, pos = varint(data, pos, len(data))
-                  if key == 0:
-                      if terminated:
-                          yield 0, 0, None, start, pos
-                          return
-                      raise ValueError("zero tag inside a descriptor message")
-                  number, wire = key >> 3, key & 7
-                  if not number or number > (1 << 29) - 1:
-                      raise ValueError("invalid descriptor field number")
-                  count += 1
-                  if count > MAX_FIELDS:
-                      raise ValueError("descriptor field count bound exceeded")
-                  if wire == 0:
-                      value, pos = varint(data, pos, len(data))
-                  elif wire in (1, 2, 5):
-                      size = 8 if wire == 1 else 4
-                      if wire == 2:
-                          size, pos = varint(data, pos, len(data))
-                      if size > len(data) - pos:
-                          raise ValueError("truncated descriptor field")
-                      value = data[pos:pos + size]
-                      pos += size
-                  else:
-                      raise ValueError("unsupported descriptor wire type")
-                  yield number, wire, value, start, pos
-              if terminated:
-                  raise ValueError("descriptor has no bounded C-string terminator")
-          
-          
-          def pe_sections(data: bytes, expected_machine: int):
-              if len(data) < 64 or data[:2] != b"MZ":
-                  raise ValueError("not a DOS/PE input")
-              pe_offset = struct.unpack_from("<I", data, 0x3C)[0]
-              if pe_offset > len(data) - 24 or data[pe_offset:pe_offset + 4] != b"PE\0\0":
-                  raise ValueError("invalid PE signature/offset")
-              machine, section_count = struct.unpack_from("<HH", data, pe_offset + 4)
-              if machine != expected_machine:
-                  raise ValueError(f"PE machine {machine:#x} differs from expected {expected_machine:#x}")
-              optional_size = struct.unpack_from("<H", data, pe_offset + 20)[0]
-              optional_offset = pe_offset + 24
-              section_offset = optional_offset + optional_size
-              if not 1 <= section_count <= 96 or optional_size < 2 or section_offset > len(data) - section_count * 40:
-                  raise ValueError("invalid PE section table")
-              magic = struct.unpack_from("<H", data, optional_offset)[0]
-              if magic != (0x10B if machine == 0x14C else 0x20B):
-                  raise ValueError("PE optional-header width differs from machine")
-              sections = []
-              for index in range(section_count):
-                  offset = section_offset + 40 * index
-                  name = data[offset:offset + 8].split(b"\0", 1)[0].decode("ascii", "strict")
-                  virtual_size, rva, raw_size, raw_offset = struct.unpack_from("<IIII", data, offset + 8)
-                  flags = struct.unpack_from("<I", data, offset + 36)[0]
-                  if raw_size and (raw_offset > len(data) or raw_size > len(data) - raw_offset):
-                      raise ValueError("PE section exceeds file")
-                  sections.append({"name": name, "rva": rva, "virtual_size": virtual_size,
-                                   "raw_offset": raw_offset, "raw_size": raw_size, "flags": flags})
-              return sections
-          
-          
-          def _validate_name(value: str, label: str):
-              if not IDENTIFIER.fullmatch(value):
-                  raise ValueError(f"invalid/oversized descriptor {label}")
-          
-          
-          def _is_repeated(field):
-              return field.is_repeated if hasattr(field, "is_repeated") else field.label == field.LABEL_REPEATED
-          
-          
-          def _unknown_fields(message, path: str, depth: int = 0):
-              if depth > MAX_DEPTH:
-                  raise ValueError("descriptor nesting bound exceeded")
-              unknown = []
-              for number, wire, value, start, end in wire_fields(message.SerializeToString(deterministic=True)):
-                  field = message.DESCRIPTOR.fields_by_number.get(number)
-                  if field is None:
-                      unknown.append({"path": path, "number": number, "wire": wire,
-                                      "payload_sha256": sha256(value) if isinstance(value, bytes) else sha256(str(value).encode())})
-                  elif field.type == field.TYPE_MESSAGE:
-                      if wire != 2:
-                          raise ValueError("message field has invalid wire type")
-                      child = getattr(message, field.name)
-                      if _is_repeated(field):
-                          # Inspect each parsed entry once below, avoiding an O(n^2) walk.
-                          continue
-                      unknown += _unknown_fields(child, path + "." + field.name, depth + 1)
-              for field, value in message.ListFields():
-                  if field.type == field.TYPE_MESSAGE and _is_repeated(field):
-                      for index, child in enumerate(value):
-                          unknown += _unknown_fields(child, f"{path}.{field.name}[{index}]", depth + 1)
-              if len(unknown) > MAX_FIELDS:
-                  raise ValueError("unknown descriptor field bound exceeded")
-              return unknown
-          
-          
-          def _options(message) -> dict:
-              raw = message.options.SerializeToString(deterministic=True)
-              return {"length": len(raw), "sha256": sha256(raw)}
-          
-          
-          def _enum(enum, parent: str) -> dict:
-              _validate_name(enum.name, "enum name")
-              values = []
-              if len(enum.value) > MAX_FIELDS:
-                  raise ValueError("enum value bound exceeded")
-              for value in enum.value:
-                  _validate_name(value.name, "enum value")
-                  values.append({"name": value.name, "number": value.number, "options": _options(value)})
-              return {"full_name": parent + enum.name, "sha256": sha256(enum.SerializeToString(deterministic=True)),
-                      "options": _options(enum), "values": values}
-          
-          
-          def _message(message, parent: str, depth: int, budget: list[int]) -> dict:
-              if depth > MAX_DEPTH:
-                  raise ValueError("message nesting bound exceeded")
-              budget[0] += 1
-              budget[1] += len(message.field)
-              if budget[0] > 4096 or budget[1] > MAX_FIELDS:
-                  raise ValueError("message/field bound exceeded")
-              _validate_name(message.name, "message name")
-              full_name = parent + message.name
-              fields = []
-              numbers, names = set(), set()
-              for field in message.field:
-                  _validate_name(field.name, "field name")
-                  if field.number < 1 or field.number >= 1 << 29 or field.number in numbers or field.name in names:
-                      raise ValueError("duplicate/invalid message field")
-                  numbers.add(field.number)
-                  names.add(field.name)
-                  if len(field.type_name) > 1024 or len(field.default_value) > 4096 or len(field.json_name) > 1024:
-                      raise ValueError("oversized descriptor field metadata")
-                  item = {"name": field.name, "number": field.number, "label": field.label,
-                          "type": field.type, "options": _options(field),
-                          "sha256": sha256(field.SerializeToString(deterministic=True))}
-                  for key in ("type_name", "extendee", "default_value", "oneof_index", "json_name", "proto3_optional"):
-                      if field.HasField(key):
-                          item[key] = getattr(field, key)
-                  fields.append(item)
-              return {"full_name": full_name, "sha256": sha256(message.SerializeToString(deterministic=True)),
-                      "options": _options(message), "fields": fields,
-                      "oneofs": [{"name": oneof.name, "sha256": sha256(oneof.SerializeToString(deterministic=True))}
-                                 for oneof in message.oneof_decl],
-                      "nested": [_message(child, full_name + ".", depth + 1, budget) for child in message.nested_type],
-                      "enums": [_enum(enum, full_name + ".") for enum in message.enum_type],
-                      "extension_sha256": [sha256(value.SerializeToString(deterministic=True)) for value in message.extension]}
-          
-          
-          def extract_bytes(data: bytes, *, expected_sha256: str, expected_machine: int, label: str = "") -> dict:
-              if len(data) > MAX_FILE:
-                  raise ValueError("PE exceeds bounded file size")
-              digest = sha256(data)
-              if digest != expected_sha256.lower() or not re.fullmatch(r"[0-9a-fA-F]{64}", expected_sha256):
-                  raise ValueError("PE SHA256 does not match the expected official artifact")
-              sections = pe_sections(data, expected_machine)
-              # Reject even a second marker outside the candidate section: ambiguity must
-              # not silently select one protocol generation from a multi-image input.
-              if data.count(MARKER) != 1:
-                  raise ValueError("expected one unique htmlmessages.proto descriptor marker")
-              start = data.index(MARKER)
-              candidates = [section for section in sections
-                            if section["raw_offset"] <= start < section["raw_offset"] + min(
-                                section["raw_size"], section["virtual_size"] or section["raw_size"])]
-              if len(candidates) != 1:
-                  raise ValueError("descriptor marker has ambiguous/no PE section ownership")
-              section = candidates[0]
-              if not section["flags"] & 0x40000000 or section["flags"] & 0x20000000:
-                  raise ValueError("descriptor is outside readable non-executable PE data")
-              stop = min(start + MAX_DESCRIPTOR + 1, section["raw_offset"] + min(
-                  section["raw_size"], section["virtual_size"] or section["raw_size"]))
-              framed = data[start:stop]
-              end = None
-              fields = descriptor_pb2.FileDescriptorProto.DESCRIPTOR.fields_by_number
-              seen = set()
-              for number, wire, value, begin, after in wire_fields(framed, terminated=True):
-                  if number == 0:
-                      end = begin
-                      break
-                  # Chromium 126's descriptor version ends at syntax (field 12). Do not
-                  # accept a new host protobuf library's later fields as adjacent bytes.
-                  field = fields.get(number) if number <= 12 else None
-                  if field is None or wire != (0 if field.type in (field.TYPE_INT32, field.TYPE_ENUM) else 2):
-                      # public_dependency/weak_dependency can be packed in modern writers.
-                      if field is None or not (number in (10, 11) and wire == 2):
-                          raise ValueError(f"unexpected top-level descriptor field/wire {number}/{wire}")
-                  if not _is_repeated(field) and number in seen:
-                      raise ValueError("duplicate singular top-level descriptor field")
-                  seen.add(number)
-              if end is None or not 0 < end <= MAX_DESCRIPTOR:
-                  raise ValueError("missing/beyond-bound descriptor terminator")
-              raw = framed[:end]
-              descriptor = descriptor_pb2.FileDescriptorProto()
-              try:
-                  descriptor.ParseFromString(raw)
-              except DecodeError as error:
-                  raise ValueError("FileDescriptorProto validation failed") from error
-              if descriptor.name != "htmlmessages.proto" or not 50 <= len(descriptor.message_type) <= 2048:
-                  raise ValueError("unexpected HTML IPC descriptor identity/message count")
-              names = [message.name for message in descriptor.message_type]
-              if len(set(names)) != len(names) or "CMsgBrowserCreate" not in names:
-                  raise ValueError("duplicate/missing required HTML IPC message")
-              if descriptor.syntax not in ("", "proto2", "proto3"):
-                  raise ValueError("unexpected descriptor syntax")
-              canonical = descriptor.SerializeToString(deterministic=True)
-              budget = [0, 0]
-              package = descriptor.package + "." if descriptor.package else ""
-              messages = [_message(message, package, 0, budget) for message in descriptor.message_type]
-              unknown = _unknown_fields(descriptor, "FileDescriptorProto")
-              return {"label": label, "pe_sha256": digest, "pe_machine": f"0x{expected_machine:04x}",
-                      "descriptor_name": descriptor.name, "package": descriptor.package, "syntax": descriptor.syntax,
-                      "file_offset": start, "rva": section["rva"] + start - section["raw_offset"],
-                      "section": section, "byte_length": len(raw), "terminator_file_offset": start + end,
-                      "framing": "top-level protobuf fields followed by one zero tag; no compiler-length xref",
-                      "raw_descriptor_sha256": sha256(raw), "canonical_descriptor_sha256": sha256(canonical),
-                      "dependency": list(descriptor.dependency), "public_dependency": list(descriptor.public_dependency),
-                      "weak_dependency": list(descriptor.weak_dependency), "message_count": len(messages),
-                      "recursive_message_count": budget[0], "recursive_field_count": budget[1],
-                      "messages": messages, "enums": [_enum(enum, package) for enum in descriptor.enum_type],
-                      "file_options": _options(descriptor), "unknown_fields": unknown,
-                      "service_sha256": [sha256(value.SerializeToString(deterministic=True)) for value in descriptor.service],
-                      "extension_sha256": [sha256(value.SerializeToString(deterministic=True)) for value in descriptor.extension],
-                      "source_code_info_sha256": sha256(descriptor.source_code_info.SerializeToString(deterministic=True))}
-          
-          
-          def main():
-              parser = argparse.ArgumentParser(description=__doc__)
-              parser.add_argument("input", type=Path)
-              parser.add_argument("--sha256", required=True, help="expected official member SHA256")
-              parser.add_argument("--machine", choices=MACHINES, required=True)
-              parser.add_argument("--label", default="")
-              parser.add_argument("--output", type=Path)
-              args = parser.parse_args()
-              if args.input.stat().st_size > MAX_FILE:
-                  parser.error("PE exceeds bounded file size")
-              try:
-                  result = extract_bytes(args.input.read_bytes(), expected_sha256=args.sha256,
-                                         expected_machine=MACHINES[args.machine], label=args.label)
-              except (ValueError, UnicodeError, struct.error) as error:
-                  parser.error(str(error))
-              output = json.dumps(result, sort_keys=True, indent=2) + "\n"
-              if args.output:
-                  args.output.write_text(output)
-              else:
-                  print(output, end="")
-          
-          
-          
-          # Exact static descriptor and official beta allocator inspection; no DLL execution.
-          import io,json,urllib.request,zipfile,hashlib,re,bisect,struct
-          import pefile,capstone
-          from pathlib import Path
-          REPORT={}
-          def download(file,sha):
-           with urllib.request.urlopen('https://client-update.akamai.steamstatic.com/'+file,timeout=120) as r:data=r.read()
-           assert hashlib.sha256(data).hexdigest()==sha
-           return data
-          HELPERS=[('current64','bins_webhelpers_win64.zip.24cccba0a57045dd639e797a63facc0f56d9cd4c','697b728a706405a73bbcfcb530f609d414968c2ba189ae87aba83715ff9394c6','bin/cef/cef.win64/steamwebhelper.exe','abbd293bd42564944700b46b9245209a4fef15247e21b968dd622d874961f4ce',0x8664),('legacy32','bins_webhelpers_win32.zip.8a153ec2ee2090c19b25204806ffca2a7ba15bf2','1ab3b3834172a644759860f65d853970ba1d8b65f30190aae774395d69136307','bin/cef/cef.win7/steamwebhelper.exe','8dba99d204779a30a88a794d1a88d7e76355d004d876ed4bb29da7c3d5a4fc70',0x14c)]
-          for label,file,archive_sha,member,member_sha,machine in HELPERS:
-           with zipfile.ZipFile(io.BytesIO(download(file,archive_sha))) as z:data=z.read(member)
-           result=extract_bytes(data,expected_sha256=member_sha,expected_machine=machine,label=label);assert result['unknown_fields']==[]
-           Path('htmlipc-'+label+'.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n');REPORT[label]=result
-           print('EXACT_DESCRIPTOR',json.dumps({k:v for k,v in result.items() if k not in ['messages','enums','section']}),flush=True)
-          def messages(result):
-           out={}
-           def walk(msg):
-            out[msg['full_name']]=msg
-            for child in msg.get('nested',[]):walk(child)
-           for msg in result['messages']:walk(msg)
-           return out
-          old,new=messages(REPORT['legacy32']),messages(REPORT['current64'])
-          changed=[]
-          for name in sorted(set(old)&set(new)):
-           if old[name]['sha256']!=new[name]['sha256']:
-            changed.append({'name':name,'legacy':old[name],'current':new[name]})
-          summary={'legacy_only':sorted(set(old)-set(new)),'current_only':sorted(set(new)-set(old)),'changed':changed}
-          Path('htmlipc-exact-diff.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n');print('EXACT_SCHEMA_DIFF',json.dumps(summary,sort_keys=True),flush=True)
-          # Bounded official branch comparison. Follow only the documented publicbetaWin64 manifest.
-          manifest=download('steam_client_publicbeta_win64','bdbfc302490862f9bdc6752574efd5c930041d91aec270f006c6d270891df272')
-          beta_file='bins_cef_win64.zip.405f57b00b32fbc9c4eb414210fa3148484abb0b';beta_sha='ae3cb9fca4218491001623c36e39a98e466c4610a4a550252f0c95e09d479df3';assert beta_file.encode() in manifest and beta_sha.encode() in manifest
-          with zipfile.ZipFile(io.BytesIO(download(beta_file,beta_sha))) as z:
-           member=next(n for n in z.namelist() if n.endswith('/chrome_elf.dll'));data=z.read(member)
-          p=pefile.PE(data=data);assert p.FILE_HEADER.Machine==0x8664
-          version={}
-          for group in p.FileInfo:
-           for entry in group:
-            for table in getattr(entry,'StringTable',[]):version.update({k.decode():v.decode() for k,v in table.entries.items() if k in [b'FileVersion',b'ProductVersion',b'LastChange']})
-          imports=sorted({i.name.decode() for e in p.DIRECTORY_ENTRY_IMPORT for i in e.imports if i.name});interesting=[x for x in imports if any(y in x for y in ['VirtualAlloc','VirtualFree','SystemInfo','MitigationPolicy'])]
-          print('BETA_ELF_IDENTITY',json.dumps({'manifest_sha256':hashlib.sha256(manifest).hexdigest(),'archive':beta_file,'archive_sha256':beta_sha,'member_sha256':hashlib.sha256(data).hexdigest(),'image_size':hex(p.OPTIONAL_HEADER.SizeOfImage),'machine':hex(p.FILE_HEADER.Machine),'versions':version,'alloc_imports':interesting,'VirtualAlloc2_string':b'VirtualAlloc2' in data}),flush=True)
-          cs=capstone.Cs(capstone.CS_ARCH_X86,capstone.CS_MODE_64);cs.detail=True;cs.skipdata=True
-          functions=sorted((e.struct.BeginAddress,e.struct.EndAddress) for e in p.DIRECTORY_ENTRY_EXCEPTION);begins=[a for a,b in functions];selected={}
-          for section in p.sections:
-           if not section.Characteristics&0x20000000:continue
-           for i in cs.disasm(section.get_data()[:section.Misc_VirtualSize],section.VirtualAddress):
-            if not i.id:continue
-            constants=[hex(o.imm) for o in i.operands if o.type==capstone.x86.X86_OP_IMM and o.imm in [0x40000000,0x80000000,0x100000000,0x200000000,0x400000000,0x800000000]]
-            if not constants:continue
-            at=bisect.bisect_right(begins,i.address)-1
-            if at<0 or i.address>=functions[at][1]:continue
-            lo,hi=functions[at];selected.setdefault(lo,{'end':hi,'constants':[]})['constants'].append({'rva':hex(i.address),'values':constants})
-          for lo,item in sorted(selected.items())[:16]:
-           ins=list(cs.disasm(p.get_data(lo,item['end']-lo),lo));body=[f'{i.address:08x} {i.mnemonic} {i.op_str}' for i in ins[:150]]
-           print('BETA_POOL_FUNCTION',json.dumps({'rva':hex(lo),'end':hex(item['end']),'constants':item['constants'],'truncated':len(ins)>150,'body':body}),flush=True)
-          print('FINISHED exact descriptor and conditional official beta allocator inspection',flush=True)
-          PYINSPECT
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: htmlipc-exact-descriptors
-          path: htmlipc-*.json
-          if-no-files-found: warn
+          python3 - <<'PY'
+          import urllib.request,urllib.error,re,json,hashlib
+          def nodes(text):
+           tokens=[a if a else b for a,b in re.findall(r'"([^"\\r\\n]*)"|([{}])',text)];pos=0
+           def parse():
+            nonlocal pos
+            d={}
+            while pos<len(tokens):
+             key=tokens[pos];pos+=1
+             if key=='}':return d
+             value=tokens[pos];pos+=1;d[key]=parse() if value=='{' else value
+            return d
+           def walk(d,path=()):
+            if not isinstance(d,dict):return
+            if path and path[-1] in ['bins_cef_win32','bins_webhelpers_win32']:yield path,{k:v for k,v in d.items() if k in ['file','sha2','size']}
+            for k,v in d.items():yield from walk(v,path+(k,))
+           return list(walk(parse()))
+          results={}
+          for name in ['steam_client_win32','steam_client_publicbeta_win32']:
+           url='https://client-update.akamai.steamstatic.com/'+name
+           try:
+            with urllib.request.urlopen(url,timeout=30) as response:data=response.read(262145);status=response.status
+            assert len(data)<=262144
+            text=data.decode();versions=re.findall(r'"version"\\s*"([0-9]+)"',text)
+            result={'url':url,'http_status':status,'sha256':hashlib.sha256(data).hexdigest(),'versions':versions,'browser_packages':nodes(text)}
+           except urllib.error.HTTPError as error:result={'url':url,'http_status':error.code}
+           results[name]=result;print('OFFICIAL_MANIFEST',name,json.dumps(result,sort_keys=True),flush=True)
+          stable=results['steam_client_win32'];beta=results['steam_client_publicbeta_win32']
+          comparison={'beta_available':beta.get('http_status')==200,'same_manifest_bytes':stable.get('sha256')==beta.get('sha256') if beta.get('http_status')==200 else None,'same_browser_packages':stable.get('browser_packages')==beta.get('browser_packages') if beta.get('http_status')==200 else None,'archive_downloads':0,'runtime_or_config_changes':0}
+          print('RESULT',json.dumps(comparison,sort_keys=True),flush=True)
+          PY
