@@ -77,6 +77,8 @@ static U32 published_phase,published_error;
 static void *published_module;
 static bool registry_quarantined;
 static bool installed_announced;
+static bool hook_announced;
+static U32 unrelated_probes;
 static bool install_error_announced;
 static Wide executable_path[32768];
 static U32 steam_root_length;
@@ -148,6 +150,15 @@ static void announce_install_diagnostic(const install::Diagnostic &d){
     WriteFile(GetStdHandle(U32(-12)),line,U32(n),&written,nullptr);OutputDebugStringA(line);
 }
 static install::Installer *get_installer(){return __atomic_load_n(&installer,__ATOMIC_ACQUIRE);}
+static void probe_stream(void *stream,void *to,void *from,U32 operation){
+    if(__atomic_fetch_add(&unrelated_probes,1u,__ATOMIC_RELAXED)>=8)return;
+    char line[256];Size n=literal(line,0,"MADEIRA_HTMLIPC stream-probe pid=");
+    n=number(line,n,pid);n=literal(line,n," operation=");n=number(line,n,operation);
+    n=literal(line,n," stream=");n=number(line,n,reinterpret_cast<U64>(stream));
+    n=literal(line,n," to=");n=number(line,n,reinterpret_cast<U64>(to));
+    n=literal(line,n," from=");n=number(line,n,reinterpret_cast<U64>(from));
+    line[n++]='\n';line[n]=0;OutputDebugStringA(line);
+}
 static bool originals(Originals *out){
     auto *i=get_installer();
     if(!i||__atomic_load_n(&published_phase,__ATOMIC_ACQUIRE)!=U32(install::Phase::Installed)){
@@ -155,6 +166,9 @@ static bool originals(Originals *out){
     bool expected=false;
     if(__atomic_compare_exchange_n(&installed_announced,&expected,true,false,
         __ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE))announce("installed");
+    expected=false;
+    if(__atomic_compare_exchange_n(&hook_announced,&expected,true,false,
+        __ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE))announce("hook-reached");
     out->destroy=reinterpret_cast<Destroy>(i->original_entries[0]);
     out->methods={reinterpret_cast<codec::Original::Count>(i->original_entries[1]),
         reinterpret_cast<codec::Original::Count>(i->original_entries[2]),
@@ -241,7 +255,7 @@ static Lease acquire(void *stream,Operation op,const Originals &original){
         /* Read live stream identities, not a pre-Init snapshot of null fields. */
         void *to=*reinterpret_cast<void **>(controller+0x170);
         void *from=*reinterpret_cast<void **>(controller+0x178);
-        if(stream!=to&&stream!=from){unlock_registry();return result;}
+        if(stream!=to&&stream!=from){unlock_registry();probe_stream(stream,to,from,U32(op));return result;}
         result.owned=true;
         if(!install::validate_live_controller(i,controller))error=Error::ControllerInvalid;
         else if(!to||!from||to==from)error=Error::PartialPublication;

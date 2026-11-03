@@ -210,9 +210,9 @@ enum SteamBrowserRuntimeFiles {
     // shortcut. Every file, its size, its architecture and the exact tree are
     // checked again before reuse. No ambient file is accepted into the cache.
     static func relativePath(_ target: URL, under root: URL, directory: Bool) throws -> String {
-        // Darwin's enumerator can spell a directory URL with a final slash,
-        // whereas a URL constructed before mkdir has no directory hint. The
-        // filesystem path identity is independent of that URL representation.
+        // Darwin's enumerator can use the OS /var alias while its caller uses
+        // /private/var, and directory URL hints can add a final slash. Compare
+        // standardized filesystem paths before computing the relative suffix.
         var base = root.standardizedFileURL.path
         while base.count > 1 && base.hasSuffix("/") { base.removeLast() }
         let full = target.standardizedFileURL.path

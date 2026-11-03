@@ -140,7 +140,9 @@ def main(root, artifacts):
               'client_arguments': CLIENT_ARGUMENTS, 'graphics_control': False, 'bridge_installed': False,
               'bridge_connected': False, 'bridge_failure': [], 'missing_dlls': [],
               'bridge_loader_entry': False, 'version_load_events': [],
-              'image_mismatch': []}
+              'image_mismatch': [], 'bridge_hook_reached': False, 'stream_probes': [],
+              'i386_client_dependency': {k: provenance[k] for k in
+                  ('steamclient_i386_present','steamclient_i386_machine','steamclient_i386_sha256') if k in provenance}}
     xvfb = subprocess.Popen(['Xvfb', ':109', '-screen', '0', '1280x800x24', '-nolisten', 'tcp'],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     processes = [xvfb]
@@ -198,6 +200,9 @@ def main(root, artifacts):
                 report['bridge_loader_entry'] |= 'MADEIRA_HTMLIPC loader-entry' in raw_now
                 report['bridge_installed'] |= 'MADEIRA_HTMLIPC installed pid=' in raw_now
                 report['bridge_connected'] |= 'MADEIRA_HTMLIPC connected pid=' in raw_now
+                report['bridge_hook_reached'] |= 'MADEIRA_HTMLIPC hook-reached pid=' in raw_now
+                report['stream_probes'] = re.findall(
+                    r'MADEIRA_HTMLIPC stream-probe pid=(\d+) operation=(\d+) stream=(\d+) to=(\d+) from=(\d+)', raw_now)[:8]
                 install_failures = re.findall(r'MADEIRA_HTMLIPC install-error pid=(\d+) code=(\d+)', raw_now)
                 if install_failures:
                     report['image_mismatch'] = re.findall(
@@ -256,6 +261,19 @@ def main(root, artifacts):
              'candidate_path': str(steam / 'version.dll').lower() in line.lower()}
             for line in raw.splitlines() if 'loaddll' in line.lower() and 'version.dll' in line.lower()][:24]
         report['bridge_loader_entry'] |= 'MADEIRA_HTMLIPC loader-entry' in raw
+        report['bridge_hook_reached'] |= 'MADEIRA_HTMLIPC hook-reached pid=' in raw
+        report['cef_source_counts'] = {}
+        for file in sorted((steam / 'logs').glob('*'))[:32]:
+            if not file.is_file() or file.stat().st_size > 2 * 1024**2:
+                continue
+            content = file.read_bytes().decode(errors='replace')
+            for tag in re.findall(r'\b([A-Za-z0-9_]{1,80}\.(?:cc|cpp)\(\d{1,6}\))', content):
+                if tag in report['cef_source_counts'] or len(report['cef_source_counts']) < 64:
+                    report['cef_source_counts'][tag] = report['cef_source_counts'].get(tag, 0) + 1
+            for tag in ('SteamAPI_Init failed','Could not load steamclient','Unable to load steamclient',
+                        'Failed to connect','Check failed: false'):
+                count = content.count(tag)
+                if count: report['cef_source_counts'][tag] = report['cef_source_counts'].get(tag, 0) + count
         report['missing_dlls'] = sorted(set(re.findall(r'Library ([A-Za-z0-9_.-]{1,128}\.dll) .*?not found', raw, re.I)))[:16]
         report['loader_error_counts'] = {key: raw.lower().count(key.lower()) for key in
             ('nodrv_CreateWindow', 'Make sure that your X server is running', 'err:module:import_dll', 'err:module:loader_init', 'unimplemented function',
