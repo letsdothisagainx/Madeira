@@ -21,6 +21,7 @@ IMPORT Size VirtualQuery(const void *,Mbi *,Size);
 IMPORT int VirtualProtect(void *,Size,U32,U32 *);
 IMPORT U32 GetLastError();
 IMPORT int DisableThreadLibraryCalls(void *);
+IMPORT void OutputDebugStringA(const char *);
 }
 struct UnicodeString {U16 length,maximum;U32 pad;const U16 *buffer;};
 struct Notification {U32 flags,pad;const UnicodeString *full,*base;void *module;U32 image_size,padding;};
@@ -79,6 +80,9 @@ extern "C" EXPORT void *MadeiraResolveCurrentController(){
 }
 extern "C" int DllMain(void *module,U32 reason,void *reserved){
     if(reason==1){
+#ifdef MADEIRA_RUNTIME_PROVIDER
+        OutputDebugStringA("MADEIRA_HTMLIPC loader-entry");
+#endif
         DisableThreadLibraryCalls(module);
         auto ntdll=GetModuleHandleW(reinterpret_cast<const Wide*>(L"ntdll.dll"));
         if(!ntdll)return 0;

@@ -13,6 +13,7 @@ using Wide=unsigned short;
 #define EXPORT __declspec(dllexport)
 extern "C" {
 IMPORT U32 GetCurrentProcessId();
+IMPORT void OutputDebugStringA(const char *);
 IMPORT U32 GetCurrentThreadId();
 IMPORT U32 GetModuleFileNameW(void *,Wide *,U32);
 IMPORT int GetModuleHandleExW(U32,const Wide *,void **);
@@ -117,13 +118,13 @@ static void report(Error error,U32 direction,U32 command,U32 wire){
     n=literal(line,n," direction=");n=number(line,n,direction);
     n=literal(line,n," command=");n=number(line,n,command);
     n=literal(line,n," wire=");n=number(line,n,wire);line[n++]='\n';
-    U32 written=0;(void)WriteFile(GetStdHandle(U32(-12)),line,U32(n),&written,nullptr);
+    line[n]=0;U32 written=0;if(!WriteFile(GetStdHandle(U32(-12)),line,U32(n),&written,nullptr))OutputDebugStringA(line);
 }
 static void announce(const char *label,U64 generation=0){
     char line[128];Size n=literal(line,0,"MADEIRA_HTMLIPC ");n=literal(line,n,label);
     n=literal(line,n," pid=");n=number(line,n,pid);
     if(generation){n=literal(line,n," generation=");n=number(line,n,generation);}
-    line[n++]='\n';U32 written=0;(void)WriteFile(GetStdHandle(U32(-12)),line,U32(n),&written,nullptr);
+    line[n++]='\n';line[n]=0;U32 written=0;if(!WriteFile(GetStdHandle(U32(-12)),line,U32(n),&written,nullptr))OutputDebugStringA(line);
 }
 static void announce_install_error(U32 code){
     bool expected=false;
@@ -131,7 +132,7 @@ static void announce_install_error(U32 code){
         __ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE))return;
     char line[100];Size n=literal(line,0,"MADEIRA_HTMLIPC install-error pid=");
     n=number(line,n,pid);n=literal(line,n," code=");n=number(line,n,code);line[n++]='\n';
-    U32 written=0;(void)WriteFile(GetStdHandle(U32(-12)),line,U32(n),&written,nullptr);
+    line[n]=0;U32 written=0;if(!WriteFile(GetStdHandle(U32(-12)),line,U32(n),&written,nullptr))OutputDebugStringA(line);
 }
 static install::Installer *get_installer(){return __atomic_load_n(&installer,__ATOMIC_ACQUIRE);}
 static bool originals(Originals *out){

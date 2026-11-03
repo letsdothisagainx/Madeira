@@ -70,6 +70,7 @@ def capture(display, raw_path, output_path):
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     image = cv2.imread(str(raw_path))
     assert image is not None
+    image = cv2.resize(image, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
     # Detection only: never decode, log, or retain an authentication QR token.
     qr = cv2.QRCodeDetector()
     found, polygons = qr.detectMulti(image)
@@ -99,14 +100,15 @@ def capture(display, raw_path, output_path):
     cv2.imwrite(str(output_path), redacted)
     raw_path.unlink(missing_ok=True)
     # Keep only predicates over a fresh no-account login page, not OCR text.
-    text = ' '.join(words)
+    text = re.sub(r'[^a-z0-9 ]+', ' ', ' '.join(words))
     probes = {
-        'sign_in_label': 'sign in' in text,
-        'account_name_label': 'account name' in text,
-        'password_label': 'password' in text,
+        'sign_in_label': bool(re.search(r'\bsign\s*in(?:\b|to)', text)),
+        'account_name_label': bool(re.search(r'\baccount\s*name\b', text)),
+        'password_label': bool(re.search(r'\bpass\s*word\b', text)),
         'update_label': 'updating steam' in text or 'checking for available updates' in text,
         'nonuniform_frame': float(image.std()) > 3,
         'qr_regions_redacted': len(polygons) if found else 0,
+        'approved_words': sorted(set(words) & (approved | {'error','failed','connect','network','welcome','create','join','username','loading','continue'})),
     }
     return probes
 
@@ -125,7 +127,7 @@ def main(root, artifacts):
     env = {key: os.environ[key] for key in ('PATH', 'HOME', 'USER', 'LOGNAME') if key in os.environ}
     env.update({'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8',
            'WINEPREFIX': str(prefix), 'WINEARCH': 'win64',
-           'WINEDEBUG': '+loaddll,err+all', 'DISPLAY': ':109',
+           'WINEDEBUG': '+pid,+loaddll,+debugstr,err+all', 'DISPLAY': ':109',
            'WINEDLLOVERRIDES': 'mscoree,mshtml='})
     # Mono/Gecko are optional Wine components, not Steam authentication APIs.
     # Use Madeira's existing client arguments exactly. No additional sandbox,
@@ -136,7 +138,8 @@ def main(root, artifacts):
               'updater_replaced_component': [], 'scope': 'unauthenticated login rendering only',
               'authentication_attempted': False, 'library_or_game_launch_validated': False,
               'client_arguments': CLIENT_ARGUMENTS, 'graphics_control': False, 'bridge_installed': False,
-              'bridge_connected': False, 'bridge_failure': [], 'missing_dlls': []}
+              'bridge_connected': False, 'bridge_failure': [], 'missing_dlls': [],
+              'bridge_loader_entry': False, 'version_load_events': []}
     xvfb = subprocess.Popen(['Xvfb', ':109', '-screen', '0', '1280x800x24', '-nolisten', 'tcp'],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     processes = [xvfb]
@@ -172,6 +175,8 @@ def main(root, artifacts):
                 r'HKCU\Software\Wine\AppDefaults\steam.exe\DllOverrides',
                 '/v', 'version', '/t', 'REG_SZ', '/d', 'native,builtin', '/f'], env=env,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15, check=True)
+        if 'version.dll' in provenance['files']:
+            env['WINEDLLOVERRIDES'] = 'version=n,b;mscoree,mshtml='
         with log_path.open('wb') as log:
             processes.append(subprocess.Popen(['wine', str(steam / 'steam.exe'), *CLIENT_ARGUMENTS], env=env,
                              cwd=steam, stdout=log, stderr=subprocess.STDOUT,
@@ -189,6 +194,7 @@ def main(root, artifacts):
                     report['result'] = 'inconclusive-official-updater-replaced-test-component'
                     break
                 raw_now = log_path.read_bytes()[:MAX_LOG_BYTES].decode(errors='replace')
+                report['bridge_loader_entry'] |= 'MADEIRA_HTMLIPC loader-entry' in raw_now
                 report['bridge_installed'] |= 'MADEIRA_HTMLIPC installed pid=' in raw_now
                 report['bridge_connected'] |= 'MADEIRA_HTMLIPC connected pid=' in raw_now
                 install_failures = re.findall(r'MADEIRA_HTMLIPC install-error pid=(\d+) code=(\d+)', raw_now)
@@ -197,6 +203,7 @@ def main(root, artifacts):
                     report['result'] = 'failed-source-bridge-installation'
                     break
                 failures = re.findall(r'MADEIRA_HTMLIPC error=(\d+) pid=(\d+) generation=(\d+) direction=(\d+) command=(\d+) wire=(\d+)', raw_now)
+                failures = [x for x in failures if x[0] != '1'] # scoped provider ignores other executable names
                 if failures:
                     report['bridge_failure'] = list(failures[0])
                     report['result'] = 'failed-source-bridge-operation'
@@ -241,6 +248,11 @@ def main(root, artifacts):
         # Preserve no raw Wine/CEF logs, account store, screenshots or QR payloads.
         # Exact bounded module load counts help distinguish a loader failure.
         raw = log_path.read_bytes()[:MAX_LOG_BYTES].decode(errors='replace')
+        report['version_load_events'] = [
+            {'native': 'native' in line.lower(), 'builtin': 'builtin' in line.lower(),
+             'candidate_path': str(steam / 'version.dll').lower() in line.lower()}
+            for line in raw.splitlines() if 'loaddll' in line.lower() and 'version.dll' in line.lower()][:24]
+        report['bridge_loader_entry'] |= 'MADEIRA_HTMLIPC loader-entry' in raw
         report['missing_dlls'] = sorted(set(re.findall(r'Library ([A-Za-z0-9_.-]{1,128}\.dll) .*?not found', raw, re.I)))[:16]
         report['loader_error_counts'] = {key: raw.lower().count(key.lower()) for key in
             ('nodrv_CreateWindow', 'Make sure that your X server is running', 'err:module:import_dll', 'err:module:loader_init', 'unimplemented function',

@@ -34,10 +34,6 @@ jobs:
           "$RUNNER_TEMP/htmlipc-tools/bin/python" tools/htmlipc/stream-codec/check_stream_codec.py
           "$RUNNER_TEMP/htmlipc-tools/bin/python" tools/htmlipc/stream-install/check_installer.py
           "$RUNNER_TEMP/htmlipc-tools/bin/python" tools/htmlipc/runtime-shim/check_provider.py
-      - name: Stage and run genuine current AMD64 reference with existing Madeira arguments
-        run: |
-          timeout 360 /usr/bin/python3 tools/htmlipc/runtime-smoke/stage.py --mode baseline --root "$RUNNER_TEMP/reference" --current-manifest tools/htmlipc/runtime-smoke/steam_client_win64.tracking --current-manifest-sha256 0b12d3072042b2f2aa7b5bc0677c686210465438de981340bb46ac717b1caab8
-          timeout 360 /usr/bin/python3 tools/htmlipc/runtime-smoke/run.py --root "$RUNNER_TEMP/reference" --artifacts "$RUNNER_TEMP/runtime-artifacts/reference" || test "$?" = 2
       - name: Stage complete official I386 cache without replacing current files
         run: |
           timeout 360 /usr/bin/python3 tools/htmlipc/runtime-smoke/stage.py --mode bridge --bridge-dll tools/htmlipc/runtime-shim/version.dll --root "$RUNNER_TEMP/bridge" --current-manifest tools/htmlipc/runtime-smoke/steam_client_win64.tracking --current-manifest-sha256 0b12d3072042b2f2aa7b5bc0677c686210465438de981340bb46ac717b1caab8

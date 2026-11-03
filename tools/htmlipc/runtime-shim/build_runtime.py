@@ -34,7 +34,7 @@ for source in sources:
     # GNU PE ld does not consume Clang's MSVC /EXPORT directives. Export the
     # same public names using an explicit .def; remove only that linker data.
     subprocess.run([args.objcopy,'--remove-section','.drectve',str(obj)],check=True)
-kernel_exports=['GetCurrentProcessId','GetCurrentThreadId','GetModuleFileNameW',
+kernel_exports=['OutputDebugStringA','GetCurrentProcessId','GetCurrentThreadId','GetModuleFileNameW',
     'GetModuleHandleW','GetModuleHandleExW','GetProcAddress','GetProcessHeap',
     'HeapAlloc','HeapFree','TryAcquireSRWLockExclusive','ReleaseSRWLockExclusive',
     'Sleep','CreateFileW','GetFileSizeEx','ReadFile','WriteFile','CloseHandle',

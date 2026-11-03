@@ -86,7 +86,8 @@ def execute(mode):
             u.reg_write(UC_X86_REG_RIP,original_entries[address]);return
         if address not in apis:return
         name=apis[address];a,b,c,d=[reg(r) for r in (UC_X86_REG_RCX,UC_X86_REG_RDX,UC_X86_REG_R8,UC_X86_REG_R9)]
-        if name=='GetCurrentProcessId':ret(1234)
+        if name=='OutputDebugStringA':ret(0)
+        elif name=='GetCurrentProcessId':ret(1234)
         elif name=='GetCurrentThreadId':ret(word(symbols['fixture_thread']))
         elif name=='GetModuleFileNameW':
             value='C:\\Steam\\other.exe' if mode==9 else 'C:\\Steam\\steam.exe'
