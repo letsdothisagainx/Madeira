@@ -1,0 +1,48 @@
+name: Inspect exact Steam Chrome pool
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m pip install pefile==2024.8.26 capstone==5.0.6
+      - name: Inspect official hash-pinned chrome_elf allocation code
+        run: |
+          python3 - <<'PYINSPECT'
+          from pathlib import Path
+          import urllib.request,hashlib,zipfile,struct,uuid,pefile,capstone
+          url='https://client-update.akamai.steamstatic.com/bins_cef_win64.zip.0bad5abe29375d80e5bb0eedf714329369140164'
+          data=urllib.request.urlopen(url,timeout=120).read()
+          assert hashlib.sha256(data).hexdigest()=='e5e660226cc586c3cbc9a225f92e041664f228f83ef210574e39967c82c691cc'
+          Path('cef.zip').write_bytes(data)
+          with zipfile.ZipFile('cef.zip') as z:
+           names=[n for n in z.namelist() if n.lower().endswith('chrome_elf.dll')];assert len(names)==1
+           image=z.read(names[0]);Path('chrome_elf.dll').write_bytes(image)
+          p=pefile.PE(data=image);print('FILE',names[0],'MACHINE',hex(p.FILE_HEADER.Machine),'SIZE',hex(p.OPTIONAL_HEADER.SizeOfImage),'SHA256',hashlib.sha256(image).hexdigest())
+          for e in getattr(p,'DIRECTORY_ENTRY_DEBUG',[]):
+           if e.struct.Type==2:
+            b=p.get_data(e.struct.AddressOfRawData,e.struct.SizeOfData)
+            if b[:4]==b'RSDS':print('PDB',str(uuid.UUID(bytes_le=b[4:20])).upper(),'AGE',struct.unpack_from('<I',b,20)[0],'PATH',b[24:].split(b'\0')[0].decode(errors='replace'))
+          for e in getattr(p,'DIRECTORY_ENTRY_IMPORT',[]):
+           for x in e.imports:
+            if x.name and any(v in x.name.lower() for v in (b'virtualalloc',b'virtualfree',b'getsysteminfo',b'getnativesysteminfo')):print('IMPORT',e.dll.decode(),x.name.decode(),hex(x.address-p.OPTIONAL_HEADER.ImageBase))
+          md=capstone.Cs(capstone.CS_ARCH_X86,capstone.CS_MODE_64);md.detail=True
+          for center in [0x4e0ca,0xe1927,0xdc104]:
+           begin=max(0,center-0x90);print('\nNEAR RVA',hex(center))
+           for ins in md.disasm(p.get_data(begin,0x160),begin):
+            print(f'{ins.address:08x} {ins.bytes.hex():20s} {ins.mnemonic:8s} {ins.op_str}')
+          print('POOL CONSTANT LOCATIONS')
+          for value in [0x400000000,0x7ffff0000,0x200000000]:
+           needle=struct.pack('<Q',value)
+           at=0;hits=[]
+           while True:
+            i=image.find(needle,at)
+            if i<0:break
+            try:hits.append(hex(p.get_rva_from_offset(i)))
+            except:pass
+            at=i+1
+           print(hex(value),hits[:40])
+          PYINSPECT
