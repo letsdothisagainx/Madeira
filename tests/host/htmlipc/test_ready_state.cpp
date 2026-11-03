@@ -4,6 +4,7 @@
 #include "ready_state.h"
 #include "htmlipc_policy.h"
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -14,6 +15,14 @@
 using Ready=madeira_htmlipc_ready;
 using Values=madeira_ready::Values;
 static std::atomic<unsigned long long> assertions;
+static std::atomic<unsigned> pause_at,entered;
+static std::atomic<bool> release_publisher;
+extern "C" void MadeiraReadyTestCheckpoint(unsigned point){
+    if(pause_at.load(std::memory_order_acquire)!=point)return;
+    entered.store(point,std::memory_order_release);
+    while(!release_publisher.load(std::memory_order_acquire))std::this_thread::yield();
+    pause_at.store(0,std::memory_order_release);
+}
 [[noreturn]] static void fail(const char *expression,int line){
     std::fprintf(stderr,"FAIL ready publisher line %d: %s\n",line,expression);
     std::exit(1);
@@ -173,10 +182,12 @@ static void concurrent_writers(){
     /* Contention may explicitly revoke, but no accepted positive may mix
      * independently valid synthetic owner/module identity sets. */
 }
-static void concurrent_revoke(){
+static void concurrent_revoke(unsigned point){
     Values v=values();CHECK(madeira_ready::publish(v,910));
     std::atomic<bool> start=false,complete=false;
     std::atomic<unsigned> publications=0;
+    CHECK(point>=1&&point<=3);
+    pause_at.store(point,std::memory_order_release);
     std::thread writer([&]{
         Values local=values();while(!start.load(std::memory_order_acquire))std::this_thread::yield();
         for(unsigned n=2;n<=100000;++n){local.generation=(uint64_t(1)<<48)|n;
@@ -184,18 +195,24 @@ static void concurrent_revoke(){
         complete.store(true,std::memory_order_release);
     });
     start.store(true,std::memory_order_release);
-    bool saw_odd=false;
-    for(unsigned n=0;n<5000000&&!complete.load(std::memory_order_acquire);++n){
-        if(__atomic_load_n(&MadeiraRuntimeReady.sequence,__ATOMIC_SEQ_CST)&1){saw_odd=true;break;}
+    auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+    while(entered.load(std::memory_order_acquire)!=point&&std::chrono::steady_clock::now()<deadline){
+        std::this_thread::yield();
     }
-    CHECK(saw_odd);CHECK(publications.load(std::memory_order_acquire)<100000);
+    CHECK(entered.load(std::memory_order_acquire)==point);
+    CHECK(__atomic_load_n(&MadeiraRuntimeReady.sequence,__ATOMIC_SEQ_CST)&1);
+    CHECK(publications.load(std::memory_order_acquire)==0);
+    check_not_ready();
     madeira_ready::revoke(77,88);
+    check_not_ready();
+    release_publisher.store(true,std::memory_order_release);
     /* Completion of revoke happens-before every subsequent read in this
      * thread. A concurrent cached publication must never restore flags7. */
     while(!complete.load(std::memory_order_acquire))check_not_ready();
     writer.join();
     for(unsigned n=0;n<10000;++n)check_not_ready();
     CHECK(!(read_snapshot().flags&MADEIRA_HTMLIPC_READY_INSTALLED));
+    CHECK(read_snapshot().provider_error==77&&read_snapshot().installer_error==88);
 }
 int main(int argc,char **argv){
     if(argc!=2)fail("one fresh-process mode required",__LINE__);
@@ -208,7 +225,7 @@ int main(int argc,char **argv){
     else if(!std::strcmp(argv[1],"busy"))busy();
     else if(!std::strcmp(argv[1],"wrap"))wrap();
     else if(!std::strcmp(argv[1],"writers"))concurrent_writers();
-    else if(!std::strcmp(argv[1],"race"))concurrent_revoke();
+    else if(!std::strncmp(argv[1],"race",4))concurrent_revoke(unsigned(std::atoi(argv[1]+4)));
     else fail("unknown mode",__LINE__);
     std::printf("PASS ready DATA %s: %llu assertions\n",argv[1],assertions.load());
 }
