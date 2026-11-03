@@ -103,7 +103,7 @@ not prove native Steam Library or CS2 success.
 
 ## Legitimate CS2 launch path available for testing
 
-The latest capture confirms AppID 730's manifest and executable are present,
+The 19:06 capture confirms AppID 730's manifest and executable are present,
 but contains no `native-steam-play-v1`, `-applaunch`, cs2.exe or game-action-error
 event. It does not test a CS2 launch or establish current core authentication.
 
@@ -114,3 +114,34 @@ manifest, install directory and Steam library registration, then starts genuine
 `steam.exe -applaunch 730`. Steam handles authentication, ownership and launch.
 This route's behavior while Chromium fails remains unverified. It does not
 replace the native Library, fake authentication or bypass VAC.
+
+## The 19:52 Play attempt exposes a separate service startup defect
+
+The next capture, still UUID `653A3A58`, does contain
+`native-steam-play-v1 app=730 ... mechanism=steam-applaunch`. It starts the
+native ARM64 command processor, then the AMD64 Steam service-preparation helper.
+Before the batch reaches steam.exe, the real 32-bit SteamService.exe child
+faults in native ntdll's PE-header lookup with a null module pointer. No cs2.exe
+process or Chromium pool allocation is reached in this capture.
+
+The child loader's snapshot is correct: guest ntdll `fff40000`. Its pool-only
+native ntdll clone also contains that value, but GetProcAddress returns a data
+export in the original session PE backing, which is correctly empty for the
+ARM64 command processor. Both forms of access therefore disagree. Publishing
+the child data into the shared parent would corrupt process isolation.
+
+All 32-bit children now use a real private native ntdll PE image, even when the
+session architecture matches their native host. The existing fresh-image path
+writes the owner's startup block into both its private PE export and JIT alias.
+Required guest32 startup addresses are validated before callbacks are published.
+Native ARM64 and compatible hybrid AMD64 clone paths remain unchanged. The
+bounded `wow-native-export-v1` marker records the actual PE export and guest
+startup pointers.
+
+The regression reproduces an empty parent PE export alongside a populated child
+pool, then verifies private PE/export and alias agreement across alternating
+native/hybrid parents and distinct owners. Missing, zero or out-of-range startup
+data is rejected before publication; parent and sibling bytes remain unchanged.
+This is a source fix for service startup, not a fix for the separate Chromium
+address-space constraint. Service readiness, actual steam.exe -applaunch730
+execution and CS2 process creation require a new device run.

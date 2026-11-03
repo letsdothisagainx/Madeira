@@ -2623,14 +2623,21 @@ static void redirect_ntdll_functions( HMODULE module )
 
 #ifdef WINE_IOS
 /***********************************************************************
- * Private native ntdll for a cross-architecture child pseudo-process.
+ * Private native ntdll for a WoW64 or cross-architecture pseudo-process.
  * An AMD64 child needs the hybrid build; native ARM64 and WoW64 hosts need
- * the pure ARM64 build. Both directions map a fresh process-owned image and
+ * the pure ARM64 build. WoW64 also needs a private PE data-export backing
+ * when the session already uses ARM64. These cases map a fresh owned image and
  * wire native dispatchers before publishing its entry-point table. The
  * session's source-image architecture is immutable after initial load.
  */
 static int ios_child_ntdll_can_clone( USHORT source, USHORT child )
 {
+    /* A WoW64 child's startup block is exported as PE data as well as read
+     * by its native ntdll code. A pool-only clone isolates internal reads,
+     * but GetProcAddress still returns the shared PE backing's data export.
+     * Give every 32-bit child a real private native PE image so both reads
+     * observe its own block, even under an architecture-compatible session. */
+    if (!is_machine_64bit( child )) return 0;
     return source == (child == IMAGE_FILE_MACHINE_AMD64 ? IMAGE_FILE_MACHINE_AMD64 : IMAGE_FILE_MACHINE_ARM64);
 }
 
@@ -2840,11 +2847,26 @@ static int ios_load_child_ntdll( PEB *child_peb, USHORT machine )
 
     if (!ec && !is_machine_64bit( ios_cur_image_info()->Machine ))
     {
+        static unsigned int reports;
         SYSTEM_DLL_INIT_BLOCK *dst = (void *)find_named_export( module, exports, "LdrSystemDllInitBlock" );
         const SYSTEM_DLL_INIT_BLOCK *block = ios_wow64_init_block_for_peb( child_peb );
-        if (!dst || !block) return -1;
+        unsigned int report = __atomic_fetch_add( &reports, 1, __ATOMIC_RELAXED );
+        if (!dst || !block || !block->ntdll_handle || block->ntdll_handle > 0xffffffffULL ||
+            !block->pLdrInitializeThunk || block->pLdrInitializeThunk > 0xffffffffULL ||
+            !block->pRtlUserThreadStart || block->pRtlUserThreadStart > 0xffffffffULL)
+        {
+            if (report < 32)
+                dprintf( 2, "[wow-native-export-v1] owner=%p pe-block=%p snapshot=%p ready=0\n",
+                         child_peb, dst, block );
+            return -1;
+        }
         memcpy( dst, block, sizeof(*block) );
         ios_jit_sync_write( dst, sizeof(*block) );
+        if (report < 32)
+            dprintf( 2, "[wow-native-export-v1] owner=%p pe-block=%p ntdll32=%llx ldr=%llx start=%llx ready=1\n",
+                     child_peb, dst, (unsigned long long)block->ntdll_handle,
+                     (unsigned long long)block->pLdrInitializeThunk,
+                     (unsigned long long)block->pRtlUserThreadStart );
     }
     dprintf(2,"[child-native-ntdll-v1] owner=%p source-machine=%04x private-machine=%04x guest-machine=%04x ready=1\n",
             child_peb,ios_session_ntdll_machine,machine,ios_cur_image_info()->Machine);
@@ -4194,11 +4216,11 @@ DECLSPEC_EXPORT void wine_ios_child_main( int argc, char *argv[], int child_fd_s
             ios_child_load_apiset( ios_cur_image_info()->Machine );
         }
 
-        /* A hybrid session ntdll is equally unsuitable for a native ARM64
-         * child or an i386 child's native WoW64 host. Otherwise pure ARM64
-         * wow64.dll imports x64 export stubs and executes them as ARM64.
-         * Map a fresh image of the correct native architecture in either
-         * direction; do not clone a foreign-architecture loader's .data. */
+        /* A hybrid session image cannot host native ARM64 calls. WoW64 also
+         * requires private PE-backed startup exports even when the session's
+         * architecture matches: a pool-only clone leaves data exports pointing
+         * at the session's block. Map a fresh image in either case; never
+         * publish another owner's loader or WoW64 startup data. */
         if (!ios_child_ntdll_can_clone( ios_session_ntdll_machine, ios_cur_image_info()->Machine ))
         {
             USHORT machine = ios_cur_image_info()->Machine == IMAGE_FILE_MACHINE_AMD64 ?
