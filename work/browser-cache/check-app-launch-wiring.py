@@ -38,7 +38,11 @@ assert 'nativeSteamBrowser: nativeSteamBrowser)' in start
 assert start.index('guard nativeSteamPreparationIdle(), jit_check_debugged()') < start.index('library.begin(')
 full = between('    private func runWineFullSequence(', '    /// Madeira Dock: hand the stored sign-in')
 assert full.index('if nativeSteamClient && nativeSteamBrowser == nil') < full.index('SteamOwnedLibrary.shared.sessionChanged(active: true)')
-assert 'self.startWineProcess(nativeSteamClient: nativeSteamClient, nativeSteamBrowser: nativeSteamBrowser)' in full
+assert 'self.startWineProcess(nativeSteamClient: nativeSteamClient)' in full
+assert full.index('profile.applyEnvironment()') < full.index('SteamNativeBrowserLaunchFiles.export(') < full.index('self.startWineserver()')
+assert full.index('SteamNativeBrowserLaunchFiles.export(') < full.index('StikJITHelper.allocatePool(')
+assert 'heartbeat.invalidate(); ws_log_quiet = 0; logStore.uiPaused = false' in full
+assert 'SteamOwnedLibrary.shared.sessionChanged(active: false)' in full
 helper = between('    private func prepareNativeSteamBrowser(', '    /// Full sequence:')
 assert helper.index('steamBrowserLaunch.begin(') < helper.index('Task { @MainActor in')
 assert helper.index('try await preparation.value') < helper.index('guard nativeSteamPreparationIdle(), jit_check_debugged()') < helper.index('continuation(selected)')
@@ -57,7 +61,7 @@ assert dock.index('await SteamOwnedLibrary.shared.prepareDock()') < dock.index('
 assert '.disabled(steamBrowserLaunch.busy || SteamBrowserRuntime.busy)' in content
 assert '!SteamNativeBrowserLaunch.shared.busy && !SteamBrowserRuntime.busy' in update
 process = between('    private func startWineProcess(', '    private func testDualMapping()')
-assert process.index('SteamNativeBrowserLaunchFiles.export(') < process.index('let result = wine_process_start(')
+assert 'verified helper/cache pair after applying the profile' in process
 assert 'unsetenv("MADEIRA_HTMLIPC_HELPER"); unsetenv("MADEIRA_HTMLIPC_CACHE_DIR")' in process
 assert 'guard native else { return }' in native and 'MADEIRA_ENV_LOCKED' in native
 assert bridge.count('if (madeira_env_is_locked(k.UTF8String))') == 2

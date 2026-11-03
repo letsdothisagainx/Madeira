@@ -125,6 +125,14 @@ func fixture(_ name: String) throws -> Data { try Data(contentsOf: fixtures.appe
 let hashes: [String: String] = HASHES
 func digest(_ bytes: Data) -> String { hashes[bytes.base64EncodedString()] ?? "unknown-mutation" }
 func digestFile(_ file: URL) throws -> String { digest(try Data(contentsOf: file)) }
+func checkpoint(_ label: String) {
+    FileHandle.standardError.write(Data(("[browser-cache-test] " + label + "\n").utf8))
+}
+func checked<T>(_ label: String, _ body: () throws -> T) throws -> T {
+    checkpoint("begin " + label)
+    do { let value = try body(); checkpoint("pass " + label); return value }
+    catch { checkpoint("FAIL " + label + " error=" + String(describing: error)); throw error }
+}
 func fails(_ label: String, _ block: () throws -> Void) {
     do { try block(); fatalError("accepted: " + label) } catch {}
 }
@@ -158,7 +166,7 @@ for spoof in ["spoof-marker.zip", "spoof-marker-case.zip"] {
     fails("archive cannot supply generated marker") { try F.appendArchive(bytes, package: spoofPackage, recipe: spoofRecipe, stage: base, records: &spoofRecords, digest: digest, idle: { true }) }
     assert(spoofRecords.isEmpty)
 }
-try F.core(core, steamRoot: steam, recipe: recipe, digest: digestFile)
+try checked("current-core") { try F.core(core, steamRoot: steam, recipe: recipe, digest: digestFile) }
 fails("core outside Steam") { try F.core(core, steamRoot: base, recipe: recipe, digest: digestFile) }
 fails("active owner acquisition") { _ = try F.ownerRoot(cacheBase: base, steamRoot: steam, idle: { false }) }
 let alien = base.appendingPathComponent("SteamBrowserRuntime")
@@ -167,7 +175,7 @@ try Data("keep".utf8).write(to: alien.appendingPathComponent("existing"))
 fails("unowned existing cache") { _ = try F.ownerRoot(cacheBase: base, steamRoot: steam, idle: { true }) }
 assert(try! Data(contentsOf: alien.appendingPathComponent("existing")) == Data("keep".utf8))
 try fm.removeItem(at: alien)
-let owner = try F.ownerRoot(cacheBase: base, steamRoot: steam, idle: { true })
+let owner = try checked("fresh-owner-root") { try F.ownerRoot(cacheBase: base, steamRoot: steam, idle: { true }) }
 assert(try! F.ownerRoot(cacheBase: base, steamRoot: steam, idle: { true }) == owner)
 let interrupted = owner.appendingPathComponent(".stage-interrupted")
 try fm.createDirectory(at: interrupted, withIntermediateDirectories: false)
@@ -183,7 +191,9 @@ fails("active extraction") { try F.appendArchive(try fixture("good.zip"), packag
 assert(records.isEmpty && (try! fm.contentsOfDirectory(atPath: stage.path)).isEmpty)
 fails("unverified archive") { try F.appendArchive(try fixture("crc.zip"), package: package, recipe: recipe, stage: stage, records: &records, digest: digest, idle: { true }) }
 assert(records.isEmpty)
-try F.appendArchive(try fixture("good.zip"), package: package, recipe: recipe, stage: stage, records: &records, digest: digest, idle: { true })
+try checked("verified-archive-extraction") {
+    try F.appendArchive(try fixture("good.zip"), package: package, recipe: recipe, stage: stage, records: &records, digest: digest, idle: { true })
+}
 assert(records.count == 4)
 assert(!fm.fileExists(atPath: stage.appendingPathComponent(recipe.prefix + generated.name).path))
 let falseOfficialRecipe = F.Recipe(id: recipe.id, coreSHA256: recipe.coreSHA256, prefix: recipe.prefix, expectedFiles: 4, packages: [package], keys: recipe.keys, marker: F.officialMarker)
@@ -193,12 +203,21 @@ fails("duplicate archive members") { try F.appendArchive(try fixture("good.zip")
 fails("wrong final ownership") { _ = try F.commit(stage: stage, destination: base.appendingPathComponent(recipe.id), recipe: recipe, records: records, digest: digestFile, idle: { true }, recheckCore: {}) }
 let final = owner.appendingPathComponent(recipe.id)
 fails("active atomic completion") { _ = try F.commit(stage: stage, destination: final, recipe: recipe, records: records, digest: digestFile, idle: { false }, recheckCore: {}) }
-let prepared = try F.commit(stage: stage, destination: final, recipe: recipe, records: records, digest: digestFile, idle: { true }) {
-    try F.core(core, steamRoot: steam, recipe: recipe, digest: digestFile)
+try checked("official-record-metadata") { try F.checkOfficialRecords(recipe: recipe, records: records) }
+try checked("exact-official-stage-tree") { try F.validateTree(stage, recipe: recipe, records: records, extraFiles: [], digest: digestFile) }
+_ = try checked("prospective-completion-manifest") { try F.manifest(recipe: recipe, records: records + [F.generatedRecord(recipe: recipe)]) }
+var commitIdleChecks = 0, commitCoreChecks = 0
+let prepared = try checked("complete-cache-transaction") {
+    try F.commit(stage: stage, destination: final, recipe: recipe, records: records, digest: digestFile, idle: {
+        commitIdleChecks += 1; checkpoint("commit idle-check " + String(commitIdleChecks)); return true
+    }) {
+        commitCoreChecks += 1; checkpoint("commit core-check " + String(commitCoreChecks))
+        try F.core(core, steamRoot: steam, recipe: recipe, digest: digestFile)
+    }
 }
 assert(prepared.helper.lastPathComponent == "steamwebhelper.exe")
 assert(!fm.fileExists(atPath: stage.path))
-_ = try F.validate(final, recipe: recipe, digest: digestFile)
+_ = try checked("reuse-completed-cache") { try F.validate(final, recipe: recipe, digest: digestFile) }
 let verifiedMarker = final.appendingPathComponent(recipe.prefix + generated.name)
 assert(try! Data(contentsOf: verifiedMarker) == fixture("cache-marker"))
 let initialManifestBytes = try Data(contentsOf: final.appendingPathComponent(F.completion))
@@ -242,7 +261,9 @@ var incomplete = records; incomplete.removeLast()
 fails("incomplete manifest") { _ = try F.manifest(recipe: recipe, records: incomplete) }
 let partialStage = try newStage("partial-tree")
 var partialRecords: [F.FileRecord] = []
-try F.appendArchive(try fixture("good.zip"), package: package, recipe: recipe, stage: partialStage, records: &partialRecords, digest: digest, idle: { true })
+try checked("partial-stage-extraction") {
+    try F.appendArchive(try fixture("good.zip"), package: package, recipe: recipe, stage: partialStage, records: &partialRecords, digest: digest, idle: { true })
+}
 try fm.removeItem(at: partialStage.appendingPathComponent(recipe.prefix + "resources.pak"))
 fails("no generated marker for partial stage") { _ = try F.commit(stage: partialStage, destination: owner.appendingPathComponent(recipe.id), recipe: recipe, records: partialRecords, digest: digestFile, idle: { true }, recheckCore: {}) }
 assert(!fm.fileExists(atPath: partialStage.appendingPathComponent(recipe.prefix + generated.name).path))
@@ -264,11 +285,13 @@ for name in ["traversal.zip", "collision.zip", "symlink.zip", "crc.zip", "local.
     fails(name) { try SteamRuntimeFiles.unpack(try fixture(name), limits: .trustedOfficialI386Browser) { _, _ in } }
 }
 var descriptorCount = 0
-try SteamRuntimeFiles.unpack(try fixture("descriptor.zip"), limits: .trustedOfficialI386Browser) { _, _ in descriptorCount += 1 }
+try checked("valid-data-descriptor") {
+    try SteamRuntimeFiles.unpack(try fixture("descriptor.zip"), limits: .trustedOfficialI386Browser) { _, _ in descriptorCount += 1 }
+}
 assert(descriptorCount == 1)
 // The default behavior stays unchanged; the stricter local-CRC check belongs
 // to the authenticated-browser budget only.
-try SteamRuntimeFiles.unpack(try fixture("local-crc.zip")) { _, _ in }
+try checked("unchanged-default-local-crc-behavior") { try SteamRuntimeFiles.unpack(try fixture("local-crc.zip")) { _, _ in } }
 for name in privateNames { assert(try! Data(contentsOf: steam.appendingPathComponent(name)) == Data(name.utf8)) }
 assert(try! Data(contentsOf: core) == fixture("core.dll"))
 print("PASS real candidate Swift functions: generated-marker absence/tamper/edited-manifest/partial-tree/interruption refusal, manifest/full-tree validation, idle rechecks, ownership, archive pins, traversal/case/symlink/CRC/local-header/descriptor rejection, i386 PE requirement; Steam authentication, CS2 and official cef.win64 fixtures unchanged")

@@ -114,8 +114,38 @@ s = replace_once(s, '    private func runWineFullSequence(profile: LibraryEntry?
             return
         }
 ''')
-s = replace_once(s, '            self.startWineProcess(nativeSteamClient: nativeSteamClient)\n',
-    '            self.startWineProcess(nativeSteamClient: nativeSteamClient, nativeSteamBrowser: nativeSteamBrowser)\n')
+worker_anchor = '''            } else {
+                _ = try? MadeiraConfig.applyGame(nil)   // no library game: no game's own lines
+            }
+
+            // Step 1: Allocate JIT pool (BRK suspends entire process)
+'''
+worker_export = '''            } else {
+                _ = try? MadeiraConfig.applyGame(nil)   // no library game: no game's own lines
+            }
+
+            // Reassert the immutable selected paths after profile environment,
+            // before JIT/server startup. Both later cfg loops honor these locks.
+            do {
+                try SteamNativeBrowserLaunchFiles.export(native: nativeSteamClient, prepared: nativeSteamBrowser,
+                    get: { getenv($0).map { String(cString: $0) } },
+                    set: { setenv($0, $1, 1) == 0 }, unset: { unsetenv($0) })
+            } catch {
+                let message = error.localizedDescription
+                logStore.log("Steam's verified browser launch could not be configured.", level: .error)
+                DispatchQueue.main.async {
+                    heartbeat.invalidate(); ws_log_quiet = 0; logStore.uiPaused = false
+                    LibraryModel.shared.launchFailed(message)
+                    MadeiraDock.cleanup(); SteamOwnedLibrary.shared.dockEnded()
+                    SteamOwnedLibrary.shared.sessionChanged(active: false)
+                    EpicLibrary.shared.sessionChanged(active: false)
+                }
+                return
+            }
+
+            // Step 1: Allocate JIT pool (BRK suspends entire process)
+'''
+s = replace_once(s, worker_anchor, worker_export)
 s = replace_once(s, '    private func startDock(_ game: DockGame, compactPool: Bool, profile: LibraryEntry? = nil) {\n',
     '''    private func startDock(_ game: DockGame, compactPool: Bool, profile: LibraryEntry? = nil) {
         guard !steamBrowserLaunch.busy, !SteamBrowserRuntime.busy else {
@@ -131,21 +161,12 @@ s = replace_once(s, '            let options = await SteamOwnedLibrary.shared.la
 s = replace_once(s, '                guard StikJITHelper.ready, wine_process_is_running() == 0, wineserver_is_running() == 0,\n',
     '                guard !steamBrowserLaunch.busy, !SteamBrowserRuntime.busy,\n'
     '                      StikJITHelper.ready, wine_process_is_running() == 0, wineserver_is_running() == 0,\n')
-s = replace_once(s, '    private func startWineProcess(nativeSteamClient: Bool) {\n',
-    '    private func startWineProcess(nativeSteamClient: Bool, nativeSteamBrowser: SteamNativeBrowserLaunch.Prepared?) {\n')
 old = '''        if nativeSteamClient { setenv("MADEIRA_NATIVE_STEAM_LAUNCH", "1", 1) }
         else { unsetenv("MADEIRA_NATIVE_STEAM_LAUNCH") }
 '''
-new = '''        do {
-            try SteamNativeBrowserLaunchFiles.export(native: nativeSteamClient, prepared: nativeSteamBrowser,
-                get: { getenv($0).map { String(cString: $0) } },
-                set: { setenv($0, $1, 1) == 0 }, unset: { unsetenv($0) })
-        } catch {
-            SteamLibraryDiagnostics.shared.stop()
-            logStore.log("Steam's verified browser launch could not be configured.", level: .error)
-            DispatchQueue.main.async { LibraryModel.shared.launchFailed(error.localizedDescription) }
-            return
-        }
+new = '''        // The launch worker exported and locked this native signal and the
+        // verified helper/cache pair after applying the profile, before the
+        // wineserver started. No config can enable or replace this selection.
 '''
 s = replace_once(s, old, new)
 s = replace_once(s, '            unsetenv("MADEIRA_NATIVE_STEAM_LAUNCH")\n            SteamLibraryDiagnostics.shared.stop()\n',

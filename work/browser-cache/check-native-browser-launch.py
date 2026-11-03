@@ -224,7 +224,7 @@ fails("linked ownership stamp") { try F.installBridge(sourceSecond, manifest: ne
 try fm.removeItem(at: stamp); try writeStamp(installed: next.fingerprint, pending: nil)
 
 let compat = try F.compatRoot(drive: drive, idle: { true })
-assert(compat == drive.appendingPathComponent("windows/madeira-compat"))
+assert(compat == drive.appendingPathComponent("windows/madeira-compat", isDirectory: true))
 let browser = compat.appendingPathComponent("SteamBrowserRuntime/" + B.official.id + "/bin/cef/cef.win7")
 try fm.createDirectory(at: browser, withIntermediateDirectories: true)
 let helper = browser.appendingPathComponent("steamwebhelper.exe")
