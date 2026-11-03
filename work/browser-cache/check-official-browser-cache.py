@@ -24,7 +24,13 @@ for i,(name,size,sha) in enumerate(packages):
   path.write_bytes(data)
  data=path.read_bytes();assert len(data)==size and hashlib.sha256(data).hexdigest()==sha
  with zipfile.ZipFile(path) as archive:
-  members=archive.infolist();print(json.dumps(dict(package=i+1,pinned=True,count=len(members),largest=max(x.file_size for x in members),flags=sorted(set(x.flag_bits for x in members)),methods=sorted(set(x.compress_type for x in members)),directories=[dict(name=x.filename,size=x.file_size,compressed=x.compress_size) for x in members if x.is_dir()])),flush=True)
+  members=archive.infolist();non_i386=[]
+  for member in members:
+   if member.filename.lower().endswith(('.dll','.exe')):
+    with archive.open(member) as source:header=source.read(65536)
+    offset=struct.unpack_from('<I',header,0x3c)[0];machine=struct.unpack_from('<H',header,offset+4)[0]
+    if machine!=0x014c:non_i386.append(dict(name=member.filename,machine=hex(machine),size=member.file_size,sha256=hashlib.sha256(archive.read(member)).hexdigest()))
+  print(json.dumps(dict(package=i+1,pinned=True,count=len(members),largest=max(x.file_size for x in members),flags=sorted(set(x.flag_bits for x in members)),methods=sorted(set(x.compress_type for x in members)),non_i386=non_i386,directories=[dict(name=x.filename,size=x.file_size,compressed=x.compress_size) for x in members if x.is_dir()])),flush=True)
 source=RUNTIME.read_text();start=source.index('enum SteamRuntimeFiles {');end=source.index('\n#if canImport(CryptoKit)',start)
 files='import Foundation\nimport zlib\n'+source[start:end]
 files=files.replace('func need(_ condition: Bool) throws { if !condition { throw Failure.invalidPackage } }','func need(_ condition: Bool, line: Int = #line) throws { if !condition { throw ArchiveProbeFailure(file: "ZIP", line: line) } }')
