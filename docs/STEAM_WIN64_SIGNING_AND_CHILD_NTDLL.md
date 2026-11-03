@@ -262,3 +262,55 @@ Device acceptance remains: no 0x378 callback fault during forced cleanup, actual
 SCM wait outcome, successful updater completion and SERVICE_RUNNING, followed
 by genuine Steam and CS2 process creation. Library and CS2 remain unverified;
 the independent Win64 Chromium address-space limitation is unchanged.
+
+## The 22:24 device run confirms the service and callback fixes
+
+The next capture has the expected native UUID
+`B5BFDE63-90AD-377B-ACBB-BDB9E14E2B0A` from source
+`285e988c894899c969038640aee844911374704a`, Actions 41568566518.
+The original service exits during its genuine update at 12,429 ms, within the
+corrected 30,000 ms SCM wait. The new trace explicitly reports `process-exit`,
+not timeout. The updater witness is one, its real exit code is zero, the
+replacement service connects in 280 ms, and the helper queries state four
+(`SERVICE_RUNNING`) and returns zero. Both forced worker and main-thread FEX
+retirement callbacks return successfully; no null-TEB read at 0x378 recurs.
+
+The batch then really creates AMD64 steam.exe with `-applaunch 730`. These are
+device-confirmed startup improvements, not just CI results. They do not establish
+that the native client finishes authentication or launches the game: this
+capture contains no cs2.exe creation or native authentication-success result.
+Madeira's separate SwiftSteam signed-in/ownership records are not such proof.
+
+Every browser attempt fails in chrome_elf.dll DLL initialization, before a CEF
+page or Library store is observed. Thirteen helpers abort with `80000003` at
+the same chrome_elf offset `dc104` after the large PA reservation fails. High
+fixed 16 GiB hints exceed the actual task map; the roughly 32 GiB alignment
+fallback (`0x7ffff0000`) also fails. Its scan is artificially confined to a
+16 GiB band, but merely widening that band does not establish a fix: the Wine
+ownership census's largest free contiguous span is about 17 GiB. Other map
+summaries omit logical reservations or are truncated; they cannot authorize
+overwriting guest windows. The task still reports a 63 GiB map with both
+increased-memory and extended-VA entitlements already active. No supported
+signing change, guessed fixed-hint relocation, fake reservation or skipped
+Chromium check is justified by this evidence.
+
+Two apparent secondary faults are not established blockers. The exact official
+current Win64 core package inspected in Actions 41552679648 includes x86
+bin/SteamService.dll and SteamService.exe, without a SteamService64.dll. The
+AMD64 SteamServiceConnect thread's architecture rejection is followed by normal
+exit zero, so replacing that official DLL is unwarranted. The seven fdtrace
+`CROSS!` warnings all refer to communication descriptors whose consumer threads
+already exited; normal thread closes do not retire that diagnostic ledger, and
+cached-file registrations do not populate it. They do not prove that retiring
+helpers closed surviving Steam threads' descriptors. A close guard based on
+that stale ledger would leak legitimate cached files.
+
+The `Wine finished after 110.5s` line is also not a process-exit result: it follows
+the existing first-present debugger-detach heuristic, and Steam continues
+creating helpers afterward. That line and the generic dll-missing suffix must
+not be used as proof of session termination or of a Chromium DLL dependency.
+
+The current IPA remains the last built runtime candidate. There is no new
+validated runtime fix or new IPA from this capture. A correct guest address-space
+solution is still needed before the real Library and authenticated CS2 launch
+can be accepted. No installed game, prefix or account data was reset.
