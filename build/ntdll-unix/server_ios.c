@@ -5113,13 +5113,23 @@ static void ios_finish_process_memory(void *dead_peb)
     extern void ios_subfloor_release_owner(void *owner);
     extern void ios_jit_reclaim_process(void *owner);
     extern void ios_fex_reclaim_process_views(void *owner);
+    extern void ios_cef_reclaim_process_images(void *owner);
     extern void ios_exe_win_mark_ready(void *owner);
+    extern unsigned long long ios_thread_process_quiescent_lease(void *owner);
+    extern int ios_thread_process_finalize_native(void *owner, unsigned long long lease);
+    /* Keep the original generation registered through every CPU/VM cleanup.
+     * WoW groups are retired when their whole guest window is recycled; a
+     * native child has no such later teardown and needs its own final boundary. */
+    unsigned long long lease = ios_thread_process_quiescent_lease(dead_peb);
+    int native_owner = !ios_wow_base_for_peb(dead_peb);
     ios_fd_cache_release(dead_peb);
     ios_subfloor_release_owner(dead_peb);
     ios_jit_reclaim_process(dead_peb);
     ios_fex_reclaim_process_views(dead_peb);
+    ios_cef_reclaim_process_images(dead_peb);
     ios_wow_window_release(dead_peb);
     ios_exe_win_mark_ready(dead_peb);
+    if (native_owner && lease) ios_thread_process_finalize_native(dead_peb, lease);
     wine_log_write("[process-quarantine] peb=%p last Wine thread retired; memory released", dead_peb);
 }
 #endif

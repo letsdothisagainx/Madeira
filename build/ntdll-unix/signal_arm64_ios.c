@@ -101,6 +101,7 @@
 #include "winternl.h"
 #include "wine/asm.h"
 #include "unix_private.h"
+#include "fex_hold_release_abi.h"
 #include "ios_wow.h"
 #include "wine/debug.h"
 
@@ -2632,6 +2633,35 @@ done:
     errno=saved_errno;
 }
 
+/* Read-only context for aliased atomic writes during image initialization. Never infer an
+ * exact guest RIP from x28 alone: match the target's TLS14 frame and owner. */
+static void ios_trace_alias_swap(uintptr_t teb, const arm_thread_state64_t *state,
+                                 uint64_t address, uint64_t rw, unsigned width)
+{
+    static unsigned reports;
+    uint64_t owner=0,thread=0,frame=0,window=0,guest=0,saved=0;
+    struct ios_g32_fault_block block={0};
+    int saved_errno=errno, frame_ok=0, exact=0, saved_ok=0;
+    uint64_t pc=arm_thread_state64_get_pc(*state);
+    if (__atomic_fetch_add(&reports,1,__ATOMIC_RELAXED)>=8) return;
+    int guest_ok=width<=sizeof(guest) && ios_g32_read(address,&guest,width);
+    if (teb && ios_g32_read(teb+offsetof(TEB,Peb),&owner,8) &&
+        (window=ios_wow_base_for_peb((void *)(uintptr_t)owner)) && state->__x[19]==window &&
+        ios_g32_read(teb+offsetof(TEB,TlsSlots)+14*sizeof(void *),&thread,8) && thread &&
+        ios_g32_read(thread,&frame,8) && frame && frame==state->__x[28])
+    {
+        frame_ok=1;
+        saved_ok=ios_g32_read(frame+0x18,&saved,8);
+        exact=ios_g32_fault_block(frame,pc,owner,&block);
+    }
+    dprintf(2,"[swp-context-v1] teb=%#lx owner=%#llx pc=%#llx continuation=%#llx frame=%#llx frame-validated=%d saved-rip=%#llx saved-readable=%d exact-rip=%#llx exact-valid=%d guest=%#llx guest-readable=%d rw=%#llx width=%u snapshot-after-exchange=1\n",
+            (unsigned long)teb,(unsigned long long)owner,(unsigned long long)pc,
+            (unsigned long long)(pc+4),(unsigned long long)state->__x[28],frame_ok,
+            (unsigned long long)saved,saved_ok,(unsigned long long)block.exact,exact,
+            (unsigned long long)guest,guest_ok,(unsigned long long)rw,width);
+    errno=saved_errno;
+}
+
 void ios_trace_first_cxx(const EXCEPTION_RECORD *rec)
 {
     static unsigned reports;
@@ -2812,6 +2842,41 @@ static int ios_verified_guest_breakpoint( uint64_t pc, uint64_t frame, uintptr_t
             dprintf(2, "[guest-breakpoint] pc=%p owner=%p window=%p rip=%p rsp=%p action=forward\n",
                     (void *)(uintptr_t)pc, (void *)(uintptr_t)owner, (void *)window,
                     (void *)(uintptr_t)rip, (void *)(uintptr_t)rsp);
+    }
+    return 1;
+}
+
+/* ARM64EC stores the AMD64 frame in CHPE's CPU area, not WoW64 TLS14.
+ * A generated INT3 still goes through the unchanged debugger/SIGTRAP/FEX
+ * dispatch chain. Recognizing it here only avoids misreporting the native
+ * BRK as an unhandled CPU instruction and dumping an otherwise valid JIT.
+ * In particular, this does not resume past a Chromium CHECK or consume it. */
+static int ios_verified_guest64_breakpoint( uint64_t pc, uint64_t frame, uintptr_t teb )
+{
+    extern int ios_fex_code_owner_matches(uintptr_t pc, void *owner);
+    uint32_t insn = 0;
+    uint64_t self = 0, owner = 0, area = 0, current = 0, thread = 0, rip = 0, rsp = 0;
+    unsigned char simulation = 0, opcode = 0;
+    if (!teb || !frame || (pc & 3) ||
+        !ios_fault_read(pc, &insn, sizeof(insn)) || insn != 0xd4200000 ||
+        !ios_fault_read(teb + offsetof(TEB, Tib.Self), &self, sizeof(self)) || self != teb ||
+        !ios_fault_read(teb + offsetof(TEB, Peb), &owner, sizeof(owner)) || !owner ||
+        ios_wow_base_for_peb((void *)(uintptr_t)owner) ||
+        !ios_fex_code_owner_matches(pc, (void *)(uintptr_t)owner) ||
+        !ios_fault_read(teb + offsetof(TEB, ChpeV2CpuAreaInfo), &area, sizeof(area)) || !area ||
+        !ios_fault_read(area + offsetof(CHPE_V2_CPU_AREA_INFO, InSimulation), &simulation, sizeof(simulation)) || !simulation ||
+        !ios_fault_read(area + offsetof(CHPE_V2_CPU_AREA_INFO, EmulatorData[0]), &current, sizeof(current)) || current != frame ||
+        !ios_fault_read(area + offsetof(CHPE_V2_CPU_AREA_INFO, EmulatorData[1]), &thread, sizeof(thread)) || !thread ||
+        !ios_fault_read(thread, &current, sizeof(current)) || current != frame ||
+        !ios_fault_read(frame + 0x18, &rip, sizeof(rip)) || rip < 0x10000 ||
+        !ios_fault_read(frame + 0x40, &rsp, sizeof(rsp)) || rsp < 0x10000 ||
+        !ios_fault_read(rip - 1, &opcode, sizeof(opcode)) || opcode != 0xcc) return 0;
+    {
+        static unsigned reports;
+        if (__atomic_fetch_add(&reports, 1, __ATOMIC_RELAXED) < 16)
+            dprintf(2, "[guest-breakpoint64-v1] pc=%p owner=%p frame=%p rip=%p rsp=%p opcode=cc action=forward-to-guest-dispatch\n",
+                    (void *)(uintptr_t)pc, (void *)(uintptr_t)owner, (void *)(uintptr_t)frame,
+                    (void *)(uintptr_t)(rip - 1), (void *)(uintptr_t)rsp);
     }
     return 1;
 }
@@ -3279,35 +3344,10 @@ static void *ios_mach_exception_thread( void *arg )
                                         "[int3-guest]   ASCII x%d = \"%s\"  <== text in a register\n", gi, a);
                         }
 
-                        /* iOS-Madeira ml616 [brp-contain]: WHICH PartitionAlloc callsite
-                         * asserted, and on WHAT value.
-                         *
-                         * Chromium's BackupRefPtr refcount assertion is `int3; int3; ud2`
-                         * preceded by a "refcount" diagnostic. It has killed ml602, ml603,
-                         * ml607 and ml615 with a byte-identical signature: after the int3,
-                         * Chrome's OWN handler runs with State.rip = 0xEFEFEFEFEFEFEFEF
-                         * (freed poison), producing the read fault at 0x1e051d9c8dfd8.
-                         *
-                         * The registers here cannot name the offender: the assertion
-                         * routine makes two calls before executing int3, so guest/host R8
-                         * is already clobbered. The values survive on the STACK:
-                         *   [guest RSP+0x38] = the offending refcount value
-                         *   [guest RSP+0x48] = the direct caller's return address
-                         * Five PartitionAlloc callsites can reach this; the return address
-                         * is what distinguishes them.
-                         *
-                         * Self-identifying match, no module base needed: the guest bytes at
-                         * rip-1 are the literal `CC CC 0F 0B` fatal pattern. That is why
-                         * this cannot fire on an ordinary debugger breakpoint.
-                         *
-                         * ⚠️ Probe only — this does NOT contain the crash. Containment is
-                         * deliberately NOT in this build: it must terminate the whole
-                         * steamwebhelper pseudo-process, release FEX holds, and be proven
-                         * to respawn and reach BrowserReady, or it merely renames the
-                         * failure (webhelper owns the entire single-process CEF UI).
-                         *
-                         * ⛔ Do not try to suppress this with --disable-features: we already
-                         * pass PartitionAllocBackupRefPtr and the assertion still runs. */
+                        /* This trap sequence is shared by CHECK/OOM/other
+                         * fatal paths. Raw stack slots have no stable meaning
+                         * without exact-build symbols; do not call them a BRP
+                         * refcount or bypass the exception based on the bytes. */
                         {
                             unsigned char pat[4] = {0, 0, 0, 0};
                             unsigned long long guest_rsp = gregs[4];   /* RAX,RCX,RDX,RBX,RSP,... */
@@ -3326,9 +3366,9 @@ static void *ios_mach_exception_thread( void *arg )
                                           (mach_vm_address_t)(guest_rsp + 0x48), sizeof(caller),
                                           (mach_vm_address_t)&caller, &pg ) == KERN_SUCCESS;
                                 dprintf(STDERR_FILENO,
-                                        "[brp-contain] ml616 BackupRefPtr refcount assertion: int3 at guest 0x%llx "
-                                        "rsp=0x%llx offender=%s0x%llx caller=%s0x%llx pid=%04x tid=%04x "
-                                        "-- caller names WHICH of the 5 PA callsites; NOT contained in this build\n",
+                                        "[guest-trap-context-v1] pattern=cc-cc-0f-0b subsystem=unresolved int3=0x%llx "
+                                        "rsp=0x%llx stack38=%s0x%llx stack48=%s0x%llx pid=%04x tid=%04x "
+                                        "action=forward\n",
                                         (unsigned long long)(grip - 1), guest_rsp,
                                         o_ok ? "" : "<unreadable>", offender,
                                         c_ok ? "" : "<unreadable>", caller,
@@ -3360,7 +3400,8 @@ static void *ios_mach_exception_thread( void *arg )
         {
             uintptr_t fault_addr = (uintptr_t)req->code[1];
             if (req->exception == EXC_BREAKPOINT &&
-                ios_verified_guest_breakpoint( arm_thread_state64_get_pc(state), state.__x[28], thread_teb ))
+                (ios_verified_guest_breakpoint( arm_thread_state64_get_pc(state), state.__x[28], thread_teb ) ||
+                 ios_verified_guest64_breakpoint( arm_thread_state64_get_pc(state), state.__x[28], thread_teb )))
                 goto send_exception_reply;
 #ifdef WINE_IOS
             /* ml939: THE SUB-FLOOR SERVICE BELONGS HERE, NOT IN segv_handler.
@@ -5488,12 +5529,15 @@ static void *ios_mach_exception_thread( void *arg )
                             {
                                 static int swp_n;
                                 if (swp_n < 8)
+                                {
                                     dprintf(STDERR_FILENO,
                                         "[swp-emul] ml626 #%d insn=0x%08x size=%d Rs=x%d Rt=x%d addr=0x%llx "
                                         "rw=0x%llx in=0x%llx old=0x%llx\n",
                                         ++swp_n, insn, 1 << size_lg2, rs, rt,
                                         (unsigned long long)fault_addr, (unsigned long long)rw_addr,
                                         (unsigned long long)in, (unsigned long long)old);
+                                    ios_trace_alias_swap(thread_teb,&state,fault_addr,rw_addr,1u << size_lg2);
+                                }
                             }
                         }
                     }
@@ -10009,7 +10053,7 @@ __ASM_GLOBAL_FUNC( call_user_mode_callback,
                    "mov x18, x4\n\t"              /* teb */
                    "mrs x1, fpcr\n\t"
                    "mrs x2, fpsr\n\t"
-                   "bfi x1, x2, #0, #32\n\t"
+                   "bfi x1, x2, #32, #32\n\t" /* FPCR low, FPSR high */
                    "ldr x2, [x18]\n\t"            /* teb->Tib.ExceptionList */
                    "stp x1, x2, [x29, #0xb0]\n\t"
 
@@ -10018,6 +10062,7 @@ __ASM_GLOBAL_FUNC( call_user_mode_callback,
                    "str x1, [x18, #0x378]\n\t"    /* thread_data->syscall_frame */
                    "add x8, x29, #0xd0\n\t"
                    "stp x7, x8, [x1, #0x110]\n\t" /* frame->prev_frame,syscall_cfa */
+                   "str wzr, [x1, #0x10c]\n\t"   /* fresh frame->restore_flags */
                    "ldr w11, [x18, #0x380]\n\t"   /* thread_data->syscall_trace */
                    "cbnz x11, 1f\n\t"
                    /* switch to user stack */
@@ -10097,6 +10142,83 @@ __ASM_GLOBAL_FUNC( user_mode_callback_return,
                    "ldp x29, x30, [sp], #0xd0\n\t"
                    "ret" )
 
+
+#ifdef WINE_IOS
+/* A native ARM64 PE callback can issue Wine syscalls. Calling it directly
+ * from a Unix syscall reuses the active syscall_frame and overwrites its
+ * caller's kernel stack. Use Wine's existing user-callback transition: it
+ * chains a fresh frame below this C call and runs the PE code on the real
+ * user stack. No FEX callback runs after its owner has retired. */
+struct ios_fex_callback_args
+{
+    unsigned int (*callback)(void *, unsigned long long *, unsigned int *, unsigned int *);
+    void *teb;
+    unsigned long long *state;
+    unsigned int *depth;
+    unsigned int *flags;
+};
+
+extern void ios_fex_callback_dispatcher(void);
+__ASM_GLOBAL_FUNC( ios_fex_callback_dispatcher,
+                   "ldr x16, [sp]\n\t" /* callback_stack_layout.args */
+                   /* iOS may clear x18 between any two instructions. A copy
+                    * from x18 does not fault, so the TEB memory-access
+                    * recovery cannot repair it. These args were validated
+                    * by ios_call_fex_callback and live until callback return. */
+                   "ldr x19, [x16, #8]\n\t" /* retain the validated TEB */
+                   "ldr x4, [x16]\n\t" /* native ARM64 callback */
+                   "ldp x0, x1, [x16, #8]\n\t"
+                   "ldp x2, x3, [x16, #24]\n\t"
+                   "blr x4\n\t"
+                   "mov w2, w0\n\t" /* callback result is the return status */
+                   "mov x0, #0\n\t"
+                   "mov x1, #0\n\t"
+                   "mov x3, x19\n\t"
+                   "b " __ASM_NAME("user_mode_callback_return") )
+
+unsigned int ios_call_fex_callback(
+    unsigned int (*callback)(void *, unsigned long long *, unsigned int *, unsigned int *),
+    void *teb_ptr, unsigned long long *state, unsigned int *depth, unsigned int *flags )
+{
+    TEB *teb = NtCurrentTeb();
+    struct syscall_frame *frame = teb ? get_syscall_frame() : NULL;
+    const SIZE_T needed = sizeof(struct callback_stack_layout) + sizeof(struct ios_fex_callback_args) + 16;
+    struct callback_stack_layout *stack;
+    struct ios_fex_callback_args args = { callback, teb_ptr, state, depth, flags };
+    ULONG_PTR sp;
+    void *ret_ptr = NULL;
+    ULONG ret_len = 0;
+
+    if (!callback || !teb || teb_ptr != teb || !frame ||
+        frame->sp < needed || frame->sp > (ULONG_PTR)teb->Tib.StackBase)
+        goto refused;
+    sp = (frame->sp - needed) & ~(ULONG_PTR)15;
+    if (sp < (ULONG_PTR)teb->Tib.StackLimit ||
+        (char *)ntdll_get_thread_data()->kernel_stack + min_kernel_stack > (char *)&frame ||
+        (char *)&frame >= (char *)ntdll_get_thread_data()->kernel_stack + kernel_stack_size)
+        goto refused;
+
+    stack = (struct callback_stack_layout *)sp;
+    memset( stack, 0, sizeof(*stack) );
+    stack->args = stack->args_data;
+    stack->len = sizeof(args);
+    stack->lr = frame->lr;
+    stack->sp = frame->sp;
+    stack->pc = frame->pc;
+    memcpy( stack->args_data, &args, sizeof(args) );
+    return call_user_mode_callback( sp, &ret_ptr, &ret_len,
+                                    ios_fex_callback_dispatcher, teb );
+
+refused:
+    {
+        static unsigned int reports;
+        if (__atomic_fetch_add( &reports, 1, __ATOMIC_RELAXED ) < 16)
+            dprintf( 2, "[fex-callback-v2] refused callback=%p teb=%p expected=%p frame=%p\n",
+                     callback, teb_ptr, teb, frame );
+    }
+    return MADEIRA_FEX_THREAD_RETIRE_REFUSED;
+}
+#endif
 
 /***********************************************************************
  *           user_mode_abort_thread

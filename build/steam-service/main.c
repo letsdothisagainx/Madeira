@@ -4,9 +4,11 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <winsvc.h>
+#include <tlhelp32.h>
 #include <stdio.h>
 #include <wchar.h>
 #include "prepare.h"
+#include "update_handoff.h"
 
 static SC_HANDLE manager;
 static wchar_t root[32768];
@@ -139,32 +141,163 @@ static void pipe_diagnostics(const char *stage)
     if (error != ERROR_NO_MORE_FILES) event("pipe-enumeration-error", error);
     else event(stage, count);
 }
-static uint32_t start_service(void)
+static struct {
+    wchar_t service_path[32768], updater_path[32768];
+    HANDLE parent, updater;
+    struct steam_update_witness witness;
+    ULONGLONG next_updater_scan;
+    unsigned attempts;
+} update;
+
+static uint64_t filetime_value(FILETIME time)
 {
-    SC_HANDLE service = OpenServiceW(manager, service_name, SERVICE_START | SERVICE_QUERY_STATUS);
-    if (!service) return last_error();
-    DWORD needed = 0;
-    SC_HANDLE detail = OpenServiceW(manager, service_name, SERVICE_QUERY_CONFIG);
-    if (!detail) event("config-error", last_error());
-    else QueryServiceConfigW(detail, NULL, 0, &needed);
-    if (detail && needed >= sizeof(QUERY_SERVICE_CONFIGW) && needed < 1024 * 1024) {
-        QUERY_SERVICE_CONFIGW *config = HeapAlloc(GetProcessHeap(), 0, needed);
-        if (config) {
-            if (QueryServiceConfigW(detail, config, needed, &needed)) {
-                event("service-type", config->dwServiceType);
-                event("service-start-type", config->dwStartType);
-                event("image-path-present", config->lpBinaryPathName && config->lpBinaryPathName[0]);
-            }
-            HeapFree(GetProcessHeap(), 0, config);
+    return ((uint64_t)time.dwHighDateTime << 32) | time.dwLowDateTime;
+}
+static BOOL process_identity(HANDLE process, const wchar_t *expected, uint64_t *created)
+{
+    wchar_t path[32768], canonical[32768];
+    DWORD length = 32768;
+    FILETIME creation, exit, kernel, user;
+    if (!QueryFullProcessImageNameW(process, 0, path, &length) ||
+        !GetProcessTimes(process, &creation, &exit, &kernel, &user)) return FALSE;
+    DWORD n = GetFullPathNameW(path, 32768, canonical, NULL);
+    if (!n || n >= 32768 || _wcsicmp(canonical, expected)) return FALSE;
+    *created = filetime_value(creation);
+    return TRUE;
+}
+static void configured_paths(const wchar_t *command)
+{
+    wchar_t image[32768], *filename;
+    const wchar_t *begin, *end;
+    update.service_path[0] = update.updater_path[0] = 0;
+    if (!command) return;
+    begin = command;
+    while (*begin == L' ' || *begin == L'\t') begin++;
+    if (*begin == L'"') {
+        begin++;
+        end = wcschr(begin, L'"');
+    } else {
+        /* ImagePath may contain an unquoted path with spaces. The held
+         * process image must subsequently match this entire executable. */
+        for (end = begin; *end; end++)
+            if (!_wcsnicmp(end, L".exe", 4) &&
+                (!end[4] || end[4] == L' ' || end[4] == L'\t')) { end += 4; break; }
+    }
+    if (!end || end == begin || (size_t)(end - begin) >= 32768) return;
+    wmemcpy(image, begin, end - begin); image[end - begin] = 0;
+    DWORD n = GetFullPathNameW(image, 32768, update.service_path, &filename);
+    if (!n || n >= 32768 || !filename || _wcsicmp(filename, L"SteamService.exe")) {
+        update.service_path[0] = 0; return;
+    }
+    size_t prefix = filename - update.service_path;
+    if (prefix + wcslen(L"SteamServiceTmp.exe") >= 32768) { update.service_path[0] = 0; return; }
+    wmemcpy(update.updater_path, update.service_path, prefix);
+    wcscpy(update.updater_path + prefix, L"SteamServiceTmp.exe");
+}
+static void observe_updater(void)
+{
+    if (!update.parent || update.updater) return;
+    ULONGLONG now = GetTickCount64();
+    if (now < update.next_updater_scan) return;
+    update.next_updater_scan = now + 100;
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) return;
+    PROCESSENTRY32W entry = {0}; entry.dwSize = sizeof(entry);
+    if (Process32FirstW(snapshot, &entry)) do {
+        if (entry.th32ParentProcessID != update.witness.parent_pid ||
+            _wcsicmp(entry.szExeFile, L"SteamServiceTmp.exe")) continue;
+        HANDLE child = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, entry.th32ProcessID);
+        if (!child) continue;
+        struct steam_update_witness candidate = update.witness;
+        candidate.child_parent_pid = entry.th32ParentProcessID;
+        candidate.child_handle_valid = 1;
+        candidate.child_path_matches = process_identity(child, update.updater_path, &candidate.child_created);
+        if (steam_update_child_matches(&candidate)) {
+            update.updater = child; update.witness = candidate;
+            event("update-child-held", entry.th32ProcessID); break;
         }
+        CloseHandle(child);
+    } while (Process32NextW(snapshot, &entry));
+    CloseHandle(snapshot);
+}
+static void observe_service_owner(const SERVICE_STATUS_PROCESS *status)
+{
+    if (!update.service_path[0] || update.attempts != 1) return;
+    if (!update.parent && status->dwProcessId) {
+        HANDLE process = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, status->dwProcessId);
+        uint64_t created;
+        if (process && process_identity(process, update.service_path, &created)) {
+            update.parent = process;
+            update.witness.parent_pid = status->dwProcessId;
+            update.witness.parent_handle_valid = update.witness.parent_path_matches = 1;
+            update.witness.parent_created = created;
+            event("update-parent-held", status->dwProcessId);
+        } else if (process) CloseHandle(process);
     }
-    if (detail) CloseServiceHandle(detail);
-    pipe_diagnostics("steam-pipes-before");
-    DWORD error = 0;
-    if (!StartServiceW(service, 0, NULL) && (error = last_error()) != ERROR_SERVICE_ALREADY_RUNNING) {
-        CloseServiceHandle(service); return error;
+    observe_updater();
+}
+static void observe_pending_start(SC_HANDLE service)
+{
+    if (update.attempts != 1) return;
+    /* Once pinned, the original process identity is immutable. Repeated SCM
+     * queries cannot improve that witness and keep creating RPC/section work
+     * while the real service is initializing. Continue observing its child. */
+    if (update.parent) { observe_updater(); return; }
+    SERVICE_STATUS_PROCESS status;
+    DWORD needed;
+    if (QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO, (BYTE *)&status, sizeof(status), &needed))
+        observe_service_owner(&status);
+}
+struct start_call { SC_HANDLE service; LONG references; DWORD error; };
+static void release_start_call(struct start_call *call)
+{
+    if (!InterlockedDecrement(&call->references)) HeapFree(GetProcessHeap(), 0, call);
+}
+static DWORD WINAPI call_start_service(void *argument)
+{
+    struct start_call *call = argument;
+    call->error = StartServiceW(call->service, 0, NULL) ? 0 : last_error();
+    CloseServiceHandle(call->service);
+    release_start_call(call);
+    return 0;
+}
+static uint32_t start_attempt(void)
+{
+    update.attempts++;
+    SC_HANDLE service = OpenServiceW(manager, service_name, SERVICE_QUERY_STATUS);
+    if (!service) return last_error();
+    SC_HANDLE starter = OpenServiceW(manager, service_name, SERVICE_START);
+    if (!starter) { DWORD error = last_error(); CloseServiceHandle(service); return error; }
+    struct start_call *call = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*call));
+    if (!call) { CloseServiceHandle(starter); CloseServiceHandle(service); return ERROR_NOT_ENOUGH_MEMORY; }
+    call->service = starter; call->references = 2;
+    FILETIME now; GetSystemTimeAsFileTime(&now);
+    if (update.attempts == 1) update.witness.attempt_started = filetime_value(now);
+    HANDLE worker = CreateThread(NULL, 0, call_start_service, call, 0, NULL);
+    if (!worker) {
+        DWORD error = last_error(); HeapFree(GetProcessHeap(), 0, call);
+        CloseServiceHandle(starter); CloseServiceHandle(service); return error;
     }
+    /* StartService waits for the service control pipe. Query through a separate
+     * handle while it waits so the original SCM process cannot disappear before
+     * we hold and validate its identity. Neither path invents readiness. */
     ULONGLONG begin = GetTickCount64();
+    DWORD error = 0, needed = 0, wait;
+    for (;;) {
+        observe_pending_start(service);
+        wait = WaitForSingleObject(worker, 10);
+        if (wait == WAIT_OBJECT_0) { error = call->error; break; }
+        if (wait == WAIT_FAILED) { error = last_error(); break; }
+        if (GetTickCount64() - begin >= 35000) { error = ERROR_TIMEOUT; break; }
+    }
+    CloseHandle(worker);
+    /* A timed-out worker retains its own SCM handle and context until it
+     * returns. Closing our observer cannot leave a dangling stack argument. */
+    release_start_call(call);
+    if (error && error != ERROR_SERVICE_ALREADY_RUNNING) {
+        event("start-error", error); CloseServiceHandle(service); return error;
+    }
+    begin = GetTickCount64();
     DWORD previous_state = MAXDWORD, previous_checkpoint = MAXDWORD;
     for (;;) {
         SERVICE_STATUS_PROCESS status;
@@ -185,12 +318,63 @@ static uint32_t start_service(void)
         if (GetTickCount64() - begin >= 30000) { error = ERROR_TIMEOUT; break; }
         Sleep(250);
     }
-    pipe_diagnostics("steam-pipes-after");
     CloseServiceHandle(service);
+    return error;
+}
+static int capture_verified_updater(void)
+{
+    update.next_updater_scan = 0;
+    observe_updater();
+    if (!update.parent || WaitForSingleObject(update.parent, 0) != WAIT_OBJECT_0) {
+        event("update-witness", 0); return 0;
+    }
+    DWORD code;
+    if (!GetExitCodeProcess(update.parent, &code)) return 0;
+    update.witness.parent_exited = 1;
+    update.witness.parent_exit_code = code;
+    event("update-parent-exit", code);
+    int verified = steam_update_witness_matches(&update.witness);
+    event("update-witness", verified);
+    return verified;
+}
+static uint32_t wait_updater(void)
+{
+    DWORD wait = WaitForSingleObject(update.updater, 60000), code;
+    if (wait == WAIT_TIMEOUT) { event("update-wait-error", ERROR_TIMEOUT); return ERROR_TIMEOUT; }
+    if (wait != WAIT_OBJECT_0 || !GetExitCodeProcess(update.updater, &code)) return last_error();
+    event("update-child-exit", code);
+    return code;
+}
+static uint32_t start_service(void)
+{
+    DWORD needed = 0;
+    SC_HANDLE detail = OpenServiceW(manager, service_name, SERVICE_QUERY_CONFIG);
+    if (!detail) event("config-error", last_error());
+    else QueryServiceConfigW(detail, NULL, 0, &needed);
+    if (detail && needed >= sizeof(QUERY_SERVICE_CONFIGW) && needed < 1024 * 1024) {
+        QUERY_SERVICE_CONFIGW *config = HeapAlloc(GetProcessHeap(), 0, needed);
+        if (config) {
+            if (QueryServiceConfigW(detail, config, needed, &needed)) {
+                event("service-type", config->dwServiceType);
+                event("service-start-type", config->dwStartType);
+                event("image-path-present", config->lpBinaryPathName && config->lpBinaryPathName[0]);
+                if (config->dwServiceType == SERVICE_WIN32_OWN_PROCESS) configured_paths(config->lpBinaryPathName);
+            }
+            HeapFree(GetProcessHeap(), 0, config);
+        }
+    }
+    if (detail) CloseServiceHandle(detail);
+    pipe_diagnostics("steam-pipes-before");
+    const struct steam_update_ops ops = {start_attempt, capture_verified_updater, wait_updater};
+    DWORD error = service_start_with_update_handoff(&ops);
+    pipe_diagnostics("steam-pipes-after");
+    if (update.updater) CloseHandle(update.updater);
+    if (update.parent) CloseHandle(update.parent);
     return error;
 }
 int wmain(int argc, wchar_t **argv)
 {
+    event("update-handoff-v1", 1);
     /* Serialize our launchers; do not race two genuine /install invocations. */
     HANDLE mutex = CreateMutexW(NULL, FALSE, L"Local\\MadeiraSteamServicePreparation");
     if (!mutex) { DWORD error = last_error(); event("result", error); return (int)error; }

@@ -148,6 +148,7 @@ typedef struct {
 static SYSTEM_DLL_INIT_BLOCK root_block, *pLdrSystemDllInitBlock=&root_block;
 static void *p__wine_ctrl_routine, *current_peb, *session_peb=(void*)0x100;
 static int ios_proc_ident_count;
+static pthread_mutex_t ios_proc_ident_writer_lock=PTHREAD_MUTEX_INITIALIZER;
 static __attribute__((noreturn)) void ios_unix_fatal_exit(int s,const char*w) { assert(0); __builtin_trap(); }
 static uintptr_t current_base;
 static void *unix_call_wow64_funcs;
@@ -242,6 +243,7 @@ static _Thread_local TEB *test_teb;
 static TEB *NtCurrentTeb(void) { return test_teb; }
 static void ios_trace_steam_helper_exit(const char *event, int status) { (void)event; (void)status; assert(test_teb && test_teb->Peb); }
 static int free_calls, exit_calls;
+static void ios_proc_ident_release(void *owner) { (void)owner; }
 static jmp_buf escape;
 static void virtual_free_teb(void *teb) { assert(((TEB*)teb)->Peb==test_teb->Peb); ++free_calls; }
 static DECLSPEC_NORETURN void pthread_exit_wrapper(int status) { longjmp(escape,1); }
@@ -252,7 +254,33 @@ static sigset_t server_block_set;
 # Native declarations and bookkeeping are compiled verbatim.
 a=t.index('struct ios_thread_group\n{')
 b=t.index('\nstatic inline int get_unix_exit_code(',a)
-threads += 'static void ios_thread_finish_fex(void) {}\n' + t[a:b] + '\n' + body(t,'static DECLSPEC_NORETURN void exit_thread(')
+threads += 'static void ios_thread_finish_fex(void) {}\n' + t[a:b] + r'''
+/* Pause the real exit-thread path immediately after its retirement decrement.
+ * The final other thread completes cleanup while this thread is descheduled;
+ * optionally the same PEB then acquires a new process generation. */
+static int interleave_retirement;
+static unsigned long long replacement_lease;
+static unsigned retire_with_interleaving(void) {
+    unsigned remaining=ios_thread_retire_current();
+    if(interleave_retirement) {
+        void *owner=NtCurrentTeb()->Peb;
+        int mode=interleave_retirement;
+        assert(remaining==1);
+        ios_retired_thread_owner=NULL;
+        assert(ios_thread_process_exit_ready(owner));
+        unsigned long long old=ios_thread_process_quiescent_lease(owner);
+        assert(old&&ios_thread_process_finalize_native(owner,old));
+        if(mode==2) {
+            replacement_lease=ios_thread_process_lease(owner,1);
+            assert(replacement_lease&&replacement_lease!=old);
+        }
+        ios_retired_thread_owner=owner;
+        interleave_retirement=0;
+    }
+    return remaining;
+}
+#define ios_thread_retire_current retire_with_interleaving
+''' + body(t,'static DECLSPEC_NORETURN void exit_thread(') + '\n#undef ios_thread_retire_current\n'
 threads += r'''
 static void *finished(void *a) { return NULL; }
 static void retire(TEB *teb) {
@@ -288,11 +316,31 @@ int main(void) {
     assert(ios_thread_process_forget(a.Peb)); /* detach snapshot without a TEB read */
     munmap(dead,page);
     assert(!ios_thread_groups[0].owner);
+    for(int mode=1;mode<=2;mode++) {
+        memset(ios_thread_groups,0,sizeof(ios_thread_groups));
+        test_teb=&a;ios_retired_thread_owner=NULL;
+        unsigned long long old=ios_thread_process_lease(a.Peb,1);
+        assert(old&&ios_thread_count_add(a.Peb,1)==2);
+        replacement_lease=0;interleave_retirement=mode;
+        retire(&a);
+        assert(!interleave_retirement&&!free_calls&&!exit_calls);
+        if(mode==1) {
+            /* A late cleanup tail must not recreate a group for its dead owner. */
+            assert(!ios_thread_process_lease(a.Peb,0));
+            for(unsigned i=0;i<ARRAY_SIZE(ios_thread_groups);i++)assert(!ios_thread_groups[i].owner);
+        } else {
+            /* Nor may it hand an old TEB/pthread to a recycled same-PEB group. */
+            assert(ios_thread_process_lease(a.Peb,0)==replacement_lease);
+            struct ios_thread_group *g=&ios_thread_groups[0];
+            assert(g->lease==replacement_lease&&g->count==1&&!g->exiting&&!g->reclaimed);
+            assert(!g->prev_teb&&!g->prev_pthread);
+        }
+    }
     return 0;
 }
 '''
 threads = threads.replace('static sigset_t server_block_set;\n#include <signal.h>', '#include <signal.h>\nstatic sigset_t server_block_set;')
-run('deferred TEB handoff/counts are per process; protected stale TEB never read; live threads quarantine memory', threads)
+run('deferred TEB handoff/counts are per process; protected stale TEB never read; delayed exits neither recreate a retired group nor corrupt a reused lease', threads)
 
 # The final retiring thread no longer has a live master socket. Exercise the
 # real fixed-image state machine, including refusal to touch a foreign image.

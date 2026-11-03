@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reproduce the partial-alias RX spill with real mappings and concurrent writers."""
+"""Reproduce the alias protection regression and partial-page RX spill."""
 from pathlib import Path
 import os, subprocess, tempfile
 root=Path(__file__).resolve().parents[2]
@@ -82,7 +82,15 @@ static void* write_neighbors(void *unused){
  return NULL;
 }
 int main(void){
+ // Live alias: no physical mprotect during protection transitions.
+ // This is the real Steam cryptnet.dll regression path (not the synthetic
+ // partial-page RX policy exercised below).
+ unsetenv("MADEIRA_ALIAS_PROT_FORCE_RX");
+ errno=EAGAIN;assert(ios_protect_alias_run(1,PAGE,PROT_READ|PROT_EXEC,1,NULL)==0&&errno==EAGAIN);
+ // Preserve the original strict policy behind an explicit A/B opt-in.
+ assert(!setenv("MADEIRA_ALIAS_PROT_FORCE_RX","1",1));
  errno=0;assert(ios_protect_alias_run(1,PAGE,PROT_READ,1,NULL)==-1&&errno==EINVAL);
+ unsetenv("MADEIRA_ALIAS_PROT_FORCE_RX");
  memset(logical,0x23,sizeof(logical));logical[0x11]=0x21;
  BYTE before_metadata[256];memcpy(before_metadata,logical,sizeof(logical));
  assert((get_host_page_vprot((void*)0x10000)&3)==3);

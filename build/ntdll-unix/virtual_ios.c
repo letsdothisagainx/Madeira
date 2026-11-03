@@ -7868,6 +7868,8 @@ struct file_view
     unsigned int  ios_flags;     /* IOS_VIEW_* */
     void         *ios_fex_owner; /* native FEX data only; never guest/image/JIT aliases */
     unsigned long long ios_fex_lease;
+    void         *ios_cef_owner; /* private native Steam CEF image backing only */
+    unsigned long long ios_cef_lease;
 };
 #define IOS_VIEW_QUARANTINED 0x4   /* a dead thread's stack held by the stack quarantine */
 
@@ -14916,6 +14918,26 @@ static void delete_view( struct file_view *view ) /* [in] View */
     if ((view->protect & SEC_IMAGE) && ios_jit_image_retire_enabled())
         ios_jit_retire_image( view->base, view->size );
     if (view->protect & SEC_IMAGE) ios_jit_note_image_unmapped( view->base, view->size );
+    /* The last host page can also have an anonymous JIT alias (a PE tail
+     * rounded from 4 KiB to 16 KiB). Its binding dies with this image view,
+     * before unmap_area replaces the backing. Keep the pool storage alive
+     * for in-flight readers, but never let a later image reuse this binding. */
+    if ((view->protect & (SEC_IMAGE | VPROT_SYSTEM)) == SEC_IMAGE)
+    {
+        int saved_errno = errno;
+        size_t span = ROUND_SIZE(0,view->size,host_page_mask);
+        uintptr_t first = 0, end = 0;
+        if (ios_jit_anon_alias_overlaps(view->base,span,&first,&end))
+        {
+            static unsigned reports;
+            if (__atomic_fetch_add(&reports,1,__ATOMIC_RELAXED) < 16)
+                dprintf(2,"[image-alias-retire-v1] image=%p+%#lx host-span=%#lx alias=%#lx..%#lx phase=before-backing-replacement\n",
+                        view->base,(unsigned long)view->size,(unsigned long)span,
+                        (unsigned long)first,(unsigned long)end);
+        }
+        ios_jit_anon_alias_retire_range( view->base, span );
+        errno = saved_errno;
+    }
     ios_swap_release_range( view->base, view->size, 0 );   /* ml1077 */
     if (!(view->protect & VPROT_SYSTEM)) unmap_area( view->base, view->size );
     if (ios_retire_trace_armed) ios_retire_mark( "D1u\n" );   /* unmap_area done */
@@ -14988,6 +15010,8 @@ static NTSTATUS create_view( struct file_view **view_ret, void *base, size_t siz
     view->ios_flags = 0;
     view->ios_fex_owner = NULL;
     view->ios_fex_lease = 0;
+    view->ios_cef_owner = NULL;
+    view->ios_cef_lease = 0;
     if (use_kernel_writewatch) vprot &= ~VPROT_WRITEWATCH;
     set_page_vprot( base, size, vprot );
 
@@ -15001,6 +15025,7 @@ static NTSTATUS create_view( struct file_view **view_ret, void *base, size_t siz
 
 #ifdef WINE_IOS
 #include "fex_view_ownership.h"
+#include "cef_image_ownership.h"
 #include "fex_hold_release_abi.h"
 
 /* A distinct private operation for the native ARM64 WoW CPU producer. It
@@ -19908,8 +19933,29 @@ static int ios_protect_alias_run(uintptr_t base, size_t size, int prot, int alia
 {
     int result, saved_errno;
     (void)context;
-    /* The alias was remapped from the blessed pool. Its RW sibling remains
-     * writable; the guest view must never become writable or COW-detach. */
+    /* Steam startup regression (2026-11-02): reprotecting an already-owned
+     * dual-mapped JIT page detached/collided with a neighbouring PE image
+     * during cryptnet.dll init. The subsequent SWP write and guest RIP=0
+     * crashed Steam before its browser was created. Wine has already updated
+     * the guest's logical protection and the live JIT alias uses its own
+     * write-through/SMC tracking. Preserve its existing native mapping,
+     * as in the earlier [alias-own] path; never remap or reclassify it here.
+     * Keep a strict opt-in to compare on-device without changing the ABI.
+     * Non-owned pages and PROT_NONE/release paths retain their old behavior. */
+    if (alias)
+    {
+        const char *strict = getenv("MADEIRA_ALIAS_PROT_FORCE_RX");
+        if (!(strict && !strcmp(strict,"1")))
+        {
+            int prior_errno = errno;
+            static unsigned reports;
+            if (__atomic_fetch_add(&reports,1,__ATOMIC_RELAXED) < 24)
+                dprintf(2,"[alias-prot-compat] host=%p+%#lx page=%#lx physical=preserved logical=unchanged reason=live-jit-alias\n",
+                        (void *)base,(unsigned long)size,(unsigned long)host_page_size);
+            errno = prior_errno;
+            return 0;
+        }
+    }
     result = alias ? mprotect((void *)base,size,prot) : mprotect_exec((void *)base,size,prot);
     saved_errno = errno;
     if (alias)
@@ -20351,11 +20397,11 @@ static void *find_reserved_free_area_outside_preloader( void *start, void *end, 
  * virtual_mutex must be held by caller.
  */
 static void *map_reserved_area_inner( void *limit_low, void *limit_high, size_t size, int top_down,
-                                      int unix_prot, size_t align_mask );
+                                      int unix_prot, size_t align_mask, int fex_allowed );
 
 /* iOS-Madeira ml520 timing wrapper — see map_reserved_area_inner. */
-static void *map_reserved_area( void *limit_low, void *limit_high, size_t size, int top_down,
-                                int unix_prot, size_t align_mask )
+static void *map_reserved_area_scoped( void *limit_low, void *limit_high, size_t size, int top_down,
+                                       int unix_prot, size_t align_mask, int fex_allowed )
 {
     struct timespec t0, t1;
     void *r;
@@ -20363,7 +20409,7 @@ static void *map_reserved_area( void *limit_low, void *limit_high, size_t size, 
     static unsigned long slow_n;
 
     clock_gettime( CLOCK_MONOTONIC, &t0 );
-    r = map_reserved_area_inner( limit_low, limit_high, size, top_down, unix_prot, align_mask );
+    r = map_reserved_area_inner( limit_low, limit_high, size, top_down, unix_prot, align_mask, fex_allowed );
     clock_gettime( CLOCK_MONOTONIC, &t1 );
     ms = (t1.tv_sec - t0.tv_sec) * 1000.0 + (t1.tv_nsec - t0.tv_nsec) / 1e6;
     if (ms > 250.0)
@@ -20377,8 +20423,15 @@ static void *map_reserved_area( void *limit_low, void *limit_high, size_t size, 
     return r;
 }
 
+static void *map_reserved_area( void *limit_low, void *limit_high, size_t size, int top_down,
+                                int unix_prot, size_t align_mask )
+{
+    return map_reserved_area_scoped( limit_low, limit_high, size, top_down, unix_prot, align_mask,
+                                     fex_arena_covers( limit_low, limit_high ) );
+}
+
 static void *map_reserved_area_inner( void *limit_low, void *limit_high, size_t size, int top_down,
-                                      int unix_prot, size_t align_mask )
+                                      int unix_prot, size_t align_mask, int fex_allowed )
 {
     void *ptr = NULL;
     struct reserved_area *area;
@@ -20407,7 +20460,7 @@ static void *map_reserved_area_inner( void *limit_low, void *limit_high, size_t 
             void *end = (char *)start + area->size;
 
             /* ml799: the FEX arena serves only requests contained in it. */
-            if (area->fex_only && !fex_arena_covers( limit_low, limit_high )) continue;
+            if (area->fex_only && !fex_allowed) continue;
             if (area->thin_only) continue;   /* Madeira: thin heads are placed at fixed slots */
             if (start >= limit_high) continue;
             if (end <= limit_low) return NULL;
@@ -20425,7 +20478,7 @@ static void *map_reserved_area_inner( void *limit_low, void *limit_high, size_t 
             void *end = (char *)start + area->size;
 
             /* ml799: the FEX arena serves only requests contained in it. */
-            if (area->fex_only && !fex_arena_covers( limit_low, limit_high )) continue;
+            if (area->fex_only && !fex_allowed) continue;
             if (area->thin_only) continue;   /* Madeira: thin heads are placed at fixed slots */
             if (start >= limit_high) return NULL;
             if (end <= limit_low) continue;
@@ -20439,18 +20492,98 @@ static void *map_reserved_area_inner( void *limit_low, void *limit_high, size_t 
     return ptr;
 }
 
-/***********************************************************************
- *           map_fixed_area
- *
- * Map a memory area at a fixed address.
- * virtual_mutex must be held by caller.
- */
+#ifdef WINE_IOS
+/* Excluding WoW64 reservations by keeping only their low and high sides
+ * loses valid holes BETWEEN non-contiguous windows. Search every remaining
+ * segment before failing an unhinted native allocation. Caller bounds stay
+ * intact; no window, placeholder, or owned overrun guard is lent to a native
+ * view. The existing mappers still enforce view/FEX and kernel ownership. */
+static void *ios_map_between_wow_windows( void *start, void *end, size_t size,
+                                         int top_down, int unix_prot, size_t align_mask,
+                                         int fex_allowed )
+{
+    struct { ULONG_PTR lo, hi; } blocked[2 * IOS_WOW_MAX_WINDOWS], gaps[2 * IOS_WOW_MAX_WINDOWS + 1];
+    ULONG_PTR lo = (ULONG_PTR)start, hi = (ULONG_PTR)end, cursor;
+    unsigned i, j, count = 0, gap_count = 0, attempted = 0;
+    void *ptr = NULL;
+
+    if (!size || lo >= hi || size > hi - lo) return NULL;
+    for (i = 0; i < ios_wow_window_count + ios_wow_placeholder_count; ++i)
+    {
+        ULONG_PTR base, span, limit;
+        if (i < ios_wow_window_count)
+        {
+            base = ios_wow_windows[i].base;
+            span = ios_wow_slot_reservation( &ios_wow_windows[i] );
+        }
+        else
+        {
+            const struct ios_wow_placeholder *p = &ios_wow_placeholders[i - ios_wow_window_count];
+            if (p->adopted) continue;
+            base = p->base;
+            span = IOS_WOW_WINDOW_SIZE + (p->guard_owned ? ios_wow_guard_size() : 0);
+        }
+        if (!base) continue;
+        limit = base + span;
+        if (limit < base) limit = ~(ULONG_PTR)0;
+        if (base >= hi || limit <= lo) continue;
+        blocked[count].lo = max( base, lo );
+        blocked[count++].hi = min( limit, hi );
+    }
+    /* The registries contain at most eight entries each. Keep this snapshot
+     * on the stack; there is no allocator recursion while virtual_mutex is held. */
+    for (i = 1; i < count; ++i)
+        for (j = i; j && blocked[j].lo < blocked[j - 1].lo; --j)
+        {
+            ULONG_PTR a = blocked[j].lo, b = blocked[j].hi;
+            blocked[j] = blocked[j - 1];
+            blocked[j - 1].lo = a; blocked[j - 1].hi = b;
+        }
+    cursor = lo;
+    for (i = 0; i < count; ++i)
+    {
+        if (blocked[i].lo > cursor)
+        {
+            gaps[gap_count].lo = cursor;
+            gaps[gap_count++].hi = blocked[i].lo;
+        }
+        cursor = max( cursor, blocked[i].hi );
+    }
+    if (cursor < hi) { gaps[gap_count].lo = cursor; gaps[gap_count++].hi = hi; }
+    for (i = 0; i < gap_count; ++i)
+    {
+        unsigned k = top_down ? gap_count - i - 1 : i;
+        if (gaps[k].hi - gaps[k].lo < size) continue;
+        ++attempted;
+        /* Derived gap bounds are placement limits, never FEX authorization. */
+        ptr = map_reserved_area_scoped( (void *)gaps[k].lo, (void *)gaps[k].hi, size,
+                                         top_down, unix_prot, align_mask, fex_allowed );
+        if (!ptr) ptr = map_free_area( (void *)gaps[k].lo, (void *)gaps[k].hi, size,
+                                       top_down, unix_prot, align_mask );
+        if (ptr) break;
+    }
+    {
+        static unsigned int reports;
+        if (__atomic_fetch_add( &reports, 1, __ATOMIC_RELAXED ) < 32)
+            dprintf( 2, "[wow-placement-v1] bounds=%p..%p size=%p alignment=%p segments=%u attempted=%u result=%p\n",
+                     start, end, (void *)size, (void *)(align_mask + 1), gap_count, attempted, ptr );
+    }
+    return ptr;
+}
+#endif
+
 #ifdef WINE_IOS
 /* Madeira: set by ios_thin_reserve, with virtual_mutex held, while it maps a
  * head inside a thin arena. */
 static int ios_thin_placing;
 #endif
 
+/***********************************************************************
+ *           map_fixed_area
+ *
+ * Map a memory area at a fixed address.
+ * virtual_mutex must be held by caller.
+ */
 static NTSTATUS map_fixed_area( void *base, size_t size, int unix_prot )
 {
     struct reserved_area *area;
@@ -20725,6 +20858,8 @@ static NTSTATUS map_view( struct file_view **view_ret, void *base, size_t size,
         void *start = address_space_start;
         void *end = min( user_space_limit, host_addr_space_limit );
         void *wow_hi_start = NULL, *wow_hi_end = NULL;   /* madeira-bcd: band above the 32-bit windows */
+        void *wow_scan_start = NULL, *wow_scan_end = NULL;
+        int wow_fex_allowed = 0;
         /* task #35 furniture ceiling — see its definition. Kernel-pick views
          * below 16GB (TEBs, stacks, anon views, section views incl. the 4GB
          * top-of-space tenant from ml106) stay below 464G-64K; only the PA
@@ -20772,6 +20907,10 @@ static NTSTATUS map_view( struct file_view **view_ret, void *base, size_t size,
         {
             void *excl_start = start, *excl_end = end;
 
+            wow_scan_start = start; wow_scan_end = end;
+            /* Placement clipping cannot grant access to FEX-only reservations.
+             * Freeze authorization from the caller's original requirements. */
+            wow_fex_allowed = fex_arena_covers( (void *)limit_low, (void *)limit_high );
             ios_wow_exclude_windows( &excl_start, &excl_end );
             if (excl_start < excl_end)
             {
@@ -20987,6 +21126,13 @@ static NTSTATUS map_view( struct file_view **view_ret, void *base, size_t size,
                              ptr ? "" : " (falling back as before)" );
                 if (ptr) goto done;
             }
+            /* The edge attempts omit middle holes when windows are not
+             * contiguous. Retry all owner-safe segments within the original
+             * caller bounds before deciding that placement is impossible. */
+            if (wow_scan_start &&
+                (ptr = ios_map_between_wow_windows( wow_scan_start, wow_scan_end, host_size,
+                                                    top_down, unix_prot, align_mask, wow_fex_allowed )))
+                goto done;
             /* ml117: THE CEILING IS ADVISORY, NEVER FATAL. It exists only to
              * bias Wine's furniture low so the top 16GB-aligned slots stay free
              * for PartitionAlloc; failing an allocation for it is strictly worse
@@ -24780,6 +24926,11 @@ static NTSTATUS virtual_map_image( HANDLE mapping, void **addr_ptr, SIZE_T *size
 #endif
         if (is_builtin && !offset) add_builtin_module( view->base, NULL );
 #ifdef WINE_IOS
+        /* Private CEF data belongs to the helper's process generation as well
+         * as its JIT copy. A failed DLL initialization otherwise retains the
+         * original dirty PE pages after the pool/FEX reapers have completed. */
+        if (!is_builtin && !offset && !image_info->is_hybrid && !ios_map_resource_view)
+            ios_cef_tag_private_image( view, nt_name );
         /* For builtin images on iOS: eagerly trigger the JIT copy for each
          * EXEC section. Normally Wine relies on an mprotect(PROT_EXEC) call
          * from somewhere downstream to activate section execution, but for

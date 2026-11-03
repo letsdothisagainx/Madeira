@@ -1290,6 +1290,38 @@ static void winios_drv_refresh_children( HWND hwnd, BOOL geometry )
     free( children );
 }
 
+/* A new backing is not an expose event by itself. apply_window_pos marks
+ * surface replacement with SWP_FRAMECHANGED, but desktop mode has no native
+ * window-system expose events. Queue paint for the visible parent and its
+ * children after the replacement, including windowed CEF render widgets.
+ * Do not run guest paint callbacks inline or change any window's visibility. */
+static void winios_expose_surface( HWND hwnd, UINT flags, const RECT *visible,
+                                   struct window_surface *surface )
+{
+    DWORD saved_error;
+    int saved_errno;
+    BOOL painted;
+    if (!surface || IsRectEmpty( visible ) || (flags & SWP_HIDEWINDOW) ||
+        !(flags & (SWP_SHOWWINDOW | SWP_FRAMECHANGED)) || !is_window_visible( hwnd )) return;
+    if (winios_desktop_mode())
+    {
+        if (surface->funcs != &winios_surface_funcs) return;
+    }
+    else if (!winios_game_windows()) return;
+
+    saved_error = NtCurrentTeb()->LastErrorValue;
+    saved_errno = errno;
+    painted = NtUserRedrawWindow( hwnd, NULL, 0, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN );
+    {
+        static unsigned reports;
+        if (__atomic_fetch_add( &reports, 1, __ATOMIC_RELAXED ) < 32)
+            dprintf( 2, "[surface-expose-v1] hwnd=%p surface=%p flags=%08x paint-queued=%u children=1\n",
+                     hwnd, surface, flags, (unsigned)painted );
+    }
+    NtCurrentTeb()->LastErrorValue = saved_error;
+    errno = saved_errno;
+}
+
 /* pWindowPosChanged wrapper: dereference window_rects HERE (Winios.m
  * cannot include wine headers) and forward plain ints for the layer
  * frame; chain to the Winios.m hook afterwards. */
@@ -1388,20 +1420,7 @@ static void winios_drv_window_pos_changed( HWND hwnd, HWND insert_after, HWND ow
         }
     }
 
-    /* Game-mode windows need an expose-equivalent repaint. A real windowing
-     * system answers a window becoming visible, or getting a new backing
-     * surface, with an expose / damage event, and the driver turns it into
-     * NtUserRedrawWindow -- the only thing that queues WM_PAINT. winios has no
-     * such event, so a game's message box painted once into its first
-     * surface, got a new one ("[surf-create] ... RECREATED") and never
-     * painted or flushed again: a layer with no bits. Condition: a
-     * surface-backed window that is visible and was just shown or had its
-     * surface changed (apply_window_pos forces SWP_FRAMECHANGED when the
-     * surface pointer changes). Game mode only; desktop mode is unchanged. */
-    if (winios_game_windows() && surface && !IsRectEmpty( &new_rects->visible ) &&
-        !(swp_flags & SWP_HIDEWINDOW) && (swp_flags & (SWP_SHOWWINDOW | SWP_FRAMECHANGED)) &&
-        (get_window_long( hwnd, GWL_STYLE ) & WS_VISIBLE))
-        NtUserRedrawWindow( hwnd, NULL, 0, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN );
+    winios_expose_surface( hwnd, swp_flags, &new_rects->visible, surface );
 
     if (winios_pWindowPosChanged)
         winios_pWindowPosChanged( hwnd, insert_after, owner_hint, swp_flags, new_rects, surface );

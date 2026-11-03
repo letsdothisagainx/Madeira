@@ -23,6 +23,9 @@ with tempfile.TemporaryDirectory() as temp:
         p = t/relative
         if relative.endswith(('.a','.exe','.dll','.txt')):
             p.parent.mkdir(parents=True, exist_ok=True); p.write_bytes(b'fixture')
+    service_fixture = b'fixture update-handoff-v1'
+    service_path = t/'app/Madeira/arm64ec-windows/madeira-steam-service.exe'
+    service_path.write_bytes(service_fixture)
     # A minimal architecture/marker fixture tests the gate, not executable Wine.
     wow = bytearray(256)
     wow[:2] = b'MZ'; struct.pack_into('<I', wow, 0x3c, 0x80)
@@ -30,6 +33,10 @@ with tempfile.TemporaryDirectory() as temp:
     wow[0xa0:0xa0+len(b'madeira-io-abi-v2')] = b'madeira-io-abi-v2'
     wow.extend(b'[wow-thread-init-v1][wow-break-deliver-v1]MadeiraBTCpuWriteMemory[wow-query-zero-v1][wow-group-attribute-v1]')
     (t/'app/Madeira/aarch64-windows/wow64.dll').write_bytes(wow)
+    scm = bytearray(wow)
+    scm.extend(b'[scm-pipe-wait-v1]')
+    scm_path = t/'app/Madeira/aarch64-windows/services.exe'
+    scm_path.write_bytes(scm)
     cpu = bytearray(0x700)
     cpu[:0x98] = wow[:0x98]
     struct.pack_into('<H', cpu, 0x86, 2)  # writable DATA and native RX code
@@ -60,7 +67,26 @@ with tempfile.TemporaryDirectory() as temp:
     bodies = {
       'xcodebuild': '''mkdir -p "$TEST_APP/arm64ec-windows" "$TEST_APP/i386-windows" "$TEST_APP/x86_64-vcruntime" "$TEST_APP/aarch64-windows"
 cp "$ROOT/app/Madeira/aarch64-windows/wow64.dll" "$ROOT/app/Madeira/aarch64-windows/xtajit.dll" "$TEST_APP/aarch64-windows/"
-printf '[alias-prot-v2][fex-exit-v1][native-thread-cancel-v1][io-abi] v2 native-owned IOSB scopes active[wow-write][guest32-symbols][guest32-cxx-first-v1][cef-atexit-v1][steam-handoff-v1]_madeira_child_server_exited[fex-owner-v1] pre-crt[fex-owner-v1] retired[fex-owner-census-v2][hold-release-v2][deliver-hold-v2][native-window-retire-v1]_winios_native_window_create_winios_native_window_retire[guest32-fault-v1][steam-progress-v1]_winios_ui_progress_snapshot[srv-poll-drop-v1]poll-slots-highwater=' > "$TEST_APP/Madeira.debug.dylib"
+cp "$ROOT/app/Madeira/aarch64-windows/services.exe" "$TEST_APP/aarch64-windows/"
+if [ "${STALE_SCM:-}" = 1 ]; then printf 'old SCM' > "$TEST_APP/aarch64-windows/services.exe"; fi
+printf '[native-group-retire-v1][wow-placement-v1][wow-native-export-v1][fex-callback-v2][child-native-dll-v1][process-wow64-v1][child-native-ntdll-v1][guest-trap-context-v1][surface-expose-v1][steam-client-update-v1][alias-prot-compat][image-alias-retire-v1][swp-context-v1][alias-prot-v2][fex-exit-v1][native-thread-cancel-v1][io-abi] v2 native-owned IOSB scopes active[wow-write][guest32-symbols][guest32-cxx-first-v1][cef-atexit-v1][steam-handoff-v1]_madeira_child_server_exited[fex-owner-v1] pre-crt[fex-owner-v1] retired[fex-owner-census-v2][hold-release-v2][deliver-hold-v2][native-window-retire-v1]_winios_native_window_create_winios_native_window_retire[guest32-fault-v1][steam-progress-v1]_winios_ui_progress_snapshot[srv-poll-drop-v1]poll-slots-highwater=' > "$TEST_APP/Madeira.debug.dylib"
+printf '[cef-image-owner-v1][guest-breakpoint64-v1]' >> "$TEST_APP/Madeira.debug.dylib"
+if [ "${STALE_CEF_IMAGE:-}" = 1 ]; then
+  sed 's/\\[cef-image-owner-v1\\]//g' "$TEST_APP/Madeira.debug.dylib" > "$TEST_APP/native.stale"
+  mv "$TEST_APP/native.stale" "$TEST_APP/Madeira.debug.dylib"
+fi
+if [ "${STALE_GUEST64_BREAK:-}" = 1 ]; then
+  sed 's/\\[guest-breakpoint64-v1\\]//g' "$TEST_APP/Madeira.debug.dylib" > "$TEST_APP/native.stale"
+  mv "$TEST_APP/native.stale" "$TEST_APP/Madeira.debug.dylib"
+fi
+if [ "${STALE_NATIVE_GROUP:-}" = 1 ]; then
+  sed 's/\\[native-group-retire-v1\\]//g' "$TEST_APP/Madeira.debug.dylib" > "$TEST_APP/native.stale"
+  mv "$TEST_APP/native.stale" "$TEST_APP/Madeira.debug.dylib"
+fi
+if [ "${STALE_WOW_PLACEMENT:-}" = 1 ]; then
+  sed 's/\\[wow-placement-v1\\]//g' "$TEST_APP/Madeira.debug.dylib" > "$TEST_APP/native.stale"
+  mv "$TEST_APP/native.stale" "$TEST_APP/Madeira.debug.dylib"
+fi
 cp "$ROOT/app/Madeira/i386-windows/kernelbase.dll" "$TEST_APP/i386-windows/"
 printf fixture > "$TEST_APP/Madeira"
 printf fixture > "$TEST_APP/prefix-template.tar.gz"
@@ -69,6 +95,7 @@ printf fixture > "$TEST_APP/x86_64-vcruntime/vcruntime140.dll"
 for resource in dockhost.exe dock-notices.txt madeira-steam-service.exe madeira-scm-probe.exe; do
   if [ "${OMIT_RESOURCE:-}" != "$resource" ]; then cp "$ROOT/app/Madeira/arm64ec-windows/$resource" "$TEST_APP/arm64ec-windows/"; fi
 done
+if [ "${STALE_SERVICE:-}" = 1 ]; then printf 'old update-handoff-v1' > "$TEST_APP/arm64ec-windows/madeira-steam-service.exe"; fi
 for resource in madeira-wow64-probe.exe madeira-wow64-module-probe.dll; do
   if [ "${OMIT_RESOURCE:-}" != "$resource" ]; then cp "$ROOT/app/Madeira/i386-windows/$resource" "$TEST_APP/i386-windows/"; fi
 done
@@ -84,24 +111,54 @@ done
     result=run(); assert result.returncode == 0, result.stdout+result.stderr
     with zipfile.ZipFile(t/'dist/Madeira.ipa') as archive:
         for resource in ['dockhost.exe','dock-notices.txt','madeira-steam-service.exe','madeira-scm-probe.exe']:
-            assert archive.read('Payload/Madeira.app/arm64ec-windows/'+resource) == b'fixture'
+            assert archive.read('Payload/Madeira.app/arm64ec-windows/'+resource) == (service_fixture if resource == 'madeira-steam-service.exe' else b'fixture')
     with zipfile.ZipFile(t/'dist/Madeira.ipa') as archive:
         for resource in ['madeira-wow64-probe.exe','madeira-wow64-module-probe.dll']:
             assert archive.read('Payload/Madeira.app/i386-windows/'+resource)==b'fixture'
     print('PASS final ZIP includes Dock, helpers, i386 loader fixture and license notices')
+    result=run({'STALE_WOW_PLACEMENT':'1'})
+    assert result.returncode and 'stale native WoW64-segment placement' in result.stderr, result.stderr
+    print('PASS stale native WoW64-segment placement fails final IPA validation')
+    result=run({'STALE_NATIVE_GROUP':'1'})
+    assert result.returncode and 'stale native process-group retirement' in result.stderr, result.stderr
+    print('PASS stale native process-group retirement fails final IPA validation')
+    result=run({'STALE_CEF_IMAGE':'1'})
+    assert result.returncode and 'stale private CEF image retirement' in result.stderr, result.stderr
+    result=run({'STALE_GUEST64_BREAK':'1'})
+    assert result.returncode and 'stale AMD64 guest breakpoint diagnostics' in result.stderr, result.stderr
+    print('PASS stale CEF backing retirement and AMD64 trap diagnostics fail final IPA validation')
     for resource in ['dockhost.exe','dock-notices.txt','madeira-steam-service.exe','madeira-scm-probe.exe']:
         result=run({'OMIT_RESOURCE':resource})
         assert result.returncode != 0 and 'required bundle resource missing' in result.stderr, result.stderr
         p=t/'app/Madeira/arm64ec-windows'/resource; p.write_bytes(b'')
         result=run()
         assert result.returncode != 0 and 'required build artifact missing' in result.stderr, result.stderr
-        p.write_bytes(b'fixture')
+        p.write_bytes(service_fixture if resource == 'madeira-steam-service.exe' else b'fixture')
     for resource in ['madeira-wow64-probe.exe','madeira-wow64-module-probe.dll']:
         result=run({'OMIT_RESOURCE':resource}); assert result.returncode and 'required bundle resource missing' in result.stderr
         p=t/'app/Madeira/i386-windows'/resource; p.write_bytes(b'')
         result=run();assert result.returncode and 'required build artifact missing' in result.stderr
         p.write_bytes(b'fixture')
     print('PASS missing bundle resources and empty staging outputs fail packaging')
+    service_path.write_bytes(b'old helper')
+    result=run()
+    assert result.returncode and 'stale Steam service update handoff helper' in result.stderr, result.stderr
+    service_path.write_bytes(service_fixture)
+    result=run({'STALE_SERVICE':'1'})
+    assert result.returncode and 'Xcode packaged stale Steam service helper' in result.stderr, result.stderr
+    print('PASS stale service handoff helper and stale Xcode resource copy fail final IPA validation')
+    scm_path.write_bytes(wow)
+    result=run()
+    assert result.returncode and 'stale SCM startup timeout producer' in result.stderr, result.stderr
+    scm_path.write_bytes(scm)
+    result=run({'STALE_SCM':'1'})
+    assert result.returncode and 'Xcode packaged stale SCM startup producer' in result.stderr, result.stderr
+    invalid_scm = bytearray(scm); struct.pack_into('<H',invalid_scm,0x84,0x8664)
+    scm_path.write_bytes(invalid_scm)
+    result=run()
+    assert result.returncode and 'SCM must retain native ARM64 architecture' in result.stderr, result.stderr
+    scm_path.write_bytes(scm)
+    print('PASS stale, wrong-architecture and stale-bundle SCM producers fail final IPA validation')
     invalid_cpu = bytearray(cpu)
     invalid_cpu[0x280] = ord('x')
     (t/'app/Madeira/aarch64-windows/xtajit.dll').write_bytes(invalid_cpu)

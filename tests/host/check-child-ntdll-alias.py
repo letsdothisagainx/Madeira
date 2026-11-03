@@ -56,6 +56,7 @@ assert drop and drop.start() < reclaim.index('pthread_mutex_lock( &ios_pool_lock
     'the dying registrant must lose the callback before its pool copy is reclaimed'
 
 code = r'''
+/* FEX CPU-image classification is tested separately; these synthetic aliases are not FEX DLLs. */
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -66,6 +67,7 @@ typedef int NTSTATUS;
 #define STATUS_SUCCESS 0
 #define STATUS_INVALID_PARAMETER ((NTSTATUS)0xC000000D)
 #define ERR(...) do { } while (0)
+static int ios_image_is_fex(const void *base,size_t size){(void)base;(void)size;return 0;}
 static void *cur_peb;
 void *ios_jit_current_peb(void) { return cur_peb; }
 int ios_subfloor_enum( int idx, unsigned long long *low, unsigned long long *real, unsigned long long *size,

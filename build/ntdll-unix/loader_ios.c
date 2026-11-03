@@ -325,6 +325,10 @@ struct ios_proc_ident
 };
 static struct ios_proc_ident ios_proc_idents[IOS_MAX_PROC_IDENTS];
 static int ios_proc_ident_count;
+/* Native process retirement can run alongside a successor's bootstrap.
+ * Serialize slot writers while keeping signal/Mach-side identity lookups
+ * lock-free and preserving the existing metadata-before-owner publication. */
+static pthread_mutex_t ios_proc_ident_writer_lock = PTHREAD_MUTEX_INITIALIZER;
 
 extern void *ios_jit_current_peb(void);
 extern void ios_unix_fatal_exit(int status, const char *why) __attribute__((noreturn));
@@ -351,7 +355,10 @@ int ios_is_arm64ec_cur(void)
 
 void ios_register_proc_ident( void *peb_id, const SECTION_IMAGE_INFORMATION *info )
 {
-    int idx = ios_proc_ident_count, i;
+    int idx, i;
+
+    pthread_mutex_lock( &ios_proc_ident_writer_lock );
+    idx = ios_proc_ident_count;
 
     /* prefer a slot released by a dead pseudo-process (ios_proc_ident_release)
      * — without this the registry fills up over a long multi-process session
@@ -362,6 +369,7 @@ void ios_register_proc_ident( void *peb_id, const SECTION_IMAGE_INFORMATION *inf
 
     if (idx >= IOS_MAX_PROC_IDENTS)
     {
+        pthread_mutex_unlock( &ios_proc_ident_writer_lock );
         dprintf(2, "[proc-ident] registry FULL — %p keeps session identity\n", peb_id);
         return;
     }
@@ -373,6 +381,7 @@ void ios_register_proc_ident( void *peb_id, const SECTION_IMAGE_INFORMATION *inf
     ios_proc_idents[idx].peb = peb_id;
     __sync_synchronize();
     if (idx == ios_proc_ident_count) ios_proc_ident_count = idx + 1;
+    pthread_mutex_unlock( &ios_proc_ident_writer_lock );
     dprintf(2, "[proc-ident] peb=%p Machine=0x%x (slot %d)\n",
             peb_id, info->Machine, idx);
 }
@@ -385,12 +394,14 @@ void ios_register_proc_ident( void *peb_id, const SECTION_IMAGE_INFORMATION *inf
  * then answer for the new process with the dead one's main-image info and its
  * private (already tombstoned) ntdll copy, which is how a stale identity turns
  * into a wrong pe_dir, a wrong is_arm64ec() and a call into freed pool memory.
- * Called from the guest-window teardown (virtual_ios.c). */
+ * Called from guest-window teardown or final quiescent native-process cleanup. */
 void ios_proc_ident_release( void *peb_id )
 {
-    int i, n = ios_proc_ident_count;
+    int i, n;
 
     if (!peb_id) return;
+    pthread_mutex_lock( &ios_proc_ident_writer_lock );
+    n = ios_proc_ident_count;
     for (i = 0; i < n; i++)
     {
         if (ios_proc_idents[i].peb != peb_id) continue;
@@ -401,9 +412,11 @@ void ios_proc_ident_release( void *peb_id )
         memset( &ios_proc_idents[i].wow_init, 0, sizeof(ios_proc_idents[i].wow_init) );
         memset( &ios_proc_idents[i].funcs, 0, sizeof(ios_proc_idents[i].funcs) );
         memset( &ios_proc_idents[i].info, 0, sizeof(ios_proc_idents[i].info) );
+        pthread_mutex_unlock( &ios_proc_ident_writer_lock );
         dprintf(2, "[proc-ident] released peb=%p (slot %d)\n", peb_id, i);
         return;
     }
+    pthread_mutex_unlock( &ios_proc_ident_writer_lock );
     dprintf(2, "[proc-ident] release: peb=%p was not registered\n", peb_id);
 }
 
@@ -1898,6 +1911,31 @@ NTSTATUS load_builtin( const struct pe_image_info *image_info, UNICODE_STRING *n
             TRACE( "iOS: %s disabled by WINEDLLOVERRIDES\n", debugstr_us(nt_name) );
             return STATUS_DLL_NOT_FOUND;
         }
+
+        /* system32 belongs to the installed session and may point to the
+         * hybrid DLL farm after an AMD64 Steam update. A native ARM64 host
+         * (including an i386 child's WoW64 host) cannot call those x64 entry
+         * points. Resolve Wine's own DLL from the native PE farm instead.
+         * Do not replace application DLLs, explicit AMD64 mappings, or a
+         * hybrid process's imports. Never fall back to the incompatible file
+         * if the matching builtin is absent or cannot be mapped. */
+        if (current_machine == IMAGE_FILE_MACHINE_ARM64 && !ios_is_arm64ec_cur() &&
+            image_info->wine_builtin && image_info->is_hybrid &&
+            image_info->machine == IMAGE_FILE_MACHINE_AMD64 &&
+            (!machine || machine == IMAGE_FILE_MACHINE_ARM64))
+        {
+            static unsigned int notes;
+            NTSTATUS status;
+
+            if (lo == LO_NATIVE) return STATUS_NOT_SUPPORTED;
+            status = find_builtin_dll( nt_name, exp_name, module, size, info,
+                                       limit_low, limit_high, IMAGE_FILE_MACHINE_ARM64,
+                                       IMAGE_FILE_MACHINE_ARM64, FALSE, offset );
+            if (__atomic_fetch_add( &notes, 1, __ATOMIC_RELAXED ) < 16)
+                dprintf( 2, "[child-native-dll-v1] owner=%p source=8664 target=aa64 status=%08x\n",
+                         ios_jit_current_peb(), (unsigned int)status );
+            return status;
+        }
     }
     /* On iOS, all PE DLLs are in the prefix (system32 symlinks to bundle).
      * Skip the builtin .so search — it causes mmap failures on iOS and
@@ -2222,6 +2260,8 @@ static const void *get_module_data_dir( HMODULE module, ULONG dir, ULONG *size )
 void **ios_ntdll_syscall_dispatcher_ptr = NULL;
 void **ios_ntdll_unix_call_dispatcher_ptr = NULL;
 unixlib_handle_t *ios_ntdll_unixlib_handle_ptr = NULL;
+/* The mapped source image, not the mutable main_image_info session global. */
+static USHORT ios_session_ntdll_machine;
 #endif
 
 static void load_ntdll_functions( HMODULE module )
@@ -2232,6 +2272,11 @@ static void load_ntdll_functions( HMODULE module )
     unixlib_handle_t *p__wine_unixlib_handle;
     const IMAGE_EXPORT_DIRECTORY *exports;
     unsigned int *pios_teb_tsd_offset;
+
+#ifdef WINE_IOS
+    ios_session_ntdll_machine = ((const IMAGE_NT_HEADERS *)((const BYTE *)module +
+                                 ((const IMAGE_DOS_HEADER *)module)->e_lfanew))->FileHeader.Machine;
+#endif
 
     exports = get_module_data_dir( module, IMAGE_DIRECTORY_ENTRY_EXPORT, NULL );
     assert( exports );
@@ -2591,28 +2636,33 @@ static void redirect_ntdll_functions( HMODULE module )
 
 #ifdef WINE_IOS
 /***********************************************************************
- * X3c: private ARM64EC ntdll for a cross-arch child pseudo-process.
- *
- * An AMD64 child under an aarch64 session cannot use the session ntdll
- * (no EC syscall thunks / KiUserEmulationDispatcher / load_arm64ec_module),
- * and it cannot share another image's .data anyway. Map the arm64ec build
- * as a SECOND ntdll image at a fresh VA: the standard map pipeline
- * (map_image_into_view → update_arm64ec_ranges → mprotect_exec) gives it a
- * pool copy, EC bitmap ranges, alias registration and x18 patching exactly
- * like any child-loaded DLL (proven by X1's per-child ucrtbase). The image
- * is child-unique, so no per-child copy pass is needed — but its dispatcher
- * slots must be wired the same way load_ntdll_functions does for the
- * session image (including the Round-7 EC unix-call swap), with every
- * PE-.data write synced into the pool copy.
+ * Private native ntdll for a WoW64 or cross-architecture pseudo-process.
+ * An AMD64 child needs the hybrid build; native ARM64 and WoW64 hosts need
+ * the pure ARM64 build. WoW64 also needs a private PE data-export backing
+ * when the session already uses ARM64. These cases map a fresh owned image and
+ * wire native dispatchers before publishing its entry-point table. The
+ * session's source-image architecture is immutable after initial load.
  */
-static int ios_load_child_ec_ntdll( PEB *child_peb )
+static int ios_child_ntdll_can_clone( USHORT source, USHORT child )
+{
+    /* A WoW64 child's startup block is exported as PE data as well as read
+     * by its native ntdll code. A pool-only clone isolates internal reads,
+     * but GetProcAddress still returns the shared PE backing's data export.
+     * Give every 32-bit child a real private native PE image so both reads
+     * observe its own block, even under an architecture-compatible session. */
+    if (!is_machine_64bit( child )) return 0;
+    return source == (child == IMAGE_FILE_MACHINE_AMD64 ? IMAGE_FILE_MACHINE_AMD64 : IMAGE_FILE_MACHINE_ARM64);
+}
+
+static int ios_load_child_ntdll( PEB *child_peb, USHORT machine )
 {
     static WCHAR path[] = {'\\','?','?','\\','C',':','\\','w','i','n','d','o','w','s','\\',
                            's','y','s','t','e','m','3','2','\\','n','t','d','l','l','.','d','l','l',0};
     extern void ios_jit_sync_write(void *addr, size_t size);
     extern void *ios_jit_translate_addr(void *addr);
     extern void *ios_arm64ec_bitmap_base(void);
-    const char *pe_dir = get_pe_dir( IMAGE_FILE_MACHINE_AMD64 );  /* owner-aware → /arm64ec-windows */
+    const int ec = machine == IMAGE_FILE_MACHINE_AMD64;
+    const char *pe_dir = ec ? "/arm64ec-windows" : "/aarch64-windows";
     unsigned int status;
     SECTION_IMAGE_INFORMATION info;
     OBJECT_ATTRIBUTES attr;
@@ -2629,52 +2679,58 @@ static int ios_load_child_ec_ntdll( PEB *child_peb )
     if (build_dir) asprintf( &name, "%s%s/ntdll.dll", ntdll_dir, pe_dir );
     else asprintf( &name, "%s%s/ntdll.dll", dll_dir, pe_dir );
 
-    dprintf(2, "[ec-child-ntdll] loading %s for peb=%p\n", name, (void *)child_peb);
+    dprintf(2, "[child-native-ntdll-v1] loading %s for peb=%p\n", name, (void *)child_peb);
     status = open_builtin_pe_file( name, &attr, &module, &size, &info, 0, 0,
-                                   IMAGE_FILE_MACHINE_AMD64, FALSE, 0 );
+                                   machine, FALSE, 0 );
     if (status == STATUS_IMAGE_NOT_AT_BASE) status = virtual_relocate_module( module );
     if (status)
     {
-        dprintf(2, "[ec-child-ntdll] FAILED to load %s: 0x%x\n", name, status);
+        dprintf(2, "[child-native-ntdll-v1] FAILED to load %s: 0x%x\n", name, status);
         free( name );
         return -1;
     }
     free( name );
-    dprintf(2, "[ec-child-ntdll] mapped at %p size=0x%lx Machine=0x%x\n",
+    dprintf(2, "[child-native-ntdll-v1] mapped at %p size=0x%lx Machine=0x%x\n",
             module, (unsigned long)size, info.Machine);
+
+    if (info.Machine != machine) return -1;
 
     exports = get_module_data_dir( module, IMAGE_DIRECTORY_ENTRY_EXPORT, NULL );
     if (!exports)
     {
-        dprintf(2, "[ec-child-ntdll] no export directory!\n");
+        dprintf(2, "[child-native-ntdll-v1] no export directory!\n");
         return -1;
     }
 
     {
         void **p__wine_syscall_dispatcher;
         void **p__wine_unix_call_dispatcher;
-        void **p__wine_unix_call_dispatcher_arm64ec;
+        void **p__wine_unix_call_dispatcher_arm64ec = NULL;
         unixlib_handle_t *p__wine_unixlib_handle;
         unsigned int *pios_teb_tsd_offset;
 
 #define EC_GET(dst, sym) \
         if (!((dst) = (void *)find_named_export( module, exports, sym ))) \
-            dprintf(2, "[ec-child-ntdll] export %s NOT FOUND\n", sym)
+            dprintf(2, "[child-native-ntdll-v1] export %s NOT FOUND\n", sym)
 
         EC_GET( funcs.LdrInitializeThunk,              "LdrInitializeThunk" );
         EC_GET( funcs.RtlUserThreadStart,              "RtlUserThreadStart" );
         EC_GET( funcs.KiUserExceptionDispatcher,       "KiUserExceptionDispatcher" );
         EC_GET( funcs.KiUserApcDispatcher,             "KiUserApcDispatcher" );
         EC_GET( funcs.KiUserCallbackDispatcher,        "KiUserCallbackDispatcher" );
-        EC_GET( funcs.KiUserEmulationDispatcher,       "KiUserEmulationDispatcher" );
+        if (ec) { EC_GET( funcs.KiUserEmulationDispatcher, "KiUserEmulationDispatcher" ); }
         EC_GET( funcs.KiRaiseUserExceptionDispatcher,  "KiRaiseUserExceptionDispatcher" );
         EC_GET( funcs.DbgUiRemoteBreakin,              "DbgUiRemoteBreakin" );
         EC_GET( p__wine_syscall_dispatcher,            "__wine_syscall_dispatcher" );
         EC_GET( p__wine_unix_call_dispatcher,          "__wine_unix_call_dispatcher" );
-        EC_GET( p__wine_unix_call_dispatcher_arm64ec,  "__wine_unix_call_dispatcher_arm64ec" );
+        if (ec) { EC_GET( p__wine_unix_call_dispatcher_arm64ec, "__wine_unix_call_dispatcher_arm64ec" ); }
         EC_GET( p__wine_unixlib_handle,                "__wine_unixlib_handle" );
 #undef EC_GET
-        if (!funcs.LdrInitializeThunk || !p__wine_syscall_dispatcher || !p__wine_unixlib_handle)
+        if (!funcs.LdrInitializeThunk || !funcs.RtlUserThreadStart ||
+            !funcs.KiUserExceptionDispatcher || !funcs.KiUserApcDispatcher ||
+            !funcs.KiUserCallbackDispatcher || !funcs.KiRaiseUserExceptionDispatcher ||
+            !p__wine_syscall_dispatcher || !p__wine_unix_call_dispatcher || !p__wine_unixlib_handle ||
+            (ec && (!funcs.KiUserEmulationDispatcher || !p__wine_unix_call_dispatcher_arm64ec)))
             return -1;
 
         /* Same slot recipe as load_ntdll_functions for the session image. */
@@ -2687,6 +2743,7 @@ static int ios_load_child_ec_ntdll( PEB *child_peb )
             if (pios_teb_tsd_offset)
             {
                 *pios_teb_tsd_offset = (unsigned int)ios_teb_tls_slot_offset;
+                ios_jit_sync_write( pios_teb_tsd_offset, sizeof(*pios_teb_tsd_offset) );
                 dprintf(2, "[teb-tsd] ec-child published offset=0x%x\n", *pios_teb_tsd_offset);
             }
             else dprintf(2, "[teb-tsd] ec-child export ios_teb_tsd_offset NOT FOUND\n");
@@ -2700,6 +2757,8 @@ static int ios_load_child_ec_ntdll( PEB *child_peb )
             {
                 *pbase = ios_fex_arena_base_unix;
                 *pend  = ios_fex_arena_end_unix;
+                ios_jit_sync_write( pbase, sizeof(*pbase) );
+                ios_jit_sync_write( pend, sizeof(*pend) );
                 dprintf(2, "[fex-arena] ml797 ec-child channel WIRED base=%p end=%p\n",
                         (void *)*pbase, (void *)*pend);
             }
@@ -2720,7 +2779,7 @@ static int ios_load_child_ec_ntdll( PEB *child_peb )
             void **p_xlate = (void **)find_named_export( module, exports, "p_ios_jit_translate_addr" );
             void **p_xlate_rev = (void **)find_named_export( module, exports, "p_ios_jit_reverse_translate_addr" );
             if (p_xlate)     { *p_xlate = (void *)ios_jit_translate_addr;              ios_jit_sync_write( p_xlate, sizeof(void*) ); }
-            else dprintf(2, "[ec-child-ntdll] p_ios_jit_translate_addr NOT FOUND\n");
+            else dprintf(2, "[child-native-ntdll-v1] p_ios_jit_translate_addr NOT FOUND\n");
             /* ml221: this used to install the reverse hook with NO log on either
              * outcome, so whether a CHILD ntdll copy got it was invisible. That matters:
              * each pseudo-process has its own cloned .data, hence its own
@@ -2732,22 +2791,22 @@ static int ios_load_child_ec_ntdll( PEB *child_peb )
             {
                 *p_xlate_rev = (void *)ios_jit_reverse_translate_addr;
                 ios_jit_sync_write( p_xlate_rev, sizeof(void*) );
-                dprintf( 2, "[ec-child-ntdll] XLATE-REV installed at %p = %p\n",
+                dprintf( 2, "[child-native-ntdll-v1] XLATE-REV installed at %p = %p\n",
                          p_xlate_rev, (void *)ios_jit_reverse_translate_addr );
             }
-            else dprintf( 2, "[ec-child-ntdll] p_ios_jit_reverse_translate_addr NOT FOUND"
+            else dprintf( 2, "[child-native-ntdll-v1] p_ios_jit_reverse_translate_addr NOT FOUND"
                              " -- unwind will run in pool space\n" );
         }
         /* RtlPcToFileHeader must map JIT-pool aliases (virtual_ios.c). */
         {
             extern int ios_patch_rtl_pc_to_file_header( void *module, const void *export_addr );
             void *f = (void *)find_named_export( module, exports, "RtlPcToFileHeader" );
-            if (f) ios_patch_rtl_pc_to_file_header( module, f );
+            if (ec && f) ios_patch_rtl_pc_to_file_header( module, f );
         }
         {   /* madeira-bcd: the [exec-req] path of NtProtectVirtualMemory leaves the
              * syscall callback (virtual_ios.c, opt-in MADEIRA_EXECREQ_LEAVE=1) */
             extern int ios_patch_execreq_leave( void *module );
-            ios_patch_execreq_leave( module );
+            if (ec) ios_patch_execreq_leave( module );
         }
 
         /* Sync all written slots into the pool copy (PE code reads there). */
@@ -2757,13 +2816,14 @@ static int ios_load_child_ec_ntdll( PEB *child_peb )
         if (p__wine_unix_call_dispatcher_arm64ec)
             ios_jit_sync_write( p__wine_unix_call_dispatcher_arm64ec, sizeof(void*) );
 
-        dprintf(2, "[ec-child-ntdll] syscall_disp slot %p -> pool %p\n",
+        dprintf(2, "[child-native-ntdll-v1] syscall_disp slot %p -> pool %p\n",
                 (void *)p__wine_syscall_dispatcher,
                 ios_jit_translate_addr( p__wine_syscall_dispatcher ));
     }
 
     /* Redirect exported entry points to their EC variants (hybrid metadata),
      * mirroring redirect_ntdll_functions on the p* globals. */
+    if (ec)
     {
         const IMAGE_LOAD_CONFIG_DIRECTORY *loadcfg;
         const IMAGE_ARM64EC_METADATA *metadata;
@@ -2783,17 +2843,46 @@ static int ios_load_child_ec_ntdll( PEB *child_peb )
             EC_REDIRECT( DbgUiRemoteBreakin );
 #undef EC_REDIRECT
         }
-        else dprintf(2, "[ec-child-ntdll] no CHPE metadata — EC redirect skipped!\n");
+        else
+        {
+            dprintf(2, "[child-native-ntdll-v1] no CHPE metadata — refusing unvalidated EC entry points\n");
+            return -1;
+        }
     }
 
     /* The EC code bitmap is lazily created by the first hybrid AMD64 map;
      * only the creating PEB gets EcCodeBitMap set. Every EC child needs it
      * (arm64x_check_call reads TEB->Peb->EcCodeBitMap). */
-    if (!child_peb->EcCodeBitMap) child_peb->EcCodeBitMap = ios_arm64ec_bitmap_base();
-    dprintf(2, "[ec-child-ntdll] EcCodeBitMap=%p LdrInitializeThunk=%p (pool %p)\n",
+    if (ec && !child_peb->EcCodeBitMap) child_peb->EcCodeBitMap = ios_arm64ec_bitmap_base();
+    dprintf(2, "[child-native-ntdll-v1] EcCodeBitMap=%p LdrInitializeThunk=%p (pool %p)\n",
             child_peb->EcCodeBitMap, funcs.LdrInitializeThunk,
             ios_jit_translate_addr( funcs.LdrInitializeThunk ));
 
+    if (!ec && !is_machine_64bit( ios_cur_image_info()->Machine ))
+    {
+        static unsigned int reports;
+        SYSTEM_DLL_INIT_BLOCK *dst = (void *)find_named_export( module, exports, "LdrSystemDllInitBlock" );
+        const SYSTEM_DLL_INIT_BLOCK *block = ios_wow64_init_block_for_peb( child_peb );
+        unsigned int report = __atomic_fetch_add( &reports, 1, __ATOMIC_RELAXED );
+        if (!dst || !block || !block->ntdll_handle || block->ntdll_handle > 0xffffffffULL ||
+            !block->pLdrInitializeThunk || block->pLdrInitializeThunk > 0xffffffffULL ||
+            !block->pRtlUserThreadStart || block->pRtlUserThreadStart > 0xffffffffULL)
+        {
+            if (report < 32)
+                dprintf( 2, "[wow-native-export-v1] owner=%p pe-block=%p snapshot=%p ready=0\n",
+                         child_peb, dst, block );
+            return -1;
+        }
+        memcpy( dst, block, sizeof(*block) );
+        ios_jit_sync_write( dst, sizeof(*block) );
+        if (report < 32)
+            dprintf( 2, "[wow-native-export-v1] owner=%p pe-block=%p ntdll32=%llx ldr=%llx start=%llx ready=1\n",
+                     child_peb, dst, (unsigned long long)block->ntdll_handle,
+                     (unsigned long long)block->pLdrInitializeThunk,
+                     (unsigned long long)block->pRtlUserThreadStart );
+    }
+    dprintf(2,"[child-native-ntdll-v1] owner=%p source-machine=%04x private-machine=%04x guest-machine=%04x ready=1\n",
+            child_peb,ios_session_ntdll_machine,machine,ios_cur_image_info()->Machine);
     ios_set_proc_ntdll( child_peb, module, &funcs );
     return 0;
 }
@@ -4140,16 +4229,18 @@ DECLSPEC_EXPORT void wine_ios_child_main( int argc, char *argv[], int child_fd_s
             ios_child_load_apiset( ios_cur_image_info()->Machine );
         }
 
-        /* X3c: a cross-arch child (AMD64 exe, non-EC session) cannot run on
-         * the session's aarch64 ntdll at all — load the ARM64EC build as a
-         * private second image instead of copying the session image. The
-         * fresh image needs no per-child copy (nobody else uses its .data);
-         * the standard map pipeline gave it pool/EC/x18 treatment. */
-        if (ios_cur_image_info()->Machine == IMAGE_FILE_MACHINE_AMD64 && !is_arm64ec())
+        /* A hybrid session image cannot host native ARM64 calls. WoW64 also
+         * requires private PE-backed startup exports even when the session's
+         * architecture matches: a pool-only clone leaves data exports pointing
+         * at the session's block. Map a fresh image in either case; never
+         * publish another owner's loader or WoW64 startup data. */
+        if (!ios_child_ntdll_can_clone( ios_session_ntdll_machine, ios_cur_image_info()->Machine ))
         {
-            CHILD_STAGE( "load_child_ec_ntdll" );
-            if (ios_load_child_ec_ntdll( child_peb ) != 0)
-                CHILD_BOOT_FAIL( "EC ntdll load failed — a cross-arch child cannot start\n" );
+            USHORT machine = ios_cur_image_info()->Machine == IMAGE_FILE_MACHINE_AMD64 ?
+                             IMAGE_FILE_MACHINE_AMD64 : IMAGE_FILE_MACHINE_ARM64;
+            CHILD_STAGE( "load_child_native_ntdll" );
+            if (ios_load_child_ntdll( child_peb, machine ) != 0)
+                CHILD_BOOT_FAIL( "private native ntdll load failed for machine=%04x\n", machine );
         }
         else
         /* S1: per-child ntdll copy. The child cannot share the parent's

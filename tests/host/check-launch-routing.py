@@ -53,14 +53,24 @@ print("PASS: non-i386 targets keep the upstream core choice and exe path; the i3
 pe_machine = function(src, "static uint16_t madeira_pe_machine(")
 target = function(src, "static uint16_t madeira_target_machine(")
 target = target.replace("NSString *bundle", "const char *bundle").replace("bundle.fileSystemRepresentation", "bundle")
+route = function(src, "static BOOL madeira_use_arm64ec_for_target(")
 code = r"""
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <strings.h>
+#include <dirent.h>
 #include <unistd.h>
 #include <limits.h>
 #include <assert.h>
-""" + pe_machine + "\n" + target + r"""
+#define BOOL int
+#define YES 1
+#define NO 0
+#define MADEIRA_IMAGE_FILE_MACHINE_I386 0x14c
+#define MADEIRA_IMAGE_FILE_MACHINE_AMD64 0x8664
+#define MADEIRA_IMAGE_FILE_MACHINE_ARM64 0xaa64
+#define MADEIRA_IMAGE_FILE_MACHINE_ARM64EC 0xa641
+""" + pe_machine + "\n" + target + "\n" + route + r"""
 int main(int argc, char **argv)
 {
     const char *d = argv[1];
@@ -85,6 +95,33 @@ int main(int argc, char **argv)
     assert(madeira_target_machine("both.exe", prefix, bundle) == 0xaa64);
     assert(madeira_target_machine("only32.exe", prefix, bundle) == 0x14c);
     assert(madeira_target_machine("nowhere.exe", prefix, bundle) == 0);
+    /* A bundle update moves the container before the generated farms refresh.
+     * Neither dangling links nor a previous EC session may choose the root's
+     * architecture. Compile the production routing too: wrong => EC kernel32. */
+    const char *system_cmd = "C:\\windows\\system32\\cmd.exe";
+    uint16_t machine = madeira_target_machine(system_cmd, prefix, bundle);
+    assert(machine == 0xaa64);
+    assert(!madeira_use_arm64ec_for_target(system_cmd, NULL, machine, YES));
+    assert(madeira_target_machine("C:\\WINDOWS\\SYSTEM32\\CMD.EXE", prefix, bundle) == 0xaa64);
+    assert(madeira_target_machine("C:\\windows\\system32\\old-ec.exe", prefix, bundle) == 0xaa64);
+    assert(madeira_target_machine("C:\\windows\\sysaa64\\cmd.exe", prefix, bundle) == 0xaa64);
+    assert(madeira_target_machine("C:\\windows\\sysx64\\cmd.exe", prefix, bundle) == 0x8664);
+    assert(madeira_target_machine("C:\\windows\\syswow64\\cmd.exe", prefix, bundle) == 0x14c);
+    assert(madeira_target_machine("C:\\windows\\system32\\only32.exe", prefix, bundle) == 0);
+    assert(madeira_target_machine("C:\\windows\\system32\\CuStOm.ExE", prefix, bundle) == 0x8664);
+    assert(madeira_target_machine("C:\\windows\\system32\\broken.exe", prefix, bundle) == 0);
+    /* Custom prefix files remain authoritative when no bundled file will
+     * replace them. Nested and neighboring directories are not farm aliases. */
+    assert(madeira_target_machine("C:\\windows\\system32\\thirdparty.exe", prefix, bundle) == 0x8664);
+    assert(madeira_target_machine("C:\\windows\\system32\\wbem\\cmd.exe", prefix, bundle) == 0x14c);
+    assert(madeira_target_machine("C:\\windows\\system32-other\\cmd.exe", prefix, bundle) == 0x14c);
+    assert(madeira_target_machine("C:\\windows\\system32\\..\\cmd.exe", prefix, bundle) == 0x14c);
+    assert(madeira_target_machine("C:\\Program Files\\App Dir\\cmd.exe", prefix, bundle) == 0x8664);
+    /* Architecture probing is read-only; never repair/remove prefix data here. */
+    snprintf(p, sizeof(p), "%s/drive_c/windows/system32/cmd.exe", prefix);
+    char link[PATH_MAX];
+    assert(readlink(p, link, sizeof(link)) > 0);
+    assert(madeira_pe_machine(p) == 0);
     puts("probe ok");
     return 0;
 }
@@ -109,9 +146,29 @@ with tempfile.TemporaryDirectory() as tmp:
     (t / "bundle/aarch64-windows/both.exe").write_bytes(pe(0xaa64))
     (t / "bundle/i386-windows/both.exe").write_bytes(pe(0x14c))
     (t / "bundle/i386-windows/only32.exe").write_bytes(pe(0x14c))
+    (app / "cmd.exe").write_bytes(pe(0x8664))
+    windows = t / "prefix/drive_c/windows"
+    for farm in ["system32", "sysaa64", "sysx64", "syswow64", "system32/wbem", "system32-other"]:
+        (windows / farm).mkdir(parents=True, exist_ok=True)
+    for farm, machine in [("aarch64-windows", 0xaa64), ("arm64ec-windows", 0x8664), ("i386-windows", 0x14c)]:
+        (t / "bundle" / farm / "cmd.exe").write_bytes(pe(machine))
+    (windows / "system32/cmd.exe").symlink_to(t / "old-IPA/Madeira.app/aarch64-windows/cmd.exe")
+    (windows / "sysaa64/cmd.exe").symlink_to(t / "old-IPA/Madeira.app/aarch64-windows/cmd.exe")
+    (windows / "sysx64/cmd.exe").symlink_to(t / "old-IPA/Madeira.app/arm64ec-windows/cmd.exe")
+    (windows / "syswow64/cmd.exe").symlink_to(t / "old-IPA/Madeira.app/i386-windows/cmd.exe")
+    old_ec = t / "old-ec.exe"; old_ec.write_bytes(pe(0x8664))
+    (windows / "system32/old-ec.exe").symlink_to(old_ec)
+    (t / "bundle/aarch64-windows/old-ec.exe").write_bytes(pe(0xaa64))
+    (t / "bundle/arm64ec-windows/CuStOm.exe").write_bytes(pe(0x8664))
+    (t / "bundle/aarch64-windows/broken.exe").write_bytes(b"not a PE")
+    (t / "bundle/arm64ec-windows/broken.exe").write_bytes(pe(0x8664))
+    (windows / "system32/thirdparty.exe").write_bytes(pe(0x8664))
+    for path in ["system32/wbem/cmd.exe", "system32-other/cmd.exe", "cmd.exe"]:
+        (windows / path).write_bytes(pe(0x14c))
     c = t / "check.c"; exe = t / "check"; c.write_text(code)
     subprocess.run(["cc", "-std=gnu11", "-O1", "-g", "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
                     "-Werror=implicit-function-declaration", str(c), "-o", str(exe)], check=True)
     out = subprocess.run([str(exe), str(t)], check=True, capture_output=True, text=True)
     assert "probe ok" in out.stdout, out.stdout + out.stderr
 print("PASS: PE machine probe: PE32/PE32+/non-PE/truncated/huge e_lfanew; drive_c paths; bare names prefer the 64-bit farms")
+print("PASS: bundle relocation and stale/mixed-architecture prefix links choose current farms; explicit architectures, case, invalid PE and custom paths preserved")

@@ -222,6 +222,12 @@ static unsigned int finish_callback(void *teb, unsigned long long *stamp, unsign
 }
 hold_callback ios_hold_release_lookup(void *owner) { return owner == a ? finish_callback : NULL; }
 hold_callback ios_wow_thread_retire_lookup(void *owner,unsigned long long lease){(void)owner;(void)lease;return NULL;}
+/* This fixture isolates owner quiescence. The separate native-callback test
+ * executes the production stack/frame transition. */
+unsigned int ios_call_fex_callback(hold_callback cb,void *teb,unsigned long long *stamp,
+                                   unsigned int *depth,unsigned int *flags) {
+    return cb(teb,stamp,depth,flags);
+}
 '''
 for marker in ('static struct ios_thread_group *ios_thread_group_locked(void *owner)',
                'unsigned long long ios_thread_process_lease(void *owner, int create)',
@@ -346,6 +352,12 @@ static int ios_jit_image_retire_enabled(void) { return 0; }
 static void ios_jit_retire_image(void *base, size_t size) { (void)base; (void)size; }
 static void ios_jit_note_image_unmapped(void *base, size_t size) { (void)base; (void)size; }
 static void ios_swap_release_range(void *base, size_t size, int arg) { (void)base; (void)size; (void)arg; }
+/* This allocator fixture has no image/JIT aliases; their actual retirement
+ * and physical rebinding are exercised by check-image-alias-lifetime.py. */
+#define ROUND_SIZE(b,s,m) (((size_t)(s)+((uintptr_t)(b)&(m))+(m))&~(size_t)(m))
+static int ios_jit_anon_alias_overlaps(void *base,size_t size,uintptr_t *lo,uintptr_t *hi)
+{ (void)base;(void)size;(void)lo;(void)hi;return 0; }
+static void ios_jit_anon_alias_retire_range(void *base,size_t size) { (void)base;(void)size; }
 static void clear_arm64ec_range(void *base, size_t size) { (void)base; (void)size; }
 '''
 for marker in ('static int compare_view( const void *addr, const struct wine_rb_entry *entry )',

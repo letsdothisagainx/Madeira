@@ -1,0 +1,109 @@
+--- a/programs/services/services.c
++++ b/programs/services/services.c
+@@ -41,7 +41,9 @@
+ 
+ struct scmdatabase *active_database;
+ 
+-DWORD service_pipe_timeout = 10000;
++/* Match the Windows SCM default; slow cold service initialization must not
++ * be killed after Wine's former ten-second compatibility timeout. */
++DWORD service_pipe_timeout = 30000;
+ DWORD service_kill_timeout = 60000;
+ static DWORD default_preshutdown_timeout = 180000;
+ static DWORD autostart_delay = 120000;
+@@ -1108,6 +1110,20 @@
+            ERROR_SUCCESS : ERROR_SERVICE_REQUEST_TIMEOUT;
+ }
+ 
++/* A service may legitimately exit while handing work to its own updater.
++ * Record the actual wait outcome without treating it as service readiness. */
++static void trace_service_pipe_wait( DWORD wait, ULONGLONG begin, BOOL connected, DWORD error )
++{
++    static LONG traces;
++    const char *outcome = wait == WAIT_OBJECT_0 ? "event" :
++                          wait == WAIT_OBJECT_0 + 1 ? "process-exit" :
++                          wait == WAIT_TIMEOUT ? "timeout" : "wait-error";
++    if (InterlockedIncrement( &traces ) <= 32)
++        WINE_ERR( "[scm-pipe-wait-v1] outcome=%s wait=%lu elapsed-ms=%llu timeout-ms=%lu overlapped=%lu error=%lu\n",
++                 outcome, (unsigned long)wait, (unsigned long long)(GetTickCount64() - begin),
++                 (unsigned long)service_pipe_timeout, (unsigned long)connected, (unsigned long)error );
++}
++
+ /******************************************************************************
+  * process_send_start_message
+  */
+@@ -1126,11 +1142,17 @@
+         if (GetLastError() == ERROR_IO_PENDING)
+         {
+             HANDLE handles[2];
++            DWORD wait, error;
++            BOOL connected;
++            ULONGLONG begin = GetTickCount64();
+             handles[0] = process->overlapped_event;
+             handles[1] = process->process;
+-            if (WaitForMultipleObjects( 2, handles, FALSE, service_pipe_timeout ) != WAIT_OBJECT_0)
+-                CancelIo(process->control_pipe);
+-            if (!GetOverlappedResult(process->control_pipe, &overlapped, &len, FALSE))
++            wait = WaitForMultipleObjects( 2, handles, FALSE, service_pipe_timeout );
++            if (wait != WAIT_OBJECT_0) CancelIo(process->control_pipe);
++            connected = GetOverlappedResult(process->control_pipe, &overlapped, &len, FALSE);
++            error = connected ? ERROR_SUCCESS : GetLastError();
++            trace_service_pipe_wait( wait, begin, connected, error );
++            if (!connected)
+             {
+                 WINE_ERR("service %s failed to start\n", wine_dbgstr_w(name));
+                 return ERROR_SERVICE_REQUEST_TIMEOUT;
+@@ -1222,6 +1244,44 @@
+     scmdatabase_unlock(db);
+ }
+ 
++/* ServicesPipeTimeout is a DWORD on Windows. Keep the historical Wine
++ * decimal-string form, but ignore malformed, zero and infinite values. */
++static BOOL parse_service_pipe_timeout( DWORD type, const void *data, DWORD count, DWORD *value )
++{
++    DWORD parsed = 0, i, first, length;
++    const WCHAR *text = data;
++    if (!data || !value) return FALSE;
++    if (type == REG_DWORD)
++    {
++        if (count != sizeof(parsed)) return FALSE;
++        memcpy( &parsed, data, sizeof(parsed) );
++    }
++    else if (type == REG_SZ)
++    {
++        if (count < sizeof(WCHAR) || count % sizeof(WCHAR)) return FALSE;
++        length = count / sizeof(WCHAR);
++        if (text[length - 1]) return FALSE;
++        for (i = 0; i < length - 1 && (text[i] == ' ' || text[i] == '\t' ||
++                                     text[i] == '\r' || text[i] == '\n'); i++) {}
++        if (text[i] == '+') i++;
++        first = i;
++        for (; i < length - 1 && text[i] >= '0' && text[i] <= '9'; i++)
++        {
++            DWORD digit = text[i] - '0';
++            if (parsed > (MAXDWORD - digit) / 10) return FALSE;
++            parsed = parsed * 10 + digit;
++        }
++        if (first == i) return FALSE;
++        while (i < length - 1 && (text[i] == ' ' || text[i] == '\t' ||
++                                 text[i] == '\r' || text[i] == '\n')) i++;
++        if (i != length - 1) return FALSE;
++    }
++    else return FALSE;
++    if (!parsed || parsed == INFINITE) return FALSE;
++    *value = parsed;
++    return TRUE;
++}
++
+ static void load_registry_parameters(void)
+ {
+     HKEY key;
+@@ -1232,7 +1292,7 @@
+ 
+     count = sizeof(buffer);
+     if (!RegQueryValueExW( key, L"ServicesPipeTimeout", NULL, &type, (BYTE *)buffer, &count ) &&
+-        type == REG_SZ && (val = wcstol( buffer, NULL, 10 )))
++        parse_service_pipe_timeout( type, buffer, count, &val ))
+         service_pipe_timeout = val;
+ 
+     count = sizeof(buffer);

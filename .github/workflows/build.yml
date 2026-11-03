@@ -20,6 +20,10 @@ on:
         description: Inspect exact FEX CPU symbols from an existing IPA instead of building (optional run ID)
         required: false
         default: ''
+      inspect_steam_run_id:
+        description: Inspect cryptnet in an exact prior IPA (run ID), or 'updater' for Valve's pinned bootstrap
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -34,7 +38,7 @@ concurrency:
 
 jobs:
   plan:
-    if: inputs.inspect_native_run_id == '' && inputs.inspect_fex_run_id == ''
+    if: inputs.inspect_native_run_id == '' && inputs.inspect_fex_run_id == '' && inputs.inspect_steam_run_id == ''
     runs-on: xcode-27
     outputs:
       ipa: ${{ steps.key.outputs.ipa }}
@@ -382,6 +386,7 @@ jobs:
           "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-scm-rpc-abi.py --producer "$farm/sechost.dll" --runtime "$farm/rpcrt4.dll"
           git submodule update --init --depth 1 wine
           "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-x18-loads.py --emulate
+          "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-fex-native-callback.py --emulate
           unzip -q scm-ipa/Madeira.ipa 'Payload/Madeira.app/i386-windows/madeira-wow64-*' 'Payload/Madeira.app/Madeira.debug.dylib' -d scm-ipa
           "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-wow64-probe-image.py scm-ipa/Payload/Madeira.app/i386-windows
           "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-native-apc-image.py
@@ -452,3 +457,30 @@ jobs:
         run: |
           unzip -q previous-ipa/Madeira.ipa 'Payload/Madeira.app/aarch64-windows/xtajit.dll' -d previous-ipa
           python3 tools/build/inspect-fex-image.py previous-ipa/Payload/Madeira.app/aarch64-windows/xtajit.dll --assert-known-fault
+
+  inspect-steam:
+    if: inputs.inspect_steam_run_id != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    env:
+      MADEIRA_INSPECT_UUID: ${{ inputs.inspect_native_uuid }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify the genuine 64-bit Steam updater package
+        if: inputs.inspect_steam_run_id == 'updater'
+        run: python3 tools/inspect-steam-updater.py
+      - uses: actions/download-artifact@v4
+        if: inputs.inspect_steam_run_id != 'updater'
+        with:
+          name: Madeira-ipa
+          run-id: ${{ inputs.inspect_steam_run_id }}
+          github-token: ${{ github.token }}
+          path: previous-ipa
+      - name: Inspect the exact archived cryptnet swap target
+        if: inputs.inspect_steam_run_id != 'updater'
+        run: |
+          python3 -m venv "$RUNNER_TEMP/steam-image-tools"
+          "$RUNNER_TEMP/steam-image-tools/bin/pip" install capstone==5.0.6
+          "$RUNNER_TEMP/steam-image-tools/bin/python" tools/inspect-steam-startup-image.py previous-ipa/Madeira.ipa --expected-uuid "$MADEIRA_INSPECT_UUID"

@@ -336,6 +336,54 @@ int ios_thread_process_forget(void *owner)
     return 1;
 }
 
+/* Native 64-bit pseudo-processes have no WoW window teardown to release
+ * their lease/identity slots. Called only after that lease's JIT/FEX memory
+ * cleanup. Pending deferred TEB handoffs keep the group intact; do not drop
+ * their storage or detach a pthread merely to recover registry capacity. */
+int ios_thread_process_finalize_native(void *owner, unsigned long long lease)
+{
+    unsigned i = ARRAY_SIZE(ios_thread_groups);
+    int forgotten = 0;
+    int saved_errno = errno;
+    const char *reason = "invalid-state";
+    static unsigned reports;
+    extern void ios_proc_ident_release(void *owner);
+
+    if (!owner || !lease) goto done;
+    pthread_once(&ios_thread_reapers_once, ios_thread_reapers_init);
+    pthread_mutex_lock(&ios_thread_group_mutex);
+    for (i = 0; i < ARRAY_SIZE(ios_thread_groups); ++i)
+        if (ios_thread_groups[i].owner == owner && ios_thread_groups[i].lease == lease) break;
+    pthread_mutex_unlock(&ios_thread_group_mutex);
+    if (i == ARRAY_SIZE(ios_thread_groups)) goto done;
+    if (pthread_mutex_trylock(&ios_thread_reapers[i])) { reason = "reaper"; goto done; }
+
+    pthread_mutex_lock(&ios_thread_group_mutex);
+    struct ios_thread_group *group = &ios_thread_groups[i];
+    if (group->owner == owner && group->lease == lease && !group->count &&
+        group->exiting && group->reclaimed && !group->native_threads)
+    {
+        if (group->prev_teb || group->prev_pthread) reason = "deferred";
+        else
+        {
+            /* Keep the generation protected until its identity is cleared. A
+             * recycled PEB must never lose the successor's private ntdll data. */
+            ios_proc_ident_release(owner);
+            memset(group, 0, sizeof(*group));
+            forgotten = 1;
+            reason = "quiescent";
+        }
+    }
+    pthread_mutex_unlock(&ios_thread_group_mutex);
+    pthread_mutex_unlock(&ios_thread_reapers[i]);
+done:
+    if (__atomic_fetch_add(&reports, 1, __ATOMIC_RELAXED) < 32)
+        dprintf(2, "[native-group-retire-v1] owner=%p lease=%llu slot=%u metadata=%s reason=%s\n",
+                owner, lease, i, forgotten ? "released" : "retained", reason);
+    errno = saved_errno;
+    return forgotten;
+}
+
 
 static inline int get_unix_exit_code( NTSTATUS status )
 {
@@ -1365,6 +1413,9 @@ static void contexts_from_server( CONTEXT *context, struct context_data server_c
  * data and code. The remaining noreturn tail uses only native C/TEB state. */
 static void ios_thread_finish_fex(void)
 {
+    extern unsigned int ios_call_fex_callback(
+        unsigned int (*)(void *, unsigned long long *, unsigned int *, unsigned int *),
+        void *, unsigned long long *, unsigned int *, unsigned int * );
     static _Thread_local int entered;
     if (entered || !NtCurrentTeb()) return;
     entered = 1; /* recursive abort must not call the same faulting callback */
@@ -1415,12 +1466,13 @@ static void ios_thread_finish_fex(void)
         {
             /* ml618: RELEASE IT. The callback is the arm64ec_redirect_ptr()-resolved
              * ARM64 alias registered by the PE side and self-tested there, so this
-             * native call is legal — unlike ml613, which bound base+RVA (the raw x64
+             * callback target is legal — unlike ml613, which bound base+RVA (the raw x64
              * entry thunk) and died on every launch.
              *
              * PEB-keyed: pick the callback belonging to THIS pseudo-process, because
              * each has its own FEX context and its own CodeInvalidationMutex.
-             * Runs while the TEB is still valid and before TSD 275 is cleared. */
+             * Runs while the TEB is still valid and before TSD 275 is cleared.
+             * The Unix-to-PE bridge also isolates any nested Wine syscall. */
             extern unsigned int (*ios_hold_release_lookup(void *peb))(void *, unsigned long long *,
                                                                       unsigned int *, unsigned int *);
             void *peb = NtCurrentTeb()->Peb;
@@ -1429,7 +1481,7 @@ static void ios_thread_finish_fex(void)
             unsigned long long stamp = 0;
             unsigned int depth = 0, flags = 0, r = 0;
 
-            if (cb) r = cb( NtCurrentTeb(), &stamp, &depth, &flags );
+            if (cb) r = ios_call_fex_callback( cb, NtCurrentTeb(), &stamp, &depth, &flags );
 
             dprintf(2, "[exit-hold] ml618 tid=%04x peb=%p stamp=0x%llx depth=%u rwx_read=%u -> %s"
                        "released=0x%x (%s%s%s%s)\n",
@@ -1443,7 +1495,9 @@ static void ios_thread_finish_fex(void)
         }
     }
     /* Abort/pipe EOF bypasses BTCpuThreadTerm. Reclaim the current thread's
-     * private CPU state while its owner/lease and TEB are still live. */
+     * private CPU state while its owner/lease and TEB are still live.
+     * Retirement's VirtualFree calls must enter through a fresh syscall frame,
+     * rather than switch back onto this active Unix exit stack. */
     {
         TEB *teb = NtCurrentTeb();
         unsigned long long lease = ios_thread_process_lease(teb->Peb,0), state = 0;
@@ -1460,7 +1514,7 @@ static void ios_thread_finish_fex(void)
                 dprintf(2,"[fex-exit-v1] phase=enter tid=%04x owner=%p lease=%llu\n",
                         (unsigned)(ULONG_PTR)teb->ClientId.UniqueThread,teb->Peb,lease);
             do {
-                result = retire(teb,&state,&depth,&flags);
+                result = ios_call_fex_callback(retire,teb,&state,&depth,&flags);
                 if (result != MADEIRA_FEX_THREAD_RETIRE_BUSY) break;
                 sched_yield();
             } while (++tries < 16);
@@ -2467,21 +2521,30 @@ static DECLSPEC_NORETURN void exit_thread( int status )
     TEB *current = NtCurrentTeb(), *previous = NULL;
     struct ios_thread_group *group;
     pthread_t previous_pthread = 0;
+    unsigned long long lease = 0;
     unsigned index = ARRAY_SIZE(ios_thread_groups);
 
     pthread_sigmask( SIG_BLOCK, &server_block_set, NULL );
+    /* Snapshot while this thread is still counted. Once retirement drops
+     * the count, the final sibling may clear/reuse this slot before our
+     * deferred TEB handoff runs. Never create a fresh group in that tail. */
+    pthread_mutex_lock(&ios_thread_group_mutex);
+    for (index = 0; index < ARRAY_SIZE(ios_thread_groups); ++index)
+    {
+        if (ios_thread_groups[index].owner != current->Peb) continue;
+        lease = ios_thread_groups[index].lease;
+        break;
+    }
+    pthread_mutex_unlock(&ios_thread_group_mutex);
     if (!ios_thread_retire_current()) exit_process( status );
 
     pthread_once(&ios_thread_reapers_once, ios_thread_reapers_init);
-    pthread_mutex_lock(&ios_thread_group_mutex);
-    if ((group = ios_thread_group_locked(current->Peb))) index = group - ios_thread_groups;
-    pthread_mutex_unlock(&ios_thread_group_mutex);
     if (index < ARRAY_SIZE(ios_thread_groups))
     {
         pthread_mutex_lock(&ios_thread_reapers[index]);
         pthread_mutex_lock(&ios_thread_group_mutex);
         group = &ios_thread_groups[index];
-        if (group->owner == current->Peb)
+        if (group->owner == current->Peb && group->lease == lease)
         {
             previous = group->prev_teb;
             previous_pthread = group->prev_pthread;
