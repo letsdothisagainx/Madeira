@@ -22,6 +22,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 parser = argparse.ArgumentParser()
 parser.add_argument('--require-swift', action='store_true')
+parser.add_argument('--app-activated', action='store_true', help='verify exact applied sources in an isolated candidate build checkout')
 args = parser.parse_args()
 runtime = (HERE / 'SteamRuntime.swift.candidate').read_text()
 cache = (HERE / 'SteamBrowserRuntime.swift').read_text()
@@ -30,7 +31,11 @@ assert 'limits: ZIPLimits = .standard' in runtime
 assert 'archive: 64 * 1024 * 1024, member: 64 * 1024 * 1024' in runtime
 assert 'total: 256 * 1024 * 1024, records: 256, strict: false' in runtime
 assert 'member: 256 * 1024 * 1024, total: 768 * 1024 * 1024, records: 256, strict: true' in runtime
-assert 'limits: ZIPLimits' not in production_runtime, 'Candidate unexpectedly activated in app'
+if args.app_activated:
+    assert production_runtime == runtime, 'Applied parser differs from reviewed candidate'
+    assert (ROOT / 'app/Madeira/SteamBrowserRuntime.swift').read_text() == cache
+else:
+    assert 'limits: ZIPLimits' not in production_runtime, 'Candidate unexpectedly activated in app'
 assert cache.index('digest(archive) == package.sha256') < cache.index('limits: .trustedOfficialI386Browser')
 assert 'URLSessionDataDelegate' in cache and 'data.count <= package.bytes - received' in cache
 assert 'URLSession.download(' not in cache and 'session.data(from:' not in cache
@@ -204,6 +209,31 @@ fails("wrong final ownership") { _ = try F.commit(stage: stage, destination: bas
 let final = owner.appendingPathComponent(recipe.id)
 fails("active atomic completion") { _ = try F.commit(stage: stage, destination: final, recipe: recipe, records: records, digest: digestFile, idle: { false }, recheckCore: {}) }
 try checked("official-record-metadata") { try F.checkOfficialRecords(recipe: recipe, records: records) }
+checkpoint("stage directory-hint=" + String(stage.hasDirectoryPath) + " path-final-slash=" + String(stage.path.hasSuffix("/")))
+for item in records.prefix(8) {
+    let file = stage.appendingPathComponent(item.name)
+    let sizeOK = (try file.resourceValues(forKeys: [.fileSizeKey])).fileSize == item.bytes
+    let hashOK = try digestFile(file) == item.sha256
+    let machine = F.executable(item.name) ? F.machine(try Data(contentsOf: file)) : nil
+    checkpoint("fixture-record " + item.name + " size=" + String(sizeOK) + " hash=" + String(hashOK) + " machine=" + String(describing: machine))
+}
+let hintedStage = URL(fileURLWithPath: stage.path, isDirectory: true)
+for hinted in [false, true] {
+    let bin = URL(fileURLWithPath: stage.appendingPathComponent("bin").path, isDirectory: hinted)
+    assert(try! F.relativePath(bin, under: stage, directory: true) == "bin")
+    assert(try! F.relativePath(bin, under: hintedStage, directory: true) == "bin")
+}
+fails("directory relative path outside cache") { _ = try F.relativePath(base, under: stage, directory: true) }
+fails("directory relative path root itself") { _ = try F.relativePath(stage, under: stage, directory: true) }
+if let listing = fm.enumerator(at: stage, includingPropertiesForKeys: [.isDirectoryKey], options: []) {
+    var logged = 0
+    for case let entry as URL in listing {
+        guard logged < 16 else { break }; logged += 1
+        let kind = (try entry.resourceValues(forKeys: [.isDirectoryKey])).isDirectory == true ? "directory" : "file"
+        let relative = String(entry.path.dropFirst(stage.path.count + 1))
+        checkpoint("fixture-tree " + kind + " relative=" + String(reflecting: relative))
+    }
+}
 try checked("exact-official-stage-tree") { try F.validateTree(stage, recipe: recipe, records: records, extraFiles: [], digest: digestFile) }
 _ = try checked("prospective-completion-manifest") { try F.manifest(recipe: recipe, records: records + [F.generatedRecord(recipe: recipe)]) }
 var commitIdleChecks = 0, commitCoreChecks = 0

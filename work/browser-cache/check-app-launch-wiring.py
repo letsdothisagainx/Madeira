@@ -15,14 +15,18 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 parser = argparse.ArgumentParser()
 parser.add_argument('--require-swift', action='store_true')
+parser.add_argument('--app-activated', action='store_true', help='inspect applied sources without regenerating/applying a patch')
 args = parser.parse_args()
 tracked = ['app/Madeira/ContentView.swift', 'app/Madeira/SteamClientUpdate.swift',
            'app/Madeira/SteamRuntime.swift', 'app/Madeira.xcodeproj/project.pbxproj']
 before = {name: (ROOT / name).read_bytes() for name in tracked}
-subprocess.run([os.sys.executable, str(HERE / 'prepare-app-candidates.py')], cwd=ROOT, check=True)
-assert before == {name: (ROOT / name).read_bytes() for name in tracked}
-subprocess.run(['git', 'apply', '--check', str(HERE / 'app-launch-wiring.patch')], cwd=ROOT, check=True)
-candidate = HERE / 'candidate'
+if args.app_activated:
+    candidate = ROOT
+else:
+    subprocess.run([os.sys.executable, str(HERE / 'prepare-app-candidates.py')], cwd=ROOT, check=True)
+    assert before == {name: (ROOT / name).read_bytes() for name in tracked}
+    subprocess.run(['git', 'apply', '--check', str(HERE / 'app-launch-wiring.patch')], cwd=ROOT, check=True)
+    candidate = HERE / 'candidate'
 content = (candidate / 'app/Madeira/ContentView.swift').read_text()
 update = (candidate / 'app/Madeira/SteamClientUpdate.swift').read_text()
 project = (candidate / 'app/Madeira.xcodeproj/project.pbxproj').read_text()
@@ -73,7 +77,8 @@ for name in ['SteamBrowserRuntime', 'SteamNativeBrowserLaunch']:
     assert f'path = "{name}.swift";' in project
     assert (candidate / f'app/Madeira/{name}.swift').read_text() == (HERE / f'{name}.swift').read_text()
 assert 'lastKnownFileType = folder; path = "arm64ec-windows";' in project
-assert 'SteamNativeBrowserLaunch' not in before['app/Madeira/ContentView.swift'].decode(), 'candidate activated unexpectedly'
+if not args.app_activated:
+    assert 'SteamNativeBrowserLaunch' not in before['app/Madeira/ContentView.swift'].decode(), 'candidate activated unexpectedly'
 print('PASS work-only app wiring: prepare before session/configuration, synchronous launch reservation, immutable worker token, updater/Dock/shortcut race guards, exact environment lock export, source/project inclusion, tracked app retained')
 
 swift = os.environ.get('SWIFTC') or shutil.which('swiftc')

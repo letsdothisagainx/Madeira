@@ -118,13 +118,13 @@ static void report(Error error,U32 direction,U32 command,U32 wire){
     n=literal(line,n," direction=");n=number(line,n,direction);
     n=literal(line,n," command=");n=number(line,n,command);
     n=literal(line,n," wire=");n=number(line,n,wire);line[n++]='\n';
-    line[n]=0;U32 written=0;if(!WriteFile(GetStdHandle(U32(-12)),line,U32(n),&written,nullptr))OutputDebugStringA(line);
+    line[n]=0;U32 written=0;WriteFile(GetStdHandle(U32(-12)),line,U32(n),&written,nullptr);OutputDebugStringA(line);
 }
 static void announce(const char *label,U64 generation=0){
     char line[128];Size n=literal(line,0,"MADEIRA_HTMLIPC ");n=literal(line,n,label);
     n=literal(line,n," pid=");n=number(line,n,pid);
     if(generation){n=literal(line,n," generation=");n=number(line,n,generation);}
-    line[n++]='\n';line[n]=0;U32 written=0;if(!WriteFile(GetStdHandle(U32(-12)),line,U32(n),&written,nullptr))OutputDebugStringA(line);
+    line[n++]='\n';line[n]=0;U32 written=0;WriteFile(GetStdHandle(U32(-12)),line,U32(n),&written,nullptr);OutputDebugStringA(line);
 }
 static void announce_install_error(U32 code){
     bool expected=false;
@@ -132,7 +132,7 @@ static void announce_install_error(U32 code){
         __ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE))return;
     char line[100];Size n=literal(line,0,"MADEIRA_HTMLIPC install-error pid=");
     n=number(line,n,pid);n=literal(line,n," code=");n=number(line,n,code);line[n++]='\n';
-    line[n]=0;U32 written=0;if(!WriteFile(GetStdHandle(U32(-12)),line,U32(n),&written,nullptr))OutputDebugStringA(line);
+    line[n]=0;U32 written=0;WriteFile(GetStdHandle(U32(-12)),line,U32(n),&written,nullptr);OutputDebugStringA(line);
 }
 static void announce_install_diagnostic(const install::Diagnostic &d){
     char line[384];Size n=literal(line,0,"MADEIRA_HTMLIPC image-mismatch stage=");
@@ -145,7 +145,7 @@ static void announce_install_diagnostic(const install::Diagnostic &d){
     n=literal(line,n," image-size=");n=number(line,n,d.actual_image_size);
     n=literal(line,n," query-flags=");n=number(line,n,d.query_flags);
     line[n++]='\n';line[n]=0;U32 written=0;
-    if(!WriteFile(GetStdHandle(U32(-12)),line,U32(n),&written,nullptr))OutputDebugStringA(line);
+    WriteFile(GetStdHandle(U32(-12)),line,U32(n),&written,nullptr);OutputDebugStringA(line);
 }
 static install::Installer *get_installer(){return __atomic_load_n(&installer,__ATOMIC_ACQUIRE);}
 static bool originals(Originals *out){
@@ -506,7 +506,11 @@ extern "C" void MadeiraRuntimeNoteInstaller(install::Installer *state){
     __atomic_store_n(&published_module,state?state->module:nullptr,__ATOMIC_RELAXED);
     __atomic_store_n(&published_error,state?U32(state->result.error):0u,__ATOMIC_RELAXED);
     __atomic_store_n(&published_phase,state?U32(state->phase):0u,__ATOMIC_RELEASE);
-    if(state&&state->phase==install::Phase::Failed){
+    if(state&&state->phase==install::Phase::Installed){
+        bool expected=false;
+        if(__atomic_compare_exchange_n(&installed_announced,&expected,true,false,
+            __ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE))announce("installed");
+    }else if(state&&state->phase==install::Phase::Failed){
         announce_install_diagnostic(state->diagnostic);
         announce_install_error(U32(state->result.error));
     }

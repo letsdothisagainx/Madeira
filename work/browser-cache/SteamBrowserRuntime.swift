@@ -209,6 +209,19 @@ enum SteamBrowserRuntimeFiles {
     // A completion manifest is a transaction record, not an authentication
     // shortcut. Every file, its size, its architecture and the exact tree are
     // checked again before reuse. No ambient file is accepted into the cache.
+    static func relativePath(_ target: URL, under root: URL, directory: Bool) throws -> String {
+        // Darwin's enumerator can spell a directory URL with a final slash,
+        // whereas a URL constructed before mkdir has no directory hint. The
+        // filesystem path identity is independent of that URL representation.
+        var base = root.standardizedFileURL.path
+        while base.count > 1 && base.hasSuffix("/") { base.removeLast() }
+        let full = target.standardizedFileURL.path
+        guard full.hasPrefix(base + "/") else { throw Failure.invalid }
+        var name = String(full.dropFirst(base.count + 1))
+        if directory { while name.hasSuffix("/") { name.removeLast() } }
+        guard SteamRuntimeFiles.validPath(name) else { throw Failure.invalid }
+        return name
+    }
     static func validateTree(_ root: URL, recipe: Recipe, records: [FileRecord],
                              extraFiles: Set<String>, digest: DigestFile) throws {
         let fm = FileManager.default
@@ -235,7 +248,7 @@ enum SteamBrowserRuntimeFiles {
         for case let target as URL in enumerator {
             let value = try target.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
             guard value.isSymbolicLink != true else { throw Failure.ownership }
-            let relative = String(target.path.dropFirst(root.path.count + 1))
+            let relative = try relativePath(target, under: root, directory: value.isDirectory == true)
             if value.isDirectory == true {
                 // Empty or unrelated directories do not belong to this tree.
                 guard records.contains(where: { $0.name.hasPrefix(relative + "/") }) else { throw Failure.invalid }

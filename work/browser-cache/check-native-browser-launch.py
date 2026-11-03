@@ -21,6 +21,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 parser = argparse.ArgumentParser()
 parser.add_argument('--require-swift', action='store_true')
+parser.add_argument('--app-activated', action='store_true', help='verify exact applied new sources in an isolated candidate build checkout')
 args = parser.parse_args()
 native = (HERE / 'SteamNativeBrowserLaunch.swift').read_text()
 cache = (HERE / 'SteamBrowserRuntime.swift').read_text()
@@ -39,7 +40,12 @@ assert native.index('try encoded.write(to: stamp') < native.index('try image.wri
 assert '"MADEIRA_NATIVE_STEAM_LAUNCH", "MADEIRA_ENV_LOCKED"' in native
 assert 'for name in lockedNames.prefix(3) { unset(name) }' in native
 assert native.index('guard native else { return }') < native.index('guard let selected = prepared')
-assert 'SteamNativeBrowserLaunch' not in (ROOT / 'app/Madeira/ContentView.swift').read_text(), 'candidate unexpectedly activated'
+if args.app_activated:
+    assert (ROOT / 'app/Madeira/SteamNativeBrowserLaunch.swift').read_text() == native
+    assert (ROOT / 'app/Madeira/SteamBrowserRuntime.swift').read_text() == cache
+    assert 'SteamNativeBrowserLaunchFiles.export(' in (ROOT / 'app/Madeira/ContentView.swift').read_text()
+else:
+    assert 'SteamNativeBrowserLaunch' not in (ROOT / 'app/Madeira/ContentView.swift').read_text(), 'candidate unexpectedly activated'
 
 
 def pe(kind, label):
@@ -97,7 +103,7 @@ int main(void) {
 main = r'''
 import Foundation
 let fm = FileManager.default
-let fixtures = URL(fileURLWithPath: CommandLine.arguments[1])
+let fixtures = URL(fileURLWithPath: CommandLine.arguments[1]).resolvingSymlinksInPath()
 let locksExecutable = URL(fileURLWithPath: CommandLine.arguments[2])
 let hashes: [String: String] = HASHES
 func fixture(_ name: String) throws -> Data { try Data(contentsOf: fixtures.appendingPathComponent(name)) }
