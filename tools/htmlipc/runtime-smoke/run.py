@@ -1,0 +1,265 @@
+#!/usr/bin/env python3
+"""Bounded no-account Wine/Xvfb smoke test; never reports full compatibility."""
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import time
+from pathlib import Path
+
+MAX_SECONDS = 180
+MAX_RSS_KIB = 5 * 1024**2
+MAX_TREE_BYTES = 8 * 1024**3
+MAX_LOG_BYTES = 32 * 1024**2
+IDENTITY_TOKENS = {}
+CLIENT_ARGUMENTS = ['-no-cef-sandbox', '-cef-disable-gpu', '-console', '-nocrashmonitor', '-cef-disable-features=SegmentationPlatform,OptimizationTargetPrediction,OptimizationHints']
+
+
+def sha(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def check_identities(steam, identities):
+    changed = []
+    for name, expected in identities.items():
+        path = steam / name
+        if not path.is_file():
+            changed.append(name)
+            continue
+        stat = path.stat()
+        token = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+        if IDENTITY_TOKENS.get(str(path)) != token:
+            if sha(path) != expected['sha256']:
+                changed.append(name)
+            else:
+                IDENTITY_TOKENS[str(path)] = token
+    return changed
+
+
+def used_bytes(root):
+    return sum(p.stat().st_size for p in root.rglob('*') if p.is_file() and not p.is_symlink())
+
+
+def process_census(prefix, watched):
+    rss, evidence = 0, set()
+    prefix_bytes = ('WINEPREFIX=' + str(prefix)).encode() + b'\0'
+    for process in Path('/proc').glob('[0-9]*'):
+        try:
+            if prefix_bytes not in (process / 'environ').read_bytes():
+                continue
+            status = (process / 'status').read_text()
+            found = re.search(r'^VmRSS:\s+(\d+)', status, re.M)
+            rss += int(found[1]) if found else 0
+            mappings = (process / 'maps').read_text(errors='replace').lower()
+            for name, path in watched.items():
+                if str(path).lower() in mappings:
+                    evidence.add(name)
+        except (OSError, ProcessLookupError):
+            pass
+    return rss, evidence
+
+
+def capture(display, raw_path, output_path):
+    import cv2
+    subprocess.run(['scrot', '--silent', str(raw_path)],
+                   env={**os.environ, 'DISPLAY': display}, check=True, timeout=8,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    image = cv2.imread(str(raw_path))
+    assert image is not None
+    # Detection only: never decode, log, or retain an authentication QR token.
+    qr = cv2.QRCodeDetector()
+    found, polygons = qr.detectMulti(image)
+    if found:
+        for polygon in polygons:
+            x, y, w, h = cv2.boundingRect(polygon.astype('int32'))
+            cv2.rectangle(image, (max(0, x - 24), max(0, y - 24)),
+                          (x + w + 24, y + h + 24), (0, 0, 0), -1)
+    cv2.imwrite(str(raw_path), image)
+    result = subprocess.run(['tesseract', str(raw_path), 'stdout', '--psm', '11', 'tsv'],
+                            capture_output=True, text=True, timeout=12, check=False)
+    # Export pixels ONLY for predefined static labels. QR detector failure
+    # must never expose even a newly issued anonymous login QR token.
+    approved = {'steam', 'sign', 'in', 'account', 'name', 'password'}
+    redacted = image.copy()
+    redacted[:] = 0
+    words = []
+    for row in result.stdout.splitlines()[1:]:
+        fields = row.split('\t', 11)
+        if len(fields) != 12:
+            continue
+        word = fields[11].strip().lower()
+        if word in approved and float(fields[10]) >= 60:
+            x, y, w, h = (int(v) for v in fields[6:10])
+            redacted[y:y+h, x:x+w] = image[y:y+h, x:x+w]
+        words.append(word)
+    cv2.imwrite(str(output_path), redacted)
+    raw_path.unlink(missing_ok=True)
+    # Keep only predicates over a fresh no-account login page, not OCR text.
+    text = ' '.join(words)
+    probes = {
+        'sign_in_label': 'sign in' in text,
+        'account_name_label': 'account name' in text,
+        'password_label': 'password' in text,
+        'update_label': 'updating steam' in text or 'checking for available updates' in text,
+        'nonuniform_frame': float(image.std()) > 3,
+        'qr_regions_redacted': len(polygons) if found else 0,
+    }
+    return probes
+
+
+def main(root, artifacts):
+    root, artifacts = root.resolve(), artifacts.resolve()
+    provenance = json.loads((root / 'provenance.json').read_text())
+    steam = root / 'steam'
+    prefix = root / 'wine-prefix'
+    assert not prefix.exists(), 'a fresh prefix is required; never reuse account data'
+    assert not check_identities(steam, provenance['files'])
+    artifacts.mkdir(parents=True, exist_ok=False)
+    shutil.copyfile(root / 'provenance.json', artifacts / 'provenance.json')
+    # Never pass Actions service/artifact tokens or unrelated credentials to
+    # the Windows applications under test.
+    env = {key: os.environ[key] for key in ('PATH', 'HOME', 'USER', 'LOGNAME') if key in os.environ}
+    env.update({'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8',
+           'WINEPREFIX': str(prefix), 'WINEARCH': 'win64',
+           'WINEDEBUG': '+loaddll,err+all', 'DISPLAY': ':109',
+           'WINEDLLOVERRIDES': 'mscoree,mshtml='})
+    # Mono/Gecko are optional Wine components, not Steam authentication APIs.
+    # Use Madeira's existing client arguments exactly. No additional sandbox,
+    # update, version or certificate policy is introduced by this probe.
+    log_path = root / 'private-wine.log'
+    report = {'result': 'inconclusive', 'max_seconds': MAX_SECONDS,
+              'login_frame_observed': False, 'loaded': [], 'samples': [],
+              'updater_replaced_component': [], 'scope': 'unauthenticated login rendering only',
+              'authentication_attempted': False, 'library_or_game_launch_validated': False,
+              'client_arguments': CLIENT_ARGUMENTS, 'graphics_control': False, 'bridge_installed': False,
+              'bridge_connected': False, 'bridge_failure': [], 'missing_dlls': []}
+    xvfb = subprocess.Popen(['Xvfb', ':109', '-screen', '0', '1280x800x24', '-nolisten', 'tcp'],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    processes = [xvfb]
+    try:
+        time.sleep(1)
+        subprocess.run(['wineboot', '-u'], env=env, timeout=60,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        subprocess.run(['winecfg', '-v', 'win10'], env=env, timeout=20,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        processes.append(subprocess.Popen(['openbox', '--sm-disable'], env=env,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+        # Prove the actual Wine GDI/X11 test setup before attributing a black
+        # frame to Steam. No account or Steam process exists during this probe.
+        control = subprocess.Popen(['wine', 'notepad.exe'], env=env,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        processes.append(control)
+        for _ in range(12):
+            windows = subprocess.run(['xwininfo', '-root', '-tree'], env=env,
+                                     capture_output=True, text=True, timeout=5, check=False).stdout
+            if 'notepad.exe' in windows.lower() or 'notepad' in windows.lower():
+                report['graphics_control'] = True
+                break
+            time.sleep(1)
+        subprocess.run(['wine', 'taskkill.exe', '/IM', 'notepad.exe', '/F'], env=env,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=False)
+        if not report['graphics_control']:
+            report['result'] = 'inconclusive-wine-graphics-control-failed'
+            return 2
+        if 'version.dll' in provenance['files']:
+            # App-specific only: the I386 helper must retain its own genuine
+            # builtin VERSION implementation, rather than inherit an AMD64 override.
+            subprocess.run(['wine', 'reg.exe', 'add',
+                r'HKCU\Software\Wine\AppDefaults\steam.exe\DllOverrides',
+                '/v', 'version', '/t', 'REG_SZ', '/d', 'native,builtin', '/f'], env=env,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15, check=True)
+        with log_path.open('wb') as log:
+            processes.append(subprocess.Popen(['wine', str(steam / 'steam.exe'), *CLIENT_ARGUMENTS], env=env,
+                             cwd=steam, stdout=log, stderr=subprocess.STDOUT,
+                             start_new_session=True))
+            watched = {name: steam / name for name in provenance['files']}
+            started = time.monotonic()
+            next_frame = 10
+            all_loaded = set()
+            screenshot_count = 0
+            while time.monotonic() - started < MAX_SECONDS:
+                elapsed = time.monotonic() - started
+                changed = check_identities(steam, provenance['files'])
+                if changed:
+                    report['updater_replaced_component'] = changed
+                    report['result'] = 'inconclusive-official-updater-replaced-test-component'
+                    break
+                raw_now = log_path.read_bytes()[:MAX_LOG_BYTES].decode(errors='replace')
+                report['bridge_installed'] |= 'MADEIRA_HTMLIPC installed pid=' in raw_now
+                report['bridge_connected'] |= 'MADEIRA_HTMLIPC connected pid=' in raw_now
+                install_failures = re.findall(r'MADEIRA_HTMLIPC install-error pid=(\d+) code=(\d+)', raw_now)
+                if install_failures:
+                    report['bridge_failure'] = ['install', *install_failures[0]]
+                    report['result'] = 'failed-source-bridge-installation'
+                    break
+                failures = re.findall(r'MADEIRA_HTMLIPC error=(\d+) pid=(\d+) generation=(\d+) direction=(\d+) command=(\d+) wire=(\d+)', raw_now)
+                if failures:
+                    report['bridge_failure'] = list(failures[0])
+                    report['result'] = 'failed-source-bridge-operation'
+                    break
+                rss, loaded = process_census(prefix, watched)
+                all_loaded.update(loaded)
+                if rss > MAX_RSS_KIB or used_bytes(root) > MAX_TREE_BYTES or log_path.stat().st_size > MAX_LOG_BYTES:
+                    report['result'] = 'inconclusive-resource-budget'
+                    break
+                if elapsed >= next_frame:
+                    next_frame += 20
+                    screenshot_count += 1
+                    name = f'frame-{screenshot_count:02d}.png'
+                    probes = capture(env['DISPLAY'], root / 'private-frame.png', artifacts / name)
+                    report['samples'].append({'seconds': round(elapsed), 'rss_kib': rss, **probes})
+                    # Require actual current core, selected controller and I386 CEF
+                    # mappings plus a rendered login form. Process creation alone fails.
+                    if 'version.dll' in provenance['files']:
+                        required = {'steam.exe','SteamUI.dll','steamclient64.dll','bin/chromehtml.dll',
+                                    'version.dll','bin/cef/cef.win32/steamwebhelper.exe','bin/cef/cef.win32/libcef.dll'}
+                        eligible = report['bridge_installed'] and report['bridge_connected']
+                        eligible &= 'bin/cef/cef.win64/steamwebhelper.exe' not in loaded
+                        eligible &= 'bin/cef/cef.win64/libcef.dll' not in loaded
+                    else:
+                        required = {'steam.exe','SteamUI.dll','steamclient64.dll','bin/chromehtml.dll',
+                                    'bin/cef/cef.win64/steamwebhelper.exe','bin/cef/cef.win64/libcef.dll'}
+                        eligible = True
+                    if eligible and required <= loaded and all(probes[k] for k in
+                        ('sign_in_label', 'account_name_label', 'password_label', 'nonuniform_frame')):
+                        report['login_frame_observed'] = True
+                        report['result'] = 'unauthenticated-login-rendered'
+                        break
+                time.sleep(2)
+            report['loaded'] = sorted(all_loaded)
+            report['elapsed_seconds'] = round(time.monotonic() - started)
+        IDENTITY_TOKENS.clear()
+        final_changes = check_identities(steam, provenance['files'])
+        if final_changes:
+            report['updater_replaced_component'] = final_changes
+            report['login_frame_observed'] = False
+            report['result'] = 'inconclusive-official-updater-replaced-test-component'
+        # Preserve no raw Wine/CEF logs, account store, screenshots or QR payloads.
+        # Exact bounded module load counts help distinguish a loader failure.
+        raw = log_path.read_bytes()[:MAX_LOG_BYTES].decode(errors='replace')
+        report['missing_dlls'] = sorted(set(re.findall(r'Library ([A-Za-z0-9_.-]{1,128}\.dll) .*?not found', raw, re.I)))[:16]
+        report['loader_error_counts'] = {key: raw.lower().count(key.lower()) for key in
+            ('nodrv_CreateWindow', 'Make sure that your X server is running', 'err:module:import_dll', 'err:module:loader_init', 'unimplemented function',
+             'c0000135', 'c0000005', '80000003')}
+    finally:
+        subprocess.run(['wineserver', '-k'], env=env, timeout=10,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        for process in reversed(processes):
+            if process.poll() is None:
+                process.terminate()
+        (root / 'private-frame.png').unlink(missing_ok=True)
+        (artifacts / 'result.json').write_text(json.dumps(report, indent=2) + '\n')
+        print(json.dumps(report))
+    return 0 if report['login_frame_observed'] else 2
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--root', type=Path, required=True)
+    parser.add_argument('--artifacts', type=Path, required=True)
+    args = parser.parse_args()
+    raise SystemExit(main(args.root, args.artifacts))

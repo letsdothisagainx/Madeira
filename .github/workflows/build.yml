@@ -1,13 +1,60 @@
-name: Read exact official transport image for static analysis
+name: Source HTMLIPC browser compatibility runtime probe
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  inspect-image:
-    runs-on: ubuntu-latest
-    timeout-minutes: 3
+  runtime:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      MADEIRA_VALVE_ARCHIVE_CACHE: ${{ github.workspace }}/.valve-package-cache
+      MADEIRA_PE_LD: x86_64-w64-mingw32-ld
+      MADEIRA_PE_OBJCOPY: x86_64-w64-mingw32-objcopy
     steps:
       - uses: actions/checkout@v4
-      - name: Read pinned public image; never execute PE
-        run: python3 tools/fetch-helpers-pe.py
+        with:
+          persist-credentials: false
+      - name: Install real multiarch Wine and software graphics fixture
+        run: |
+          test "$(df --output=avail -B1 / | tail -1)" -gt 9000000000
+          sudo dpkg --add-architecture i386
+          sudo timeout 120 apt-get update -qq
+          sudo timeout 600 apt-get install -y --no-install-recommends wine wine64 wine32:i386 xvfb openbox scrot x11-utils tesseract-ocr python3-opencv ca-certificates winbind fonts-wine fonts-liberation binutils-mingw-w64-x86-64 libgl1-mesa-dri libgl1-mesa-dri:i386 libgl1:i386 libx11-6:i386 libxext6:i386 libxcursor1:i386 libxi6:i386 libxrandr2:i386 libxrender1:i386 libxcomposite1:i386 libvulkan1 libvulkan1:i386 mesa-vulkan-drivers mesa-vulkan-drivers:i386
+      - name: Prepare pinned source compiler and exact read-only fixture
+        run: |
+          python3 -m venv "$RUNNER_TEMP/htmlipc-tools"
+          "$RUNNER_TEMP/htmlipc-tools/bin/pip" install ziglang==0.15.1 pefile==2024.8.26 unicorn==2.1.3 capstone==5.0.6
+          echo "MADEIRA_ZIG=$RUNNER_TEMP/htmlipc-tools/bin/python-zig" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/htmlipc-tools/bin/python" tools/htmlipc/runtime-smoke/fetch-pin.py
+      - name: Build source guest AMD64 adapter and execute regression fixtures
+        run: |
+          "$RUNNER_TEMP/htmlipc-tools/bin/python" tools/htmlipc/runtime-shim/build_runtime.py --experimental --map-source tools/htmlipc/runtime-shim/proven_map.cpp --version-proxy tools/htmlipc/runtime-smoke/version-proxy.def --output tools/htmlipc/runtime-shim/version.dll
+          "$RUNNER_TEMP/htmlipc-tools/bin/python" tools/htmlipc/wire-codec/check_wire_codec.py
+          "$RUNNER_TEMP/htmlipc-tools/bin/python" tools/htmlipc/stream-codec/check_stream_codec.py
+          "$RUNNER_TEMP/htmlipc-tools/bin/python" tools/htmlipc/stream-install/check_installer.py
+          "$RUNNER_TEMP/htmlipc-tools/bin/python" tools/htmlipc/runtime-shim/check_provider.py
+      - name: Stage and run genuine current AMD64 reference with existing Madeira arguments
+        run: |
+          timeout 360 /usr/bin/python3 tools/htmlipc/runtime-smoke/stage.py --mode baseline --root "$RUNNER_TEMP/reference" --current-manifest tools/htmlipc/runtime-smoke/steam_client_win64.tracking --current-manifest-sha256 0b12d3072042b2f2aa7b5bc0677c686210465438de981340bb46ac717b1caab8
+          timeout 360 /usr/bin/python3 tools/htmlipc/runtime-smoke/run.py --root "$RUNNER_TEMP/reference" --artifacts "$RUNNER_TEMP/runtime-artifacts/reference" || test "$?" = 2
+      - name: Stage complete official I386 cache without replacing current files
+        run: |
+          timeout 360 /usr/bin/python3 tools/htmlipc/runtime-smoke/stage.py --mode bridge --bridge-dll tools/htmlipc/runtime-shim/version.dll --root "$RUNNER_TEMP/bridge" --current-manifest tools/htmlipc/runtime-smoke/steam_client_win64.tracking --current-manifest-sha256 0b12d3072042b2f2aa7b5bc0677c686210465438de981340bb46ac717b1caab8
+          /usr/bin/python3 tools/htmlipc/runtime-shim/make-cache-manifest.py "$RUNNER_TEMP/bridge/steam/bin/cef/cef.win32"
+      - name: Run actual source-adapted client; stop on first compatibility error
+        run: |
+          timeout 360 /usr/bin/python3 tools/htmlipc/runtime-smoke/run.py --root "$RUNNER_TEMP/bridge" --artifacts "$RUNNER_TEMP/runtime-artifacts/bridge" || test "$?" = 2
+      - name: Collect only bounded fixture and static-label runtime evidence
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/runtime-artifacts/source-tests"
+          for file in tools/htmlipc/wire-codec/results.json tools/htmlipc/stream-codec/results.json tools/htmlipc/stream-install/results.json tools/htmlipc/runtime-shim/provider-results.json tools/htmlipc/runtime-shim/version.build.json; do
+            if test -f "$file"; then cp "$file" "$RUNNER_TEMP/runtime-artifacts/source-tests/$(basename "$(dirname "$file")")-$(basename "$file")"; fi
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: source-htmlipc-runtime-probe
+          path: ${{ runner.temp }}/runtime-artifacts
+          retention-days: 3

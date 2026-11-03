@@ -1,0 +1,16 @@
+LIBRARY version
+EXPORTS
+    GetFileVersionInfoA=kernelbase.GetFileVersionInfoA
+    GetFileVersionInfoW=kernelbase.GetFileVersionInfoW
+    GetFileVersionInfoExA=kernelbase.GetFileVersionInfoExA
+    GetFileVersionInfoExW=kernelbase.GetFileVersionInfoExW
+    GetFileVersionInfoSizeA=kernelbase.GetFileVersionInfoSizeA
+    GetFileVersionInfoSizeW=kernelbase.GetFileVersionInfoSizeW
+    GetFileVersionInfoSizeExA=kernelbase.GetFileVersionInfoSizeExA
+    GetFileVersionInfoSizeExW=kernelbase.GetFileVersionInfoSizeExW
+    VerFindFileA=kernelbase.VerFindFileA
+    VerFindFileW=kernelbase.VerFindFileW
+    VerLanguageNameA=kernel32.VerLanguageNameA
+    VerLanguageNameW=kernel32.VerLanguageNameW
+    VerQueryValueA=kernelbase.VerQueryValueA
+    VerQueryValueW=kernelbase.VerQueryValueW
