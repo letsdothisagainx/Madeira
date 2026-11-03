@@ -64,7 +64,7 @@ static unsigned callback(void*t,unsigned long long*s,unsigned*d,unsigned*f){
  assert(t==&owner);callbacks++;*s=0xb71001140ull;*d=0;*f=3;return 0x100;
 }
 static void ios_fex_callback_dispatcher(void){}
-static int diagnostic(int fd,const char*fmt,...){assert(fd==2&&strstr(fmt,"[fex-callback-v1]"));logs++;return 0;}
+static int diagnostic(int fd,const char*fmt,...){assert(fd==2&&strstr(fmt,"[fex-callback-v2]"));logs++;return 0;}
 #define dprintf diagnostic
 ''' + layout + '\n' + args_struct + r'''
 static unsigned call_user_mode_callback(ULONG64 sp,void**out,ULONG*len,void*func,TEB*teb){
@@ -149,7 +149,7 @@ with tempfile.TemporaryDirectory(prefix='madeira-fex-callback-') as directory:
                    env=dict(os.environ,ASAN_OPTIONS='detect_stack_use_after_return=0'))
     if not args.emulate:
         raise SystemExit(0)
-    from unicorn import Uc, UC_ARCH_ARM64, UC_MODE_ARM, UC_HOOK_CODE, UcError
+    from unicorn import Uc, UC_ARCH_ARM64, UC_MODE_ARM, UC_HOOK_CODE, UC_HOOK_MEM_INVALID, UcError
     from unicorn.arm64_const import (UC_ARM64_REG_X0, UC_ARM64_REG_X18, UC_ARM64_REG_X29,
         UC_ARM64_REG_X30, UC_ARM64_REG_SP, UC_ARM64_REG_PC, UC_ARM64_REG_NZCV,
         UC_ARM64_REG_FPCR, UC_ARM64_REG_FPSR, UC_ARM64_REG_Q0)
@@ -218,7 +218,8 @@ stop:
     base, teb, kernel, user, output, table = 0x100000,0x200000,0x300000,0x400000,0x500000,0x600000
     addr = lambda name: base+symbols[name]
 
-    def run(safe, owner, trace, repeats=1, packing_negative=False, clear_negative=False):
+    def run(safe, owner, trace, repeats=1, packing_negative=False, clear_negative=False,
+            clear_x18=False, teb_negative=False):
         mu=Uc(UC_ARCH_ARM64,UC_MODE_ARM)
         for start,size in ((base,0x10000),(teb,0x10000),(kernel,0x20000),(user,0x20000),(output,0x10000),(table,0x10000)):
             mu.mem_map(start,size)
@@ -228,6 +229,12 @@ stop:
             mu.mem_write(base,machine.replace(fixed_pack,old_pack))
         if clear_negative:
             mu.mem_write(base,machine.replace(clear_flags,nop))
+        if teb_negative:
+            # Restore the exact old silent TEB copy. Unlike a TEB memory
+            # access, MOV from a cleared x18 never reaches Mach recovery.
+            location=symbols['ios_fex_callback_dispatcher']+4
+            assert struct.unpack_from('<I',machine,location)[0]==0xf9400613  # ldr x19,[x16,#8]
+            mu.mem_write(base+location,struct.pack('<I',0xaa1203f3))  # mov x19,x18
         mu.mem_write(kernel,b'\x5a'*0x20000)  # reused, nonzero kernel stack
         frame=kernel+0x18000
         outer=bytearray(b'\xa5'*0x330)
@@ -256,8 +263,30 @@ stop:
             mu.reg_write(UC_ARM64_REG_SP,initial_sp)
             values=[user_sp,output,output+8,addr('ios_fex_callback_dispatcher'),teb] if safe else [teb,output+0x100,output+0x108,output+0x10c]
             for r,value in enumerate(values):mu.reg_write(UC_ARM64_REG_X0+r,value)
-            visits=[]; syscall_flags=[]
+            visits=[]; syscall_flags=[]; invalid_accesses=[]; recovered_teb_accesses=[]
             def observe(m,a,n,u):
+                if clear_x18:
+                    # iOS can discard its reserved x18 at every context
+                    # switch, including between adjacent transition insns.
+                    m.reg_write(UC_ARM64_REG_X18,0)
+                    word=struct.unpack('<I',m.mem_read(a,4))[0]
+                    kind=word&0xffc00000
+                    if ((word>>5)&31)==18 and kind in (0xf9400000,0xb9400000,0xf9000000,0xb9000000):
+                        # Model the existing Mach handler's unsigned TEB
+                        # LDR/STR recovery. Execute every other instruction,
+                        # especially nonfaulting MOV, as actual ARM64 code.
+                        width=8 if word&(1<<30) else 4
+                        offset=((word>>10)&0xfff)*width
+                        register=word&31
+                        if kind in (0xf9400000,0xb9400000):
+                            value=int.from_bytes(m.mem_read(teb+offset,width),'little')
+                            if register!=31:m.reg_write(UC_ARM64_REG_X0+register,value)
+                        else:
+                            value=0 if register==31 else m.reg_read(UC_ARM64_REG_X0+register)
+                            m.mem_write(teb+offset,(value&((1<<(width*8))-1)).to_bytes(width,'little'))
+                        recovered_teb_accesses.append(a)
+                        m.reg_write(UC_ARM64_REG_PC,a+4)
+                        return
                 if a==addr('pe_callback') and safe:
                     current_frame=struct.unpack('<Q',m.mem_read(teb+0x378,8))[0]
                     assert struct.unpack('<I',m.mem_read(current_frame+0x10c,4))[0]==0, 'fresh-frame restore flags uninitialized'
@@ -265,11 +294,23 @@ stop:
                 if a==addr('nt_free_stub'):syscall_flags.append(m.reg_read(UC_ARM64_REG_NZCV))
                 if a==addr('nt_free_stub')+16:
                     assert m.reg_read(UC_ARM64_REG_NZCV)==syscall_flags[-1], 'syscall changed incoming flags'
+            def invalid(m,access,address,size,value,user_data):
+                invalid_accesses.append(address)
+                return False  # Never map the null page or suppress a fault.
             hook=mu.hook_add(UC_HOOK_CODE,observe)
+            invalid_hook=mu.hook_add(UC_HOOK_MEM_INVALID,invalid)
             try:mu.emu_start(addr('call_user_mode_callback' if safe else 'pe_callback'),stop,count=5000)
             except UcError:
+                if teb_negative:
+                    assert clear_x18 and invalid_accesses==[0x378]
+                    assert mu.reg_read(UC_ARM64_REG_PC)==addr('user_mode_callback_return')
+                    assert mu.reg_read(UC_ARM64_REG_X0+3)==0 and mu.reg_read(UC_ARM64_REG_X0+2)==0x100
+                    assert len(visits)==2 and recovered_teb_accesses
+                    return
                 if safe:raise
             mu.hook_del(hook)
+            mu.hook_del(invalid_hook)
+            assert not teb_negative,'old x18 copy unexpectedly returned safely'
             if not safe:
                 assert mu.reg_read(UC_ARM64_REG_PC)==0,'negative control must reproduce null execution'
                 return
@@ -283,14 +324,18 @@ stop:
             for r in range(8,16):assert mu.reg_read(UC_ARM64_REG_Q0+r)&((1<<64)-1)==0x123400000000+r
             assert mu.mem_read(output+0x100,16)==struct.pack('<QII',0xb7101140,0,3)
             assert mu.mem_read(teb+0x60,8)==struct.pack('<Q',owner)
+            if clear_x18:assert recovered_teb_accesses,'x18 stress did not exercise Mach TEB recovery'
 
     run(False,0x400310000,0)
     for owner in (0x400310000,0x500310000):
-        for trace in (0,1):run(True,owner,trace,32)
+        for trace in (0,1):
+            run(True,owner,trace,32)
+            run(True,owner,trace,32,clear_x18=True)
+            run(True,owner,trace,clear_x18=True,teb_negative=True)
     try:run(True,0x400310000,0,packing_negative=True)
     except AssertionError:pass
     else:raise AssertionError('old floating-point packing unexpectedly preserved FPCR/FPSR')
     try:run(True,0x400310000,0,clear_negative=True)
     except (AssertionError,UcError):pass
     else:raise AssertionError('uninitialized fresh-frame flags unexpectedly survived dirty-stack reuse')
-    print('PASS executed production ARM64 callback transition/dispatcher/return and nested syscall dispatcher: old direct-call PC=0 and FP packing failure reproduced; dirty-frame initialization negative control; two frees per callback, 128 repeats/two owners/trace paths preserve outer frame, SP/LR, nonvolatile registers, syscall flags, FP state, outputs and owner')
+    print('PASS executed production ARM64 callback transition/dispatcher/return and nested syscall dispatcher: old direct-call PC=0, FP packing and dirty-frame failures reproduced; old x18 TEB copy reproduces read0x378 after successful callback; two frees per callback, 256 repeats/two owners/trace paths including x18 cleared before EVERY instruction preserve outer frame, SP/LR, nonvolatile registers, syscall flags, FP state, outputs and owner')

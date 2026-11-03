@@ -33,6 +33,10 @@ with tempfile.TemporaryDirectory() as temp:
     wow[0xa0:0xa0+len(b'madeira-io-abi-v2')] = b'madeira-io-abi-v2'
     wow.extend(b'[wow-thread-init-v1][wow-break-deliver-v1]MadeiraBTCpuWriteMemory[wow-query-zero-v1][wow-group-attribute-v1]')
     (t/'app/Madeira/aarch64-windows/wow64.dll').write_bytes(wow)
+    scm = bytearray(wow)
+    scm.extend(b'[scm-pipe-wait-v1]')
+    scm_path = t/'app/Madeira/aarch64-windows/services.exe'
+    scm_path.write_bytes(scm)
     cpu = bytearray(0x700)
     cpu[:0x98] = wow[:0x98]
     struct.pack_into('<H', cpu, 0x86, 2)  # writable DATA and native RX code
@@ -63,7 +67,9 @@ with tempfile.TemporaryDirectory() as temp:
     bodies = {
       'xcodebuild': '''mkdir -p "$TEST_APP/arm64ec-windows" "$TEST_APP/i386-windows" "$TEST_APP/x86_64-vcruntime" "$TEST_APP/aarch64-windows"
 cp "$ROOT/app/Madeira/aarch64-windows/wow64.dll" "$ROOT/app/Madeira/aarch64-windows/xtajit.dll" "$TEST_APP/aarch64-windows/"
-printf '[wow-native-export-v1][fex-callback-v1][child-native-dll-v1][process-wow64-v1][child-native-ntdll-v1][guest-trap-context-v1][surface-expose-v1][steam-client-update-v1][alias-prot-compat][image-alias-retire-v1][swp-context-v1][alias-prot-v2][fex-exit-v1][native-thread-cancel-v1][io-abi] v2 native-owned IOSB scopes active[wow-write][guest32-symbols][guest32-cxx-first-v1][cef-atexit-v1][steam-handoff-v1]_madeira_child_server_exited[fex-owner-v1] pre-crt[fex-owner-v1] retired[fex-owner-census-v2][hold-release-v2][deliver-hold-v2][native-window-retire-v1]_winios_native_window_create_winios_native_window_retire[guest32-fault-v1][steam-progress-v1]_winios_ui_progress_snapshot[srv-poll-drop-v1]poll-slots-highwater=' > "$TEST_APP/Madeira.debug.dylib"
+cp "$ROOT/app/Madeira/aarch64-windows/services.exe" "$TEST_APP/aarch64-windows/"
+if [ "${STALE_SCM:-}" = 1 ]; then printf 'old SCM' > "$TEST_APP/aarch64-windows/services.exe"; fi
+printf '[wow-native-export-v1][fex-callback-v2][child-native-dll-v1][process-wow64-v1][child-native-ntdll-v1][guest-trap-context-v1][surface-expose-v1][steam-client-update-v1][alias-prot-compat][image-alias-retire-v1][swp-context-v1][alias-prot-v2][fex-exit-v1][native-thread-cancel-v1][io-abi] v2 native-owned IOSB scopes active[wow-write][guest32-symbols][guest32-cxx-first-v1][cef-atexit-v1][steam-handoff-v1]_madeira_child_server_exited[fex-owner-v1] pre-crt[fex-owner-v1] retired[fex-owner-census-v2][hold-release-v2][deliver-hold-v2][native-window-retire-v1]_winios_native_window_create_winios_native_window_retire[guest32-fault-v1][steam-progress-v1]_winios_ui_progress_snapshot[srv-poll-drop-v1]poll-slots-highwater=' > "$TEST_APP/Madeira.debug.dylib"
 cp "$ROOT/app/Madeira/i386-windows/kernelbase.dll" "$TEST_APP/i386-windows/"
 printf fixture > "$TEST_APP/Madeira"
 printf fixture > "$TEST_APP/prefix-template.tar.gz"
@@ -113,6 +119,18 @@ done
     result=run({'STALE_SERVICE':'1'})
     assert result.returncode and 'Xcode packaged stale Steam service helper' in result.stderr, result.stderr
     print('PASS stale service handoff helper and stale Xcode resource copy fail final IPA validation')
+    scm_path.write_bytes(wow)
+    result=run()
+    assert result.returncode and 'stale SCM startup timeout producer' in result.stderr, result.stderr
+    scm_path.write_bytes(scm)
+    result=run({'STALE_SCM':'1'})
+    assert result.returncode and 'Xcode packaged stale SCM startup producer' in result.stderr, result.stderr
+    invalid_scm = bytearray(scm); struct.pack_into('<H',invalid_scm,0x84,0x8664)
+    scm_path.write_bytes(invalid_scm)
+    result=run()
+    assert result.returncode and 'SCM must retain native ARM64 architecture' in result.stderr, result.stderr
+    scm_path.write_bytes(scm)
+    print('PASS stale, wrong-architecture and stale-bundle SCM producers fail final IPA validation')
     invalid_cpu = bytearray(cpu)
     invalid_cpu[0x280] = ord('x')
     (t/'app/Madeira/aarch64-windows/xtajit.dll').write_bytes(invalid_cpu)

@@ -109,7 +109,7 @@ def check(staged, app, ipa):
     assert b'[surface-expose-v1]' in native and b'[steam-client-update-v1]' in native, 'stale popup expose or official Steam updater integration'
     assert b'[child-native-ntdll-v1]' in native and b'[guest-trap-context-v1]' in native, 'stale mixed-architecture child loader or trap diagnostics'
     assert b'[child-native-dll-v1]' in native and b'[process-wow64-v1]' in native, 'stale native child imports or owner-aware WoW64 PEB query'
-    assert b'[fex-callback-v1]' in native, 'stale direct Unix-to-PE FEX cleanup callback'
+    assert b'[fex-callback-v2]' in native, 'stale direct Unix-to-PE FEX cleanup callback'
     assert b'[wow-native-export-v1]' in native, 'stale pool-only WoW64 native startup data'
     fex_arena_exports(cpu_data, require_hold_release=True)
     assert (app / 'aarch64-windows/xtajit.dll').read_bytes() == cpu_data, 'Xcode packaged stale FEX'
@@ -121,12 +121,19 @@ def check(staged, app, ipa):
     service = (staged.parent.parent / 'arm64ec-windows/madeira-steam-service.exe').read_bytes()
     assert b'update-handoff-v1' in service, 'stale Steam service update handoff helper'
     assert (app / 'arm64ec-windows/madeira-steam-service.exe').read_bytes() == service, 'Xcode packaged stale Steam service helper'
+    scm = (staged.parent / 'services.exe').read_bytes()
+    assert scm[:2] == b'MZ', 'SCM is not a PE image'
+    scm_pe = struct.unpack_from('<I', scm, 0x3c)[0]
+    assert scm[scm_pe:scm_pe + 4] == b'PE\0\0' and struct.unpack_from('<H', scm, scm_pe + 4)[0] == 0xaa64, 'SCM must retain native ARM64 architecture'
+    assert b'[scm-pipe-wait-v1]' in scm, 'stale SCM startup timeout producer'
+    assert (app / 'aarch64-windows/services.exe').read_bytes() == scm, 'Xcode packaged stale SCM startup producer'
     with zipfile.ZipFile(ipa) as archive:
         assert archive.read('Payload/Madeira.app/aarch64-windows/wow64.dll') == expected, 'ZIP producer differs'
         assert archive.read('Payload/Madeira.app/Madeira.debug.dylib') == native, 'ZIP native consumer differs'
         assert archive.read('Payload/Madeira.app/aarch64-windows/xtajit.dll') == cpu_data, 'ZIP FEX producer differs'
         assert archive.read('Payload/Madeira.app/i386-windows/kernelbase.dll') == guest, 'ZIP guest32 caller differs'
         assert archive.read('Payload/Madeira.app/arm64ec-windows/madeira-steam-service.exe') == service, 'ZIP Steam service helper differs'
+        assert archive.read('Payload/Madeira.app/aarch64-windows/services.exe') == scm, 'ZIP SCM startup producer differs'
     print('PASS final IPA contains matching native IOSB consumer and byte-identical rebuilt ARM64 WoW64 producer')
 
 

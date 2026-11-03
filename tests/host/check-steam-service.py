@@ -376,3 +376,49 @@ with tempfile.TemporaryDirectory() as folder:
                     '-fsanitize=address,undefined','-fno-sanitize-recover=all',
                     str(source),'-o',str(t/'readiness')],check=True)
     subprocess.run([str(t/'readiness')],check=True)
+
+# Only acquire the original SCM process once. Its held handle is immutable;
+# continuing child observation must not repeatedly issue service-status RPCs.
+observer_code = r'''
+#include <assert.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <stdio.h>
+typedef void *SC_HANDLE;typedef uint32_t DWORD;typedef unsigned char BYTE;
+typedef struct {DWORD dwProcessId;} SERVICE_STATUS_PROCESS;
+#define SC_STATUS_PROCESS_INFO 0
+static struct {unsigned attempts;void *parent;} update;
+static unsigned queries,owners,children,query_ok=1;
+static DWORD next_pid;
+static int QueryServiceStatusEx(SC_HANDLE service,DWORD level,BYTE *out,DWORD size,DWORD *needed) {
+    assert(service==(void *)1&&!level&&size==sizeof(SERVICE_STATUS_PROCESS));
+    queries++;if(!query_ok)return 0;
+    *(SERVICE_STATUS_PROCESS *)out=(SERVICE_STATUS_PROCESS){next_pid};*needed=size;return 1;
+}
+static void observe_updater(void) {children++;}
+static void observe_service_owner(const SERVICE_STATUS_PROCESS *status) {
+    owners++;if(status->dwProcessId==0x48)update.parent=(void *)2;
+}
+''' + production_function('static void observe_pending_start(') + r'''
+int main(void) {
+    update.attempts=2;observe_pending_start((void *)1);
+    assert(!queries&&!owners&&!children);
+    update.attempts=1;query_ok=0;observe_pending_start((void *)1);
+    assert(queries==1&&!owners&&!children&&!update.parent);
+    query_ok=1;next_pid=0;observe_pending_start((void *)1);
+    assert(queries==2&&owners==1&&!update.parent);
+    next_pid=0x48;observe_pending_start((void *)1);
+    assert(queries==3&&owners==2&&update.parent==(void *)2);
+    for(unsigned i=0;i<1000;i++)observe_pending_start((void *)1);
+    assert(queries==3&&owners==2&&children==1000&&update.parent==(void *)2);
+    update.attempts=2;observe_pending_start((void *)1);
+    assert(queries==3&&owners==2&&children==1000);
+    puts("PASS production pending-service observer: failed/zero-PID acquisition retries, pinned identity stops status RPC churn, updater observation continues, no acquisition on retry");
+}
+'''
+with tempfile.TemporaryDirectory() as folder:
+    t=Path(folder); source=t/'observer.c'; source.write_text(observer_code)
+    subprocess.run([os.environ.get('CC','cc'),'-std=c11','-Wall','-Wextra','-Werror',
+                    '-fsanitize=address,undefined','-fno-sanitize-recover=all',
+                    str(source),'-o',str(t/'observer')],check=True)
+    subprocess.run([str(t/'observer')],check=True)

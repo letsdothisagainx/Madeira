@@ -212,3 +212,53 @@ change need not change the native Mach-O UUID. Tests cover the update handoff
 and failures with production policy code. Real on-device service readiness,
 Steam's `-applaunch 730` result and CS2 process creation remain unverified. The
 independent current Win64 Chromium address-space constraint is unchanged.
+
+## The 21:27 capture exposes a null TEB during forced cleanup
+
+UUID `B7B46B26-57D0-3CFE-8F62-B441ECEE5565` and helper marker
+`update-handoff-v1=1` identify source `bd607b56620f439c9183bd31a45201b245fcf3fd`
+from Actions 41563906131. The helper holds the correct SCM parent PID 004c.
+This time no SteamServiceTmp.exe process is created. SCM fails its pending
+connection near its ten-second deadline and terminates the original service,
+which was still doing certificate/cache work. The failed updater witness is
+correct and remains a failure. The old log does not contain the raw wait result;
+the new bounded SCM diagnostic distinguishes timeout, process exit, event and
+wait error and records elapsed time and the actual overlapped result.
+
+Forced cancellation of WinINet worker 005c enters FEX retirement and faults in
+`user_mode_callback_return`: x3 is null and the first load reads address 0x378.
+The dispatcher had retained its TEB with `mov x19,x18`. iOS can clear reserved
+x18 between instructions; copying zero does not cause the TEB memory-access
+exception that normally recovers a load/store. Successful retirement can then
+return through a null retained pointer. The dispatcher now loads the already
+validated TEB from callback arguments that remain alive until return.
+
+The ARM64 regression clears x18 before every instruction while modeling the
+existing Mach handler's TEB load/store recovery. Restoring just the old MOV
+reproduces the exact read at 0x378 after a successful callback. The corrected
+instruction preserves return state across 256 callbacks, two owners, both trace
+modes and nested frees. The new `fex-callback-v2` packaging marker rejects the
+old native bridge.
+
+The SCM producer separately uses Windows' documented 30,000 ms default instead
+of Wine's 10,000 ms and accepts the documented DWORD ServicesPipeTimeout value.
+Finite valid legacy decimal strings remain supported; malformed, zero and
+infinite values leave the default intact. See Microsoft's [default-timeout
+documentation](https://learn.microsoft.com/en-us/troubleshoot/windows-client/system-management-components/windows-trace-session-manager-service-not-start-event-id-7000)
+and [DWORD configuration documentation](https://learn.microsoft.com/en-us/troubleshoot/windows-server/system-management-components/service-not-start-events-7000-7011-time-out-error).
+This does not prove that Valve's certificate/update work finishes within that
+deadline, nor that cache/signature work is otherwise correct. The preparation
+helper retains its separate 35-second call safeguard.
+
+Only the existing native ARM64 services.exe is rebuilt, using a temporary
+overlay with source restoration even after failed builds. Its existing native
+crosslink in hybrid sessions is preserved. The package gate verifies native PE
+architecture, the new SCM marker and staged/bundled/IPA byte identity. The helper
+also stops querying SCM once the original process identity is pinned; it keeps
+the same bounded child observation and genuine readiness checks. No installer,
+authentication, game files, Wine prefix reset or security checks are changed.
+
+Device acceptance remains: no 0x378 callback fault during forced cleanup, actual
+SCM wait outcome, successful updater completion and SERVICE_RUNNING, followed
+by genuine Steam and CS2 process creation. Library and CS2 remain unverified;
+the independent Win64 Chromium address-space limitation is unchanged.

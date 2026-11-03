@@ -10,6 +10,7 @@ APP="$DERIVED/Build/Products/$CONFIGURATION-iphoneos/Madeira.app"
 
 required=(
   "$ROOT/app/Madeira/aarch64-windows/wow64.dll"
+  "$ROOT/app/Madeira/aarch64-windows/services.exe"
   "$ROOT/app/Madeira/i386-windows/madeira-wow64-probe.exe"
   "$ROOT/app/Madeira/i386-windows/madeira-wow64-module-probe.dll"
   "$ROOT/FEX/build-ios/FEXCore/Source/libFEXCore.a"
@@ -57,6 +58,7 @@ codesign --force --sign - \
 
 bundle_required=(
   "$APP/aarch64-windows/wow64.dll"
+  "$APP/aarch64-windows/services.exe"
   "$APP/Madeira.debug.dylib"
   "$APP/i386-windows/madeira-wow64-probe.exe"
   "$APP/i386-windows/madeira-wow64-module-probe.dll"

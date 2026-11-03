@@ -236,6 +236,18 @@ static void observe_service_owner(const SERVICE_STATUS_PROCESS *status)
     }
     observe_updater();
 }
+static void observe_pending_start(SC_HANDLE service)
+{
+    if (update.attempts != 1) return;
+    /* Once pinned, the original process identity is immutable. Repeated SCM
+     * queries cannot improve that witness and keep creating RPC/section work
+     * while the real service is initializing. Continue observing its child. */
+    if (update.parent) { observe_updater(); return; }
+    SERVICE_STATUS_PROCESS status;
+    DWORD needed;
+    if (QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO, (BYTE *)&status, sizeof(status), &needed))
+        observe_service_owner(&status);
+}
 struct start_call { SC_HANDLE service; LONG references; DWORD error; };
 static void release_start_call(struct start_call *call)
 {
@@ -272,9 +284,7 @@ static uint32_t start_attempt(void)
     ULONGLONG begin = GetTickCount64();
     DWORD error = 0, needed = 0, wait;
     for (;;) {
-        SERVICE_STATUS_PROCESS status;
-        if (QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO, (BYTE *)&status, sizeof(status), &needed))
-            observe_service_owner(&status);
+        observe_pending_start(service);
         wait = WaitForSingleObject(worker, 10);
         if (wait == WAIT_OBJECT_0) { error = call->error; break; }
         if (wait == WAIT_FAILED) { error = last_error(); break; }

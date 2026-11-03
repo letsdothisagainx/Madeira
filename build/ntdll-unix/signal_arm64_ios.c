@@ -10124,8 +10124,12 @@ struct ios_fex_callback_args
 
 extern void ios_fex_callback_dispatcher(void);
 __ASM_GLOBAL_FUNC( ios_fex_callback_dispatcher,
-                   "mov x19, x18\n\t" /* retain the TEB across PE/syscall calls */
                    "ldr x16, [sp]\n\t" /* callback_stack_layout.args */
+                   /* iOS may clear x18 between any two instructions. A copy
+                    * from x18 does not fault, so the TEB memory-access
+                    * recovery cannot repair it. These args were validated
+                    * by ios_call_fex_callback and live until callback return. */
+                   "ldr x19, [x16, #8]\n\t" /* retain the validated TEB */
                    "ldr x4, [x16]\n\t" /* native ARM64 callback */
                    "ldp x0, x1, [x16, #8]\n\t"
                    "ldp x2, x3, [x16, #24]\n\t"
@@ -10173,7 +10177,7 @@ refused:
     {
         static unsigned int reports;
         if (__atomic_fetch_add( &reports, 1, __ATOMIC_RELAXED ) < 16)
-            dprintf( 2, "[fex-callback-v1] refused callback=%p teb=%p expected=%p frame=%p\n",
+            dprintf( 2, "[fex-callback-v2] refused callback=%p teb=%p expected=%p frame=%p\n",
                      callback, teb_ptr, teb, frame );
     }
     return MADEIRA_FEX_THREAD_RETIRE_REFUSED;

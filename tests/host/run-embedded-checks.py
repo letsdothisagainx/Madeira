@@ -79,6 +79,7 @@ commands = [
     ['python3', 'tests/host/check-wow-guard.py'],
     ['python3', 'tests/host/check-wow-sweep.py'],
     ['python3', 'tests/host/check-scm-rpc-loader.py'],
+    ['python3', 'tests/host/check-scm-service-timeout.py'],
     ['python3', 'tests/host/check-scm-rpc-sync.py'],
     ['python3', 'tests/host/check-tls-jit-sync.py'],
     ['python3', 'tests/host/check-steam-service.py'],
