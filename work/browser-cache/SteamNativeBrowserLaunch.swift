@@ -230,7 +230,7 @@ enum SteamNativeBrowserLaunchFiles {
                                                         idle: idle, progress: progress)
         guard idle() else { throw Files.Failure.active }
         try Files.installBridge(source, manifest: manifest, drive: drive, digest: SteamBrowserRuntime.hash, idle: idle)
-        try SteamBrowserRuntimeFiles.core(chromeHTML, steamRoot: steam, recipe: .official, digest: SteamBrowserRuntime.hash)
+        try SteamBrowserRuntimeFiles.core(chromeHTML, steamRoot: steam, recipe: SteamBrowserRuntimeFiles.official, digest: SteamBrowserRuntime.hash)
         guard idle() else { throw Files.Failure.active }
         return try Files.prepared(cache, bridge: manifest.fingerprint, drive: drive)
     }
