@@ -134,6 +134,10 @@ jobs:
                   raise ValueError(f"invalid/oversized descriptor {label}")
           
           
+          def _is_repeated(field):
+              return field.is_repeated if hasattr(field, "is_repeated") else field.label == field.LABEL_REPEATED
+          
+          
           def _unknown_fields(message, path: str, depth: int = 0):
               if depth > MAX_DEPTH:
                   raise ValueError("descriptor nesting bound exceeded")
@@ -147,12 +151,12 @@ jobs:
                       if wire != 2:
                           raise ValueError("message field has invalid wire type")
                       child = getattr(message, field.name)
-                      if field.is_repeated:
+                      if _is_repeated(field):
                           # Inspect each parsed entry once below, avoiding an O(n^2) walk.
                           continue
                       unknown += _unknown_fields(child, path + "." + field.name, depth + 1)
               for field, value in message.ListFields():
-                  if field.type == field.TYPE_MESSAGE and field.is_repeated:
+                  if field.type == field.TYPE_MESSAGE and _is_repeated(field):
                       for index, child in enumerate(value):
                           unknown += _unknown_fields(child, f"{path}.{field.name}[{index}]", depth + 1)
               if len(unknown) > MAX_FIELDS:
@@ -249,7 +253,7 @@ jobs:
                       # public_dependency/weak_dependency can be packed in modern writers.
                       if field is None or not (number in (10, 11) and wire == 2):
                           raise ValueError(f"unexpected top-level descriptor field/wire {number}/{wire}")
-                  if not field.is_repeated and number in seen:
+                  if not _is_repeated(field) and number in seen:
                       raise ValueError("duplicate singular top-level descriptor field")
                   seen.add(number)
               if end is None or not 0 < end <= MAX_DESCRIPTOR:
@@ -330,7 +334,7 @@ jobs:
            out={}
            def walk(msg):
             out[msg['full_name']]=msg
-            for child in msg.get('nested_messages',[]):walk(child)
+            for child in msg.get('nested',[]):walk(child)
            for msg in result['messages']:walk(msg)
            return out
           old,new=messages(REPORT['legacy32']),messages(REPORT['current64'])
