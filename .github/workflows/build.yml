@@ -91,22 +91,35 @@ jobs:
            report[label]=out;print('IDENTITY',label,json.dumps({k:v for k,v in out.items() if k not in ['exports','imports']}),flush=True)
            return out
           
-          PACKAGES=[('current64cef','bins_cef_win64.zip.0bad5abe29375d80e5bb0eedf714329369140164','e5e660226cc586c3cbc9a225f92e041664f228f83ef210574e39967c82c691cc'),('current64helper','bins_webhelpers_win64.zip.24cccba0a57045dd639e797a63facc0f56d9cd4c','697b728a706405a73bbcfcb530f609d414968c2ba189ae87aba83715ff9394c6'),('legacy32cef','bins_cef_win32_win7-64.zip.58bab15f971f2c13680107f5008db7bcf0e01175','638c890072ac89ed354c4870a440245f19684137a83d349fe1dfb01ce0e34007'),('legacy32helper','bins_webhelpers_win32_win7-64.zip.7347cb5094679cefec543c340b070e0a874c754f','4269159b0c9a4e2d8c0c1dce131c595cd2978be77f5a4cf4691c730859a4bc54')]
+          PACKAGES=[('current64cef','bins_cef_win64.zip.0bad5abe29375d80e5bb0eedf714329369140164','e5e660226cc586c3cbc9a225f92e041664f228f83ef210574e39967c82c691cc'),('current64helper','bins_webhelpers_win64.zip.24cccba0a57045dd639e797a63facc0f56d9cd4c','697b728a706405a73bbcfcb530f609d414968c2ba189ae87aba83715ff9394c6')]
           manifests={}
           for arch in ['win32','win64']:
            data=fetch('https://client-update.akamai.steamstatic.com/steam_client_'+arch);manifests[arch]=(data,file_nodes(data.decode()));report[arch+'_manifest_sha256']=digest(data)
+          assert report['win32_manifest_sha256']=='4b8aa78d95dd7a1475c7849c3e783b136452d34be67342b53728799d697c4823'
+          for label,family in [('legacy32cef','bins_cef_win32'),('legacy32helper','bins_webhelpers_win32')]:
+           candidates=[(path,n) for path,n in manifests['win32'][1] if path and path[-1]==family]
+           assert len(candidates)==1,[(p,n['file']) for p,n in candidates]
+           path,node=candidates[0];PACKAGES.append((label,node['file'],node['sha2']));print('I386_DEFAULT_PACKAGE',label,node['file'],node['sha2'],flush=True)
           raw={}
           for label,file,sha in PACKAGES:
            manifest,nodes=manifests['win32' if '32' in label else 'win64'];assert any(n['file']==file and n.get('sha2')==sha for _,n in nodes),'archive not present in corresponding current official manifest'
            data=fetch('https://client-update.akamai.steamstatic.com/'+file);assert digest(data)==sha;report[label+'_archive']={'file':file,'sha256':sha}
            for name,member in archive_members(data,'zip').items():
-            key=label+'_'+name.rsplit('/',1)[-1];identity(key,name,member);raw[key]=member
+            if label.startswith('legacy32') and '/cef.win7/' not in name.lower():continue
+            expected=0x14c if label.startswith('legacy32') else 0x8664
+            assert pefile.PE(data=member).FILE_HEADER.Machine==expected,(label,name,'unexpected architecture')
+            key=label+'_'+name.rsplit('/',1)[-1];assert key not in raw,'ambiguous member';identity(key,name,member);raw[key]=member
            del data
           patterns=[rb'(?:CLIENT|STEAM)[A-Z_]*INTERFACE_VERSION[0-9]{1,5}',rb'SteamClient[0-9]{1,5}',rb'CLIENT[A-Z_]+_VERSION[0-9]{1,5}',rb'(?:IClient|IHTML|IWeb)[A-Za-z0-9_]{1,80}',rb'(?:SteamClient|Browser|WebHelper|IPC|CEF)[A-Za-z0-9_:.-]{2,90}']
           for label in ['current64','legacy32']:
            helper=report[label+'helper_steamwebhelper.exe'];cef=report[label+'cef_libcef.dll'];data=raw[label+'helper_steamwebhelper.exe'];strings=[]
            for pattern in patterns:strings+= [x.decode('ascii') for x in re.findall(pattern,data)]
            literals=sorted(set(strings))
+           all_strings=[x.decode('ascii') for x in re.findall(rb'[\x20-\x7e]{6,300}',data)]
+           all_strings += [x.decode('utf-16le') for x in re.findall(rb'(?:[\x20-\x7e]\x00){6,160}',data)]
+           transport=[x for x in all_strings if (('html' in x.lower() or 'chrome' in x.lower()) and any(k in x.lower() for k in ['pipe','ipc','shared','mapping','socket','mutex','event'])) or '.proto' in x or '\\\\pipe\\' in x]
+           report[label+'_transport_literal_candidates']=sorted(set(transport))[:100]
+           print('TRANSPORT_LITERALS',label,json.dumps(report[label+'_transport_literal_candidates']),flush=True)
            report[label+'_bindings']={'helper_cef_imports_missing':sorted(set(helper['imports'].get('libcef.dll',[]))-set(cef['exports'])),'helper_contains_platform_api_hash':cef['api']['0'].encode() in data,'helper_contains_universal_api_hash':cef['api']['1'].encode() in data,'literal_candidates':literals,'non_system_import_dlls':sorted(helper['imports'])}
            print('BINDINGS',label,json.dumps(report[label+'_bindings'],sort_keys=True),flush=True)
           old=report['legacy32cef_libcef.dll'];new=report['current64cef_libcef.dll'];oldh=report['legacy32helper_steamwebhelper.exe'];newh=report['current64helper_steamwebhelper.exe']
