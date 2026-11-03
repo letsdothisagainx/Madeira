@@ -33,6 +33,7 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/pin-tools"
           "$RUNNER_TEMP/pin-tools/bin/pip" install pefile==2024.8.26
           "$RUNNER_TEMP/pin-tools/bin/python" tools/htmlipc/runtime-smoke/inspect-tier0.py
+          "$RUNNER_TEMP/pin-tools/bin/python" tools/htmlipc/runtime-smoke/inspect-sdl.py
   swift-cache:
     if: ${{ !inputs.launcher_only }}
     runs-on: xcode-27
