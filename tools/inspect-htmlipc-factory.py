@@ -10,7 +10,7 @@ with urllib.request.urlopen(origin+package,timeout=120) as r:
  data=r.read(size+1)
 assert len(data)==size and hashlib.sha256(data).hexdigest()==sha
 print('PINNED_CORE_PACKAGE',json.dumps({'name':package,'bytes':len(data),'sha256':sha}))
-terms=('ChromeHTML_Controller_001','IHTMLChromeController','HTMLCommandBuffer','SerializeCrossProc','DeserializeCrossProc','CChromeIPC','SteamChrome_MasterStream','chrome_ipc_shared.cpp','chrome_ipc_client.cpp','chrome_ipc_server.cpp')
+terms=('ChromeHTML_Controller','ChromeHTML','IHTMLChromeController','HTMLCommandBuffer','SerializeCrossProc','DeserializeCrossProc','CChromeIPC','SteamChrome_MasterStream','chrome_ipc_shared.cpp','chrome_ipc_client.cpp','chrome_ipc_server.cpp')
 with zipfile.ZipFile(io.BytesIO(data)) as z:
  assert sum(x.file_size for x in z.infolist())<700<<20
  names=[n for n in z.namelist() if n.lower().endswith(('.dll','.exe'))]
@@ -41,7 +41,7 @@ with zipfile.ZipFile(io.BytesIO(data)) as z:
   print('FACTORY_TRANSPORT_LITERALS',json.dumps({hex(k):v[:300] for k,v in strings.items()}))
   candidate_funcs={}
   for rva,s in strings.items():
-   if s!='ChromeHTML_Controller_001':continue
+   if 'chromehtml' not in s.lower() or 'controller' not in s.lower():continue
    target=struct.pack('<Q',imagebase+rva)
    for m in re.finditer(re.escape(target),b):
     if m.start()<8 or m.start()+16>len(b):continue
@@ -68,7 +68,7 @@ with zipfile.ZipFile(io.BytesIO(data)) as z:
      target=ins.address+ins.size+op.mem.disp
      if target in strings and len(xrefs)<100:
       f=function(ins.address);xrefs.append({'at':hex(ins.address),'target':hex(target),'string':strings[target][:180],'function':[hex(q) for q in f],'insn':ins.mnemonic+' '+ins.op_str})
-      if strings[target]=='ChromeHTML_Controller_001' or 'SteamChrome_MasterStream' in strings[target]:candidate_funcs[f]=('literal-xref',strings[target])
+      if 'chromehtml' in strings[target].lower() or 'SteamChrome_MasterStream' in strings[target]:candidate_funcs[f]=('literal-xref',strings[target])
   print('LITERAL_XREFS',json.dumps(xrefs))
   if 'CreateInterface' in exports and is_exec(exports['CreateInterface']):candidate_funcs[function(exports['CreateInterface'])]=('export','CreateInterface')
   for f,(why,label) in list(candidate_funcs.items())[:12]:
@@ -76,5 +76,5 @@ with zipfile.ZipFile(io.BytesIO(data)) as z:
    for i,ins in enumerate(md.disasm(p.get_data(f[0],min(f[1]-f[0],1536)),f[0])):
     if i>=160:break
     print('%08x %s %s'%(ins.address,ins.mnemonic,ins.op_str))
-  if 'ChromeHTML_Controller_001' not in strings.values():print('STOP_NO_MODERN_FACTORY_STRING',name)
+  if not any('chromehtml' in x.lower() and 'controller' in x.lower() for x in strings.values()):print('STOP_NO_MODERN_FACTORY_STRING',name)
   print('STOP_CONDITION','Do not interpose legacy vtables or raw I/O until this exact binary proves a supported object ABI and full channel framing.')
