@@ -111,6 +111,7 @@ def check(staged, app, ipa):
     assert b'[child-native-dll-v1]' in native and b'[process-wow64-v1]' in native, 'stale native child imports or owner-aware WoW64 PEB query'
     assert b'[fex-callback-v2]' in native, 'stale direct Unix-to-PE FEX cleanup callback'
     assert b'[wow-native-export-v1]' in native, 'stale pool-only WoW64 native startup data'
+    assert b'[wow-placement-v1]' in native, 'stale native WoW64-segment placement'
     fex_arena_exports(cpu_data, require_hold_release=True)
     assert (app / 'aarch64-windows/xtajit.dll').read_bytes() == cpu_data, 'Xcode packaged stale FEX'
     guest = (staged.parent.parent / 'i386-windows/kernelbase.dll').read_bytes()

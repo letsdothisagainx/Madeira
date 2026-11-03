@@ -285,9 +285,10 @@ Every browser attempt fails in chrome_elf.dll DLL initialization, before a CEF
 page or Library store is observed. Thirteen helpers abort with `80000003` at
 the same chrome_elf offset `dc104` after the large PA reservation fails. High
 fixed 16 GiB hints exceed the actual task map; the roughly 32 GiB alignment
-fallback (`0x7ffff0000`) also fails. Its scan is artificially confined to a
-16 GiB band, but merely widening that band does not establish a fix: the Wine
-ownership census's largest free contiguous span is about 17 GiB. Other map
+fallback (`0x7ffff0000`) also fails. Its first scan covers a 16 GiB band;
+the existing high-side retry then searches above the WoW64 windows. Neither
+can fit that request: the Wine ownership census's largest free contiguous
+span is about 17 GiB. Other map
 summaries omit logical reservations or are truncated; they cannot authorize
 overwriting guest windows. The task still reports a 63 GiB map with both
 increased-memory and extended-VA entitlements already active. No supported
@@ -314,3 +315,44 @@ The current IPA remains the last built runtime candidate. There is no new
 validated runtime fix or new IPA from this capture. A correct guest address-space
 solution is still needed before the real Library and authenticated CS2 launch
 can be accepted. No installed game, prefix or account data was reset.
+
+## Correct native placement around separated WoW64 windows
+
+The native allocator searched below and above the collection of WoW64 windows,
+but omitted gaps between separated windows. This is a real false
+`STATUS_NO_MEMORY` condition when a middle gap can satisfy a caller's request.
+The new fallback searches every remaining segment within the original placement
+bounds, while retaining live and retired reservations, unadopted placeholders
+and owned 16 KiB guards. Existing Wine view and kernel mapping checks still
+decide whether a candidate is available. Fixed-address requests are unchanged.
+
+FEX reservation authority is captured from the original request, separately
+from the derived segment bounds. A generic native request cannot acquire FEX
+ownership merely because a middle gap happens to match the arena. Logging is
+limited to the first 32 segmented searches, and final IPA validation requires
+the compiled `wow-placement-v1` marker.
+
+The source regression executes the production segment search with a real
+32 GiB, `PROT_NONE` mapping in an owned virtual test arena, in both directions.
+It also covers caller limits, guards, placeholders, reused slots, ordinary
+reserved mappings and the FEX authority boundary. The captured map is a separate
+negative case: WoW64 windows at 16–20 and 24–28 GiB, their 16 KiB guards, JIT
+aliases at 12–14 GiB, and FEX at 45–53 GiB leave a largest gap of
+17 GiB minus 16 KiB. The test requires the real Chromium-sized reservation to
+fail there. This correction does **not** solve the captured browser failure.
+
+Chromium 126's Windows fallback also requires a second, real 32 GiB temporary
+reservation for its backup-reference-pointer pool. Even an otherwise nearly
+empty 63 GiB task map cannot accommodate that fallback after retaining the
+first aligned 16 GiB pool. Returning a shorter reservation, changing a fixed
+hint, mapping the null page or removing the security check is not a valid fix.
+
+Read-only inspection of the official browser packages additionally rules out
+a blind DLL substitution: Valve's current Win64 libcef has a different API hash
+and eight helper-required exports absent from stock CEF 126. The coherent
+official I386 browser has a different private HTMLIPC schema from the current
+AMD64 core, including renumbered browser-creation fields and new resource-routing
+commands. A payload translation model is not evidence of a working transport or
+compatible rendering/security semantics. No such substitution or protocol
+workaround is enabled by this patch. Native Library and CS2 launch remain
+unverified and blocked by browser initialization.

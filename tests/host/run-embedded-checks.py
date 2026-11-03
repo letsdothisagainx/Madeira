@@ -77,6 +77,7 @@ commands = [
     ['python3', 'tests/host/check-wow-context.py'],
     ['python3', 'tests/host/check-wow-cpu-area.py'],
     ['python3', 'tests/host/check-wow-guard.py'],
+    ['python3', 'tests/host/check-wow-native-placement.py'],
     ['python3', 'tests/host/check-wow-sweep.py'],
     ['python3', 'tests/host/check-scm-rpc-loader.py'],
     ['python3', 'tests/host/check-scm-service-timeout.py'],
