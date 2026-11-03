@@ -1,31 +1,13 @@
-name: Disposable current Steam browser transport probe
+name: Read exact official transport image for static analysis
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  smoke:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 25
+  inspect-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
     steps:
       - uses: actions/checkout@v4
-      - name: Install bounded headless multiarch Wine test runtime
-        run: |
-          test "$(df --output=avail -B1 / | tail -1)" -gt 9000000000
-          sudo dpkg --add-architecture i386
-          sudo timeout 120 apt-get update -qq
-          sudo timeout 600 apt-get install -y --no-install-recommends wine wine64 wine32:i386 xvfb openbox scrot tesseract-ocr python3-opencv ca-certificates winbind
-      - name: Stage and test unchanged current AMD64 reference
-        run: |
-          timeout 360 /usr/bin/python3 tools/direct-smoke/prepare.py --mode baseline --root "$RUNNER_TEMP/baseline" --current-manifest tools/direct-smoke/steam_client_win64.tracking --current-manifest-sha256 0b12d3072042b2f2aa7b5bc0677c686210465438de981340bb46ac717b1caab8
-          timeout 360 /usr/bin/python3 tools/direct-smoke/run.py --root "$RUNNER_TEMP/baseline" --artifacts "$RUNNER_TEMP/probe-artifacts/baseline" || test "$?" = 2
-      - name: Stage and test current controller with official I386 browser
-        run: |
-          timeout 360 /usr/bin/python3 tools/direct-smoke/prepare.py --mode i386-probe --root "$RUNNER_TEMP/i386-probe" --current-manifest tools/direct-smoke/steam_client_win64.tracking --current-manifest-sha256 0b12d3072042b2f2aa7b5bc0677c686210465438de981340bb46ac717b1caab8
-          timeout 360 /usr/bin/python3 tools/direct-smoke/run.py --root "$RUNNER_TEMP/i386-probe" --artifacts "$RUNNER_TEMP/probe-artifacts/i386-probe" || test "$?" = 2
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: disposable-browser-transport-probe
-          path: ${{ runner.temp }}/probe-artifacts
-          retention-days: 3
+      - name: Read pinned public image; never execute PE
+        run: python3 tools/fetch-current-pe.py
