@@ -236,7 +236,9 @@ with tempfile.TemporaryDirectory(prefix='madeira-scm-build-') as directory:
     subprocess.run(['git','-C',str(wine),'-c','user.name=SCM Fixture','-c','user.email=scm-fixture@example.invalid',
                     'commit','-qm','pinned fixture'],check=True)
     for relative in ('tools/build/build-scm-rpc.sh','build/scm-rpc/loader.patch',
-                     'build/scm-rpc/services.patch','build/scm-rpc/aux-slot.h'):
+                     'build/scm-rpc/services.patch','build/scm-rpc/aux-slot.h',
+                     'build/scm-rpc/htmlipc-loader.patch','build/scm-rpc/htmlipc_pe_loader.h',
+                     'build/scm-rpc/htmlipc_policy.h','build/scm-rpc/htmlipc_ready_abi.h'):
         dest=fake/relative;dest.parent.mkdir(parents=True,exist_ok=True)
         shutil.copyfile(root/relative,dest)
     build=wine/'build-macos';build.mkdir();(build/'config.status').write_text('fixture')
@@ -254,6 +256,9 @@ assert 'DWORD service_pipe_timeout = 30000;' in s and '[scm-pipe-wait-v1]' in s
 assert 'parse_service_pipe_timeout' in s
 assert (r/'wine/dlls/ntdll/madeira_scm_aux_slot.h').read_bytes()==(r/'build/scm-rpc/aux-slot.h').read_bytes()
 assert 'madeira_scm_aux_slot.h' in (r/'wine/dlls/ntdll/loader.c').read_text()
+assert 'madeira_htmlipc_before_chromehtml' in (r/'wine/dlls/ntdll/loader.c').read_text()
+for source,target in [('htmlipc_pe_loader.h','madeira_htmlipc_pe_loader.h'),('htmlipc_policy.h','htmlipc_policy.h'),('htmlipc_ready_abi.h','htmlipc_ready_abi.h')]:
+    assert (r/'wine/dlls/ntdll'/target).read_bytes()==(r/'build/scm-rpc'/source).read_bytes()
 ''')
     for phase,name in [('ntdll','build-ntdll.sh'),('sechost','build-modules.sh')]:
         executable('build/wine-pe/'+name,
@@ -288,6 +293,8 @@ out.parent.mkdir(parents=True,exist_ok=True);out.write_bytes(data)
     def restored():
         for p,data in originals.items():assert (wine/p).read_bytes()==data,p
         assert not (wine/'dlls/ntdll/madeira_scm_aux_slot.h').exists()
+        for header in ('madeira_htmlipc_pe_loader.h','htmlipc_policy.h','htmlipc_ready_abi.h'):
+            assert not (wine/'dlls/ntdll'/header).exists()
         assert not (fake/'app/Madeira/arm64ec-windows/services.exe').exists(),'new hybrid SCM producer changed architecture selection'
     result=staged_run();assert result.returncode==0,result.stdout;restored()
     image=native.read_bytes();assert b'[scm-pipe-wait-v1]' in image
