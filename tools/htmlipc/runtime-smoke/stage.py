@@ -27,6 +27,8 @@ I386_CEF = ('bins_cef_win32.zip.1c1d9dc1d899e7c8d1cff9cb0fcc11b89e412b98',
             'fee14790d59463f31693ef95e10327824f5bdd95baf0aa8fae3b81aea98e794f')
 I386_HELPER = ('bins_webhelpers_win32.zip.8a153ec2ee2090c19b25204806ffca2a7ba15bf2',
                '1ab3b3834172a644759860f65d853970ba1d8b65f30190aae774395d69136307')
+I386_SDL = ('bins_win32.zip.23e34a6d4b10596a44561a5100dac5585d2517da',
+            '8b712b2a3412a9066b7725f4e1c5cef9a7ca5b187b6585a5b92d25d09df0ba62')
 MAX_DOWNLOAD = 600 * 1024**2
 MAX_UNPACKED = 2500 * 1024**2
 
@@ -137,12 +139,14 @@ def stage(root, current_manifest_path, current_manifest_sha, mode, bridge_dll=No
     assert package(current, 'win64', 'bins_win64')[::2] == CURRENT_CORE
     cef = package(win32, 'win32', 'bins_cef_win32')
     helper = package(win32, 'win32', 'bins_webhelpers_win32')
+    sdl = package(win32, 'win32', 'bins_win32')
+    assert sdl[::2] == I386_SDL and sdl[1] == 59544006
     assert cef[::2] == I386_CEF and helper[::2] == I386_HELPER
     selected = [(key, package(current, 'win64', key)) for key, value in current['win64'].items()
                 if isinstance(value, dict) and key not in ('bins_cef_win64', 'bins_webhelpers_win64')]
     selected += [(key, package(current, 'win64', key)) for key in ('bins_cef_win64','bins_webhelpers_win64')]
     if mode == 'bridge':
-        selected += [('coherent-i386-cef', cef), ('coherent-i386-helper', helper)]
+        selected += [('coherent-i386-cef', cef), ('coherent-i386-helper', helper), ('coherent-i386-sdl', sdl)]
     total = sum(item[1][1] for item in selected)
     assert total <= MAX_DOWNLOAD
     steam = root / 'steam'
@@ -172,9 +176,16 @@ def stage(root, current_manifest_path, current_manifest_sha, mode, bridge_dll=No
                 assert (member.external_attr >> 16) & 0o170000 != 0o120000, 'symlink refused'
                 if label == 'legacy-controller-only' and str(path).lower() != 'bin/chromehtml.dll':
                     continue
+                if label == 'coherent-i386-sdl' and str(path) != 'SDL3.dll':
+                    continue
                 unpacked += member.file_size
                 assert unpacked <= MAX_UNPACKED
                 data = archive.read(member)
+                if label == 'coherent-i386-sdl':
+                    assert machine(data) == 0x14c and len(data) == 2432152
+                    assert digest(data) == 'db01ec466db9c4e19cc5fe8c878ac89bc1b6057136432554842b3cd4dca88669'
+                    browser_files['bin/cef/cef.win7/SDL3.dll'] = data
+                    continue
                 if label.startswith('coherent-i386-'):
                     assert str(path) not in browser_files or browser_files[str(path)] == data, 'conflicting browser archive members'
                     browser_files[str(path)] = data
@@ -202,7 +213,7 @@ def stage(root, current_manifest_path, current_manifest_sha, mode, bridge_dll=No
     for path, expected_machine in (
         ('steam.exe', 0x8664), ('SteamUI.dll', 0x8664), ('steamclient64.dll', 0x8664),
         ('bin/chromehtml.dll', 0x8664), ('bin/cef/cef.win64/steamwebhelper.exe', 0x8664),
-        ('bin/cef/cef.win64/libcef.dll', 0x8664), ('bin/cef/cef.win64/chrome_elf.dll', 0x8664)):
+        ('bin/cef/cef.win64/libcef.dll', 0x8664), ('bin/cef/cef.win64/chrome_elf.dll', 0x8664), ('SDL3.dll',0x8664)):
         data = (steam / path).read_bytes()
         assert machine(data) == expected_machine, path
         report['files'][path] = {'sha256': digest(data), 'machine': f'{expected_machine:04x}'}
@@ -215,7 +226,7 @@ def stage(root, current_manifest_path, current_manifest_sha, mode, bridge_dll=No
         (steam / 'version.dll').write_bytes(native)
         report['files']['version.dll'] = {'sha256': digest(native), 'machine': '8664'}
         if mode == 'bridge':
-            for name in ('steamwebhelper.exe', 'libcef.dll', 'chrome_elf.dll'):
+            for name in ('steamwebhelper.exe', 'libcef.dll', 'chrome_elf.dll','SDL3.dll'):
                 relative = 'bin/cef/cef.win7/' + name
                 data = (steam / relative).read_bytes()
                 assert machine(data) == 0x14c

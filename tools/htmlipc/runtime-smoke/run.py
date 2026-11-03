@@ -117,6 +117,8 @@ def capture(display, raw_path, output_path):
         'update_label': 'updating steam' in text or 'checking for available updates' in text,
         'nonuniform_frame': float(image.std()) > 3,
         'qr_regions_redacted': len(polygons) if found else 0,
+        'failure_dll_names': sorted(set(re.findall(r'\b[a-z0-9_.-]{1,64}\.dll\b', ' '.join(words))))[:12],
+        'sdl_failure': 'sdl' in text and ('failed' in text or 'error' in text),
         'steam_login_qr_validated': bool(steam_login_qr),
         'not_responding_dialog': 'steamwebhelper' in text and 'responding' in text,
         'approved_words': sorted(set(words) & (approved | {'error','failed','connect','network','welcome','create','join','username','loading','continue'})),
@@ -159,7 +161,7 @@ def main(root, artifacts):
               'bridge_loader_entry': False, 'version_load_events': [],
               'image_mismatch': [], 'bridge_hook_reached': False, 'stream_probes': [],
               'cef_args_installed':False,'cef_args_applied':False,
-              'i386_client_dependency': {k: provenance[k] for k in
+              'failure_dll_names':[], 'i386_client_dependency': {k: provenance[k] for k in
                   ('steamclient_i386_present','steamclient_i386_machine','steamclient_i386_sha256') if k in provenance}}
     xvfb = subprocess.Popen(['Xvfb', ':109', '-screen', '0', '1280x800x24', '-nolisten', 'tcp'],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -296,7 +298,7 @@ def main(root, artifacts):
             # opaque values. Console/JavaScript/network transcripts stay private.
             for line in content.splitlines():
                 if len(report['cef_internal_messages']) >= 12: break
-                if not re.search(r'(?:chrome_main_delegate\.cc\(748\)|child_thread_impl\.cc\(942\)|crash_reporting\.cc\(271\))', line): continue
+                if 'Failed to connect' not in line and 'CCEFThread Init failed' not in line and not re.search(r'(?:chrome_main_delegate\.cc\(748\)|child_thread_impl\.cc\(942\)|crash_reporting\.cc\(271\))', line): continue
                 if re.search(r'password|authorization|cookie|ticket|token|secret|session|steamid', line, re.I): continue
                 safe = re.sub(r'(?:https?|wss?)://\S+', '[url-redacted]', line)
                 safe = re.sub(r'[A-Za-z0-9_+/=-]{24,}', '[opaque-redacted]', safe)

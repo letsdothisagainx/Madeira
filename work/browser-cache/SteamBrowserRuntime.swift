@@ -11,8 +11,19 @@ import CryptoKit
 enum SteamBrowserRuntimeFiles {
     struct Package: Codable, Equatable, Sendable {
         let file: String, bytes: Int, sha256: String
+        // A verified core archive may supply one exact root DLL only. Every
+        // other member is still parsed/decompressed/CRC-checked by unpack().
+        let singleMember: String?
+        init(file: String, bytes: Int, sha256: String, singleMember: String? = nil) {
+            self.file = file; self.bytes = bytes; self.sha256 = sha256; self.singleMember = singleMember
+        }
     }
-    struct Key: Equatable, Sendable { let name: String, sha256: String }
+    struct Key: Equatable, Sendable {
+        let name: String, sha256: String, bytes: Int?
+        init(name: String, sha256: String, bytes: Int? = nil) {
+            self.name = name; self.sha256 = sha256; self.bytes = bytes
+        }
+    }
     struct GeneratedFile: Equatable, Sendable {
         let name: String, bytes: Data, sha256: String
     }
@@ -22,27 +33,31 @@ enum SteamBrowserRuntimeFiles {
         let packages: [Package], keys: [Key]
         let marker: GeneratedFile
     }
-    // Exact runtime-shim/cache-contract.txt bytes, including the final LF.
+    // Exact cache-contract-v2.txt bytes, including the final LF.
     // The native gate treats this as host verification metadata, not a signature.
     static let officialMarker = GeneratedFile(name: ".madeira-cache-verified-v1", bytes: Data((
-        "MadeiraHtmlIPC-I386-Cache-v1\n" +
+        "MadeiraHtmlIPC-I386-Cache-v2\n" +
         "steamwebhelper.exe 014c 8dba99d204779a30a88a794d1a88d7e76355d004d876ed4bb29da7c3d5a4fc70\n" +
         "libcef.dll 014c b2dc73b55ca1d6a44a594e97b4ddd57bd19e79b2d09521faf2dfb83f51e2a94e\n" +
-        "chrome_elf.dll 014c 0c91bfdbb22d20ea153869a3dc7379d54a7380faee300d0fd6809fce491a3677\n"
-    ).utf8), sha256: "86d1ca3b9e48ef3ee3cc099cfb25ddf18cb2e09754e66a5c3c8a830e007425b8")
+        "chrome_elf.dll 014c 0c91bfdbb22d20ea153869a3dc7379d54a7380faee300d0fd6809fce491a3677\n" +
+        "SDL3.dll 014c db01ec466db9c4e19cc5fe8c878ac89bc1b6057136432554842b3cd4dca88669\n"
+    ).utf8), sha256: "fff4a23d727dd4f33ec070d29cb0012d7a22bf7f6f4e84e2cffc6709224e1781")
     static let official = Recipe(
-        id: "official-i386-fee14790d59463f3-1ab3b3834172a644-v1",
+        id: "official-i386-fee14790d59463f3-1ab3b3834172a644-sdl-db01ec466db9c4e1-v2",
         coreSHA256: "37f5ddbe874362d729b7cd33504943a9d649d845525afae4bcc2af36ab971f4b",
-        prefix: "bin/cef/cef.win7/", expectedFiles: 78,
+        prefix: "bin/cef/cef.win7/", expectedFiles: 79,
         packages: [
             Package(file: "bins_cef_win32.zip.1c1d9dc1d899e7c8d1cff9cb0fcc11b89e412b98", bytes: 130_079_979,
                     sha256: "fee14790d59463f31693ef95e10327824f5bdd95baf0aa8fae3b81aea98e794f"),
             Package(file: "bins_webhelpers_win32.zip.8a153ec2ee2090c19b25204806ffca2a7ba15bf2", bytes: 2_735_010,
-                    sha256: "1ab3b3834172a644759860f65d853970ba1d8b65f30190aae774395d69136307")
+                    sha256: "1ab3b3834172a644759860f65d853970ba1d8b65f30190aae774395d69136307"),
+            Package(file: "bins_win32.zip.23e34a6d4b10596a44561a5100dac5585d2517da", bytes: 59_544_006,
+                    sha256: "8b712b2a3412a9066b7725f4e1c5cef9a7ca5b187b6585a5b92d25d09df0ba62", singleMember: "SDL3.dll")
         ], keys: [
             Key(name: "steamwebhelper.exe", sha256: "8dba99d204779a30a88a794d1a88d7e76355d004d876ed4bb29da7c3d5a4fc70"),
             Key(name: "libcef.dll", sha256: "b2dc73b55ca1d6a44a594e97b4ddd57bd19e79b2d09521faf2dfb83f51e2a94e"),
-            Key(name: "chrome_elf.dll", sha256: "0c91bfdbb22d20ea153869a3dc7379d54a7380faee300d0fd6809fce491a3677")
+            Key(name: "chrome_elf.dll", sha256: "0c91bfdbb22d20ea153869a3dc7379d54a7380faee300d0fd6809fce491a3677"),
+            Key(name: "SDL3.dll", sha256: "db01ec466db9c4e19cc5fe8c878ac89bc1b6057136432554842b3cd4dca88669", bytes: 2_432_152)
         ], marker: officialMarker)
     static let ownerName = ".madeira-browser-owner-v1"
     static let ownerBytes = Data("org.madeira.SteamBrowserRuntime/v1\n".utf8)
@@ -149,22 +164,39 @@ enum SteamBrowserRuntimeFiles {
         // The sole call that raises ZIP budgets follows both exact pin checks.
         guard archive.count == package.bytes, digest(archive) == package.sha256,
               recipe.packages.contains(package) else { throw Failure.invalid }
+        if let member = package.singleMember {
+            guard SteamRuntimeFiles.validPath(member), !member.contains("/") else { throw Failure.invalid }
+        }
         guard idle() else { throw Failure.active }
         var seen = Set(records.map { $0.name.lowercased() })
-        try SteamRuntimeFiles.unpack(archive, limits: .trustedOfficialI386Browser) { name, bytes in
+        func install(_ name: String, _ bytes: Data) throws {
             guard name.hasPrefix(recipe.prefix), name.count > recipe.prefix.count,
                   name.lowercased() != (recipe.prefix + recipe.marker.name).lowercased(),
                   seen.insert(name.lowercased()).inserted, records.count < recipe.expectedFiles else { throw Failure.invalid }
             if executable(name), machine(bytes) != 0x014c { throw Failure.invalid }
             let hash = digest(bytes)
-            if let key = recipe.keys.first(where: { recipe.prefix + $0.name == name }), key.sha256 != hash {
-                throw Failure.invalid
+            if let key = recipe.keys.first(where: { recipe.prefix + $0.name == name }) {
+                guard key.sha256 == hash, key.bytes.map({ $0 == bytes.count }) ?? true else { throw Failure.invalid }
             }
             guard idle() else { throw Failure.active }
             let file = try destination(name, under: stage)
             try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
             try bytes.write(to: file, options: .withoutOverwriting)
             records.append(FileRecord(name: name, bytes: bytes.count, sha256: hash))
+        }
+        var selected: Data?
+        try SteamRuntimeFiles.unpack(archive, limits: .trustedOfficialI386Browser) { name, bytes in
+            if let member = package.singleMember {
+                // Continue through every other member: unsafe metadata or a bad
+                // CRC anywhere refuses the archive before the SDL file is saved.
+                guard name == member else { return }
+                guard selected == nil else { throw Failure.invalid }
+                selected = bytes
+            } else { try install(name, bytes) }
+        }
+        if let member = package.singleMember {
+            guard let selected else { throw Failure.invalid }
+            try install(recipe.prefix + member, selected)
         }
     }
 
@@ -187,7 +219,8 @@ enum SteamBrowserRuntimeFiles {
             guard total <= 768 * 1024 * 1024 else { throw Failure.invalid }
         }
         for key in recipe.keys {
-            guard records.contains(where: { $0.name == recipe.prefix + key.name && $0.sha256 == key.sha256 }) else {
+            guard records.contains(where: { record in record.name == recipe.prefix + key.name && record.sha256 == key.sha256
+                && (key.bytes.map({ $0 == record.bytes }) ?? true) }) else {
                 throw Failure.invalid
             }
         }

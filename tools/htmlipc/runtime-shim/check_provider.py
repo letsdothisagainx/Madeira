@@ -38,7 +38,7 @@ for b in genuine.DIRECTORY_ENTRY_BASERELOC:
             value=struct.unpack_from('<Q',mapped,r.rva)[0]
             struct.pack_into('<Q',mapped,r.rva,value+module-genuine.OPTIONAL_HEADER.ImageBase)
 marker=(here/'cache-contract.txt').read_bytes().replace(b'\r\n',b'\n')
-assert marker.startswith(b'MadeiraHtmlIPC-I386-Cache-v1\n')
+assert marker.startswith(b'MadeiraHtmlIPC-I386-Cache-v2\n')
 
 def prot(flags):
     return (UC_PROT_READ if flags&0x40000000 else 0)|(UC_PROT_WRITE if flags&0x80000000 else 0)|(UC_PROT_EXEC if flags&0x20000000 else 0)

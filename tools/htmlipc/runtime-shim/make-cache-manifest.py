@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """Trusted host staging gate: verify official cache PE machines/full hashes.
 
-Creates the provider's completion marker only after all three streaming checks
+Creates the provider's completion marker only after all four streaming checks
 pass. It does not edit the PEs or any official AMD64 files.
 """
 from pathlib import Path
 import argparse,hashlib,os,struct
 here=Path(__file__).resolve().parent
 parser=argparse.ArgumentParser()
-parser.add_argument('cache',type=Path,help='staged SteamRoot/bin/cef/cef.win32')
+parser.add_argument('cache',type=Path,help='staged SteamRoot/bin/cef/cef.win7')
 args=parser.parse_args()
 expected=(here/'cache-contract.txt').read_bytes().replace(b'\r\n',b'\n')
 lines=expected.decode('ascii').splitlines()
-assert lines[0]=='MadeiraHtmlIPC-I386-Cache-v1'
+assert lines[0]=='MadeiraHtmlIPC-I386-Cache-v2'
 marker=args.cache/'.madeira-cache-verified-v1'
 # A previous completed preparation must not attest a failed restage.
 marker.unlink(missing_ok=True)

@@ -44,9 +44,9 @@ assert 'response.expectedContentLength == Int64(package.bytes)' in cache
 assert 'SteamOwnedLibrary.shared.wineSessionActive' in cache
 assert 'try fm.moveItem(at: stage, to: final)' not in cache  # commit uses its own checked transaction
 assert 'moveItem(at: stage, to: final)' in cache
-contract = (ROOT / 'work/htmlipc-dispatch/runtime-shim/cache-contract.txt').read_bytes()
-assert len(contract) == 284
-assert hashlib.sha256(contract).hexdigest() == '86d1ca3b9e48ef3ee3cc099cfb25ddf18cb2e09754e66a5c3c8a830e007425b8'
+contract = (HERE / 'cache-contract-v2.txt').read_bytes()
+assert len(contract) == 363
+assert hashlib.sha256(contract).hexdigest() == 'fff4a23d727dd4f33ec070d29cb0012d7a22bf7f6f4e84e2cffc6709224e1781'
 assert hashlib.sha256(contract).hexdigest() in cache
 for line in contract.decode().splitlines(keepends=True):
     assert json.dumps(line) in cache
@@ -110,8 +110,37 @@ fixtures['marker-tampered'] = b'X' + fixtures['cache-marker'][1:]
 fixtures['official-marker'] = contract
 fixtures['spoof-marker.zip'] = archive([(prefix + '.madeira-cache-verified-v1', fixtures['cache-marker']), *payloads.items()])
 fixtures['spoof-marker-case.zip'] = archive([(prefix + '.MADEIRA-CACHE-VERIFIED-V1', fixtures['cache-marker']), *payloads.items()])
+fixtures['sdl-i386.dll'] = pe(0x14c) + b'exact-selected-SDL3-fixture'
+fixtures['sdl-amd64.dll'] = pe(0x8664) + b'wrong-architecture-SDL3-fixture'
+sdl_ignored = [('steamclient64.dll', pe(0x8664) + b'ignored-core-dll'),
+               ('steam.exe', pe(0x8664) + b'ignored-client-launcher'),
+               ('config/loginusers.vdf', b'ignored-auth-like-fixture-must-not-install'),
+               ('userdata/account/localconfig.vdf', b'ignored-userdata-fixture-must-not-install')]
+# SDL is first: malformed ignored entries later in the archive must still stop
+# selection without writing the already decoded selected member or its record.
+fixtures['sdl-core.zip'] = archive([('SDL3.dll', fixtures['sdl-i386.dll']), *sdl_ignored])
+fixtures['sdl-core-amd64.zip'] = archive([('SDL3.dll', fixtures['sdl-amd64.dll']), *sdl_ignored])
+fixtures['sdl-core-missing.zip'] = archive(sdl_ignored)
+fixtures['sdl-core-case.zip'] = archive([('sdl3.dll', fixtures['sdl-i386.dll']), *sdl_ignored])
+sdl_crc = bytearray(fixtures['sdl-core.zip'])
+ignored_header = zipfile.ZipFile(io.BytesIO(sdl_crc)).getinfo('steamclient64.dll').header_offset
+ignored_body = ignored_header + 30 + struct.unpack_from('<H', sdl_crc, ignored_header + 26)[0] + struct.unpack_from('<H', sdl_crc, ignored_header + 28)[0]
+sdl_crc[ignored_body + 100] ^= 1
+fixtures['sdl-core-ignored-crc.zip'] = bytes(sdl_crc)
+sdl_local = bytearray(fixtures['sdl-core.zip']); sdl_local[ignored_header + 30] ^= 1
+fixtures['sdl-core-ignored-local.zip'] = bytes(sdl_local)
+fixtures['sdl-core-ignored-traversal.zip'] = archive([('SDL3.dll', fixtures['sdl-i386.dll']), ('../outside', b'ignored traversal')])
+sdl_link = zipfile.ZipInfo('ignored-link'); sdl_link.create_system = 3; sdl_link.external_attr = (0o120777 << 16)
+fixtures['sdl-core-ignored-symlink.zip'] = archive([('SDL3.dll', fixtures['sdl-i386.dll']), (sdl_link, b'../outside')])
+fixtures['sdl-core-ignored-collision.zip'] = archive([('SDL3.dll', fixtures['sdl-i386.dll']), ('ignored.txt', b'a'), ('IGNORED.TXT', b'b')])
+fixtures['sdl-cache-marker'] = b'MadeiraHtmlIPC-TEST-FIXTURE-4KEY-NOT-PRODUCTION\n' + b''.join(
+    name.encode() + b' 014c ' + hashlib.sha256(value).hexdigest().encode() + b'\n'
+    for name, value in [(name.removeprefix(prefix), value) for name, value in payloads.items() if name.endswith(('.exe', '.dll'))]
+    + [('SDL3.dll', fixtures['sdl-i386.dll'])])
 digests = {value: hashlib.sha256(value).hexdigest() for value in fixtures.values()}
 assert zipfile.ZipFile(io.BytesIO(good)).testzip() is None
+assert zipfile.ZipFile(io.BytesIO(fixtures['sdl-core.zip'])).testzip() is None
+assert zipfile.ZipFile(io.BytesIO(fixtures['sdl-core-ignored-crc.zip'])).testzip() == 'steamclient64.dll'
 assert len(payloads) == 4 and len(set(n.lower() for n in payloads)) == 4
 print('PASS candidate source and ZIP fixtures: preserved app defaults, pin-before-expanded-parser, bounded transfer, malicious fixture construction')
 
@@ -156,7 +185,7 @@ for name in privateNames {
 let core = steam.appendingPathComponent("bin/chromehtml.dll")
 try fixture("core.dll").write(to: core)
 typealias F = SteamBrowserRuntimeFiles
-assert(F.official.expectedFiles == 78 && F.officialMarker.bytes.count == 284)
+assert(F.official.expectedFiles == 79 && F.officialMarker.bytes.count == 363)
 assert(F.officialMarker.sha256 == digest(F.officialMarker.bytes))
 let package = F.Package(file: "fixture.zip", bytes: try fixture("good.zip").count, sha256: digest(try fixture("good.zip")))
 let names = ["steamwebhelper.exe", "libcef.dll", "chrome_elf.dll"]
@@ -322,6 +351,90 @@ assert(descriptorCount == 1)
 // The default behavior stays unchanged; the stricter local-CRC check belongs
 // to the authenticated-browser budget only.
 try checked("unchanged-default-local-crc-behavior") { try SteamRuntimeFiles.unpack(try fixture("local-crc.zip")) { _, _ in } }
+// A second fixture recipe adds one exact root DLL from a verified core ZIP.
+// Its marker is explicitly a TEST contract with four local fixture key hashes.
+// The completed earlier recipe is retained byte-for-byte throughout v2 staging.
+let priorCompletion = try Data(contentsOf: final.appendingPathComponent(F.completion))
+let priorFiles = try initialManifest.files.map { ($0.name, try Data(contentsOf: final.appendingPathComponent($0.name))) }
+let sdlImage = try fixture("sdl-i386.dll")
+let sdlKey = F.Key(name: "SDL3.dll", sha256: digest(sdlImage), bytes: sdlImage.count)
+let sdlMarker = F.GeneratedFile(name: generated.name, bytes: try fixture("sdl-cache-marker"), sha256: digest(try fixture("sdl-cache-marker")))
+let sdlArchive = try fixture("sdl-core.zip")
+let sdlPackage = F.Package(file: "sdl-core.zip", bytes: sdlArchive.count, sha256: digest(sdlArchive), singleMember: "SDL3.dll")
+let sdlRecipe = F.Recipe(id: "fixture-v2-with-sdl", coreSHA256: recipe.coreSHA256, prefix: recipe.prefix,
+    expectedFiles: 5, packages: [package, sdlPackage], keys: keys + [sdlKey], marker: sdlMarker)
+let sdlStage = try newStage("sdl-complete")
+var sdlRecords: [F.FileRecord] = []
+try checked("sdl-base-cef-extraction") {
+    try F.appendArchive(try fixture("good.zip"), package: package, recipe: sdlRecipe, stage: sdlStage,
+                        records: &sdlRecords, digest: digest, idle: { true })
+}
+assert(sdlRecords.count == 4)
+assert(!fm.fileExists(atPath: sdlStage.appendingPathComponent(recipe.prefix + "SDL3.dll").path))
+try checked("sdl-exact-member-extraction") {
+    try F.appendArchive(sdlArchive, package: sdlPackage, recipe: sdlRecipe, stage: sdlStage,
+                        records: &sdlRecords, digest: digest, idle: { true })
+}
+assert(sdlRecords.count == 5 && sdlRecords.filter { $0.name == recipe.prefix + "SDL3.dll" }.count == 1)
+assert(try! Data(contentsOf: sdlStage.appendingPathComponent(recipe.prefix + "SDL3.dll")) == sdlImage)
+assert(!fm.fileExists(atPath: sdlStage.appendingPathComponent("SDL3.dll").path))
+assert(!fm.fileExists(atPath: sdlStage.appendingPathComponent(recipe.prefix + sdlMarker.name).path))
+for ignored in ["steamclient64.dll", "steam.exe", "config/loginusers.vdf", "userdata/account/localconfig.vdf"] {
+    assert(!fm.fileExists(atPath: sdlStage.appendingPathComponent(ignored).path))
+    assert(!fm.fileExists(atPath: sdlStage.appendingPathComponent(recipe.prefix + ignored).path))
+}
+let sdlFinal = owner.appendingPathComponent(sdlRecipe.id)
+_ = try checked("sdl-completed-cache") {
+    try F.commit(stage: sdlStage, destination: sdlFinal, recipe: sdlRecipe, records: sdlRecords,
+                 digest: digestFile, idle: { true }) {
+        try F.core(core, steamRoot: steam, recipe: sdlRecipe, digest: digestFile)
+    }
+}
+_ = try checked("sdl-completed-cache-reuse") { try F.validate(sdlFinal, recipe: sdlRecipe, digest: digestFile) }
+let sdlManifest = try JSONDecoder().decode(F.Manifest.self, from: Data(contentsOf: sdlFinal.appendingPathComponent(F.completion)))
+assert(sdlManifest.files.count == 6 && sdlManifest.files.filter(\.generated).count == 1)
+assert(sdlManifest.files.filter { !$0.generated }.count == 5)
+assert(sdlManifest.files.contains { $0.name == recipe.prefix + "SDL3.dll" && !$0.generated && $0.sha256 == sdlKey.sha256 && $0.bytes == sdlImage.count })
+assert(try! Data(contentsOf: sdlFinal.appendingPathComponent(recipe.prefix + sdlMarker.name)) == sdlMarker.bytes)
+for archiveName in ["sdl-core-amd64.zip", "sdl-core-missing.zip", "sdl-core-case.zip", "sdl-core-ignored-crc.zip",
+                    "sdl-core-ignored-local.zip", "sdl-core-ignored-traversal.zip", "sdl-core-ignored-symlink.zip", "sdl-core-ignored-collision.zip"] {
+    let candidate = try fixture(archiveName)
+    let selectedPackage = F.Package(file: archiveName, bytes: candidate.count, sha256: digest(candidate), singleMember: "SDL3.dll")
+    let selectedRecipe = F.Recipe(id: sdlRecipe.id, coreSHA256: recipe.coreSHA256, prefix: recipe.prefix,
+        expectedFiles: 5, packages: [package, selectedPackage], keys: keys + [sdlKey], marker: sdlMarker)
+    let selectedStage = try newStage(archiveName)
+    var selectedRecords: [F.FileRecord] = []
+    try F.appendArchive(try fixture("good.zip"), package: package, recipe: selectedRecipe, stage: selectedStage,
+                        records: &selectedRecords, digest: digest, idle: { true })
+    let before = selectedRecords
+    fails("exact SDL selection refuses " + archiveName) {
+        try F.appendArchive(candidate, package: selectedPackage, recipe: selectedRecipe, stage: selectedStage,
+                            records: &selectedRecords, digest: digest, idle: { true })
+    }
+    // Invalid ignored entries occur after valid SDL in the fixture. Neither
+    // selected bytes nor a record may commit until the whole ZIP is validated.
+    assert(selectedRecords == before)
+    assert(!fm.fileExists(atPath: selectedStage.appendingPathComponent(recipe.prefix + "SDL3.dll").path))
+    assert(!fm.fileExists(atPath: selectedStage.appendingPathComponent(recipe.prefix + sdlMarker.name).path))
+    try F.validateTree(selectedStage, recipe: selectedRecipe, records: before, extraFiles: [], digest: digestFile)
+}
+let sdlWrongHashStage = try newStage("sdl-wrong-key-hash")
+let sdlWrongHashRecipe = F.Recipe(id: sdlRecipe.id, coreSHA256: recipe.coreSHA256, prefix: recipe.prefix,
+    expectedFiles: 5, packages: [package, sdlPackage], keys: keys + [F.Key(name: "SDL3.dll", sha256: digest(try fixture("sdl-amd64.dll")))], marker: sdlMarker)
+var sdlWrongHashRecords: [F.FileRecord] = []
+try F.appendArchive(try fixture("good.zip"), package: package, recipe: sdlWrongHashRecipe, stage: sdlWrongHashStage,
+                    records: &sdlWrongHashRecords, digest: digest, idle: { true })
+let beforeWrongHash = sdlWrongHashRecords
+fails("selected SDL exact full SHA is required") {
+    try F.appendArchive(sdlArchive, package: sdlPackage, recipe: sdlWrongHashRecipe, stage: sdlWrongHashStage,
+                        records: &sdlWrongHashRecords, digest: digest, idle: { true })
+}
+assert(sdlWrongHashRecords == beforeWrongHash)
+assert(!fm.fileExists(atPath: sdlWrongHashStage.appendingPathComponent(recipe.prefix + "SDL3.dll").path))
+assert(!fm.fileExists(atPath: sdlWrongHashStage.appendingPathComponent(recipe.prefix + sdlMarker.name).path))
+assert(try! Data(contentsOf: final.appendingPathComponent(F.completion)) == priorCompletion)
+for (name, bytes) in priorFiles { assert(try! Data(contentsOf: final.appendingPathComponent(name)) == bytes) }
+print("PASS exact SDL selection: one I386/key-pinned member from core ZIP, ignored core/auth-like members validated but never installed; missing/case/wrong-architecture/hash and ignored CRC/header/traversal/symlink/collision failures leave selected records/files untouched; six-entry fixture completion retains prior cache")
 for name in privateNames { assert(try! Data(contentsOf: steam.appendingPathComponent(name)) == Data(name.utf8)) }
 assert(try! Data(contentsOf: core) == fixture("core.dll"))
 print("PASS real candidate Swift functions: generated-marker absence/tamper/edited-manifest/partial-tree/interruption refusal, manifest/full-tree validation, idle rechecks, ownership, archive pins, traversal/case/symlink/CRC/local-header/descriptor rejection, i386 PE requirement; Steam authentication, CS2 and official cef.win64 fixtures unchanged")

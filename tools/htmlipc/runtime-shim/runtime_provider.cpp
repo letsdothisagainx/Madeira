@@ -83,10 +83,11 @@ static bool install_error_announced;
 static Wide executable_path[32768];
 static U32 steam_root_length;
 static constexpr char cache_contract[]=
-    "MadeiraHtmlIPC-I386-Cache-v1\n"
+    "MadeiraHtmlIPC-I386-Cache-v2\n"
     "steamwebhelper.exe 014c 8dba99d204779a30a88a794d1a88d7e76355d004d876ed4bb29da7c3d5a4fc70\n"
     "libcef.dll 014c b2dc73b55ca1d6a44a594e97b4ddd57bd19e79b2d09521faf2dfb83f51e2a94e\n"
-    "chrome_elf.dll 014c 0c91bfdbb22d20ea153869a3dc7379d54a7380faee300d0fd6809fce491a3677\n";
+    "chrome_elf.dll 014c 0c91bfdbb22d20ea153869a3dc7379d54a7380faee300d0fd6809fce491a3677\n"
+    "SDL3.dll 014c db01ec466db9c4e19cc5fe8c878ac89bc1b6057136432554842b3cd4dca88669\n";
 
 static void report(Error,U32=0,U32=0,U32=0);
 static bool lock_registry(){
