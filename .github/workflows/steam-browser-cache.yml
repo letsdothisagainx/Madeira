@@ -26,7 +26,7 @@ jobs:
     runs-on: xcode-27
     timeout-minutes: 15
     env:
-      MADEIRA_VALVE_ARCHIVE_CACHE: ${{ runner.temp }}/official-browser-archives
+      MADEIRA_VALVE_ARCHIVE_CACHE: ${{ github.workspace }}/.official-browser-archives
     steps:
       - uses: actions/checkout@v4
         with:
@@ -35,7 +35,7 @@ jobs:
         run: python3 tests/host/check-steam-browser-cache.py --require-swift
       - uses: actions/cache@v4
         with:
-          path: ${{ runner.temp }}/official-browser-archives
+          path: ${{ github.workspace }}/.official-browser-archives
           key: official-browser-v2-fee14790-1ab3b383-8b712b2a
       - name: Verify complete official archives, downloader, commit and reuse
         run: python3 tests/integration/check-official-steam-browser-cache.py --download-official
