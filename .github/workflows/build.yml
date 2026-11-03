@@ -1,28 +1,78 @@
-name: Read verified CEF ABI report
+name: Inspect exact Valve CEF extension call sites
 on:
   workflow_dispatch:
 permissions:
   contents: read
-  actions: read
 jobs:
   inspect:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
-      - name: Read previously verified ABI artifact only
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - run: python3 -m pip install pefile==2024.8.26 capstone==5.0.6
+      - name: Read exact exported code and helper calls without loading DLLs
         run: |
-          python3 - <<'PY'
-          import subprocess,io,zipfile,json,hashlib
-          data=subprocess.check_output(['gh','api','repos/letsdothisagainx/Madeira/actions/artifacts/13203068345/zip'])
-          assert hashlib.sha256(data).hexdigest()=='cc891c56c10b4c9536a69e2b73151b456ee9ef8aff86a265c1e2d86b067712c6'
-          with zipfile.ZipFile(io.BytesIO(data)) as z: report=json.loads(z.read('cef-abi-report.json'))
-          for key in ['stock_archive','valve_manifest','helper_archive']:print('ARCHIVE',key,json.dumps(report[key],sort_keys=True))
-          stock=report['stock_chrome_elf.dll']['exports']
-          for key in ['valve_chrome_elf.dll','stock_chrome_elf.dll']:print('ELF_EXPORTS',key,json.dumps(report[key]['exports'],sort_keys=True))
-          for key in ['valve_libcef.dll','valve_steamwebhelper.exe']:
-           imports=report[key]['imports'].get('chrome_elf.dll',[])
-           print('ELF_IMPORTS',key,json.dumps(imports),'MISSING_STOCK',json.dumps(sorted(set(imports)-set(stock))))
-          print('FULL_REPORT',json.dumps(report,sort_keys=True))
-          PY
+          python3 - <<'PYINSPECT'
+          """Read-only call-site evidence for official Valve CEF extensions."""
+          import urllib.request,zipfile,io,hashlib,json,bisect,collections
+          import pefile,capstone
+          from capstone.x86 import X86_OP_IMM,X86_OP_MEM,X86_REG_RIP
+          PACKAGES=[('cef','bins_cef_win64.zip.0bad5abe29375d80e5bb0eedf714329369140164','e5e660226cc586c3cbc9a225f92e041664f228f83ef210574e39967c82c691cc'),('helper','bins_webhelpers_win64.zip.24cccba0a57045dd639e797a63facc0f56d9cd4c','697b728a706405a73bbcfcb530f609d414968c2ba189ae87aba83715ff9394c6')]
+          EXTRA=['cef_disable_hardware_acceleration','cef_generate_gpu_report','cef_get_device_scale_factor_for_screen_rect','cef_get_forced_device_scale_factor','cef_is_gpu_compositing_disabled','cef_is_hardware_acceleration_enabled','cef_set_force_device_scale_factor','cef_set_minimum_font_size','cef_set_preferred_contrast','cef_set_reduced_motion_enabled']
+          report={};images={}
+          for label,file,sha in PACKAGES:
+           with urllib.request.urlopen('https://client-update.akamai.steamstatic.com/'+file,timeout=150) as r:data=r.read()
+           assert hashlib.sha256(data).hexdigest()==sha
+           with zipfile.ZipFile(io.BytesIO(data)) as z:
+            member=next(n for n in z.namelist() if n.lower().endswith('/libcef.dll' if label=='cef' else '/steamwebhelper.exe'))
+            images[label]=z.read(member);report[label]={'archive':file,'archive_sha256':sha,'member':member,'sha256':hashlib.sha256(images[label]).hexdigest()}
+           del data
+          cs=capstone.Cs(capstone.CS_ARCH_X86,capstone.CS_MODE_64);cs.detail=True;cs.skipdata=True
+          p=pefile.PE(data=images['cef']);assert p.FILE_HEADER.Machine==0x8664
+          exports={e.name.decode():e.address for e in p.DIRECTORY_ENTRY_EXPORT.symbols if e.name};functions=sorted((e.struct.BeginAddress,e.struct.EndAddress) for e in p.DIRECTORY_ENTRY_EXCEPTION);begins=[a for a,b in functions]
+          def bounds(rva):
+           at=bisect.bisect_right(begins,rva)-1
+           return functions[at] if at>=0 and rva<functions[at][1] else (rva,rva+0x100)
+          def disasm(rva,limit):
+           lo,hi=bounds(rva);hi=min(hi,lo+0x2000)
+           instructions=list(cs.disasm(p.get_data(lo,hi-lo),lo))
+           return [f'{i.address:08x} {i.mnemonic} {i.op_str}' for i in instructions[:limit]],instructions
+          report['extensions']={}
+          for name in EXTRA:
+           rva=exports[name];body,ins=disasm(rva,120);callees={}
+           for i in ins:
+            if i.id and i.mnemonic in ['call','jmp'] and i.operands and i.operands[0].type==X86_OP_IMM:
+             target=i.operands[0].imm
+             if 0<target<p.OPTIONAL_HEADER.SizeOfImage and len(callees)<3:
+              callee,_=disasm(target,90);callees[hex(target)]=callee
+           report['extensions'][name]={'entry_rva':hex(rva),'bounds':list(map(hex,bounds(rva))),'body':body,'direct_callees':callees}
+           print('EXTENSION',name,json.dumps(report['extensions'][name]),flush=True)
+          h=pefile.PE(data=images['helper']);assert h.FILE_HEADER.Machine==0x8664
+          imports={}
+          for group in h.DIRECTORY_ENTRY_IMPORT:
+           if group.dll.decode().lower()=='libcef.dll':
+            for e in group.imports:
+             if e.name and e.name.decode() in EXTRA:imports[e.address-h.OPTIONAL_HEADER.ImageBase]=e.name.decode()
+          sites=collections.defaultdict(list)
+          for section in h.sections:
+           if not(section.Characteristics&0x20000000):continue
+           previous=collections.deque(maxlen=14);pending=[]
+           for i in cs.disasm(section.get_data()[:section.Misc_VirtualSize],section.VirtualAddress):
+            line=f'{i.address:08x} {i.mnemonic} {i.op_str}'
+            for site in pending:site['after'].append(line)
+            pending=[x for x in pending if len(x['after'])<14]
+            if i.id and i.mnemonic in ['call','jmp'] and i.operands and i.operands[0].type==X86_OP_MEM:
+             op=i.operands[0].mem
+             if op.base==X86_REG_RIP:
+              name=imports.get(i.address+i.size+op.disp)
+              if name and len(sites[name])<10:
+               site={'rva':hex(i.address),'before':list(previous),'call':line,'after':[]};sites[name].append(site);pending.append(site)
+            previous.append(line)
+          report['helper_extension_callsites']=dict(sites)
+          for name,entries in sites.items():print('HELPER_CALLS',name,json.dumps(entries),flush=True)
+          with open('cef-extension-disasm.json','w') as f:json.dump(report,f,indent=2)
+          print('REPORT',json.dumps({'extension_count':len(report['extensions']),'helper_import_count':len(imports),'helper_matched_sites':{k:len(v) for k,v in sites.items()}}),flush=True)
+          PYINSPECT
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cef-extension-disasm
+          path: cef-extension-disasm.json
