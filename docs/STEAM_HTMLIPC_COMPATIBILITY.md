@@ -33,6 +33,17 @@ Archive extraction, atomic completion, reuse and owned bridge installation have
 focused tests. It does not replace Steam's core, authentication files, original
 CEF tree, game manifests or CS2 files.
 
+The official I386 CEF ZIP also contains one AMD64 diagnostic DLL,
+`msdia140.dll` (2,245,784 bytes, SHA-256
+`484dee047c0f2a6e556056ad994ef6a9b846a676a067883257c7122c46c97d66`).
+The original cache verifier incorrectly required every PE in this package to be
+I386, rejecting the first archive before Wine started. That member now has an
+explicit name/size/hash/AMD64 pin, checked on extraction and cache reuse. The
+browser executable, libcef, chrome_elf and SDL3 remain I386. Unknown AMD64 members
+and altered files are rejected. CI exercises the production Swift with all three
+genuine pinned archives, atomic completion, reuse and tamper rejection in
+addition to the small malformed-archive and transaction fixtures.
+
 Host tests and a successful IPA build do not validate the iPhone runtime. The
 isolated genuine Steam probe has loaded the I386 helper and CEF libraries after
 the ImageBase correction, but has not yet verified a rendered login form. Native

@@ -1,0 +1,41 @@
+name: Verify Steam browser cache
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'codex/pr-build-*']
+    paths:
+      - app/Madeira/SteamBrowserRuntime.swift
+      - app/Madeira/SteamRuntime.swift
+      - tests/host/check-steam-browser-cache.py
+      - tests/integration/check-official-steam-browser-cache.py
+      - .github/workflows/steam-browser-cache.yml
+  pull_request:
+    paths:
+      - app/Madeira/SteamBrowserRuntime.swift
+      - app/Madeira/SteamRuntime.swift
+      - tests/host/check-steam-browser-cache.py
+      - tests/integration/check-official-steam-browser-cache.py
+      - .github/workflows/steam-browser-cache.yml
+
+permissions:
+  contents: read
+
+jobs:
+  browser-cache:
+    runs-on: xcode-27
+    timeout-minutes: 15
+    env:
+      MADEIRA_VALVE_ARCHIVE_CACHE: ${{ runner.temp }}/official-browser-archives
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Test real Swift cache transactions and mixed architecture validation
+        run: python3 tests/host/check-steam-browser-cache.py --require-swift
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/official-browser-archives
+          key: official-browser-v2-fee14790-1ab3b383-8b712b2a
+      - name: Verify complete official archives, downloader, commit and reuse
+        run: python3 tests/integration/check-official-steam-browser-cache.py --download-official

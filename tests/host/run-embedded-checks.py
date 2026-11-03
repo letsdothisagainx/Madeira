@@ -6,6 +6,7 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[2]
 commands = [
+    ['python3', 'tests/host/check-steam-browser-cache.py', '--require-swift'],
     ['python3', 'tests/host/check-htmlipc-loader.py'],
     ['python3', 'tests/host/check-htmlipc-ready-state.py'],
     ['python3', 'tests/host/check-htmlipc-codecs.py'],

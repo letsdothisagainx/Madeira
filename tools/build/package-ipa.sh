@@ -58,6 +58,19 @@ xcodebuild \
 
 [[ -d "$APP" ]] || { echo "ERROR: xcodebuild succeeded but Madeira.app is missing" >&2; exit 1; }
 
+# Include the exact Actions source revision in the existing startup build label,
+# including failures during browser preparation before the native UUID is logged.
+source_revision="${GITHUB_SHA:-$(git -C "$ROOT" rev-parse HEAD)}"
+python3 - "$APP/Info.plist" "$source_revision" <<'PY_BUILD_STAMP'
+import plistlib, re, sys
+from pathlib import Path
+file, revision = Path(sys.argv[1]), sys.argv[2]
+assert re.fullmatch(r'[0-9a-f]{40}', revision), 'invalid source revision'
+value = plistlib.loads(file.read_bytes())
+value['MadeiraBuild'] = f"v{value['CFBundleShortVersionString']} ({value['CFBundleVersion']}) source={revision}"
+file.write_bytes(plistlib.dumps(value, fmt=plistlib.FMT_BINARY))
+PY_BUILD_STAMP
+
 # Preserve Madeira's requested JIT/debug entitlements in the IPA. SideStore will
 # replace this ad-hoc signature with the user's development signature while
 # retaining the supported entitlements.
