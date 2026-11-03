@@ -356,3 +356,34 @@ commands. A payload translation model is not evidence of a working transport or
 compatible rendering/security semantics. No such substitution or protocol
 workaround is enabled by this patch. Native Library and CS2 launch remain
 unverified and blocked by browser initialization.
+
+Read-only Actions inspection 41578716240 also checks the live official public
+beta manifest (version `1793235415`). Its CEF archive differs from stable, but
+the extracted chrome_elf still reports Chromium `126.0.6478.183` and the same
+unconditional 16 GiB regular/backup-reference-pointer pool allocation sequence.
+Switching the user's update branch is therefore not justified as a fix, and
+no branch setting was changed. The same inspection extracts the real current
+and I386 helper protobuf descriptors; they confirm the schema differences
+rather than establishing a compatible transport adapter.
+
+Inspection 41578816318 identifies the actual modern factory:
+`bin/chromehtml.dll` exports `CreateInterface` and registers
+`ChromeHTML_Controller_003`, which SteamUI requests. The caller then uses a
+secondary interface at returned-object offset eight. The public legacy
+`Controller_001` declaration is not enough to implement that object ABI or its
+message framing. No guessed vtable proxy or raw file-I/O rewrite is installed.
+
+The live official Win32 stable and public-beta manifests were checked separately
+in inspection 41580202903. Both return HTTP 200 and are byte-identical, version
+`1769731672`, with the same verified I386 browser/helper pair. There is no newer
+Win32-beta browser in those manifests to substitute without the unresolved
+protocol work.
+
+Actions 41578723650 builds the placement correction from source
+`581758fee97eb8e5a43160012e069376fbfefb57` (tested merge
+`477ec686a8d4f8a1a6df7bdc20401935960aaddc`). All 82 registered host commands,
+native SCM compilation, actual ARM64 callback execution and final package/ABI
+checks pass. The IPA artifact is 13205004492; its native UUID is
+`E1BBFC97-C862-3D6D-92E4-DE11B0810733`. This build verifies the source correction,
+not Steam readiness: it contains no demonstrated fix for the captured CEF
+failure and must not be presented as a working Steam/CS2 build.
