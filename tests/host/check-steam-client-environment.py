@@ -63,13 +63,20 @@ with tempfile.TemporaryDirectory() as d:
  subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-fsanitize=address,undefined','-I'+str(root/'app/Madeira'),str(c),'-o',str(e)],check=True)
  subprocess.run([str(e)],check=True)
 content=(root/'app/Madeira/ContentView.swift').read_text()
-assert content.count('nativeSteamClient: true')==2
+# Both user entry points and both asynchronous preparation continuations must
+# retain native Steam identity. Counting only the old two direct calls rejected
+# the newly required preparation continuations without testing their behavior.
+assert content.count('nativeSteamClient: true')==4
 assert 'runWineFullSequence(nativeSteamClient: true)' in content
 assert 'startLibraryEntry(launch, remember: false, preferences: entry, nativeSteamClient: true)' in content
-assert 'runWineFullSequence(profile: effectiveProfile, nativeSteamClient: nativeSteamClient)' in content
+assert 'nativeSteamClient: true, nativeSteamBrowser: selected)' in content
+assert 'runWineFullSequence(profile: effectiveProfile, nativeSteamClient: nativeSteamClient, nativeSteamBrowser: nativeSteamBrowser)' in content
 worker=content[content.index('private func runWineFullSequence('):content.index('private func startWineProcess(')]
 assert worker.index('profile.applyEnvironment()') < worker.index('self.startWineProcess(nativeSteamClient: nativeSteamClient)')
 launch=content[content.index('private func startWineProcess('):content.index('private func testDualMapping(')]
-assert launch.index('setenv("MADEIRA_NATIVE_STEAM_LAUNCH", "1", 1)') < launch.index('wine_process_start(winePrefixPath)')
-assert 'else { unsetenv("MADEIRA_NATIVE_STEAM_LAUNCH") }' in launch
+assert worker.index('profile.applyEnvironment()') < worker.index('SteamNativeBrowserLaunchFiles.export(') < worker.index('self.startWineProcess(nativeSteamClient: nativeSteamClient)')
+prepared=(root/'app/Madeira/SteamNativeBrowserLaunch.swift').read_text()
+assert 'set("MADEIRA_NATIVE_STEAM_LAUNCH", "1")' in prepared
+assert 'for name in lockedNames.prefix(3) { unset(name) }' in prepared
+assert 'unsetenv("MADEIRA_NATIVE_STEAM_LAUNCH")' in launch # failed start clears it too
 assert 'if nativeSteamClient || image.contains("steam.exe")' in launch
