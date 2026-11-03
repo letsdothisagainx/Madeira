@@ -121,7 +121,9 @@ enum SteamBrowserRuntimeFiles {
     static func ownerRoot(cacheBase: URL, steamRoot: URL, idle: () -> Bool) throws -> URL {
         let fm = FileManager.default
         try plain(cacheBase, directory: true)
-        let root = try destination("SteamBrowserRuntime", under: cacheBase)
+        // Foundation otherwise infers a trailing directory slash only AFTER
+        // creation, making the fresh and reused URL values compare unequal.
+        let root = URL(fileURLWithPath: try destination("SteamBrowserRuntime", under: cacheBase).path, isDirectory: true)
         guard !inside(root, steamRoot), !inside(steamRoot, root) else { throw Failure.ownership }
         if fm.fileExists(atPath: root.path) {
             try plain(root, directory: true)

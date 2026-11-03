@@ -1,6 +1,11 @@
 name: Source HTMLIPC browser compatibility runtime probe
 on:
   workflow_dispatch:
+    inputs:
+      runtime_probe:
+        description: Execute genuine Steam runtime in addition to Swift integration checks
+        type: boolean
+        default: true
 permissions:
   contents: read
 jobs:
@@ -11,9 +16,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Compile full verified browser cache and exercise Swift transaction fixtures
-        run: python3 work/browser-cache/check-browser-cache.py --require-swift
+      - name: Compile cache and native launch wiring and exercise real Swift transaction fixtures
+        run: |
+          python3 work/browser-cache/check-browser-cache.py --require-swift
+          python3 work/browser-cache/check-native-browser-launch.py --require-swift
+          python3 work/browser-cache/check-app-launch-wiring.py --require-swift
   runtime:
+    if: inputs.runtime_probe
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:

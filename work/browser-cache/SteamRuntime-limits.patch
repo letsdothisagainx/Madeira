@@ -1,0 +1,81 @@
+--- a/app/Madeira/SteamRuntime.swift
++++ b/app/Madeira/SteamRuntime.swift
+@@ -69,12 +69,27 @@
+         return result
+     }
+ 
++    // Existing callers retain their exact ZIP v0 budgets. Only the hash-pinned
++    // official i386 browser recipe opts into its named larger budget.
++    struct ZIPLimits: Sendable {
++        let archiveBytes: Int, memberBytes: Int, totalBytes: Int, records: Int
++        let strictHeaders: Bool
++        private init(archive: Int, member: Int, total: Int, records: Int, strict: Bool) {
++            archiveBytes = archive; memberBytes = member; totalBytes = total
++            self.records = records; strictHeaders = strict
++        }
++        static let standard = ZIPLimits(archive: 64 * 1024 * 1024, member: 64 * 1024 * 1024,
++                                       total: 256 * 1024 * 1024, records: 256, strict: false)
++        static let trustedOfficialI386Browser = ZIPLimits(archive: 256 * 1024 * 1024,
++            member: 256 * 1024 * 1024, total: 768 * 1024 * 1024, records: 256, strict: true)
++    }
++
+     // Parse the central directory, then validate each local header. ZIP64,
+     // encryption, symlinks and duplicate/case-colliding names are rejected.
+     // Called only AFTER the whole archive's pinned SHA-256 has been checked.
+-    static func unpack(_ data: Data, write: (String, Data) throws -> Void) throws {
++    static func unpack(_ data: Data, limits: ZIPLimits = .standard, write: (String, Data) throws -> Void) throws {
+         func need(_ condition: Bool) throws { if !condition { throw Failure.invalidPackage } }
+-        try need(data.count >= 22 && data.count <= 64 * 1024 * 1024)
++        try need(data.count >= 22 && data.count <= limits.archiveBytes)
+         func u16(_ p: Int) -> Int { Int(data[p]) | Int(data[p + 1]) << 8 }
+         func u32(_ p: Int) -> Int { u16(p) | u16(p + 2) << 16 }
+         guard let end = stride(from: data.count - 22, through: max(0, data.count - 65557), by: -1)
+@@ -82,10 +97,11 @@
+             throw Failure.invalidPackage
+         }
+         let count = u16(end + 10), central = u32(end + 16), centralSize = u32(end + 12)
+-        try need(u16(end + 4) == 0 && u16(end + 6) == 0 && u16(end + 8) == count && count <= 256)
++        try need(u16(end + 4) == 0 && u16(end + 6) == 0 && u16(end + 8) == count && count <= limits.records)
+         try need(central <= end && centralSize == end - central)
+         var cursor = central, total = 0
+         var seen = Set<String>()
++        var occupied: [Range<Int>] = []
+         for _ in 0..<count {
+             try Task.checkCancellation()
+             try need(cursor + 46 <= end && u32(cursor) == 0x02014b50)
+@@ -105,14 +121,33 @@
+             let directory = normalizedName.hasSuffix("/")
+             let name = directory ? String(normalizedName.dropLast()) : normalizedName
+             try need(validPath(name) && seen.insert(name.lowercased()).inserted)
+-            try need(size <= 64 * 1024 * 1024 && local + 30 <= central && u32(local) == 0x04034b50)
++            try need(size <= limits.memberBytes && local + 30 <= central && u32(local) == 0x04034b50)
+             try need(u16(local + 6) == flags && u16(local + 8) == method && u16(local + 26) == nameLength)
+             let body = local + 30 + nameLength + u16(local + 28)
+             try need(body <= central && compressed <= central - body)
+             try need(data.subdata(in: local + 30..<local + 30 + nameLength) == Data(rawName.utf8))
+             if flags & 8 == 0 { try need(u32(local + 18) == compressed && u32(local + 22) == size) }
++            if limits.strictHeaders {
++                try need(flags & ~0x080e == 0)
++                var extentEnd = body + compressed
++                if flags & 8 == 0 {
++                    try need(u32(local + 14) == Int(crc))
++                } else {
++                    try need((u32(local + 14) == 0 || u32(local + 14) == Int(crc))
++                        && (u32(local + 18) == 0 || u32(local + 18) == compressed)
++                        && (u32(local + 22) == 0 || u32(local + 22) == size))
++                    try need(extentEnd + 12 <= central)
++                    let descriptor = u32(extentEnd) == 0x08074b50 ? extentEnd + 4 : extentEnd
++                    try need(descriptor + 12 <= central && u32(descriptor) == Int(crc)
++                        && u32(descriptor + 4) == compressed && u32(descriptor + 8) == size)
++                    extentEnd = descriptor + 12
++                }
++                let extent = local..<extentEnd
++                try need(!occupied.contains(where: { $0.overlaps(extent) }))
++                occupied.append(extent)
++            }
+             total += size
+-            try need(total <= 256 * 1024 * 1024)
++            try need(total <= limits.totalBytes)
+             if directory { try need(size == 0 && compressed == 0); cursor = next; continue }
+             let encoded = data.subdata(in: body..<body + compressed)
+             var decoded: Data
