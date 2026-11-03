@@ -2,7 +2,14 @@
 #ifndef MADEIRA_HTMLIPC_STREAM_CODEC_H
 #define MADEIRA_HTMLIPC_STREAM_CODEC_H
 #include "../wire-codec/wire_codec.h"
-#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+#if defined(MADEIRA_STREAM_HOST_TEST_ABI)
+/* Algorithm fixtures on an ARM host call only their own injected callbacks.
+ * This mode must never enter a Windows DLL or the guest runtime provider. */
+#if defined(_WIN32) || defined(MADEIRA_RUNTIME_PROVIDER)
+#error "Host test callback ABI is forbidden in the Windows guest runtime"
+#endif
+#define MADEIRA_STREAM_ABI
+#elif defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
 #define MADEIRA_STREAM_ABI __attribute__((ms_abi))
 #elif defined(_M_X64)
 #define MADEIRA_STREAM_ABI

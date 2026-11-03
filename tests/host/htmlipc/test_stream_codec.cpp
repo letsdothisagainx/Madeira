@@ -11,7 +11,11 @@
 #include <thread>
 #include <vector>
 using namespace madeira_stream_codec;
+#if defined(MADEIRA_STREAM_HOST_TEST_ABI)
+#define MSABI
+#else
 #define MSABI __attribute__((ms_abi))
+#endif
 static std::atomic<unsigned long long> checks{0};
 #define CHECK(x) do {++checks;if(!(x)){std::fprintf(stderr,"FAIL %s:%d: %s\n",__FILE__,__LINE__,#x);std::abort();}}while(0)
 struct Harness;
