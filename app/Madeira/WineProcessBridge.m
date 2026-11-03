@@ -628,8 +628,16 @@ static uint16_t madeira_pe_machine(const char *unix_path)
  *  - any other form (another drive, a relative Win32 path) is not probed. */
 static uint16_t madeira_target_machine(const char *exe, const char *prefix, NSString *bundle)
 {
-    static const char * const farms64[] = { "aarch64-windows", "arm64ec-windows" };
-    char probe[PATH_MAX];
+    static const char * const farms[] = { "aarch64-windows", "arm64ec-windows", "i386-windows" };
+    static const struct { const char *path; size_t first, count; } system_farms[] = {
+        { "windows/system32/", 0, 2 },
+        { "windows/sysaa64/", 0, 1 },
+        { "windows/sysx64/", 1, 1 },
+        { "windows/syswow64/", 2, 1 },
+    };
+    char probe[PATH_MAX] = {0}, bundled[PATH_MAX], candidate[PATH_MAX];
+    const char *filename = exe;
+    size_t first = 0, count = 3;
     size_t skip;
 
     if ((exe[0] == 'C' || exe[0] == 'c') && exe[1] == ':' && exe[2] == '\\')
@@ -638,23 +646,48 @@ static uint16_t madeira_target_machine(const char *exe, const char *prefix, NSSt
         if (snprintf(probe, sizeof(probe), "%s/drive_c/%s", prefix, exe + 3) >= (int)sizeof(probe))
             return 0;
         for (char *p = probe + skip; *p; p++) if (*p == '\\') *p = '/';
+        /* This probe precedes the farm refresh. Resolve generated paths from
+         * the current bundle, not stale links to a previous IPA's container. */
+        filename = NULL;
+        for (size_t i = 0; i < sizeof(system_farms) / sizeof(system_farms[0]); i++)
+        {
+            size_t len = strlen(system_farms[i].path);
+            if (strncasecmp(probe + skip, system_farms[i].path, len)) continue;
+            const char *tail = probe + skip + len;
+            /* Only flat farms; never nested directories or traversal. */
+            if (!*tail || strchr(tail, '/') || strchr(tail, ':') || !strcmp(tail, ".") || !strcmp(tail, "..")) break;
+            filename = tail;
+            first = system_farms[i].first;
+            count = system_farms[i].count;
+            break;
+        }
+        if (!filename) return madeira_pe_machine(probe);
     }
     else if (strchr(exe, '\\') || (exe[0] && exe[1] == ':'))
         return 0;
-    else
+    /* Windows paths are case insensitive; retain the actual bundle basename.
+     * Prefer the bundle even if the old link is readable: the refresh will
+     * replace it, possibly with a different architecture's copy. */
+    for (size_t i = first; i < first + count; i++)
     {
-        for (size_t i = 0; i < sizeof(farms64) / sizeof(farms64[0]); i++)
-        {
-            if (snprintf(probe, sizeof(probe), "%s/%s/%s", bundle.fileSystemRepresentation, farms64[i], exe)
-                    >= (int)sizeof(probe))
-                return 0;
-            if (access(probe, R_OK) == 0) return madeira_pe_machine(probe);
-        }
-        if (snprintf(probe, sizeof(probe), "%s/i386-windows/%s", bundle.fileSystemRepresentation, exe)
-                >= (int)sizeof(probe))
+        DIR *dir;
+        struct dirent *entry;
+        if (snprintf(bundled, sizeof(bundled), "%s/%s", bundle.fileSystemRepresentation, farms[i])
+                >= (int)sizeof(bundled))
             return 0;
+        if (!(dir = opendir(bundled))) continue;
+        while ((entry = readdir(dir)))
+        {
+            if (strcasecmp(entry->d_name, filename)) continue;
+            uint16_t machine = 0;
+            if (snprintf(candidate, sizeof(candidate), "%s/%s", bundled, entry->d_name) < (int)sizeof(candidate))
+                machine = madeira_pe_machine(candidate);
+            closedir(dir);
+            return machine;
+        }
+        closedir(dir);
     }
-    return madeira_pe_machine(probe);
+    return probe[0] ? madeira_pe_machine(probe) : 0;
 }
 
 /* Select the core by the executable's machine, not its spelling. The explicit

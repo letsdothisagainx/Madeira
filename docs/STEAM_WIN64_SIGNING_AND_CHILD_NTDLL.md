@@ -145,3 +145,35 @@ data is rejected before publication; parent and sibling bytes remain unchanged.
 This is a source fix for service startup, not a fix for the separate Chromium
 address-space constraint. Service readiness, actual steam.exe -applaunch730
 execution and CS2 process creation require a new device run.
+
+## The 20:19 capture fails earlier: root DLL farm selection
+
+The uploaded UUID `F14031EE-3E62-302D-8B74-CECB70A7B019` matches source
+`cfd4ee6ce761ec0bc190a9c2ab5495105dd8be03`, built by Actions 41556960229.
+The root ARM64 cmd.exe cannot load kernel32.dll (`c000007b`), before any service
+child or Steam process starts. This capture therefore does not exercise the
+private child-ntdll export fix or establish anything about CS2 execution.
+
+The previous capture probes cmd.exe as `aa64` and selects the native farm.
+This capture probes it as zero and selects the hybrid farm by path heuristic.
+The native-only command processor is cross-linked into that farm, leaving it
+with an incompatible hybrid kernel32.dll. Wine's architecture rejection is
+correct. The architecture probe runs before generated prefix symlinks refresh;
+a dangling link after bundle relocation reproduces this exact routing failure.
+The log does not record why the original file probe failed, so the dangling
+link itself remains inferred, while the wrong farm selection is directly logged.
+
+Generated system executable paths now probe the current bundle that the farm
+refresh will install, using the same native-first preference as a bare name.
+Explicit sysaa64, sysx64 and syswow64 paths retain their separate architectures.
+Custom application paths and prefix files absent from the bundle still use
+their original files. The probe only reads files; it does not repair, remove
+or replace user data. No Wine loader validation or child startup logic changes.
+
+The regression compiles the production probe and routing functions under ASan
+and UBSan, with dangling old-bundle links, readable old-architecture links,
+mixed-case paths, explicit farms, invalid PE files, custom files and nested
+paths. It is included in the Actions host gate. Device acceptance still requires
+the root command processor to start, the service to become ready, genuine Steam
+to accept `-applaunch 730`, and CS2 to create its real process. The independent
+Win64 Chromium address-space blocker remains unresolved.
