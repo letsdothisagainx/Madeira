@@ -120,7 +120,7 @@ def fetch(name, size=None):
     return blob
 
 
-def stage(root, current_manifest_path, current_manifest_sha, mode, bridge_dll=None):
+def stage(root, current_manifest_path, current_manifest_sha, mode, bridge_dll=None, native_cef_args=False):
     root = root.resolve()
     assert not root.exists(), 'scratch destination must not exist'
     expected_manifest = current_manifest_path.read_bytes()
@@ -151,7 +151,8 @@ def stage(root, current_manifest_path, current_manifest_sha, mode, bridge_dll=No
               'current_version': CURRENT_VERSION, 'legacy_controller_version': None,
               'browser_version': '1769731672' if mode == 'bridge' else CURRENT_VERSION, 'download_bytes': total, 'archives': [], 'files': {},
               'user_installation_accessed': False, 'auth_data_present': False,
-              'update_bypass_flags': [], 'version_receipts_created': False}
+              'update_bypass_flags': [], 'version_receipts_created': False,
+              'require_native_cef_args': native_cef_args}
     unpacked = 0
     browser_files = {}
     for label, (name, size, sha) in selected:
@@ -187,7 +188,7 @@ def stage(root, current_manifest_path, current_manifest_sha, mode, bridge_dll=No
     assert len(parents) == (1 if mode == 'bridge' else 0), 'browser archives do not share one coherent directory'
     parent = next(iter(parents)) if parents else ''
     browser_root = steam / 'bin/cef/cef.win7'
-    if mode == 'baseline':
+    if mode in ('baseline','control'):
         assert not browser_files
     assert not browser_root.exists()
     assert (steam / 'bin/cef/cef.win64').is_dir(), 'official current CEF must remain installed'
@@ -206,18 +207,19 @@ def stage(root, current_manifest_path, current_manifest_sha, mode, bridge_dll=No
         assert machine(data) == expected_machine, path
         report['files'][path] = {'sha256': digest(data), 'machine': f'{expected_machine:04x}'}
     assert report['files']['bin/chromehtml.dll']['sha256'] == '37f5ddbe874362d729b7cd33504943a9d649d845525afae4bcc2af36ab971f4b'
-    if mode == 'bridge':
+    if mode in ('bridge','control'):
         assert bridge_dll and bridge_dll.is_file(), 'compiled real source provider required'
         native = bridge_dll.read_bytes()
         assert machine(native) == 0x8664
         assert not (steam / 'version.dll').exists(), 'official current package contains version.dll; refuse replacement'
         (steam / 'version.dll').write_bytes(native)
         report['files']['version.dll'] = {'sha256': digest(native), 'machine': '8664'}
-        for name in ('steamwebhelper.exe', 'libcef.dll', 'chrome_elf.dll'):
-            relative = 'bin/cef/cef.win7/' + name
-            data = (steam / relative).read_bytes()
-            assert machine(data) == 0x14c
-            report['files'][relative] = {'sha256': digest(data), 'machine': '014c'}
+        if mode == 'bridge':
+            for name in ('steamwebhelper.exe', 'libcef.dll', 'chrome_elf.dll'):
+                relative = 'bin/cef/cef.win7/' + name
+                data = (steam / relative).read_bytes()
+                assert machine(data) == 0x14c
+                report['files'][relative] = {'sha256': digest(data), 'machine': '014c'}
         # Verify the architecture of the genuine current core's actual 32-bit
         # SteamClient dependency; do not substitute an unrelated DLL.
         dependency = steam / 'steamclient.dll'
@@ -238,10 +240,11 @@ def stage(root, current_manifest_path, current_manifest_sha, mode, bridge_dll=No
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', choices=['baseline','bridge'], required=True)
+    parser.add_argument('--mode', choices=['baseline','bridge','control'], required=True)
+    parser.add_argument('--native-cef-args', action='store_true')
     parser.add_argument('--bridge-dll', type=Path)
     parser.add_argument('--root', type=Path, required=True)
     parser.add_argument('--current-manifest', type=Path, required=True)
     parser.add_argument('--current-manifest-sha256', required=True)
     args = parser.parse_args()
-    stage(args.root, args.current_manifest, args.current_manifest_sha256, args.mode, args.bridge_dll)
+    stage(args.root, args.current_manifest, args.current_manifest_sha256, args.mode, args.bridge_dll,args.native_cef_args)

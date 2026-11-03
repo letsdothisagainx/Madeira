@@ -28,7 +28,7 @@ jobs:
           restore-keys: valve-htmlipc-v1-1792618285-1769731672-
       - name: Inspect genuine SHA-pinned launcher import
         env:
-          MADEIRA_TIER0_TRANSFER: '1'
+          MADEIRA_TIER0_TRANSFER: '0'
         run: |
           python3 -m venv "$RUNNER_TEMP/pin-tools"
           "$RUNNER_TEMP/pin-tools/bin/pip" install pefile==2024.8.26
@@ -54,6 +54,7 @@ jobs:
       MADEIRA_VALVE_ARCHIVE_CACHE: ${{ github.workspace }}/.valve-package-cache
       MADEIRA_PE_LD: x86_64-w64-mingw32-ld
       MADEIRA_PE_OBJCOPY: x86_64-w64-mingw32-objcopy
+      MADEIRA_CEF_ARGS_TEST_TOKEN: 9fae48b18db64c8c90aa21602030599a
     steps:
       - uses: actions/checkout@v4
         with:
@@ -82,13 +83,18 @@ jobs:
           "$RUNNER_TEMP/htmlipc-tools/bin/python" tools/htmlipc/stream-codec/check_stream_codec.py
           "$RUNNER_TEMP/htmlipc-tools/bin/python" tools/htmlipc/stream-install/check_installer.py
           "$RUNNER_TEMP/htmlipc-tools/bin/python" tools/htmlipc/runtime-shim/check_provider.py
+          "$RUNNER_TEMP/htmlipc-tools/bin/python" tools/cef-fixture-args/check_args.py
+          "$RUNNER_TEMP/htmlipc-tools/bin/python" tools/cef-fixture-args/check_forward.py
+          "$RUNNER_TEMP/htmlipc-tools/bin/python" tools/cef-fixture-args/check_iat.py
+          "$RUNNER_TEMP/htmlipc-tools/bin/python" tools/cef-fixture-args/check_official_map.py tools/htmlipc/current-tier0_s64.dll
+          "$RUNNER_TEMP/htmlipc-tools/bin/python" tools/cef-fixture-args/build_pair.py --provider-root tools/htmlipc --tier0 tools/htmlipc/current-tier0_s64.dll --tier0-sha256 8559e6bd32eb3fddd95079633272866deb292211ec4f7e69aeb0ec48fdafef72 --test-token "$MADEIRA_CEF_ARGS_TEST_TOKEN" --map-source tools/htmlipc/runtime-shim/proven_map.cpp
       - name: Stage complete official I386 cache without replacing current files
         run: |
-          timeout 360 /usr/bin/python3 tools/htmlipc/runtime-smoke/stage.py --mode bridge --bridge-dll tools/htmlipc/runtime-shim/version.dll --root "$RUNNER_TEMP/bridge" --current-manifest tools/htmlipc/runtime-smoke/steam_client_win64.tracking --current-manifest-sha256 0b12d3072042b2f2aa7b5bc0677c686210465438de981340bb46ac717b1caab8
+          timeout 360 /usr/bin/python3 tools/htmlipc/runtime-smoke/stage.py --mode bridge --bridge-dll tools/cef-fixture-args/SourceWireSameFlags/version.dll --native-cef-args --root "$RUNNER_TEMP/bridge" --current-manifest tools/htmlipc/runtime-smoke/steam_client_win64.tracking --current-manifest-sha256 0b12d3072042b2f2aa7b5bc0677c686210465438de981340bb46ac717b1caab8
           /usr/bin/python3 tools/htmlipc/runtime-shim/make-cache-manifest.py "$RUNNER_TEMP/bridge/steam/bin/cef/cef.win7"
-      - name: Stage and run unmodified official reference in the same fixture
+      - name: Stage and run official reference with the same existing native browser flags
         run: |
-          timeout 360 /usr/bin/python3 tools/htmlipc/runtime-smoke/stage.py --mode baseline --root "$RUNNER_TEMP/reference" --current-manifest tools/htmlipc/runtime-smoke/steam_client_win64.tracking --current-manifest-sha256 0b12d3072042b2f2aa7b5bc0677c686210465438de981340bb46ac717b1caab8
+          timeout 360 /usr/bin/python3 tools/htmlipc/runtime-smoke/stage.py --mode control --bridge-dll tools/cef-fixture-args/ControlSameFlags/version.dll --native-cef-args --root "$RUNNER_TEMP/reference" --current-manifest tools/htmlipc/runtime-smoke/steam_client_win64.tracking --current-manifest-sha256 0b12d3072042b2f2aa7b5bc0677c686210465438de981340bb46ac717b1caab8
           timeout 360 /usr/bin/python3 tools/htmlipc/runtime-smoke/run.py --root "$RUNNER_TEMP/reference" --artifacts "$RUNNER_TEMP/runtime-artifacts/reference" || test "$?" = 2
       - name: Run actual source-adapted client; stop on first compatibility error
         run: |
@@ -124,4 +130,5 @@ jobs:
           assert data['result']=='unauthenticated-login-rendered', data['result']
           assert data['bridge_installed'] and data['bridge_connected']
           assert not data['bridge_failure'] and data['login_frame_observed']
+          assert data['cef_args_installed'] and data['cef_args_applied']
           PY_RUNTIME_RESULT

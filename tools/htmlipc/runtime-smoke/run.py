@@ -71,10 +71,19 @@ def capture(display, raw_path, output_path):
     image = cv2.imread(str(raw_path))
     assert image is not None
     image = cv2.resize(image, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-    # Detection only: never decode, log, or retain an authentication QR token.
+    # Validate only a known Steam login URI prefix in memory, then discard the
+    # decoded anonymous challenge. Never log/retain it or attempt authentication.
     qr = cv2.QRCodeDetector()
     found, polygons = qr.detectMulti(image)
+    steam_login_qr = False
     if found:
+        try:
+            decoded, values, _ = qr.decodeMulti(image, polygons)
+            if decoded:
+                steam_login_qr = any(re.fullmatch(r'https://s\.team/q/[A-Za-z0-9_/-]{1,512}', value) for value in values)
+            del values
+        except cv2.error:
+            pass
         for polygon in polygons:
             x, y, w, h = cv2.boundingRect(polygon.astype('int32'))
             cv2.rectangle(image, (max(0, x - 24), max(0, y - 24)),
@@ -108,6 +117,7 @@ def capture(display, raw_path, output_path):
         'update_label': 'updating steam' in text or 'checking for available updates' in text,
         'nonuniform_frame': float(image.std()) > 3,
         'qr_regions_redacted': len(polygons) if found else 0,
+        'steam_login_qr_validated': bool(steam_login_qr),
         'not_responding_dialog': 'steamwebhelper' in text and 'responding' in text,
         'approved_words': sorted(set(words) & (approved | {'error','failed','connect','network','welcome','create','join','username','loading','continue'})),
     }
@@ -117,6 +127,8 @@ def capture(display, raw_path, output_path):
 def main(root, artifacts):
     root, artifacts = root.resolve(), artifacts.resolve()
     provenance = json.loads((root / 'provenance.json').read_text())
+    bridge_mode = provenance['experiment'].endswith('/bridge')
+    needs_native_args = provenance.get('require_native_cef_args',False)
     steam = root / 'steam'
     prefix = root / 'wine-prefix'
     assert not prefix.exists(), 'a fresh prefix is required; never reuse account data'
@@ -130,6 +142,10 @@ def main(root, artifacts):
            'WINEPREFIX': str(prefix), 'WINEARCH': 'win64',
            'WINEDEBUG': '+pid,+loaddll,+debugstr,err+all', 'DISPLAY': ':109',
            'WINEDLLOVERRIDES': 'mscoree,mshtml='})
+    if needs_native_args:
+        token=os.environ.get('MADEIRA_CEF_ARGS_TEST_TOKEN','')
+        assert re.fullmatch(r'[0-9a-fA-F]{32,96}',token)
+        env['MADEIRA_CEF_ARGS_TEST_TOKEN']=token
     # Mono/Gecko are optional Wine components, not Steam authentication APIs.
     # Use Madeira's existing client arguments exactly. No additional sandbox,
     # update, version or certificate policy is introduced by this probe.
@@ -142,6 +158,7 @@ def main(root, artifacts):
               'bridge_connected': False, 'bridge_failure': [], 'missing_dlls': [],
               'bridge_loader_entry': False, 'version_load_events': [],
               'image_mismatch': [], 'bridge_hook_reached': False, 'stream_probes': [],
+              'cef_args_installed':False,'cef_args_applied':False,
               'i386_client_dependency': {k: provenance[k] for k in
                   ('steamclient_i386_present','steamclient_i386_machine','steamclient_i386_sha256') if k in provenance}}
     xvfb = subprocess.Popen(['Xvfb', ':109', '-screen', '0', '1280x800x24', '-nolisten', 'tcp'],
@@ -202,6 +219,8 @@ def main(root, artifacts):
                 report['bridge_installed'] |= 'MADEIRA_HTMLIPC installed pid=' in raw_now
                 report['bridge_connected'] |= 'MADEIRA_HTMLIPC connected pid=' in raw_now
                 report['bridge_hook_reached'] |= 'MADEIRA_HTMLIPC hook-reached pid=' in raw_now
+                report['cef_args_installed'] |= 'MADEIRA_CEF_ARGS exact tier0 CreateProcessW IAT installed R-RW-R' in raw_now
+                report['cef_args_applied'] |= 'MADEIRA_CEF_ARGS browser-native-flags applied; BRP unchanged' in raw_now
                 report['stream_probes'] = re.findall(
                     r'MADEIRA_HTMLIPC stream-probe pid=(\d+) operation=(\d+) stream=(\d+) to=(\d+) from=(\d+)', raw_now)[:8]
                 install_failures = re.findall(r'MADEIRA_HTMLIPC install-error pid=(\d+) code=(\d+)', raw_now)
@@ -230,7 +249,7 @@ def main(root, artifacts):
                     report['samples'].append({'seconds': round(elapsed), 'rss_kib': rss, **probes})
                     # Require actual current core, selected controller and I386 CEF
                     # mappings plus a rendered login form. Process creation alone fails.
-                    if 'version.dll' in provenance['files']:
+                    if bridge_mode:
                         required = {'steam.exe','SteamUI.dll','steamclient64.dll','bin/chromehtml.dll',
                                     'version.dll','bin/cef/cef.win7/steamwebhelper.exe','bin/cef/cef.win7/libcef.dll'}
                         eligible = report['bridge_installed'] and report['bridge_connected']
@@ -240,8 +259,11 @@ def main(root, artifacts):
                         required = {'steam.exe','SteamUI.dll','steamclient64.dll','bin/chromehtml.dll',
                                     'bin/cef/cef.win64/steamwebhelper.exe','bin/cef/cef.win64/libcef.dll'}
                         eligible = True
-                    if eligible and required <= loaded and all(probes[k] for k in
-                        ('sign_in_label', 'account_name_label', 'password_label', 'nonuniform_frame')):
+                        if 'version.dll' in provenance['files']:required.add('version.dll')
+                    if needs_native_args:eligible &= report['cef_args_installed'] and report['cef_args_applied']
+                    form = all(probes[k] for k in ('sign_in_label','account_name_label','password_label'))
+                    login_content = form or probes['steam_login_qr_validated']
+                    if eligible and required <= loaded and login_content and probes['nonuniform_frame'] and not probes['not_responding_dialog']:
                         report['login_frame_observed'] = True
                         report['result'] = 'unauthenticated-login-rendered'
                         break

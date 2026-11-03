@@ -19,3 +19,9 @@ with zipfile.ZipFile(io.BytesIO(blob)) as z:
 assert hashlib.sha256(data).hexdigest()=='37f5ddbe874362d729b7cd33504943a9d649d845525afae4bcc2af36ab971f4b'
 Path(__file__).resolve().parent.parent.joinpath('current-chromehtml.dll').write_bytes(data)
 print('PASS exact genuine transport fixture: AMD64, 1668248bytes, SHA25637f5ddbe…')
+
+with zipfile.ZipFile(io.BytesIO(blob)) as z:
+ tier0=z.read('tier0_s64.dll')
+assert len(tier0)==887960 and hashlib.sha256(tier0).hexdigest()=='8559e6bd32eb3fddd95079633272866deb292211ec4f7e69aeb0ec48fdafef72'
+Path(__file__).resolve().parent.parent.joinpath('current-tier0_s64.dll').write_bytes(tier0)
+print('PASS exact process-launcher fixture: 887960bytes, SHA2568559e6bd…')
