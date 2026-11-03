@@ -13,7 +13,7 @@ jobs:
           python3 - <<'PY'
           import urllib.request,urllib.error,re,json,hashlib
           def nodes(text):
-           tokens=[a if a else b for a,b in re.findall(r'"([^"\\r\\n]*)"|([{}])',text)];pos=0
+           tokens=[a if a else b for a,b in re.findall('"([^"]*)"|([{}])',text)];pos=0
            def parse():
             nonlocal pos
             d={}
@@ -33,7 +33,7 @@ jobs:
            try:
             with urllib.request.urlopen(url,timeout=30) as response:data=response.read(262145);status=response.status
             assert len(data)<=262144
-            text=data.decode();versions=re.findall(r'"version"\\s*"([0-9]+)"',text)
+            text=data.decode();versions=re.findall('"version"[^0-9]*"([0-9]+)"',text)
             result={'url':url,'http_status':status,'sha256':hashlib.sha256(data).hexdigest(),'versions':versions,'browser_packages':nodes(text)}
            except urllib.error.HTTPError as error:result={'url':url,'http_status':error.code}
            results[name]=result;print('OFFICIAL_MANIFEST',name,json.dumps(result,sort_keys=True),flush=True)
