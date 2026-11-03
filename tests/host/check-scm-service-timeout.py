@@ -131,7 +131,7 @@ static BOOL GetOverlappedResult(HANDLE pipe,OVERLAPPED *o,DWORD *len,BOOL wait) 
     last_error=overlap_error;return overlap_result;
 }
 static DWORD lstrlenW(const WCHAR *s) {DWORD n=0;while(s[n])n++;return n;}
-static WCHAR *lstrcpyW(WCHAR *out,const WCHAR *in) {WCHAR *r=out;while((*out++=*in++));return r;}
+static WCHAR *lstrcpyW(WCHAR *out,const WCHAR *in) {WCHAR *r=out;while((*out++=*in++)) {} return r;}
 static BOOL process_send_control(struct process_entry *p,BOOL shared,const WCHAR *name,DWORD command,
                                 const BYTE *data,DWORD len,DWORD *result) {
     assert(p->control_pipe==(HANDLE)3&&!shared&&wide_is(name,"Steam Client Service"));
