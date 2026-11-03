@@ -5,7 +5,7 @@ namespace madeira_stream_install {
 static constexpr U32 original_rvas[7]={0x58bf0,0x59100,0x590e0,0x593f0,0x58fa0,0x58e60,0x58dc0};
 static constexpr U8 digest[32]={0x37,0xf5,0xdd,0xbe,0x87,0x43,0x62,0xd7,0x29,0xb7,0xcd,0x33,0x50,0x49,0x43,0xa9,0xd6,0x49,0xd8,0x45,0x52,0x5a,0xfa,0xe4,0xbc,0xc2,0xaf,0x36,0xab,0x97,0x1f,0x4b};
 static constexpr char old_path[]="bin/cef/cef.win64/steamwebhelper.exe";
-static constexpr char new_path[]="bin/cef/cef.win32/steamwebhelper.exe";
+static constexpr char new_path[sizeof(old_path)]="bin/cef/cef.win7/steamwebhelper.exe";
 static_assert(sizeof(old_path)==37 && sizeof(old_path)==sizeof(new_path));
 static U16 u16(const U8 *p){return U16(p[0])|U16(p[1])<<8;}
 static U32 u32(const U8 *p){return U32(u16(p))|U32(u16(p+2))<<16;}

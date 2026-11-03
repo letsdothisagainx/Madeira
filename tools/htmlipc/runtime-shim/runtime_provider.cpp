@@ -454,7 +454,7 @@ static bool identify_process(){
     steam_root_length=start;return true;
 }
 static bool prepare_cache_gate(){
-    static constexpr char suffix[]="bin\\cef\\cef.win32\\.madeira-cache-verified-v1";
+    static constexpr char suffix[]="bin\\cef\\cef.win7\\.madeira-cache-verified-v1";
     if(steam_root_length+sizeof(suffix)>32768){report(Error::CacheNotVerified);return false;}
     for(U32 k=0;k<sizeof(suffix);++k)executable_path[steam_root_length+k]=Wide(suffix[k]);
     void *file=CreateFileW(executable_path,0x80000000u,5,nullptr,3,0x80,nullptr);

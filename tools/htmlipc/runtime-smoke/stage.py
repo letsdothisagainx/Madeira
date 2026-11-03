@@ -186,7 +186,7 @@ def stage(root, current_manifest_path, current_manifest_sha, mode, bridge_dll=No
                if PurePosixPath(name).name.lower() in ('libcef.dll', 'steamwebhelper.exe')}
     assert len(parents) == (1 if mode == 'bridge' else 0), 'browser archives do not share one coherent directory'
     parent = next(iter(parents)) if parents else ''
-    browser_root = steam / 'bin/cef/cef.win32'
+    browser_root = steam / 'bin/cef/cef.win7'
     if mode == 'baseline':
         assert not browser_files
     assert not browser_root.exists()
@@ -214,7 +214,7 @@ def stage(root, current_manifest_path, current_manifest_sha, mode, bridge_dll=No
         (steam / 'version.dll').write_bytes(native)
         report['files']['version.dll'] = {'sha256': digest(native), 'machine': '8664'}
         for name in ('steamwebhelper.exe', 'libcef.dll', 'chrome_elf.dll'):
-            relative = 'bin/cef/cef.win32/' + name
+            relative = 'bin/cef/cef.win7/' + name
             data = (steam / relative).read_bytes()
             assert machine(data) == 0x14c
             report['files'][relative] = {'sha256': digest(data), 'machine': '014c'}

@@ -108,6 +108,7 @@ def capture(display, raw_path, output_path):
         'update_label': 'updating steam' in text or 'checking for available updates' in text,
         'nonuniform_frame': float(image.std()) > 3,
         'qr_regions_redacted': len(polygons) if found else 0,
+        'not_responding_dialog': 'steamwebhelper' in text and 'responding' in text,
         'approved_words': sorted(set(words) & (approved | {'error','failed','connect','network','welcome','create','join','username','loading','continue'})),
     }
     return probes
@@ -231,7 +232,7 @@ def main(root, artifacts):
                     # mappings plus a rendered login form. Process creation alone fails.
                     if 'version.dll' in provenance['files']:
                         required = {'steam.exe','SteamUI.dll','steamclient64.dll','bin/chromehtml.dll',
-                                    'version.dll','bin/cef/cef.win32/steamwebhelper.exe','bin/cef/cef.win32/libcef.dll'}
+                                    'version.dll','bin/cef/cef.win7/steamwebhelper.exe','bin/cef/cef.win7/libcef.dll'}
                         eligible = report['bridge_installed'] and report['bridge_connected']
                         eligible &= 'bin/cef/cef.win64/steamwebhelper.exe' not in loaded
                         eligible &= 'bin/cef/cef.win64/libcef.dll' not in loaded
@@ -263,10 +264,21 @@ def main(root, artifacts):
         report['bridge_loader_entry'] |= 'MADEIRA_HTMLIPC loader-entry' in raw
         report['bridge_hook_reached'] |= 'MADEIRA_HTMLIPC hook-reached pid=' in raw
         report['cef_source_counts'] = {}
+        report['cef_internal_messages'] = []
         for file in sorted((steam / 'logs').glob('*'))[:32]:
             if not file.is_file() or file.stat().st_size > 2 * 1024**2:
                 continue
             content = file.read_bytes().decode(errors='replace')
+            # Only known CEF internal source locations in a fresh no-account
+            # fixture. Drop credential-related lines; never export URLs or long
+            # opaque values. Console/JavaScript/network transcripts stay private.
+            for line in content.splitlines():
+                if len(report['cef_internal_messages']) >= 12: break
+                if not re.search(r'(?:chrome_main_delegate\.cc\(748\)|child_thread_impl\.cc\(942\)|crash_reporting\.cc\(271\))', line): continue
+                if re.search(r'password|authorization|cookie|ticket|token|secret|session|steamid', line, re.I): continue
+                safe = re.sub(r'(?:https?|wss?)://\S+', '[url-redacted]', line)
+                safe = re.sub(r'[A-Za-z0-9_+/=-]{24,}', '[opaque-redacted]', safe)
+                report['cef_internal_messages'].append(safe[:320])
             for tag in re.findall(r'\b([A-Za-z0-9_]{1,80}\.(?:cc|cpp)\(\d{1,6}\))', content):
                 if tag in report['cef_source_counts'] or len(report['cef_source_counts']) < 64:
                     report['cef_source_counts'][tag] = report['cef_source_counts'].get(tag, 0) + 1
@@ -278,12 +290,33 @@ def main(root, artifacts):
         report['loader_error_counts'] = {key: raw.lower().count(key.lower()) for key in
             ('nodrv_CreateWindow', 'Make sure that your X server is running', 'err:module:import_dll', 'err:module:loader_init', 'unimplemented function',
              'c0000135', 'c0000005', '80000003')}
+        report['client_registry'] = []
+        for view in ('32','64'):
+            for value in ('SteamClientDll','SteamClientDll64'):
+                try:
+                    queried = subprocess.run(['wine','reg.exe','query',r'HKCU\Software\Valve\Steam\ActiveProcess',
+                        '/v',value,'/reg:'+view],env=env,capture_output=True,text=True,timeout=8,check=False)
+                except subprocess.TimeoutExpired:
+                    report['client_registry'].append({'view':view,'value':value,'query_timeout':True})
+                    continue
+                found = re.search(r'\b'+value+r'\s+REG_SZ\s+([^\r\n]+)',queried.stdout)
+                row = {'view':view,'value':value,'present':bool(found)}
+                if found:
+                    value_path = found[1].strip().replace('\\','/')
+                    target = Path('/'+value_path[3:]) if value_path.lower().startswith('z:/') else prefix/'drive_c'/value_path[3:] if value_path.lower().startswith('c:/') else None
+                    row['matches_current_i386'] = bool(target and target.resolve() == (steam/'steamclient.dll').resolve())
+                    row['matches_current_amd64'] = bool(target and target.resolve() == (steam/'steamclient64.dll').resolve())
+                    row['file_present'] = bool(target and target.is_file())
+                report['client_registry'].append(row)
     finally:
         subprocess.run(['wineserver', '-k'], env=env, timeout=10,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
         for process in reversed(processes):
             if process.poll() is None:
                 process.terminate()
+            try: process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill();process.wait(timeout=5)
         (root / 'private-frame.png').unlink(missing_ok=True)
         (artifacts / 'result.json').write_text(json.dumps(report, indent=2) + '\n')
         print(json.dumps(report))

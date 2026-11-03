@@ -73,7 +73,7 @@ for mode in range(20):
         expected_path=(b'X'+bytes(mapped[0x121ce1:0x121d05]) if mode==15 else bytes(mapped[0x121ce0:0x121d05]))
         assert uc.mem_read(module+0x121ce0,37)==expected_path
     else:
-        assert uc.mem_read(module+0x121ce0,37)==(b'bin/cef/cef.win64/steamwebhelper.exe\0' if mode==9 else b'bin/cef/cef.win32/steamwebhelper.exe\0')
+        assert uc.mem_read(module+0x121ce0,37)==(b'bin/cef/cef.win64/steamwebhelper.exe\0' if mode==9 else b'bin/cef/cef.win7/steamwebhelper.exe\0\0')
     stage,rva,expected,actual,ep,ap,actual_size,count,query_flags=struct.unpack('<IIQQIIQII',uc.mem_read(symbols['last_diagnostic'],48))
     diagnostic={'stage':stage,'rva':hex(rva),'expected_bytes':hex(expected),'actual_bytes':hex(actual),
         'expected_protection':ep,'actual_protection':ap,'actual_image_size':actual_size,'byte_count':count,'query_flags':query_flags}
