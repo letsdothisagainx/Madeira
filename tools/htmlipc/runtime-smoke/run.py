@@ -225,10 +225,10 @@ def main(root, artifacts):
                 report['cef_args_applied'] |= 'MADEIRA_CEF_ARGS browser-native-flags applied; BRP unchanged' in raw_now
                 report['stream_probes'] = re.findall(
                     r'MADEIRA_HTMLIPC stream-probe pid=(\d+) operation=(\d+) stream=(\d+) to=(\d+) from=(\d+)', raw_now)[:8]
+                report['image_mismatch'] = re.findall(
+                    r'MADEIRA_HTMLIPC image-mismatch stage=(\d+) rva=(\d+) expected=(\d+) actual=(\d+) bytes=(\d+) expected-protection=(\d+) actual-protection=(\d+) image-size=(\d+) query-flags=(\d+)', raw_now)[:1]
                 install_failures = re.findall(r'MADEIRA_HTMLIPC install-error pid=(\d+) code=(\d+)', raw_now)
                 if install_failures:
-                    report['image_mismatch'] = re.findall(
-                        r'MADEIRA_HTMLIPC image-mismatch stage=(\d+) rva=(\d+) expected=(\d+) actual=(\d+) bytes=(\d+) expected-protection=(\d+) actual-protection=(\d+) image-size=(\d+) query-flags=(\d+)', raw_now)[:1]
                     report['bridge_failure'] = ['install', *install_failures[0]]
                     report['result'] = 'failed-source-bridge-installation'
                     break

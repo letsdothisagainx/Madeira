@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Execute real MSVC-target installer against the relocated pinned PE image."""
 from pathlib import Path
-import hashlib,json,os,struct,subprocess
+import argparse,hashlib,json,os,struct,subprocess
 import pefile
 from unicorn import Uc,UC_ARCH_X86,UC_MODE_64,UC_PROT_READ,UC_PROT_WRITE,UC_PROT_EXEC,UC_HOOK_CODE
 from unicorn.x86_const import UC_X86_REG_RSP,UC_X86_REG_RAX,UC_X86_REG_RDX,UC_X86_REG_R8,UC_X86_REG_R9
@@ -34,7 +34,8 @@ def load_pe(uc,base,p,data):
         if n:uc.mem_protect(base+s.VirtualAddress,n,permissions(s.Characteristics))
 out=[]
 image_base_rva=genuine.OPTIONAL_HEADER.get_field_absolute_offset('ImageBase')
-for mode in range(20):
+parser=argparse.ArgumentParser();parser.add_argument('--mode',type=int,choices=range(25));args=parser.parse_args()
+for mode in ([args.mode] if args.mode is not None else range(25)):
     uc=Uc(UC_ARCH_X86,UC_MODE_64);base=pe.OPTIONAL_HEADER.ImageBase
     load_pe(uc,base,pe,pe.get_memory_mapped_image());load_pe(uc,module,genuine,bytes(mapped))
     pin=bytearray(original)
@@ -68,7 +69,7 @@ for mode in range(20):
     uc.emu_start(symbols['run_tests'],stop,count=1500000000)
     result=uc.reg_read(UC_X86_REG_RAX);assert result==0,(mode,result)
     assert uc.mem_read(module+0x1000,0x11ed24)==(b'X'+bytes(mapped[0x1001:0x11fd24]) if mode in (10,18) else bytes(mapped[0x1000:0x11fd24]))
-    if mode not in (0,9,11):
+    if mode not in (0,9,11,20,21,22,23,24):
         if mode!=7:assert uc.mem_read(module+0x132340,56)==bytes(mapped[0x132340:0x132378])
         expected_path=(b'X'+bytes(mapped[0x121ce1:0x121d05]) if mode==15 else bytes(mapped[0x121ce0:0x121d05]))
         assert uc.mem_read(module+0x121ce0,37)==expected_path

@@ -64,8 +64,8 @@ jobs:
         run: |
           test "$(df --output=avail -B1 / | tail -1)" -gt 9000000000
           sudo dpkg --add-architecture i386
-          sudo timeout 120 apt-get update -qq
-          sudo timeout 600 apt-get install -y --no-install-recommends wine wine64 wine32:i386 xvfb openbox scrot x11-utils tesseract-ocr python3-opencv ca-certificates winbind fonts-wine fonts-liberation binutils-mingw-w64-x86-64 libgl1-mesa-dri libgl1-mesa-dri:i386 libgl1:i386 libx11-6:i386 libxext6:i386 libxcursor1:i386 libxi6:i386 libxrandr2:i386 libxrender1:i386 libxcomposite1:i386 libvulkan1 libvulkan1:i386 mesa-vulkan-drivers mesa-vulkan-drivers:i386
+          sudo timeout 120 apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+          sudo timeout 600 apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 install -y --no-install-recommends wine wine64 wine32:i386 xvfb openbox scrot x11-utils tesseract-ocr python3-opencv ca-certificates winbind fonts-wine fonts-liberation binutils-mingw-w64-x86-64 libgl1-mesa-dri libgl1-mesa-dri:i386 libgl1:i386 libx11-6:i386 libxext6:i386 libxcursor1:i386 libxi6:i386 libxrandr2:i386 libxrender1:i386 libxcomposite1:i386 libvulkan1 libvulkan1:i386 mesa-vulkan-drivers mesa-vulkan-drivers:i386
       - uses: actions/cache/restore@v4
         with:
           path: .valve-package-cache

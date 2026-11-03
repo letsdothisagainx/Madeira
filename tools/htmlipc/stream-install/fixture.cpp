@@ -57,6 +57,9 @@ extern "C" U64 run_tests(){
     if(page_protections[0x132]!=2||page_protections[0x121]!=2)return 40;
     auto object=reinterpret_cast<U64*>(module_base+controller_object_rva);
     *object=module_base+controller_vtable_rva;
-    if(!validate_live_controller(&state,object))return 41;
+    if(test_mode>=20&&test_mode<=24){const U32 values[]={8,2,0x40,0x80,0x104};page_protections[controller_object_rva>>12]=values[test_mode-20];}
+    bool valid=validate_live_controller(&state,object);
+    if(test_mode>=21&&test_mode<=24)return valid?50:0;
+    if(!valid)return 41;
     return 0;
 }
