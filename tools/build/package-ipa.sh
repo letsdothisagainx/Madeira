@@ -21,6 +21,8 @@ required=(
   "$ROOT/app/Madeira/arm64ec-windows/madeira-steam-service.exe"
   "$ROOT/app/Madeira/arm64ec-windows/dockhost.exe"
   "$ROOT/app/Madeira/arm64ec-windows/dock-notices.txt"
+  "$ROOT/app/Madeira/arm64ec-windows/madeira-htmlipc-bridge.dll"
+  "$ROOT/app/Madeira/arm64ec-windows/madeira-htmlipc-bridge.manifest.json"
   "$ROOT/app/Madeira/libwineserver.a"
   "$ROOT/app/Madeira/libntdll_unix.a"
   "$ROOT/app/Madeira/libwin32u_unix.a"
@@ -30,6 +32,13 @@ required=(
 for path in "${required[@]}"; do
   [[ -s "$path" ]] || { echo "ERROR: required build artifact missing: $path" >&2; exit 1; }
 done
+
+python3 "$ROOT/tools/check-htmlipc-image.py" \
+  --staged "$ROOT/app/Madeira/arm64ec-windows/madeira-htmlipc-bridge.dll" \
+  --manifest "$ROOT/app/Madeira/arm64ec-windows/madeira-htmlipc-bridge.manifest.json" \
+  --abi-header "$ROOT/build/scm-rpc/htmlipc_ready_abi.h" \
+  --build-report "$ROOT/build/htmlipc/obj/madeira-htmlipc-bridge.build.json" \
+  --source-root "$ROOT"
 
 rm -rf "$DERIVED" "$DIST/Payload"
 mkdir -p "$DIST"
@@ -66,6 +75,8 @@ bundle_required=(
   "$APP/arm64ec-windows/madeira-steam-service.exe"
   "$APP/arm64ec-windows/dockhost.exe"
   "$APP/arm64ec-windows/dock-notices.txt"
+  "$APP/arm64ec-windows/madeira-htmlipc-bridge.dll"
+  "$APP/arm64ec-windows/madeira-htmlipc-bridge.manifest.json"
   "$APP/Madeira"
   "$APP/prefix-template.tar.gz"
   "$APP/arm64ec-windows/xtajit64.dll"
@@ -100,3 +111,11 @@ done
 
 python3 "$ROOT/tools/check-io-abi-package.py" \
   --staged "$ROOT/app/Madeira/aarch64-windows/wow64.dll" --app "$APP" --ipa "$DIST/Madeira.ipa"
+
+python3 "$ROOT/tools/check-htmlipc-image.py" \
+  --staged "$ROOT/app/Madeira/arm64ec-windows/madeira-htmlipc-bridge.dll" \
+  --manifest "$ROOT/app/Madeira/arm64ec-windows/madeira-htmlipc-bridge.manifest.json" \
+  --abi-header "$ROOT/build/scm-rpc/htmlipc_ready_abi.h" \
+  --build-report "$ROOT/build/htmlipc/obj/madeira-htmlipc-bridge.build.json" \
+  --source-root "$ROOT" \
+  --app "$APP" --ipa "$DIST/Madeira.ipa"

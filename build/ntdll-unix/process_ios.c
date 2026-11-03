@@ -84,6 +84,10 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(process);
 
+#ifdef WINE_IOS
+#include "htmlipc_native.h"
+#endif
+
 
 static ULONG execute_flags = MEM_EXECUTE_OPTION_DISABLE;
 
@@ -1313,6 +1317,11 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
     const PS_ATTRIBUTE *handles_attr = NULL, *jobs_attr = NULL;
     data_size_t handles_size, jobs_size;
     obj_handle_t *handles, *jobs;
+#ifdef WINE_IOS
+    RTL_USER_PROCESS_PARAMETERS htmlipc_params;
+    WCHAR *htmlipc_path = NULL, *htmlipc_command = NULL;
+    BOOL htmlipc_redirected = FALSE;
+#endif
 
     if (thread_flags & THREAD_CREATE_FLAGS_HIDE_FROM_DEBUGGER)
     {
@@ -2145,11 +2154,28 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
     }
 #endif
 
+#ifdef WINE_IOS
+    /* Preserve caller storage and every existing process/CEF option. Rewrite
+     * the PS_ATTRIBUTE-derived local path, ImagePathName and argv[0] together. */
+    htmlipc_params = *params;
+    if ((status = ios_htmlipc_redirect( &path, &htmlipc_params, machine, parent, &htmlipc_path,
+                                       &htmlipc_command, &htmlipc_redirected )))
+        return status;
+    if (htmlipc_redirected) params = &htmlipc_params;
+#endif
+
     unixdir = get_unix_curdir( params );
 
     InitializeObjectAttributes( &attr, &path, OBJ_CASE_INSENSITIVE, 0, 0 );
     if ((status = get_pe_file_info( &attr, &nt_name, &unix_name, &file_handle, &pe_info )))
     {
+#ifdef WINE_IOS
+        if (htmlipc_redirected)
+        {
+            status = STATUS_NOT_SUPPORTED;
+            goto done;
+        }
+#endif
         if (status == STATUS_INVALID_IMAGE_NOT_MZ && !fork_and_exec( &attr, unix_name, unixdir, params ))
         {
             *process_handle_ptr = *thread_handle_ptr = 0;
@@ -2160,6 +2186,13 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
         }
         goto done;
     }
+#ifdef WINE_IOS
+    if (htmlipc_redirected && pe_info.machine != IMAGE_FILE_MACHINE_I386)
+    {
+        status = STATUS_NOT_SUPPORTED;
+        goto done;
+    }
+#endif
     if (!machine)
     {
         /* Owner-aware (X3): the SPAWNER's identity decides hybrid-image
@@ -2396,6 +2429,10 @@ done:
     free( winedebug );
     free( unix_name );
     free( nt_name.Buffer );
+#ifdef WINE_IOS
+    free( htmlipc_command );
+    free( htmlipc_path );
+#endif
     return status;
 }
 
@@ -3710,6 +3747,23 @@ NTSTATUS WINAPI NtQueryInformationProcess( HANDLE handle, PROCESSINFOCLASS class
 
     switch (class)
     {
+#ifdef WINE_IOS
+    /* Private Madeira query used by the AMD64 provider through normal NT
+     * dispatch. It reports native owner identity; it does not emulate a
+     * Windows information class or invoke a guest callback. */
+    case (PROCESSINFOCLASS)MADEIRA_HTMLIPC_OWNER_LEASE_CLASS:
+    {
+        uint64_t lease = 0;
+        len = sizeof(lease);
+        if (ret_len) *ret_len = len;
+        if (handle != GetCurrentProcess()) return STATUS_INVALID_HANDLE;
+        if (size != len) return STATUS_INFO_LENGTH_MISMATCH;
+        if (!info) return STATUS_ACCESS_VIOLATION;
+        if (!(lease = ios_htmlipc_live_lease( ios_jit_current_peb() ))) return STATUS_NOT_SUPPORTED;
+        memcpy( info, &lease, sizeof(lease) );
+        return STATUS_SUCCESS;
+    }
+#endif
     UNIMPLEMENTED_INFO_CLASS(ProcessBasePriority);
     UNIMPLEMENTED_INFO_CLASS(ProcessRaisePriority);
     UNIMPLEMENTED_INFO_CLASS(ProcessExceptionPort);

@@ -369,9 +369,15 @@ rather than establishing a compatible transport adapter.
 Inspection 41578816318 identifies the actual modern factory:
 `bin/chromehtml.dll` exports `CreateInterface` and registers
 `ChromeHTML_Controller_003`, which SteamUI requests. The caller then uses a
-secondary interface at returned-object offset eight. The public legacy
-`Controller_001` declaration is not enough to implement that object ABI or its
-message framing. No guessed vtable proxy or raw file-I/O rewrite is installed.
+controller interface whose complete layout was not established by that first
+inspection. A later full dump corrects the earlier interpretation of the large
+SteamUI caller: its returned-object offset-eight access belongs to a different
+factory, not ChromeHTML. The actual `003` acquisition is at RVA `0x596a6d`, and
+CHTMLController has one primary interface. Its current 42 slots differ from the
+January component's 43; IHTMLResponses also changes from 67 to 64. Neither the
+public `Controller_001` declaration nor the shared `003` name proves compatible
+method arguments or callbacks. No direct component swap or guessed vtable proxy
+is enabled.
 
 The live official Win32 stable and public-beta manifests were checked separately
 in inspection 41580202903. Both return HTTP 200 and are byte-identical, version

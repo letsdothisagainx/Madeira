@@ -14,6 +14,10 @@ for file in dlls/ntdll/loader.c dlls/ntdll/unixlib.h dlls/sechost/Makefile.in pr
 done
 HEADER="$WINE/dlls/ntdll/madeira_scm_aux_slot.h"
 [[ ! -e "$HEADER" ]] || { echo "Refusing to overwrite $HEADER" >&2; exit 1; }
+HTMLIPC_HEADERS=(madeira_htmlipc_pe_loader.h htmlipc_policy.h htmlipc_ready_abi.h)
+for name in "${HTMLIPC_HEADERS[@]}"; do
+  [[ ! -e "$WINE/dlls/ntdll/$name" ]] || { echo "Refusing to overwrite $name" >&2; exit 1; }
+done
 TMP="$(mktemp -d)"
 cp "$WINE/dlls/ntdll/loader.c" "$TMP/loader.c"
 cp "$WINE/dlls/ntdll/unixlib.h" "$TMP/unixlib.h"
@@ -23,6 +27,7 @@ cleanup() {
   cp "$TMP/unixlib.h" "$WINE/dlls/ntdll/unixlib.h"
   cp "$TMP/services.c" "$WINE/programs/services/services.c"
   rm -f "$HEADER"
+  for name in "${HTMLIPC_HEADERS[@]}"; do rm -f "$WINE/dlls/ntdll/$name"; done
   rm -rf "$TMP"
 }
 trap cleanup EXIT
@@ -47,6 +52,11 @@ git -C "$WINE" apply --check "$ROOT/build/scm-rpc/loader.patch"
 git -C "$WINE" apply --check "$ROOT/build/scm-rpc/services.patch"
 git -C "$WINE" apply "$ROOT/build/scm-rpc/loader.patch"
 git -C "$WINE" apply "$ROOT/build/scm-rpc/services.patch"
+git -C "$WINE" apply --check "$ROOT/build/scm-rpc/htmlipc-loader.patch"
+git -C "$WINE" apply "$ROOT/build/scm-rpc/htmlipc-loader.patch"
+cp "$ROOT/build/scm-rpc/htmlipc_pe_loader.h" "$WINE/dlls/ntdll/madeira_htmlipc_pe_loader.h"
+cp "$ROOT/build/scm-rpc/htmlipc_policy.h" "$WINE/dlls/ntdll/htmlipc_policy.h"
+cp "$ROOT/build/scm-rpc/htmlipc_ready_abi.h" "$WINE/dlls/ntdll/htmlipc_ready_abi.h"
 cp "$ROOT/build/scm-rpc/aux-slot.h" "$HEADER"
 run_build "$ROOT/build/wine-pe/build-ntdll.sh"
 # Eagerly resolve the SCM import; the loader now also fills its native aux slot.

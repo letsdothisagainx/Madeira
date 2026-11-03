@@ -1292,6 +1292,7 @@ struct ContentView: View {
     /// replaces both bodies below, and a running library session gets the
     /// full-screen `sessionBody`.
     @ObservedObject private var library = LibraryModel.shared
+    @ObservedObject private var steamBrowserLaunch = SteamNativeBrowserLaunch.shared
     /// "Use New Interface" (actionButtons) applies at the next start.
     @State private var showFrontendRestart = false
 
@@ -2176,6 +2177,7 @@ struct ContentView: View {
             }
             .padding()
         }
+        .disabled(steamBrowserLaunch.busy || SteamBrowserRuntime.busy)
         .alert("Restart Madeira", isPresented: $showFrontendRestart) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -2523,6 +2525,7 @@ struct ContentView: View {
     /// arrives before the library is up).
     /// Then the Steam game the last run's game asked to start (NextSteamApp).
     private func launchPendingShortcut() {
+        guard !steamBrowserLaunch.busy, !SteamBrowserRuntime.busy else { return }
         guard library.enabled, library.current == nil else { return }
         if let exe = ShortcutRouter.shared.pendingExe {
             ShortcutRouter.shared.pendingExe = nil
@@ -2553,6 +2556,9 @@ struct ContentView: View {
     /// applies the entry's launch profile and runs the same full sequence as the
     /// developer interface's buttons.
     private func launchLibraryEntry(_ entry: LibraryEntry) {
+        guard !steamBrowserLaunch.busy, !SteamBrowserRuntime.busy else {
+            library.error = "Wait for Steam browser preparation to finish."; return
+        }
         // madeira-bcd: a game seen for the first time starts with Madeira's recommended
         // settings (GameRecommendationsApply.swift).
         var entry = entry
@@ -2620,7 +2626,17 @@ struct ContentView: View {
     /// The rest of Play, with JIT on: checks the entry's launch profile and starts it.
     /// An Epic game first gets Epic's sign-in arguments with a fresh one-use code
     /// (EpicLibrary.launchArguments), for this launch only.
-    private func startLibraryEntry(_ entry: LibraryEntry, epicReady: Bool = false, remember: Bool = true, preferences: LibraryEntry? = nil, nativeSteamClient: Bool = false) {
+    private func startLibraryEntry(_ entry: LibraryEntry, epicReady: Bool = false, remember: Bool = true, preferences: LibraryEntry? = nil, nativeSteamClient: Bool = false, nativeSteamBrowser: SteamNativeBrowserLaunch.Prepared? = nil) {
+        guard !steamBrowserLaunch.busy, !SteamBrowserRuntime.busy else {
+            library.error = "Wait for Steam browser preparation to finish."; return
+        }
+        if nativeSteamClient && nativeSteamBrowser == nil {
+            prepareNativeSteamBrowser { selected in
+                startLibraryEntry(entry, epicReady: epicReady, remember: remember, preferences: preferences,
+                                  nativeSteamClient: true, nativeSteamBrowser: selected)
+            }
+            return
+        }
         guard !EpicCloud.shared.isBusy else {
             library.error = "Wait for Epic Cloud save sync to finish before starting a game."
             return
@@ -2651,6 +2667,12 @@ struct ContentView: View {
             LibraryEntry.setTransientArguments(nil, for: entry.id)
             library.error = "The executable path or launch arguments are too long."; return
         }
+        if nativeSteamClient {
+            guard nativeSteamPreparationIdle(), jit_check_debugged() else {
+                library.error = "The launch state changed while Steam's browser was prepared. Enable JIT and try again."
+                return
+            }
+        }
         entry.configureLaunch()
         let effectiveProfile = preferences ?? entry
         // madeira-bcd: the game's own options (LibraryBCD.swift).
@@ -2662,7 +2684,7 @@ struct ContentView: View {
             : entry.launchWindowsPath.split(separator: "\\").last.map(String.init) ?? entry.launchWindowsPath
         LogStore.shared.startSessionLog(program: program)
         library.begin(entry, remember: remember)
-        runWineFullSequence(profile: effectiveProfile, nativeSteamClient: nativeSteamClient)
+        runWineFullSequence(profile: effectiveProfile, nativeSteamClient: nativeSteamClient, nativeSteamBrowser: nativeSteamBrowser)
     }
 
     /// madeira-bcd: LibraryPrefs' AVX, NVIDIA and Wine C++ runtime switches for a
@@ -2695,11 +2717,58 @@ struct ContentView: View {
         logStore.log("[bcd] Desktop: its own settings file \(url.lastPathComponent)")
     }
 
+    private func nativeSteamPreparationIdle() -> Bool {
+        wine_process_is_running() == 0 && wineserver_is_running() == 0 &&
+        library.current == nil && !SteamOwnedLibrary.shared.wineSessionActive &&
+        !SteamClientUpdateModel.shared.busy
+    }
+
+    /// Complete the download and file transaction before any session is begun.
+    /// Failure is shown directly and never starts the incompatible helper.
+    private func prepareNativeSteamBrowser(_ continuation: @escaping (SteamNativeBrowserLaunch.Prepared) -> Void) {
+        do {
+            let preparation = try steamBrowserLaunch.begin(
+                drive: SteamNativeBrowserLaunch.appDrive, resourceRoot: Bundle.main.resourceURL,
+                idle: { nativeSteamPreparationIdle() }, progress: { logStore.log($0) })
+            Task { @MainActor in
+                do {
+                    let selected = try await preparation.value
+                    guard nativeSteamPreparationIdle(), jit_check_debugged() else {
+                        throw SteamNativeBrowserLaunchFiles.Failure.active
+                    }
+                    if library.enabled, LibraryModel.sessionsThisRun > 0, MadeiraConfig.flag("MADEIRA_ONE_SESSION_PER_RUN") {
+                        library.restartNotice = LibraryModel.restartMessage
+                        return
+                    }
+                    // No suspension between this recheck and begin/sessionChanged.
+                    continuation(selected)
+                } catch {
+                    library.error = error.localizedDescription
+                    logStore.log("Steam browser preparation failed: " + error.localizedDescription, level: .error)
+                }
+            }
+        } catch {
+            library.error = error.localizedDescription
+            logStore.log("Steam browser preparation failed: " + error.localizedDescription, level: .error)
+        }
+    }
+
     /// Full sequence: allocate JIT pool, start wineserver, start Wine.
     /// Debugger stays attached during PE loading so mprotect_exec can use BRK
     /// to prepare code pages. Detach happens after Wine finishes + recovery.
     /// `profile` is a library entry whose launch profile applies to this run.
-    private func runWineFullSequence(profile: LibraryEntry? = nil, nativeSteamClient: Bool = false) {
+    private func runWineFullSequence(profile: LibraryEntry? = nil, nativeSteamClient: Bool = false, nativeSteamBrowser: SteamNativeBrowserLaunch.Prepared? = nil) {
+        guard !steamBrowserLaunch.busy, !SteamBrowserRuntime.busy else {
+            logStore.log("Wait for Steam browser preparation to finish before starting Wine.", level: .error)
+            if profile != nil { LibraryModel.shared.launchFailed() }
+            return
+        }
+        if nativeSteamClient && nativeSteamBrowser == nil {
+            prepareNativeSteamBrowser { selected in
+                runWineFullSequence(profile: profile, nativeSteamClient: true, nativeSteamBrowser: selected)
+            }
+            return
+        }
         guard !SteamClientUpdateModel.shared.busy else {
             logStore.log("Wait for the Steam launcher update to finish before starting Wine.", level: .error)
             if profile != nil { LibraryModel.shared.launchFailed() }
@@ -2767,6 +2836,25 @@ struct ContentView: View {
                 }
             } else {
                 _ = try? MadeiraConfig.applyGame(nil)   // no library game: no game's own lines
+            }
+
+            // Reassert the immutable selected paths after profile environment,
+            // before JIT/server startup. Both later cfg loops honor these locks.
+            do {
+                try SteamNativeBrowserLaunchFiles.export(native: nativeSteamClient, prepared: nativeSteamBrowser,
+                    get: { getenv($0).map { String(cString: $0) } },
+                    set: { setenv($0, $1, 1) == 0 }, unset: { unsetenv($0) })
+            } catch {
+                let message = error.localizedDescription
+                logStore.log("Steam's verified browser launch could not be configured.", level: .error)
+                DispatchQueue.main.async {
+                    heartbeat.invalidate(); ws_log_quiet = 0; logStore.uiPaused = false
+                    LibraryModel.shared.launchFailed(message)
+                    MadeiraDock.cleanup(); SteamOwnedLibrary.shared.dockEnded()
+                    SteamOwnedLibrary.shared.sessionChanged(active: false)
+                    EpicLibrary.shared.sessionChanged(active: false)
+                }
+                return
             }
 
             // Step 1: Allocate JIT pool (BRK suspends entire process)
@@ -3461,6 +3549,9 @@ struct ContentView: View {
     /// `profile` is a Steam game's library entry (its Game details page): the
     /// session then takes that entry's display, performance and on-screen settings.
     private func startDock(_ game: DockGame, compactPool: Bool, profile: LibraryEntry? = nil) {
+        guard !steamBrowserLaunch.busy, !SteamBrowserRuntime.busy else {
+            library.error = "Wait for Steam browser preparation to finish."; return
+        }
         let inLibrary = library.enabled
         guard jitReadyForLaunch(inLibrary: inLibrary, entry: profile?.id,
                                 then: { startDock(game, compactPool: compactPool, profile: profile) }) else { return }
@@ -3498,6 +3589,9 @@ struct ContentView: View {
             // a launcher started through a .bat, say) it is key 0, which every Dock start
             // used before; Dock stops at once if Steam names that entry missing.
             let options = await SteamOwnedLibrary.shared.launchOptions(appID: game.id)
+            guard !steamBrowserLaunch.busy, !SteamBrowserRuntime.busy else {
+                library.error = "Wait for Steam browser preparation to finish."; return
+            }
             let installFolder = MadeiraDock.drive.appendingPathComponent(game.library + "/common/" + game.installDir)
             let steamEntry = options.flatMap { SteamDirectStart.choose($0, installFolder: installFolder) }
             let chosen = steamEntry?.launchIndex
@@ -3515,7 +3609,8 @@ struct ContentView: View {
             await SteamOwnedLibrary.shared.prepareDock()
             do {
                 // The launch state may have changed while the connection closed.
-                guard StikJITHelper.ready, wine_process_is_running() == 0, wineserver_is_running() == 0,
+                guard !steamBrowserLaunch.busy, !SteamBrowserRuntime.busy,
+                      StikJITHelper.ready, wine_process_is_running() == 0, wineserver_is_running() == 0,
                       !inLibrary || library.current == nil else {
                     throw DockError.message("The launch state changed. Enable JIT and try again.")
                 }
@@ -3732,8 +3827,9 @@ struct ContentView: View {
         // cmd/explorer wrapper must not publish an unrelated game's Steam ID.
         // Set it after profile.applyEnvironment; the bridge consumes it before
         // Wine snapshots the environment. Every other launch clears it.
-        if nativeSteamClient { setenv("MADEIRA_NATIVE_STEAM_LAUNCH", "1", 1) }
-        else { unsetenv("MADEIRA_NATIVE_STEAM_LAUNCH") }
+        // The launch worker exported and locked this native signal and the
+        // verified helper/cache pair after applying the profile, before the
+        // wineserver started. No config can enable or replace this selection.
         // Call synchronously — caller already waited for wineserver to be ready
         let image = (getenv("MADEIRA_EXE").map { String(cString: $0) } ?? "").lowercased()
         let arguments = (getenv("MADEIRA_ARGS").map { String(cString: $0) } ?? "").lowercased()
@@ -3747,6 +3843,7 @@ struct ContentView: View {
             logStore.log("Wine process thread launched", level: .success)
         } else {
             unsetenv("MADEIRA_NATIVE_STEAM_LAUNCH")
+            unsetenv("MADEIRA_HTMLIPC_HELPER"); unsetenv("MADEIRA_HTMLIPC_CACHE_DIR")
             SteamLibraryDiagnostics.shared.stop()
             logStore.log("Failed to start Wine process (error: \(result))", level: .error)
         }

@@ -31,6 +31,7 @@ log "Validating bundled Wine prefix"
 bash "$ROOT/tools/check-prefix-template.sh" "$ROOT/app/Madeira/prefix-template.tar.gz"
 
 "$ROOT/tools/build/setup-llvm-mingw.sh"
+"$ROOT/tools/build/build-htmlipc-bridge.sh"
 "$ROOT/build/madeira-dock/build.sh"
 "$ROOT/build/wow64-probe/build.sh"
 "$ROOT/tools/build/build-wine.sh"

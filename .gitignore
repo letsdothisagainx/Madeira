@@ -227,3 +227,8 @@ __pycache__/
 app/Madeira/arm64ec-windows/madeira-steam-service.exe
 
 app/Madeira/arm64ec-windows/madeira-scm-probe.exe
+
+# Native Steam HTMLIPC source bridge: generated resources and COFF outputs
+build/htmlipc/obj/
+app/Madeira/arm64ec-windows/madeira-htmlipc-bridge.dll
+app/Madeira/arm64ec-windows/madeira-htmlipc-bridge.manifest.json

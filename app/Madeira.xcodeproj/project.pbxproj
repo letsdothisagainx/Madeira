@@ -55,6 +55,8 @@
 		A10007D1 /* SteamLibraryDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20007D1 /* SteamLibraryDiagnostics.swift */; };
 		A10007D2 /* SteamClientUpdate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20007D2 /* SteamClientUpdate.swift */; };
 		A10007E4 /* SteamInstalledInventory.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20007E4 /* SteamInstalledInventory.swift */; };
+		A1000FA1 /* SteamBrowserRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000FA1 /* SteamBrowserRuntime.swift */; };
+		A1000FA2 /* SteamNativeBrowserLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000FA2 /* SteamNativeBrowserLaunch.swift */; };
 		A1000523 /* SteamRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000523 /* SteamRuntime.swift */; };
 		A1000524 /* DockInstallers.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000524 /* DockInstallers.swift */; };
 		A1000542 /* DockStartProgram.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000542 /* DockStartProgram.swift */; };
@@ -274,6 +276,8 @@
 		A20007D1 /* SteamLibraryDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SteamLibraryDiagnostics.swift"; sourceTree = "<group>"; };
 		A20007D2 /* SteamClientUpdate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SteamClientUpdate.swift"; sourceTree = "<group>"; };
 		A20007E4 /* SteamInstalledInventory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SteamInstalledInventory.swift"; sourceTree = "<group>"; };
+		A2000FA1 /* SteamBrowserRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SteamBrowserRuntime.swift"; sourceTree = "<group>"; };
+		A2000FA2 /* SteamNativeBrowserLaunch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SteamNativeBrowserLaunch.swift"; sourceTree = "<group>"; };
 		A2000523 /* SteamRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SteamRuntime.swift"; sourceTree = "<group>"; };
 		A2000524 /* DockInstallers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "DockInstallers.swift"; sourceTree = "<group>"; };
 		A2000542 /* DockStartProgram.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "DockStartProgram.swift"; sourceTree = "<group>"; };
@@ -536,6 +540,8 @@
 				A200060C /* SteamAppInfo.swift */,
 				A200060D /* SteamLibraryFetcher.swift */,
 				A2000522 /* SteamKeyValues.swift */,
+				A2000FA1 /* SteamBrowserRuntime.swift */,
+				A2000FA2 /* SteamNativeBrowserLaunch.swift */,
 				A2000523 /* SteamRuntime.swift */,
 				A20007D1 /* SteamLibraryDiagnostics.swift */,
 				A20007D2 /* SteamClientUpdate.swift */,
@@ -913,6 +919,8 @@
 				A100060C /* SwiftSteam/Library/SteamAppInfo.swift in Sources */,
 				A100060D /* SwiftSteam/Library/SteamLibraryFetcher.swift in Sources */,
 				A1000522 /* SteamKeyValues.swift in Sources */,
+				A1000FA1 /* SteamBrowserRuntime.swift in Sources */,
+				A1000FA2 /* SteamNativeBrowserLaunch.swift in Sources */,
 				A1000523 /* SteamRuntime.swift in Sources */,
 				A10007D1 /* SteamLibraryDiagnostics.swift in Sources */,
 				A10007D2 /* SteamClientUpdate.swift in Sources */,

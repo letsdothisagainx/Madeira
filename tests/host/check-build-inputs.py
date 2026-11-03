@@ -129,11 +129,20 @@ with tempfile.TemporaryDirectory(prefix='madeira-build-inputs-') as folder:
     dist = folder / 'dist'
     dist.mkdir()
     ipa = dist / 'Madeira.ipa'
+    import importlib.util
+    fixture_spec=importlib.util.spec_from_file_location('htmlipc_fixture', root/'tests/host/check-htmlipc-image.py')
+    htmlipc=importlib.util.module_from_spec(fixture_spec);fixture_spec.loader.exec_module(htmlipc)
+    bridge=htmlipc.fixture();bridge_manifest=htmlipc.manifest(bridge)
+    (folder/'tools').mkdir(exist_ok=True)
+    (folder/'tools/check-htmlipc-image.py').write_text((root/'tools/check-htmlipc-image.py').read_text())
+    abi=folder/'build/scm-rpc/htmlipc_ready_abi.h';abi.parent.mkdir(parents=True,exist_ok=True);abi.write_bytes(htmlipc.ABI.read_bytes())
     def valid_ipa():
         return subprocess.run(['bash', '-euo', 'pipefail', '-c', validation], cwd=folder,
                               capture_output=True).returncode == 0
     with zipfile.ZipFile(ipa, 'w') as archive:
         archive.writestr('Payload/Madeira.app/Madeira', b'fixture')
+        archive.writestr('Payload/Madeira.app/arm64ec-windows/madeira-htmlipc-bridge.dll',bridge)
+        archive.writestr('Payload/Madeira.app/arm64ec-windows/madeira-htmlipc-bridge.manifest.json',htmlipc.json.dumps(bridge_manifest))
     assert valid_ipa()
     with zipfile.ZipFile(ipa, 'w') as archive:
         archive.writestr('wrong-layout/Madeira', b'fixture')

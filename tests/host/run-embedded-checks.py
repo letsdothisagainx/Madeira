@@ -6,6 +6,10 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[2]
 commands = [
+    ['python3', 'tests/host/check-htmlipc-loader.py'],
+    ['python3', 'tests/host/check-htmlipc-ready-state.py'],
+    ['python3', 'tests/host/check-htmlipc-codecs.py'],
+    ['python3', 'tests/host/check-htmlipc-image.py'],
     ['python3', 'tests/host/check-launch-routing.py'],
     ['python3', 'tests/host/check-fex-native-callback.py'],
     ['python3', 'tests/host/check-child-native-dll.py'],

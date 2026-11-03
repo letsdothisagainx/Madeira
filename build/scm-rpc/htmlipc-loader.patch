@@ -1,0 +1,51 @@
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -4361,10 +4361,14 @@
+         ERR( "[iat-life] ml701 sweep#%d after=%s modules=%d slots=%d pooled=%d pe0=%d pool0=%d\n",
+              sweeps, when, n_mod, n_slot, n_pool, n_pezero, n_poolzero );
+ }
+ #endif  /* __arm64ec__ */
+ 
++#ifdef __arm64ec__
++#include "madeira_htmlipc_pe_loader.h"
++#endif
++
+ NTSTATUS WINAPI DECLSPEC_HOTPATCH LdrLoadDll(LPCWSTR search_path, DWORD *load_flags,
+                                              const UNICODE_STRING *libname, HMODULE* hModule)
+ {
+     const ULONG load_library_search_flags = LOAD_WITH_ALTERED_SEARCH_PATH | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
+                 | LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_USER_DIRS
+@@ -4383,10 +4387,19 @@
+     }
+     else path_name = (WCHAR *)search_path;
+ 
+     RtlEnterCriticalSection( &loader_section );
+ 
++#ifdef __arm64ec__
++    /* Attach the guarded source provider before chromehtml mapping/notification,
++     * so its registered notification installs stream DATA before constructors. */
++    if ((nts = madeira_htmlipc_before_chromehtml( libname )))
++    {
++        wm = NULL;
++        goto htmlipc_load_done;
++    }
++#endif
+     nts = load_dll( path_name, dllname ? dllname : libname->Buffer, flags, &wm, FALSE );
+ 
+     if (nts == STATUS_SUCCESS)
+     {
+ #ifdef __arm64ec__
+@@ -4414,10 +4427,13 @@
+             tag[k] = 0;
+             iat_life_sweep( tag );   /* ml701 [iat-life] stage 2 */
+         }
+ #endif
+     }
++#ifdef __arm64ec__
++htmlipc_load_done:
++#endif
+     if (wm) *hModule = wm->ldr.DllBase;
+ 
+     RtlLeaveCriticalSection( &loader_section );
+     RtlFreeHeap( GetProcessHeap(), 0, dllname );
+     if (path_name != search_path) RtlReleasePath( path_name );

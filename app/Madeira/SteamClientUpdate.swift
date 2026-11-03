@@ -81,6 +81,7 @@ import CryptoKit
     @Published private(set) var error: String?
 
     private func idle() -> Bool {
+        !SteamNativeBrowserLaunch.shared.busy && !SteamBrowserRuntime.busy &&
         wine_process_is_running() == 0 && wineserver_is_running() == 0 &&
             LibraryModel.shared.current == nil && !SteamOwnedLibrary.shared.wineSessionActive
     }

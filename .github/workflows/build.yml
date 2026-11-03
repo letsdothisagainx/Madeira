@@ -80,6 +80,11 @@ jobs:
           test -s dist/Madeira.ipa
           unzip -tq dist/Madeira.ipa
           unzip -Z1 dist/Madeira.ipa | grep -x 'Payload/Madeira.app/Madeira'
+          htmlipc_cache="$(mktemp -d)"
+          trap 'rm -rf "$htmlipc_cache"' EXIT
+          unzip -p dist/Madeira.ipa Payload/Madeira.app/arm64ec-windows/madeira-htmlipc-bridge.dll > "$htmlipc_cache/madeira-htmlipc-bridge.dll"
+          unzip -p dist/Madeira.ipa Payload/Madeira.app/arm64ec-windows/madeira-htmlipc-bridge.manifest.json > "$htmlipc_cache/madeira-htmlipc-bridge.manifest.json"
+          python3 tools/check-htmlipc-image.py --staged "$htmlipc_cache/madeira-htmlipc-bridge.dll" --manifest "$htmlipc_cache/madeira-htmlipc-bridge.manifest.json" --abi-header build/scm-rpc/htmlipc_ready_abi.h --ipa dist/Madeira.ipa
       - uses: actions/upload-artifact@v4
         with:
           name: Madeira-ipa

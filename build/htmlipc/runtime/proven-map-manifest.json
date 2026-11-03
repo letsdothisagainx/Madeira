@@ -1,0 +1,18 @@
+{
+  "scope": "152 actual command pairs; all unknown/new/removed commands fail closed",
+  "command_proof_sha256": "041ce5ed70faf89ae8da291d4ea27d2723b45043de94c5afe73dfe0d0d51c883",
+  "schema_proof_sha256": "cd9cbb917b54332a5a4fcdf534683b3f2291a2efdd311897b52c9c4cc462a475",
+  "generated_sha256": "6b230b7745472842cfe27da7f9c5fbc676679503ff728a04b0279e222c120230",
+  "unsupported": [
+    53,
+    54,
+    108
+  ],
+  "unresolved": [
+    24,
+    101,
+    118,
+    127
+  ],
+  "maintained_source_sha256": "6b230b7745472842cfe27da7f9c5fbc676679503ff728a04b0279e222c120230"
+}

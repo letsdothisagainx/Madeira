@@ -23,7 +23,25 @@ with tempfile.TemporaryDirectory() as temp:
         p = t/relative
         if relative.endswith(('.a','.exe','.dll','.txt')):
             p.parent.mkdir(parents=True, exist_ok=True); p.write_bytes(b'fixture')
-    service_fixture = b'fixture update-handoff-v1'
+    import importlib.util
+    fixture_spec=importlib.util.spec_from_file_location('htmlipc_fixture', root/'tests/host/check-htmlipc-image.py')
+    htmlipc=importlib.util.module_from_spec(fixture_spec);fixture_spec.loader.exec_module(htmlipc)
+    bridge=htmlipc.fixture();bridge_manifest=htmlipc.manifest(bridge)
+    bridge_dir=t/'app/Madeira/arm64ec-windows'
+    bridge_dir.mkdir(parents=True,exist_ok=True)
+    (bridge_dir/'madeira-htmlipc-bridge.dll').write_bytes(bridge)
+    import json
+    (bridge_dir/'madeira-htmlipc-bridge.manifest.json').write_text(json.dumps(bridge_manifest))
+    (t/'tools').mkdir(exist_ok=True)
+    (t/'tools/check-htmlipc-image.py').write_text((root/'tools/check-htmlipc-image.py').read_text())
+    abi=t/'build/scm-rpc/htmlipc_ready_abi.h';abi.parent.mkdir(parents=True,exist_ok=True);abi.write_bytes(htmlipc.ABI.read_bytes())
+    report=t/'build/htmlipc/obj/madeira-htmlipc-bridge.build.json';report.parent.mkdir(parents=True,exist_ok=True)
+    source_hashes={}
+    for index in range(7):
+        path=t/f'source/{index}.cpp';path.parent.mkdir(parents=True,exist_ok=True);path.write_text(str(index))
+        source_hashes[path.relative_to(t).as_posix()]=htmlipc.image.sha256(path.read_bytes())
+    report.write_text(json.dumps(htmlipc.report(bridge,source_hashes)))
+    service_fixture = b'fixture update-handoff-v1' 
     service_path = t/'app/Madeira/arm64ec-windows/madeira-steam-service.exe'
     service_path.write_bytes(service_fixture)
     # A minimal architecture/marker fixture tests the gate, not executable Wine.
@@ -62,7 +80,7 @@ with tempfile.TemporaryDirectory() as temp:
     struct.pack_into('<H',guest,0x84,0x14c)
     guest.extend(b'[wpm-call-v1][steam-arch-v1]')
     (t/'app/Madeira/i386-windows/kernelbase.dll').write_bytes(guest)
-    (t/'tools').mkdir()
+    (t/'tools').mkdir(exist_ok=True)
     (t/'tools/check-io-abi-package.py').write_text((root/'tools/check-io-abi-package.py').read_text())
     bodies = {
       'xcodebuild': '''mkdir -p "$TEST_APP/arm64ec-windows" "$TEST_APP/i386-windows" "$TEST_APP/x86_64-vcruntime" "$TEST_APP/aarch64-windows"
@@ -92,9 +110,10 @@ printf fixture > "$TEST_APP/Madeira"
 printf fixture > "$TEST_APP/prefix-template.tar.gz"
 printf fixture > "$TEST_APP/arm64ec-windows/xtajit64.dll"
 printf fixture > "$TEST_APP/x86_64-vcruntime/vcruntime140.dll"
-for resource in dockhost.exe dock-notices.txt madeira-steam-service.exe madeira-scm-probe.exe; do
+for resource in dockhost.exe dock-notices.txt madeira-steam-service.exe madeira-scm-probe.exe madeira-htmlipc-bridge.dll madeira-htmlipc-bridge.manifest.json; do
   if [ "${OMIT_RESOURCE:-}" != "$resource" ]; then cp "$ROOT/app/Madeira/arm64ec-windows/$resource" "$TEST_APP/arm64ec-windows/"; fi
 done
+if [ "${STALE_HTMLIPC:-}" = 1 ]; then printf old-source > "$TEST_APP/arm64ec-windows/madeira-htmlipc-bridge.dll"; fi
 if [ "${STALE_SERVICE:-}" = 1 ]; then printf 'old update-handoff-v1' > "$TEST_APP/arm64ec-windows/madeira-steam-service.exe"; fi
 for resource in madeira-wow64-probe.exe madeira-wow64-module-probe.dll; do
   if [ "${OMIT_RESOURCE:-}" != "$resource" ]; then cp "$ROOT/app/Madeira/i386-windows/$resource" "$TEST_APP/i386-windows/"; fi
@@ -115,6 +134,17 @@ done
     with zipfile.ZipFile(t/'dist/Madeira.ipa') as archive:
         for resource in ['madeira-wow64-probe.exe','madeira-wow64-module-probe.dll']:
             assert archive.read('Payload/Madeira.app/i386-windows/'+resource)==b'fixture'
+    for resource,expected in [('madeira-htmlipc-bridge.dll',bridge),('madeira-htmlipc-bridge.manifest.json',json.dumps(bridge_manifest).encode())]:
+        with zipfile.ZipFile(t/'dist/Madeira.ipa') as archive:
+            assert archive.read('Payload/Madeira.app/arm64ec-windows/'+resource)==expected
+        result=run({'OMIT_RESOURCE':resource})
+        assert result.returncode and 'required bundle resource missing' in result.stderr,result.stderr
+        path=bridge_dir/resource;path.write_bytes(b'')
+        result=run();assert result.returncode and 'required build artifact missing' in result.stderr,result.stderr
+        path.write_bytes(expected)
+    result=run({'STALE_HTMLIPC':'1'})
+    assert result.returncode and 'app resource differs from staged' in result.stderr,result.stderr
+    print('PASS AMD64 source DLL/manifest present exactly; missing, empty and stale Xcode source resources fail packaging')
     print('PASS final ZIP includes Dock, helpers, i386 loader fixture and license notices')
     result=run({'STALE_WOW_PLACEMENT':'1'})
     assert result.returncode and 'stale native WoW64-segment placement' in result.stderr, result.stderr

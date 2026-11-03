@@ -1,0 +1,29 @@
+{
+  "format": 1,
+  "scope": "review source candidate; no runtime/activation proof",
+  "coreSHA256": "37f5ddbe874362d729b7cd33504943a9d649d845525afae4bcc2af36ab971f4b",
+  "upstreamSources": {
+    "work/runtime-production/proven_map.cpp": "187676f79b07fdc0f0aba6f571ba1fc13e4106eea1b4607529133c99fefd710b",
+    "work/runtime-production/proven-map-manifest.json": "a3ff55498290d5ba7a3927b1da947bb11b5a62ee89d8675acebe5a0557105dae",
+    "work/runtime-production/runtime_provider.cpp": "c5517cb2bfd2fd65efe60ac9c0890556aa836ac7a82908a14b8cf132edb6de99",
+    "work/htmlipc-dispatch/runtime-shim/runtime_provider.cpp": "7c0992bdd03137a86d373285283cccacd981b70275febafa07226d13fbee2db1",
+    "work/runtime-production/runtime_provider.h": "ced59bd155080808934c4040cb21e13135968323529baa045330e29642c8bd2b",
+    "work/runtime-production/loader.cpp": "ef84d3201f5b43e58b858386f06e3c3df3c281b268f3b01c099f0f66a64fd090",
+    "work/runtime-production/ready_state.cpp": "76b0b51a1939adca40e0bacec5dd14180362381a724b94d64ba93fd7624cc361",
+    "work/runtime-production/ready_state.h": "f4ebe21b3ee3fa914e827c500e93479e32703ad4d4eabb1e98d29a9301abc99b",
+    "work/runtime-production/cache-contract.txt": "86d1ca3b9e48ef3ee3cc099cfb25ddf18cb2e09754e66a5c3c8a830e007425b8",
+    "work/htmlipc-dispatch/stream-install/installer.h": "f8c9809d4b959db86e43ea6685ffcbb6f3af9840b7ff01ed6a28fc3172b17752",
+    "work/htmlipc-dispatch/stream-install/installer.cpp": "7321869e459f0e5920df9a911907a2a89cfbc47f82014a015715bfc9e6275b09",
+    "work/htmlipc-dispatch/stream-install/sha256.h": "eb03d6ccda8fdad1ea6bd89c6da6aa10b0e701a79d665e66eca814ca164170d0",
+    "work/htmlipc-dispatch/stream-codec/stream_codec.h": "d8693ba6b9615cb0233f9c628d70f2ee69e817e1ba7f5efd6d2e2e29d5121253",
+    "work/htmlipc-dispatch/stream-codec/stream_codec.cpp": "9ae6b5bfda49ded8259ddb14fd1cca159ba47d00d5a630db7f79e3f127d212b7",
+    "work/htmlipc-dispatch/wire-codec/wire_codec.h": "73b4e66e732366673311a8b23410c8abd2da5e0f3a26a58a5df1c90e327588c4",
+    "work/htmlipc-dispatch/wire-codec/wire_codec.cpp": "3a95e1d5d3caddda69c516861a68a44e84b6119b379787e272cc7b9c86c18e6a"
+  },
+  "merges": [
+    "native provider: current bounded numeric image Diagnostic + OutputDebugStringA fallback; Ready revoke remains before log publication",
+    "native loader: loader-entry diagnostic; native owner/Ready detach preserved",
+    "Bounded status lines always reach OutputDebugStringA, including after Steam redirects stderr to NUL; Installed is announced directly after successful data installation."
+  ],
+  "commonInstallerPolicy": "copy latest root-reviewed common source on every generation; no source pin/protection relaxation"
+}
