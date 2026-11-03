@@ -1,4 +1,4 @@
-name: Check official Win32 beta browser manifest only
+name: Inspect exact stable ChromeElf fatal chain
 on:
   workflow_dispatch:
 permissions:
@@ -6,38 +6,126 @@ permissions:
 jobs:
   inspect:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 8
     steps:
-      - name: Compare known official Win32 manifests without downloading archives
+      - name: Install bounded PE inspection dependencies
+        run: python3 -m pip install pefile==2024.8.26 capstone==5.0.6 xxhash==3.5.0
+      - name: Inspect hash-pinned official ChromeElf control flow
         run: |
-          python3 - <<'PY'
-          import urllib.request,urllib.error,re,json,hashlib
-          def nodes(text):
-           tokens=[a if a else b for a,b in re.findall('"([^"]*)"|([{}])',text)];pos=0
-           def parse():
-            nonlocal pos
-            d={}
-            while pos<len(tokens):
-             key=tokens[pos];pos+=1
-             if key=='}':return d
-             value=tokens[pos];pos+=1;d[key]=parse() if value=='{' else value
-            return d
-           def walk(d,path=()):
-            if not isinstance(d,dict):return
-            if path and path[-1] in ['bins_cef_win32','bins_webhelpers_win32']:yield path,{k:v for k,v in d.items() if k in ['file','sha2','size']}
-            for k,v in d.items():yield from walk(v,path+(k,))
-           return list(walk(parse()))
-          results={}
-          for name in ['steam_client_win32','steam_client_publicbeta_win32']:
-           url='https://client-update.akamai.steamstatic.com/'+name
-           try:
-            with urllib.request.urlopen(url,timeout=30) as response:data=response.read(262145);status=response.status
-            assert len(data)<=262144
-            text=data.decode();versions=re.findall('"version"[^0-9]*"([0-9]+)"',text)
-            result={'url':url,'http_status':status,'sha256':hashlib.sha256(data).hexdigest(),'versions':versions,'browser_packages':nodes(text)}
-           except urllib.error.HTTPError as error:result={'url':url,'http_status':error.code}
-           results[name]=result;print('OFFICIAL_MANIFEST',name,json.dumps(result,sort_keys=True),flush=True)
-          stable=results['steam_client_win32'];beta=results['steam_client_publicbeta_win32']
-          comparison={'beta_available':beta.get('http_status')==200,'same_manifest_bytes':stable.get('sha256')==beta.get('sha256') if beta.get('http_status')==200 else None,'same_browser_packages':stable.get('browser_packages')==beta.get('browser_packages') if beta.get('http_status')==200 else None,'archive_downloads':0,'runtime_or_config_changes':0}
-          print('RESULT',json.dumps(comparison,sort_keys=True),flush=True)
-          PY
+          python3 - <<'PYINSPECT'
+          """Read-only disassembly of the exact official ChromeElf in device logs."""
+          import bisect
+          import hashlib
+          import io
+          import json
+          import struct
+          import urllib.request
+          import uuid
+          import zipfile
+          
+          import capstone
+          import pefile
+          import xxhash
+          
+          URL = 'https://client-update.akamai.steamstatic.com/bins_cef_win64.zip.0bad5abe29375d80e5bb0eedf714329369140164'
+          ARCHIVE_SHA = 'e5e660226cc586c3cbc9a225f92e041664f228f83ef210574e39967c82c691cc'
+          IMAGE_SHA = '6358830f96f36efa7516b3277cf69c1f132f97d4d93c365ccf061a7cf11e1e39'
+          with urllib.request.urlopen(URL, timeout=120) as response:
+              archive = response.read(400 * 1024 * 1024 + 1)
+          assert len(archive) <= 400 * 1024 * 1024
+          assert hashlib.sha256(archive).hexdigest() == ARCHIVE_SHA
+          with zipfile.ZipFile(io.BytesIO(archive)) as z:
+              names = [n for n in z.namelist() if n.lower().endswith('/chrome_elf.dll')]
+              assert len(names) == 1
+              image = z.read(names[0])
+          assert hashlib.sha256(image).hexdigest() == IMAGE_SHA
+          p = pefile.PE(data=image)
+          assert p.FILE_HEADER.Machine == 0x8664
+          image_base = p.OPTIONAL_HEADER.ImageBase
+          identity = xxhash.xxh3_64_intdigest(b'chrome_elf.dll') ^ ((p.OPTIONAL_HEADER.SizeOfImage << 32) | p.FILE_HEADER.TimeDateStamp)
+          assert identity == 0xc19aa5b303d01ae8
+          print('PROVENANCE', json.dumps(dict(url=URL, archive_sha256=ARCHIVE_SHA, image_sha256=IMAGE_SHA,
+              machine=hex(p.FILE_HEADER.Machine), image_size=hex(p.OPTIONAL_HEADER.SizeOfImage),
+              timestamp=hex(p.FILE_HEADER.TimeDateStamp), image_base=hex(image_base), fex_id=f'chrome_elf.dll-{identity:016x}')))
+          for e in getattr(p, 'DIRECTORY_ENTRY_DEBUG', []):
+              if e.struct.Type == 2:
+                  b = p.get_data(e.struct.AddressOfRawData, e.struct.SizeOfData)
+                  if b[:4] == b'RSDS':
+                      print('PDB', str(uuid.UUID(bytes_le=b[4:20])).upper(), 'AGE', struct.unpack_from('<I', b, 20)[0])
+          exports = {e.address: (e.name.decode() if e.name else f'ordinal:{e.ordinal}') for e in p.DIRECTORY_ENTRY_EXPORT.symbols}
+          print('EXPORTS', json.dumps({hex(a): n for a, n in exports.items()}, sort_keys=True))
+          imports = {}
+          for e in p.DIRECTORY_ENTRY_IMPORT:
+              for x in e.imports:
+                  imports[x.address - image_base] = e.dll.decode() + '!' + (x.name.decode() if x.name else f'ordinal:{x.ordinal}')
+          functions = sorted((e.struct.BeginAddress, e.struct.EndAddress) for e in p.DIRECTORY_ENTRY_EXCEPTION)
+          begins = [a for a, b in functions]
+          def enclosing(at):
+              i = bisect.bisect_right(begins, at) - 1
+              return functions[i] if i >= 0 and at < functions[i][1] else (at, at + 0xa0)
+          md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
+          md.detail = True
+          instructions = []
+          for section in p.sections:
+              if section.Characteristics & 0x20000000:
+                  md.skipdata = True
+                  instructions.extend(md.disasm(section.get_data()[:section.Misc_VirtualSize], section.VirtualAddress))
+          def target(i):
+              if i.id and i.mnemonic in ('call', 'jmp') and i.operands and i.operands[0].type == capstone.x86.X86_OP_IMM:
+                  return i.operands[0].imm
+          def note(i):
+              result = []
+              if i.id:
+                  t = target(i)
+                  if t is not None:
+                      result.append('direct:' + hex(t))
+                      if t in exports:
+                          result.append('export:' + exports[t])
+                  for op in i.operands:
+                      if op.type == capstone.x86.X86_OP_MEM and op.mem.base == capstone.x86.X86_REG_RIP:
+                          address = i.address + i.size + op.mem.disp
+                          result.append('rip:' + hex(address))
+                          if address in imports:
+                              result.append(imports[address])
+              return ';'.join(result)
+          selected = {}
+          for at in (0x417f0, 0x43be9, 0x47be9, 0x4a0ca, 0x4e0ca, 0xdc080, 0xdc104, 0xdc130,
+                     p.OPTIONAL_HEADER.AddressOfEntryPoint):
+              selected[enclosing(at)[0]] = enclosing(at)
+          frontier = {0x417f0}
+          for depth in range(5):
+              next_frontier = set()
+              for i in instructions:
+                  if target(i) in frontier:
+                      f = enclosing(i.address)
+                      selected[f[0]] = f
+                      print('STATIC_CALLER', json.dumps(dict(depth=depth, call=hex(i.address), target=hex(target(i)),
+                          function=hex(f[0]), end=hex(f[1]), export=exports.get(f[0]))))
+                      next_frontier.add(f[0])
+              frontier = next_frontier
+          tls = getattr(p, 'DIRECTORY_ENTRY_TLS', None)
+          if tls:
+              address = tls.struct.AddressOfCallBacks - image_base
+              callbacks = []
+              for i in range(32):
+                  v = struct.unpack('<Q', p.get_data(address + i * 8, 8))[0]
+                  if not v:
+                      break
+                  callbacks.append(v - image_base)
+                  selected[enclosing(v - image_base)[0]] = enclosing(v - image_base)
+              print('TLS_CALLBACKS', json.dumps([hex(a) for a in callbacks]))
+          print('ENTRYPOINT', hex(p.OPTIONAL_HEADER.AddressOfEntryPoint))
+          for start, end in sorted(selected.values()):
+              print('FUNCTION', hex(start), hex(end), exports.get(start, ''))
+              body = [i for i in instructions if start <= i.address < end]
+              if len(body) > 400:
+                  print('BODY_LIMIT', len(body))
+                  keep = set(range(15))
+                  for j, i in enumerate(body):
+                      if target(i) in selected or (i.id and i.mnemonic == 'call'):
+                          keep.update(range(max(0, j - 4), min(len(body), j + 5)))
+                  body = [i for j, i in enumerate(body) if j in keep]
+              for i in body[:450]:
+                  print(f'{i.address:08x} {i.bytes.hex():24s} {i.mnemonic:8s} {i.op_str:40s} {note(i)}')
+          print('FATAL_BYTES', p.get_data(0xdc080, 0xc0).hex())
+          PYINSPECT
