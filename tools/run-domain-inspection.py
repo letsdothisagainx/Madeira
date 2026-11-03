@@ -1,5 +1,5 @@
 """Bounded exact official-image inspection, never execute a PE."""
-import hashlib,io,subprocess,urllib.request,zipfile
+import hashlib,io,subprocess,sys,urllib.request,zipfile
 from pathlib import Path
 ORIGIN='https://client-update.akamai.steamstatic.com/'
 PINS=[
@@ -21,4 +21,4 @@ for package,sha,member,label,image_sha in PINS:
  if image_sha:assert digest==image_sha
  path=Path(label+'.dll');path.write_bytes(data)
  args+=['--image',label,str(path),digest]
-subprocess.run(['python3','tools/inspect-domain.py',*args,'--output','domain-report.json'],check=True)
+subprocess.run([sys.executable,'tools/inspect-domain.py',*args,'--output','domain-report.json'],check=True)
