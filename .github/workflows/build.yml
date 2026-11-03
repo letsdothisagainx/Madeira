@@ -34,7 +34,10 @@ jobs:
            return functions[at] if at>=0 and rva<functions[at][1] else (rva,rva+0x100)
           def disasm(rva,limit):
            lo,hi=bounds(rva);hi=min(hi,lo+0x2000)
-           instructions=list(cs.disasm(p.get_data(lo,hi-lo),lo))
+           instructions=[]
+           for i in cs.disasm(p.get_data(lo,hi-lo),lo):
+            instructions.append(i)
+            if i.mnemonic in ['jmp','ret','retf'] and (len(instructions)==1 or hi-lo==0x100):break
            return [f'{i.address:08x} {i.mnemonic} {i.op_str}' for i in instructions[:limit]],instructions
           report['extensions']={}
           for name in EXTRA:
@@ -42,7 +45,7 @@ jobs:
            for i in ins:
             if i.id and i.mnemonic in ['call','jmp'] and i.operands and i.operands[0].type==X86_OP_IMM:
              target=i.operands[0].imm
-             if 0<target<p.OPTIONAL_HEADER.SizeOfImage and len(callees)<3:
+             if 0<target<p.OPTIONAL_HEADER.SizeOfImage and not(bounds(rva)[0]<=target<bounds(rva)[1]) and len(callees)<3:
               callee,_=disasm(target,90);callees[hex(target)]=callee
            report['extensions'][name]={'entry_rva':hex(rva),'bounds':list(map(hex,bounds(rva))),'body':body,'direct_callees':callees}
            print('EXTENSION',name,json.dumps(report['extensions'][name]),flush=True)
@@ -52,7 +55,7 @@ jobs:
            if group.dll.decode().lower()=='libcef.dll':
             for e in group.imports:
              if e.name and e.name.decode() in EXTRA:imports[e.address-h.OPTIONAL_HEADER.ImageBase]=e.name.decode()
-          sites=collections.defaultdict(list)
+          sites=collections.defaultdict(list);thunks={}
           for section in h.sections:
            if not(section.Characteristics&0x20000000):continue
            previous=collections.deque(maxlen=14);pending=[]
@@ -65,7 +68,21 @@ jobs:
              if op.base==X86_REG_RIP:
               name=imports.get(i.address+i.size+op.disp)
               if name and len(sites[name])<10:
-               site={'rva':hex(i.address),'before':list(previous),'call':line,'after':[]};sites[name].append(site);pending.append(site)
+               site={'rva':hex(i.address),'kind':'IAT-'+i.mnemonic,'before':list(previous),'call':line,'after':[]};sites[name].append(site);pending.append(site)
+               if i.mnemonic=='jmp':thunks[i.address]=name
+            previous.append(line)
+          # Follow the import JMP thunks to real CALL argument-setup sites.
+          for section in h.sections:
+           if not(section.Characteristics&0x20000000):continue
+           previous=collections.deque(maxlen=18);pending=[]
+           for i in cs.disasm(section.get_data()[:section.Misc_VirtualSize],section.VirtualAddress):
+            line=f'{i.address:08x} {i.mnemonic} {i.op_str}'
+            for site in pending:site['after'].append(line)
+            pending=[x for x in pending if len(x['after'])<14]
+            if i.id and i.mnemonic=='call' and i.operands and i.operands[0].type==X86_OP_IMM:
+             name=thunks.get(i.operands[0].imm)
+             if name and len(sites[name])<16:
+              site={'rva':hex(i.address),'kind':'direct-call-to-IAT-thunk','before':list(previous),'call':line,'after':[]};sites[name].append(site);pending.append(site)
             previous.append(line)
           report['helper_extension_callsites']=dict(sites)
           for name,entries in sites.items():print('HELPER_CALLS',name,json.dumps(entries),flush=True)
