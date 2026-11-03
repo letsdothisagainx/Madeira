@@ -32,6 +32,7 @@ files=files.replace('func need(_ condition: Bool) throws { if !condition { throw
 browser=BROWSER.read_text().replace('throw Failure.invalid','throw ArchiveProbeFailure(file: "Cache", line: #line)')
 browser=browser.replace('guard let http = response as? HTTPURLResponse, http.statusCode == 200, http.url == url,','print("URLSession response status=\\((response as? HTTPURLResponse)?.statusCode ?? -1) length=\\(response.expectedContentLength) encoding=\\((response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Encoding") ?? "none") exact-url=\\(response.url == url)")\n        guard let http = response as? HTTPURLResponse, http.statusCode == 200, http.url == url,')
 main=r'''
+func probeLog(_ message: String) { FileHandle.standardOutput.write(Data((message + "\n").utf8)) }
 struct ArchiveProbeFailure: Error { let file: String; let line: Int }
 @main struct RealArchiveProbe {
  @MainActor static func main() async throws {
@@ -63,6 +64,6 @@ with tempfile.TemporaryDirectory(prefix='madeira-real-cache-') as temporary:
  p=Path(temporary)
  for name,_,_ in packages:os.link(cache/name,p/name)
  (p/'Files.swift').write_text(files)
- (p/'Browser.swift').write_text(browser+'\n'+main)
+ (p/'Browser.swift').write_text((browser+'\n'+main).replace('print(', 'probeLog('))
  subprocess.run([shutil.which('swiftc'),'-parse-as-library',str(p/'Files.swift'),str(p/'Browser.swift'),'-o',str(p/'probe')],check=True)
  subprocess.run([str(p/'probe'),str(p)],check=True)
