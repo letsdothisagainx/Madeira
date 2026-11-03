@@ -15,7 +15,7 @@ with tempfile.TemporaryDirectory(prefix='madeira-htmlipc-ready-') as folder:
              '-I'+str(ROOT/'build/htmlipc/runtime'),str(ROOT/'build/htmlipc/runtime/ready_state.cpp'),
              str(ROOT/'tests/host/htmlipc/test_ready_state.cpp'),'-o',str(binary)]
     subprocess.run(command,check=True)
-    environment=dict(os.environ,ASAN_OPTIONS='detect_leaks=1:halt_on_error=1',UBSAN_OPTIONS='halt_on_error=1:print_stacktrace=1')
+    environment=dict(os.environ,ASAN_OPTIONS=('detect_leaks=0:halt_on_error=1' if sys.platform == 'darwin' else 'detect_leaks=1:halt_on_error=1'),UBSAN_OPTIONS='halt_on_error=1:print_stacktrace=1')
     modes=['valid',*[f'owner{i}' for i in range(7)],'partial','stock','revoke','detach','busy','wrap','writers',*['race']*12]
     for mode in modes:subprocess.run([str(binary),mode],check=True,env=environment,timeout=30)
 print('PASS HTMLIPC Ready DATA: ABI80, all owner/mode guards, sticky failures/detach, bounded publication and concurrent revoke races')
