@@ -40,7 +40,7 @@ static int ios_htmlipc_source_ready(void *owner,uint64_t lease,uint32_t pid)
     uint64_t module=0,core_module=0,address=0;uint32_t image_size=0;unsigned seen=0,core_seen=0,count=0;
     struct madeira_htmlipc_ready a,b;
     if(!lease||owner!=ios_jit_current_peb()||lease!=ios_htmlipc_live_lease(owner)||
-       !ios_htmlipc_read(NULL,(uintptr_t)owner+offsetof(PEB,Ldr),&ldr,sizeof(ldr))||!ldr)return 0;
+       !ios_htmlipc_read(NULL,(uintptr_t)owner+offsetof(PEB,LdrData),&ldr,sizeof(ldr))||!ldr)return 0;
     head=(uintptr_t)ldr+offsetof(PEB_LDR_DATA,InLoadOrderModuleList);
     if(!ios_htmlipc_read(NULL,head,&first,sizeof(first)))return 0;
     current=(uintptr_t)first.Flink;previous=head;

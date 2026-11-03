@@ -15,15 +15,25 @@ typedef int BOOL;
 typedef void *HANDLE;
 typedef struct { USHORT Length, MaximumLength; WCHAR *Buffer; } UNICODE_STRING;
 typedef struct list_entry { struct list_entry *Flink,*Blink; } LIST_ENTRY;
-typedef struct { LIST_ENTRY InLoadOrderModuleList; } PEB_LDR_DATA;
-typedef struct { UNICODE_STRING ImagePathName,CommandLine; unsigned other; } RTL_USER_PROCESS_PARAMETERS;
-typedef struct { RTL_USER_PROCESS_PARAMETERS *ProcessParameters; PEB_LDR_DATA *Ldr; } PEB;
+typedef struct { unsigned char prefix[0x10]; LIST_ENTRY InLoadOrderModuleList; } PEB_LDR_DATA;
+typedef struct { unsigned char prefix[0x60]; UNICODE_STRING ImagePathName,CommandLine; unsigned other; } RTL_USER_PROCESS_PARAMETERS;
+typedef struct { unsigned char prefix[0x18]; PEB_LDR_DATA *LdrData; RTL_USER_PROCESS_PARAMETERS *ProcessParameters; } PEB;
 typedef struct {
     LIST_ENTRY InLoadOrderLinks;
-    UNICODE_STRING BaseDllName;
-    void *DllBase;
-    ULONG SizeOfImage;
+    unsigned char reserved[0x20];
+    void *DllBase,*EntryPoint;
+    ULONG SizeOfImage,padding;
+    UNICODE_STRING FullDllName,BaseDllName;
 } LDR_DATA_TABLE_ENTRY;
+/* Match Wine's actual native64 winternl layouts; compact made-up layouts can
+ * hide field-name and offset mistakes in the native owner reader. */
+_Static_assert(offsetof(PEB,LdrData)==0x18,"Wine PEB loader offset");
+_Static_assert(offsetof(PEB,ProcessParameters)==0x20,"Wine PEB parameters offset");
+_Static_assert(offsetof(PEB_LDR_DATA,InLoadOrderModuleList)==0x10,"Wine loader list offset");
+_Static_assert(offsetof(RTL_USER_PROCESS_PARAMETERS,ImagePathName)==0x60,"Wine image path offset");
+_Static_assert(offsetof(LDR_DATA_TABLE_ENTRY,DllBase)==0x30,"Wine module base offset");
+_Static_assert(offsetof(LDR_DATA_TABLE_ENTRY,SizeOfImage)==0x40,"Wine module size offset");
+_Static_assert(offsetof(LDR_DATA_TABLE_ENTRY,BaseDllName)==0x58,"Wine module name offset");
 typedef struct { struct { void *UniqueProcess; } ClientId; } TEB;
 typedef uint64_t mach_vm_address_t;
 typedef size_t mach_vm_size_t;
@@ -118,7 +128,7 @@ static void build(void)
     mock_owner=&f.peb;mock_parent=NULL;mock_flip_data=NULL;test_teb.ClientId.UniqueProcess=(void *)(uintptr_t)32;
     nranges=0;readable(&f,sizeof(f));
     assert(!setenv("MADEIRA_HTMLIPC_HELPER",helper,1));assert(!setenv("MADEIRA_HTMLIPC_CACHE_DIR",cache,1));
-    f.peb.ProcessParameters=&f.parent;f.peb.Ldr=&f.ldr;
+    f.peb.ProcessParameters=&f.parent;f.peb.LdrData=&f.ldr;
     string(&f.parent.ImagePathName,f.parent_name,"C:\\Program Files (x86)\\Steam\\Steam.exe");
     string(&f.module.BaseDllName,f.module_name,"madeira-htmlipc-bridge.dll");
     string(&f.core.BaseDllName,f.core_name,"chromehtml.dll");
@@ -227,8 +237,8 @@ int main(void)
     build();mock_exiting=1;rejected(0);
     build();mock_reclaimed=1;rejected(0);
     build();mock_expire_snapshot=3;rejected(0); /* generation changed during native read */
-    build();f.peb.Ldr=NULL;rejected(0);
-    build();f.peb.Ldr=(void *)(uintptr_t)0x12345670000;rejected(0);
+    build();f.peb.LdrData=NULL;rejected(0);
+    build();f.peb.LdrData=(void *)(uintptr_t)0x12345670000;rejected(0);
     build();f.ldr.InLoadOrderModuleList.Flink=f.ldr.InLoadOrderModuleList.Blink=&f.ldr.InLoadOrderModuleList;rejected(0);
     build();f.ldr.InLoadOrderModuleList.Flink=NULL;rejected(0);
     build();f.ldr.InLoadOrderModuleList.Blink=&f.ldr.InLoadOrderModuleList;rejected(0);
