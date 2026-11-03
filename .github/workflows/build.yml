@@ -1,4 +1,4 @@
-name: Inspect exact HTML IPC factory
+name: Inspect exact HTML controller ABI
 on:
   workflow_dispatch:
 permissions:
@@ -6,10 +6,16 @@ permissions:
 jobs:
   inspect-htmlipc:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - name: Inspect hash-pinned current Steam core factory and transport references
+      - name: Compare pinned current and January AMD64 transport interfaces
         run: |
           python3 -m venv "$RUNNER_TEMP/htmlipc-tools"
           "$RUNNER_TEMP/htmlipc-tools/bin/pip" install pefile==2024.8.26 capstone==5.0.6
-          "$RUNNER_TEMP/htmlipc-tools/bin/python" tools/inspect-htmlipc-factory.py
+          "$RUNNER_TEMP/htmlipc-tools/bin/python" tools/inspect-controller-abi.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: exact-controller-abi-report
+          path: controller-abi-report.json
+          retention-days: 3
