@@ -28,6 +28,7 @@ for label,package,archive_sha,image_sha,ranges in PINS:
  row={'archive':package,'archive_sha256':archive_sha,'image_sha256':image_sha,'functions':{},'references':{},'imports':imports}
  report[label]=row
  for entry,end in ranges:
+  if hex(entry) in row['functions']: continue
   start=entry
   if end is None:
    i=bisect.bisect_right(starts,entry)-1
