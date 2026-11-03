@@ -36,10 +36,30 @@ enum class Error:U32 {
 };
 struct Result { Error error; U32 system_error; bool rollback_complete; };
 enum class Phase:U32 { Disarmed,Armed,Installed,Failed };
+/* First public-image mismatch only. Numeric values are part of the fixed
+ * probe diagnostic. Result::system_error retains its genuine WinAPI meaning. */
+enum class Stage:U32 {
+    None=0,ModuleSize=1,HeaderProtection=2,HeaderBytes=3,
+    SectionBounds=4,SectionProtection=5,SectionBytes=6,
+    Relocation=7,Metadata=8
+};
+struct Diagnostic {
+    Stage stage=Stage::None;
+    U32 rva=0;
+    U64 expected_bytes=0,actual_bytes=0;
+    U32 expected_protection=0,actual_protection=0;
+    U64 actual_image_size=0;
+    U32 byte_count=0;
+    /* Query failure=1, invalid region range=2, state!=MEM_COMMIT=4,
+     * type!=MEM_IMAGE=8, wrong allocation base=16, protection mismatch=32. */
+    U32 query_flags=0;
+};
+static_assert(sizeof(Diagnostic)==48);
 struct Installer {
     Config config{}; Api api{}; Phase phase=Phase::Disarmed;
     Result result{Error::NotArmed,0,true}; void *module=nullptr;
     U64 original_entries[7]{};
+    Diagnostic diagnostic{};
 };
 /* Call before loading chromehtml. It rejects an absent real wire contract;
  * no placeholder codec, loader, hooks or permissive default is supplied. */

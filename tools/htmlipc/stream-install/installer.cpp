@@ -16,6 +16,13 @@ static Result fail(Installer *s,Error error,U32 system=0,bool rolled_back=true){
     if(s){s->phase=Phase::Failed;s->result={error,system,rolled_back};return s->result;}
     return {error,system,rolled_back};
 }
+static void diagnose(Installer *s,Stage stage,U32 rva,U64 expected=0,U64 actual=0,
+                     U32 count=0,U32 expected_protect=0,U32 actual_protect=0,U32 flags=0){
+    if(!s||stage==Stage::None||s->diagnostic.stage!=Stage::None)return;
+    auto &d=s->diagnostic;d.stage=stage;d.rva=rva;d.expected_bytes=expected;
+    d.actual_bytes=actual;d.byte_count=count;d.expected_protection=expected_protect;
+    d.actual_protection=actual_protect;d.query_flags=flags;
+}
 struct PE {const U8 *f;Size n;U32 nt,optional,sections,count,image_size,headers,iat,iat_size,reloc,reloc_size;U64 base;};
 static bool parse(const Config &c,PE &p){
     p={};p.f=c.pinned_file;p.n=c.pinned_file_size;
@@ -40,11 +47,16 @@ static const U8 *at(const PE &p,U32 rva,Size n){
 static bool pin(const Config &c,PE &p){
     if(!parse(c,p))return false;U8 actual[32];sha256(c.pinned_file,c.pinned_file_size,actual);return equal(actual,digest,32);
 }
-static bool query_span(Installer *s,const void *address,Size bytes,U32 expected,void *allocation){
-    U64 cursor=reinterpret_cast<U64>(address),end=cursor+bytes;if(end<cursor)return false;
-    while(cursor<end){Region r{};if(!s->api.query(s->api.context,reinterpret_cast<void*>(cursor),&r))return false;
+static bool query_span(Installer *s,const void *address,Size bytes,U32 expected,void *allocation,Stage stage=Stage::None){
+    U64 cursor=reinterpret_cast<U64>(address),end=cursor+bytes;
+    if(end<cursor){diagnose(s,stage,U32(cursor-reinterpret_cast<U64>(s->module)),0,0,0,expected,0,2);return false;}
+    while(cursor<end){Region r{};U32 rva=U32(cursor-reinterpret_cast<U64>(s->module));
+        if(!s->api.query(s->api.context,reinterpret_cast<void*>(cursor),&r)){
+            diagnose(s,stage,rva,0,0,0,expected,0,1);return false;}
         U64 b=reinterpret_cast<U64>(r.base),z=b+r.size;
-        if(b>cursor||z<=cursor||z<b||r.state!=0x1000||r.type!=0x1000000||r.allocation!=allocation||r.protect!=expected)return false;
+        U32 flags=0;if(b>cursor||z<=cursor||z<b)flags|=2;if(r.state!=0x1000)flags|=4;
+        if(r.type!=0x1000000)flags|=8;if(r.allocation!=allocation)flags|=16;if(r.protect!=expected)flags|=32;
+        if(flags){diagnose(s,stage,rva,0,0,0,expected,r.protect,flags);return false;}
         cursor=z<end?z:end;
     }return true;
 }
@@ -59,20 +71,46 @@ static bool next_reloc(Relocations &r,U32 &target){
         r.block+=r.block_size;r.block_size=0;
     }target=0xffffffff;return true;
 }
+/* Snapshot at most eight bytes already identified as a first mismatch.
+ * Query each byte before reading; no attempt is made to relax validation.
+ * Section snapshots normalize the same DIR64 entries as comparison. */
+static void snapshot(Installer *s,const PE &p,bool header=false){
+    auto &d=s->diagnostic;if(d.stage==Stage::None||d.byte_count)return;
+    U32 start=d.rva;U8 *base=static_cast<U8*>(s->module);
+    Relocations it{&p};U32 relocation=0xffffffff;
+    if(!header&&!next_reloc(it,relocation))return;
+    for(U32 i=0;i<8&&start+i<p.image_size;++i){U32 rva=start+i;Region q{};
+        if(!s->api.query(s->api.context,base+rva,&q)||q.state!=0x1000||q.type!=0x1000000||q.allocation!=s->module||
+           (q.protect&0x100)||!(q.protect==2||q.protect==4||q.protect==8||q.protect==0x20||q.protect==0x40||q.protect==0x80))break;
+        U64 b=reinterpret_cast<U64>(q.base),a=reinterpret_cast<U64>(base+rva);
+        if(a<b||a-b>=q.size)break;
+        const U8 *raw=at(p,rva,1);if(!raw)break;
+        U8 expected=*raw;
+        if(!header){
+            if(rva>=p.iat&&rva-p.iat<p.iat_size)break;
+            while(relocation!=0xffffffff&&U64(relocation)+8<=rva)if(!next_reloc(it,relocation))return;
+            if(relocation<=rva&&rva-relocation<8){const U8 *v=at(p,relocation,8);if(!v)break;
+                U64 relocated=u64(v)+reinterpret_cast<U64>(base)-p.base;expected=U8(relocated>>((rva-relocation)*8));}
+        }
+        d.expected_bytes|=U64(expected)<<(i*8);d.actual_bytes|=U64(base[rva])<<(i*8);++d.byte_count;
+    }
+}
 static bool compare_section(Installer *s,const PE &p,U32 section){
     const U8 *h=p.f+p.sections+section*40;U32 start=u32(h+12),length=u32(h+8),raw=u32(h+16),off=u32(h+20),flags=u32(h+36);
-    if(!span(start,length,p.image_size)||!span(off,raw,p.n))return false;
+    if(!span(start,length,p.image_size)||!span(off,raw,p.n)){
+        diagnose(s,Stage::SectionBounds,start,p.image_size,U64(start)+length);return false;}
     U8 *base=static_cast<U8*>(s->module);U32 protect=(flags&0x20000000)?0x20:2;
-    if(!query_span(s,base+start,length,protect,s->module))return false;
-    Relocations it{&p};U32 relocation;if(!next_reloc(it,relocation))return false;
-    while(relocation<start)if(!next_reloc(it,relocation))return false;
+    if(!query_span(s,base+start,length,protect,s->module,Stage::SectionProtection)){snapshot(s,p);return false;}
+    Relocations it{&p};U32 relocation;if(!next_reloc(it,relocation)){diagnose(s,Stage::Relocation,p.reloc);return false;}
+    while(relocation<start)if(!next_reloc(it,relocation)){diagnose(s,Stage::Relocation,p.reloc+it.block);return false;}
     for(U32 i=0;i<length;){U32 rva=start+i;
         if(rva>=p.iat && rva-p.iat<p.iat_size){++i;continue;}
-        if(relocation==rva){const U8 *original=at(p,rva,8);if(!original||length-i<8)return false;
-            if(u64(base+rva)!=u64(original)+reinterpret_cast<U64>(base)-p.base)return false;
-            i+=8;if(!next_reloc(it,relocation))return false;continue;}
+        if(relocation==rva){const U8 *original=at(p,rva,8);if(!original||length-i<8){diagnose(s,Stage::Relocation,rva);return false;}
+            U64 wanted=u64(original)+reinterpret_cast<U64>(base)-p.base,actual=u64(base+rva);
+            if(actual!=wanted){diagnose(s,Stage::Relocation,rva,wanted,actual,8,protect,protect);return false;}
+            i+=8;if(!next_reloc(it,relocation)){diagnose(s,Stage::Relocation,p.reloc+it.block);return false;}continue;}
         U8 expected=i<raw?p.f[off+i]:0;
-        if(base[rva]!=expected)return false;++i;
+        if(base[rva]!=expected){diagnose(s,Stage::SectionBytes,rva,0,0,0,protect,protect);snapshot(s,p);return false;}++i;
     }return true;
 }
 static bool name_is_current(const U16 *name,Size units){
@@ -100,22 +138,32 @@ static bool restore_pages(Installer *s,void *const pages[2],U32 count,const U32 
 }
 Result install_loaded(Installer *s,void *module,Size image_size,const U16 *name,Size units){
     if(!s||s->phase!=Phase::Armed)return s?fail(s,s->phase==Phase::Installed?Error::AlreadyInstalled:Error::NotArmed):Result{Error::NotArmed,0,true};
+    s->diagnostic.actual_image_size=image_size;
     if(!name_is_current(name,units))return fail(s,Error::WrongModule);
-    if(!module||image_size!=0x19c000)return fail(s,Error::WrongImage);
+    if(!module||image_size!=0x19c000){diagnose(s,Stage::ModuleSize,0,0x19c000,image_size);return fail(s,Error::WrongImage);}
     s->module=module;PE p;if(!pin(s->config,p))return fail(s,Error::PinMismatch);
-    if(!query_span(s,module,p.headers,2,module)||!equal(module,p.f,p.headers))return fail(s,Error::WrongImage);
+    if(!query_span(s,module,p.headers,2,module,Stage::HeaderProtection)){snapshot(s,p,true);return fail(s,Error::WrongImage);}
+    for(U32 i=0;i<p.headers;++i)if(static_cast<U8*>(module)[i]!=p.f[i]){
+        diagnose(s,Stage::HeaderBytes,i,0,0,0,2,2);snapshot(s,p,true);return fail(s,Error::WrongImage);}
     /* Verify the complete mapped .text/.rdata/.pdata against the original
      * SHA-pinned file. Normalize only PE DIR64 relocations and loader IAT.
      * Mutable .data is checked separately for the exact RTTI type names. */
     for(U32 i=0;i<p.count;++i){const U8 *h=p.f+p.sections+i*40;
         if((equal(h,".text",5)||equal(h,".rdata",6)||equal(h,".pdata",6))&&!compare_section(s,p,i))return fail(s,Error::WrongImage);}
     U8 *base=static_cast<U8*>(module);auto table=reinterpret_cast<volatile U64*>(base+stream_vtable_rva);
-    if(u64(base+0x132338)!=reinterpret_cast<U64>(base)+0x15c550||
-       !equal(base+0x15c550,at(p,0x15c550,24),24)||
-       !equal(base+0x17f428,".?AVCSharedMemStream@@",22)||
-       !equal(base+0x17f400,".?AVIMemStream@@",16))return fail(s,Error::WrongMetadata);
-    for(U32 i=0;i<7;++i){s->original_entries[i]=reinterpret_cast<U64>(base)+original_rvas[i];if(table[i]!=s->original_entries[i])return fail(s,Error::WrongMetadata);}
-    if(!equal(base+0x121ce0,old_path,sizeof(old_path))||u64(base+0x121cd8)!=reinterpret_cast<U64>(base)+0x121ce0)return fail(s,Error::WrongMetadata);
+    if(u64(base+0x132338)!=reinterpret_cast<U64>(base)+0x15c550){
+        diagnose(s,Stage::Metadata,0x132338,reinterpret_cast<U64>(base)+0x15c550,u64(base+0x132338),8);return fail(s,Error::WrongMetadata);}
+    const U32 metadata_rvas[3]={0x15c550,0x17f428,0x17f400};
+    const U8 *metadata_expected[3]={at(p,0x15c550,24),reinterpret_cast<const U8*>(".?AVCSharedMemStream@@"),reinterpret_cast<const U8*>(".?AVIMemStream@@")};
+    const U32 metadata_lengths[3]={24,22,16};
+    for(U32 m=0;m<3;++m)for(U32 i=0;i<metadata_lengths[m];++i)if(base[metadata_rvas[m]+i]!=metadata_expected[m][i]){
+        diagnose(s,Stage::Metadata,metadata_rvas[m]+i);snapshot(s,p);return fail(s,Error::WrongMetadata);}
+    for(U32 i=0;i<7;++i){s->original_entries[i]=reinterpret_cast<U64>(base)+original_rvas[i];if(table[i]!=s->original_entries[i]){
+        diagnose(s,Stage::Metadata,stream_vtable_rva+i*8,s->original_entries[i],table[i],8);return fail(s,Error::WrongMetadata);}}
+    for(U32 i=0;i<sizeof(old_path);++i)if(base[0x121ce0+i]!=U8(old_path[i])){
+        diagnose(s,Stage::Metadata,0x121ce0+i);snapshot(s,p);return fail(s,Error::WrongMetadata);}
+    if(u64(base+0x121cd8)!=reinterpret_cast<U64>(base)+0x121ce0){
+        diagnose(s,Stage::Metadata,0x121cd8,reinterpret_cast<U64>(base)+0x121ce0,u64(base+0x121cd8),8);return fail(s,Error::WrongMetadata);}
     void *pages[2]={base+0x132000,base+0x121000};U32 old[2]{};U32 count=s->config.redirect_helper_win32?2:1;
     for(U32 i=0;i<count;++i){if(!query_span(s,pages[i],4096,2,module))return fail(s,Error::WrongProtection);
         if(!s->api.protect(s->api.context,pages[i],4096,4,&old[i])){U32 error=s->api.last_error(s->api.context);bool restored=restore_pages(s,pages,i,old);return fail(s,restored?Error::MakeWritableFailed:Error::RollbackIncomplete,error,restored);}

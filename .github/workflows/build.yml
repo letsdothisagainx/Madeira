@@ -64,3 +64,17 @@ jobs:
           name: source-htmlipc-runtime-probe
           path: ${{ runner.temp }}/runtime-artifacts
           retention-days: 3
+      - name: Require genuine source-adapted login rendering
+        if: always()
+        run: |
+          /usr/bin/python3 - <<'PY_RUNTIME_RESULT'
+          import json, os
+          from pathlib import Path
+          file=Path(os.environ['RUNNER_TEMP'])/'bridge-runtime-result.json'
+          result=Path(os.environ['RUNNER_TEMP'])/'runtime-artifacts/bridge/result.json'
+          assert result.is_file(), 'runtime did not execute'
+          data=json.loads(result.read_text())
+          assert data['result']=='unauthenticated-login-rendered', data['result']
+          assert data['bridge_installed'] and data['bridge_connected']
+          assert not data['bridge_failure'] and data['login_frame_observed']
+          PY_RUNTIME_RESULT

@@ -3,6 +3,7 @@
 using namespace madeira_stream_install;
 static constexpr U64 module_base=0x280000000ULL,pin_base=0x900000000ULL;
 extern "C" U32 test_mode=0,protect_calls=0,api_error=0;
+extern "C" Diagnostic last_diagnostic{};
 extern "C" U32 page_protections[0x19c]{};
 extern "C" void *memset(void *p,int c,Size n){auto b=static_cast<volatile U8*>(p);for(Size i=0;i<n;++i)b[i]=U8(c);return p;}
 extern "C" void *memcpy(void *p,const void *q,Size n){auto a=static_cast<volatile U8*>(p);auto b=static_cast<const volatile U8*>(q);for(Size i=0;i<n;++i)a[i]=b[i];return p;}
@@ -25,6 +26,8 @@ extern "C" U64 run_tests(){
     for(U32 i=1;i<0x120;++i)page_protections[i]=0x20;
     for(U32 i=0x177;i<0x185;++i)page_protections[i]=4;
     page_protections[0x197]=4;
+    if(test_mode==12)page_protections[0]=4;
+    if(test_mode==13)page_protections[1]=2;
     Installer state;Config c{};c.pinned_file=reinterpret_cast<const U8*>(pin_base);c.pinned_file_size=1668248;
     c.hook_module=reinterpret_cast<void*>(0x180000000ULL);c.hook_module_size=0x100000;
     for(U32 i=0;i<7;++i)c.hooks[i]=reinterpret_cast<const void*>(hook);
@@ -35,13 +38,21 @@ extern "C" U64 run_tests(){
     if(test_mode==8)return armed.error==Error::InvalidConfig?0:3;
     if(armed.error!=Error::None)return 4;
     const U16 name[]={'c','h','r','o','m','e','h','t','m','l','.','d','l','l'};
-    Result result=install_loaded(&state,reinterpret_cast<void*>(module_base),0x19c000,name,14);
+    Result result=install_loaded(&state,reinterpret_cast<void*>(module_base),test_mode==14?0x19c001:0x19c000,name,14);
+    last_diagnostic=state.diagnostic;
     if(test_mode==1)return result.error==Error::MakeWritableFailed&&result.system_error==57&&result.rollback_complete?0:5;
     if(test_mode==2)return result.error==Error::RestoreFailed&&result.system_error==57&&result.rollback_complete?0:6;
     if(test_mode==3)return result.error==Error::RollbackIncomplete&&result.system_error==57&&!result.rollback_complete?0:7;
-    if(test_mode==5)return result.error==Error::WrongMetadata?0:8;
-    if(test_mode==7||test_mode==10)return result.error==Error::WrongImage?0:9;
+    if(test_mode==5)return result.error==Error::WrongMetadata&&state.diagnostic.stage==Stage::Metadata&&state.diagnostic.rva==0x17f428?0:8;
+    if(test_mode==7)return result.error==Error::WrongImage&&state.diagnostic.stage==Stage::Relocation&&state.diagnostic.rva==0x132340?0:9;
+    if(test_mode==10)return result.error==Error::WrongImage&&state.diagnostic.stage==Stage::SectionBytes&&state.diagnostic.rva==0x1000?0:42;
+    if(test_mode==11)return result.error==Error::WrongImage&&state.diagnostic.stage==Stage::HeaderBytes?0:43;
+    if(test_mode==12)return result.error==Error::WrongImage&&state.diagnostic.stage==Stage::HeaderProtection&&state.diagnostic.rva==0?0:44;
+    if(test_mode==13)return result.error==Error::WrongImage&&state.diagnostic.stage==Stage::SectionProtection&&state.diagnostic.rva==0x1000?0:45;
+    if(test_mode==14)return result.error==Error::WrongImage&&state.diagnostic.stage==Stage::ModuleSize&&state.diagnostic.actual_image_size==0x19c001?0:46;
+    if(test_mode==15)return result.error==Error::WrongImage&&state.diagnostic.stage==Stage::SectionBytes&&state.diagnostic.rva==0x121ce0?0:47;
     if(result.error!=Error::None||state.phase!=Phase::Installed)return 10+U64(result.error);
+    if(state.diagnostic.stage!=Stage::None)return 48;
     if(page_protections[0x132]!=2||page_protections[0x121]!=2)return 40;
     auto object=reinterpret_cast<U64*>(module_base+controller_object_rva);
     *object=module_base+controller_vtable_rva;

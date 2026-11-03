@@ -134,6 +134,19 @@ static void announce_install_error(U32 code){
     n=number(line,n,pid);n=literal(line,n," code=");n=number(line,n,code);line[n++]='\n';
     line[n]=0;U32 written=0;if(!WriteFile(GetStdHandle(U32(-12)),line,U32(n),&written,nullptr))OutputDebugStringA(line);
 }
+static void announce_install_diagnostic(const install::Diagnostic &d){
+    char line[384];Size n=literal(line,0,"MADEIRA_HTMLIPC image-mismatch stage=");
+    n=number(line,n,U32(d.stage));n=literal(line,n," rva=");n=number(line,n,d.rva);
+    n=literal(line,n," expected=");n=number(line,n,d.expected_bytes);
+    n=literal(line,n," actual=");n=number(line,n,d.actual_bytes);
+    n=literal(line,n," bytes=");n=number(line,n,d.byte_count);
+    n=literal(line,n," expected-protection=");n=number(line,n,d.expected_protection);
+    n=literal(line,n," actual-protection=");n=number(line,n,d.actual_protection);
+    n=literal(line,n," image-size=");n=number(line,n,d.actual_image_size);
+    n=literal(line,n," query-flags=");n=number(line,n,d.query_flags);
+    line[n++]='\n';line[n]=0;U32 written=0;
+    if(!WriteFile(GetStdHandle(U32(-12)),line,U32(n),&written,nullptr))OutputDebugStringA(line);
+}
 static install::Installer *get_installer(){return __atomic_load_n(&installer,__ATOMIC_ACQUIRE);}
 static bool originals(Originals *out){
     auto *i=get_installer();
@@ -493,7 +506,10 @@ extern "C" void MadeiraRuntimeNoteInstaller(install::Installer *state){
     __atomic_store_n(&published_module,state?state->module:nullptr,__ATOMIC_RELAXED);
     __atomic_store_n(&published_error,state?U32(state->result.error):0u,__ATOMIC_RELAXED);
     __atomic_store_n(&published_phase,state?U32(state->phase):0u,__ATOMIC_RELEASE);
-    if(state&&state->phase==install::Phase::Failed)announce_install_error(U32(state->result.error));
+    if(state&&state->phase==install::Phase::Failed){
+        announce_install_diagnostic(state->diagnostic);
+        announce_install_error(U32(state->result.error));
+    }
 }
 extern "C" EXPORT bool MadeiraRuntimeGetStatus(Status *out,U32 bytes){
     if(!out||bytes<sizeof(Status))return false;
