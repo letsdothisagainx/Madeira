@@ -1,5 +1,8 @@
 /* SPDX-License-Identifier: MIT */
 #include "stream_codec.h"
+#include "domain_registry.h"
+#include <cstdlib>
+#include <cstring>
 #include <algorithm>
 #include <atomic>
 #include <cassert>
@@ -63,10 +66,10 @@ struct Harness {
     std::mutex codec_mutex;
     std::vector<Byte> input,output;
     Scope scope;
-    explicit Harness(Size workspace=4096):input(workspace),output(workspace),scope{this,7,&tx,&rx}{
+    explicit Harness(Size workspace=4096,Control control={},U32 budget=64):input(workspace),output(workspace),scope{this,7,&tx,&rx}{
         tx.owner=rx.owner=this;
         Settings p{scope,{original_available,original_writable,original_put,original_get,original_clear,original_wait},
-            {entries,3},{input.data(),input.size(),output.data(),output.size()},{&codec_mutex,enter,leave},64};
+            {entries,3},{input.data(),input.size(),output.data(),output.size()},{&codec_mutex,enter,leave},budget,control};
         CHECK(configure(&state,p));
     }
 };
@@ -164,4 +167,56 @@ static void failures(){
     {Harness h;h.rx.over_get=true;auto f=frame(101);h.rx.feed(f.data(),f.size());CHECK(available(&h.state,h.scope,&h.rx)==0);CHECK(status(&h.state).error==Error::OriginalOverreported);}
     {Harness h;Scope wrong=h.scope;++wrong.generation;CHECK(available(&h.state,wrong,&h.rx)==0);CHECK(status(&h.state).error==Error::WrongScope);}
 }
-int main(){tx_final_ack();retry_mismatch();read_ahead_and_clear();incoming_chunks();outgoing_chunks();large_ring();failures();std::printf("stream codec: %llu checks passed\n",checks.load());}
+
+struct DomainControl {
+    madeira_domain::Registry registry{};U32 calls=0;bool fail=false;
+    static void *alloc(void *,Size n){return std::malloc(n);}
+    static void free(void *,void *p){std::free(p);}
+    DomainControl(){CHECK(madeira_domain::open(&registry,{1,7},{nullptr,alloc,free})==madeira_domain::Error::Ok);}
+    ~DomainControl(){CHECK(madeira_domain::close(&registry,{1,7})==madeira_domain::Error::Ok);}
+    static bool handles(void *,U32 command){return command==54;}
+    static bool consume(void *p,const Scope &scope,U32 command,U32 browser,const Byte *body,Size n){
+        auto &d=*static_cast<DomainControl *>(p);++d.calls;
+        if(d.fail||scope.generation!=7||command!=54||browser!=0xffffffffu)return false;
+        madeira_domain::Registration r{};
+        return madeira_domain::parse_registration({body,n},&r)==madeira_domain::Error::Ok&&
+            madeira_domain::update(&d.registry,{1,scope.generation},r)==madeira_domain::Error::Ok;
+    }
+    Control api(){return {this,handles,consume};}
+};
+static void local_controls(){
+    const std::vector<Byte> body={0x0a,4,'d','.','h','t',0x12,4,'p','a','t','h'};
+    auto registration=frame(54,body,0xffffffffu);
+    for(Size cut=1;cut<registration.size();++cut){DomainControl d;Harness h(4096,d.api());
+        CHECK(put(&h.state,h.scope,&h.tx,registration.data(),U32(cut))==cut);CHECK(d.calls==0&&d.registry.records==0);
+        CHECK(put(&h.state,h.scope,&h.tx,registration.data()+cut,U32(registration.size()-cut))==registration.size()-cut);
+        CHECK(d.calls==1&&d.registry.records==1&&h.tx.put_calls==0);assert_ok(h);
+    }
+    {DomainControl d;Harness h(4096,d.api(),1);
+        CHECK(put(&h.state,h.scope,&h.tx,registration.data(),U32(registration.size()))==registration.size()-1);
+        CHECK(d.calls==1&&h.state.tx_final_unacked&&writable(&h.state,h.scope,&h.tx)==1);
+        CHECK(put(&h.state,h.scope,&h.tx,registration.data()+registration.size()-1,1)==1);
+        CHECK(d.calls==1&&h.tx.put_calls==0);assert_ok(h);
+    }
+    {DomainControl d;Harness h(4096,d.api());auto before=frame(11,{1,2}),after=frame(13,{3,4});
+        std::vector<Byte> input=before;append(input,registration);append(input,after);
+        CHECK(put(&h.state,h.scope,&h.tx,input.data(),U32(input.size()))==input.size());
+        auto expected=converted(before);append(expected,converted(after));CHECK(h.tx.drain(4096)==expected);
+        CHECK(d.calls==1&&d.registry.records==1);assert_ok(h);
+    }
+    for(unsigned mode=0;mode<3;++mode){DomainControl d;Harness h(4096,d.api());auto bad=registration;
+        if(mode==0)d.fail=true;
+        if(mode==1)set32(bad,8,123);
+        if(mode==2)bad[12]=0;
+        CHECK(put(&h.state,h.scope,&h.tx,bad.data(),U32(bad.size()))==bad.size()-1);
+        CHECK(status(&h.state).error==Error::ControlFailure&&d.registry.records==0&&h.tx.put_calls==0);
+    }
+    for(U32 command:{53u,108u}){DomainControl d;Harness h(4096,d.api());auto bad=frame(command);
+        CHECK(put(&h.state,h.scope,&h.tx,bad.data(),U32(bad.size()))==bad.size()-1);
+        CHECK(status(&h.state).wire==madeira_wire::Error::UnsupportedCommand&&d.calls==0&&h.tx.put_calls==0);
+    }
+    {DomainControl d;Harness h(4096,d.api());CHECK(put(&h.state,h.scope,&h.tx,registration.data(),13)==13);
+        CHECK(d.calls==0);CHECK(clear(&h.state,h.scope,&h.tx,0));CHECK(d.registry.records==0);assert_ok(h);}
+}
+
+int main(){local_controls();tx_final_ack();retry_mismatch();read_ahead_and_clear();incoming_chunks();outgoing_chunks();large_ring();failures();std::printf("stream codec: %llu checks passed\n",checks.load());}

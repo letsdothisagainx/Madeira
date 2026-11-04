@@ -9,6 +9,10 @@ on:
       - app/Madeira/SteamRuntime.swift
       - tests/host/check-steam-browser-cache.py
       - tests/integration/check-official-steam-browser-cache.py
+      - build/htmlipc/domain-routing/**
+      - build/htmlipc/stream-codec/**
+      - tests/host/check-htmlipc-domain-registry.py
+      - tests/host/htmlipc/test_domain_registry.cpp
       - build/htmlipc/stream-install/**
       - build/htmlipc/runtime/runtime_provider.cpp
       - tests/host/check-htmlipc-controller.py
@@ -20,6 +24,10 @@ on:
       - app/Madeira/SteamRuntime.swift
       - tests/host/check-steam-browser-cache.py
       - tests/integration/check-official-steam-browser-cache.py
+      - build/htmlipc/domain-routing/**
+      - build/htmlipc/stream-codec/**
+      - tests/host/check-htmlipc-domain-registry.py
+      - tests/host/htmlipc/test_domain_registry.cpp
       - build/htmlipc/stream-install/**
       - build/htmlipc/runtime/runtime_provider.cpp
       - tests/host/check-htmlipc-controller.py
@@ -38,7 +46,10 @@ jobs:
         with:
           persist-credentials: false
       - name: Test committed image ownership and exact writable data protections
-        run: python3 tests/host/check-htmlipc-controller.py
+        run: |
+          python3 tests/host/check-htmlipc-controller.py
+          python3 tests/host/check-htmlipc-domain-registry.py
+          python3 tests/host/check-htmlipc-codecs.py
   browser-cache:
     runs-on: xcode-27
     timeout-minutes: 15

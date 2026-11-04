@@ -37,9 +37,14 @@ struct Scope {void *controller;U64 generation;Stream to_helper,from_helper;};
 struct Workspace {Byte *input;Size input_capacity;Byte *output;Size output_capacity;};
 enum class Error:U32 {
     None,InvalidConfiguration,WrongScope,InvalidArgument,WireFailure,
-    OriginalOverreported,RetryByteMismatch,CounterOverflow
+    OriginalOverreported,RetryByteMismatch,CounterOverflow,ControlFailure
 };
 struct Failure {Error error;madeira_wire::Error wire;};
+struct Control {
+    void *context=nullptr;
+    bool (*handles)(void *,U32)=nullptr;
+    bool (*consume)(void *,const Scope &,U32,U32,const Byte *,Size)=nullptr;
+};
 struct Settings {
     Scope scope;Original original;madeira_wire::MapView map;Workspace workspace;
     Lock lock;
@@ -47,6 +52,10 @@ struct Settings {
      * lock. Zero stops pumping. Positive short writes continue within this
      * bound. Recommended:64 for the genuine 1MiB chunks/32MiB frame limit. */
     U32 io_budget;
+    // A local control operation has genuine state semantics but no legacy
+    // wire opcode. It must commit atomically before the final caller byte is
+    // acknowledged. Absent handlers retain the ordinary fail-closed map.
+    Control control{};
 };
 /* All memory is caller-owned. Allocate sizeof(State), plus two disjoint
  * workspaces of max_frame bytes to support the full outgoing limit. Smaller

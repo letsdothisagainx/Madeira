@@ -55,12 +55,35 @@ changed vtables and executable/writable protections remain rejected. The first
 controller mismatch emits a bounded numeric diagnostic after releasing the
 registry lock.
 
-Host tests and a successful IPA build do not validate the iPhone runtime. The
-isolated genuine Steam probe now loads the I386 helper and CEF libraries and
-establishes shared-memory IPC after the copy-on-write correction. It then fails
-explicitly on current command 54 (`CMsgSetBrowserViewDomainRequestMapping`), which
-the frozen helper does not implement. That global helper-side routing policy
-has not been translated; mapping it to an old per-browser file route would not
-preserve its access policy or child BrowserView lifecycle. It remains a real
-startup blocker. Rendered login, responsive authenticated Library navigation,
-five-minute stability and CS2 process creation are not verified.
+Command 54 (`CMsgSetBrowserViewDomainRequestMapping`) is a passive global
+registration, with replacement/removal semantics; it does not immediately map a
+browser or serve files. Exact current SteamUI and web-resource inspection shows
+startup registration enumerates custom screensaver directories and registers
+`%s.steamscreensavers.host`. The ordinary shared UI separately installs its
+existing per-browser `https://steamloopback.host` route with command 60. The one
+`bBrowserViewDomainMapping` consumer in the pinned web package is the optional
+custom Screensaver BrowserView, not the ordinary Library.
+
+The connected adapter now implements registration as real generation-owned
+state. Protobuf optional fields use last-value semantics; const-char strings
+retain the genuine helper's first-NUL behavior. Replacements allocate before
+committing, failed allocations retain prior entries, and retirement frees state
+only after callbacks have drained. A complete registration is acknowledged only
+after it commits. It is never forwarded as the legacy opcode 54 (which means
+ClearHistory). Ordinary frames retain their original partial-write, backpressure
+and ordering behavior. Unknown commands still fail explicitly.
+
+This does not implement custom Screensaver routing. No global mapping is
+converted into a blanket per-browser mapping or added to the old helper's file
+policy. Commands 53 (SetBlockInput) and 108 (InputBlocked) remain unsupported.
+The current helper's actual routed path depends on type 3, explicit opt-in,
+empty existing mapping and the empty-POST pre-navigation branch, with different
+file-access policy; silently emulating that path would be incorrect. Future
+routing support must preserve those conditions and child/popup lifetimes.
+
+Host tests, build success and IPC connection are distinct from UI validation.
+The latest iPhone log identifies source `02c525c` and proves cache verification
+and connection succeeded before rejection of command 54. The revised source
+requires genuine login-frame testing, then authenticated Library navigation,
+five-minute on-device responsiveness and normal CS2 process creation. No Steam
+JavaScript, installed game, account data or authentication check is changed.

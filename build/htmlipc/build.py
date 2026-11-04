@@ -43,6 +43,7 @@ def main():
              HERE/'stream-install/installer.cpp',HERE/'runtime/loader.cpp',
              HERE/'stream-codec/stream_codec.cpp',HERE/'wire-codec/wire_codec.cpp',
              HERE/'runtime/proven_map.cpp']
+    sources.append(HERE/'domain-routing/domain_registry.cpp')
     headers=sorted(HERE.rglob('*.h'))
     abi=ROOT/'build/scm-rpc/htmlipc_ready_abi.h'
     closure=sources+headers+[abi,HERE/'runtime/cache-contract.txt',HERE/'runtime/proven-map-manifest.json',HERE/'source-provenance.json']
