@@ -51,7 +51,7 @@ for f,refs in xref.items():
  spans=[(f[0],f[1])] if f[1]-f[0]<=2200 else [(max(f[0],int(ref['rva'],16)-120),min(f[1],int(ref['rva'],16)+220)) for ref in refs]
  for a,b in spans:
   print('FUNCTION_CONTEXT '+json.dumps({'function':hex(f[0]),'range':[hex(a),hex(b)],'instructions':[(hex(ad-base),mn+' '+op) for ad,_,mn,op in c.disasm_lite(p.get_data(a,b-a),base+a)]}),flush=True)
-for a,b in [(0x66aa30,0x66ae80)]:
+for a,b in [(0x66aa30,0x66ace3),(0x5b9660,0x5b9a30)]:
  print('EXACT_MAPPING_BODY '+json.dumps({'range':[hex(a),hex(b)],'instructions':[(hex(ad-base),mn+' '+op) for ad,_,mn,op in c.disasm_lite(p.get_data(a,b-a),base+a)]}),flush=True)
 with zipfile.ZipFile(io.BytesIO(blobs[1])) as z:
  count=0
