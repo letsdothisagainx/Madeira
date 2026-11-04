@@ -2,7 +2,14 @@
 #ifndef MADEIRA_HTMLIPC_STREAM_CODEC_H
 #define MADEIRA_HTMLIPC_STREAM_CODEC_H
 #include "../wire-codec/wire_codec.h"
-#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+#if defined(MADEIRA_STREAM_HOST_TEST_ABI)
+/* Algorithm fixtures on an ARM host call only their own injected callbacks.
+ * This mode must never enter a Windows DLL or the guest runtime provider. */
+#if defined(_WIN32) || defined(MADEIRA_RUNTIME_PROVIDER)
+#error "Host test callback ABI is forbidden in the Windows guest runtime"
+#endif
+#define MADEIRA_STREAM_ABI
+#elif defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
 #define MADEIRA_STREAM_ABI __attribute__((ms_abi))
 #elif defined(_M_X64)
 #define MADEIRA_STREAM_ABI
@@ -30,9 +37,14 @@ struct Scope {void *controller;U64 generation;Stream to_helper,from_helper;};
 struct Workspace {Byte *input;Size input_capacity;Byte *output;Size output_capacity;};
 enum class Error:U32 {
     None,InvalidConfiguration,WrongScope,InvalidArgument,WireFailure,
-    OriginalOverreported,RetryByteMismatch,CounterOverflow
+    OriginalOverreported,RetryByteMismatch,CounterOverflow,ControlFailure
 };
 struct Failure {Error error;madeira_wire::Error wire;};
+struct Control {
+    void *context=nullptr;
+    bool (*handles)(void *,U32)=nullptr;
+    bool (*consume)(void *,const Scope &,U32,U32,const Byte *,Size)=nullptr;
+};
 struct Settings {
     Scope scope;Original original;madeira_wire::MapView map;Workspace workspace;
     Lock lock;
@@ -40,6 +52,10 @@ struct Settings {
      * lock. Zero stops pumping. Positive short writes continue within this
      * bound. Recommended:64 for the genuine 1MiB chunks/32MiB frame limit. */
     U32 io_budget;
+    // A local control operation has genuine state semantics but no legacy
+    // wire opcode. It must commit atomically before the final caller byte is
+    // acknowledged. Absent handlers retain the ordinary fail-closed map.
+    Control control{};
 };
 /* All memory is caller-owned. Allocate sizeof(State), plus two disjoint
  * workspaces of max_frame bytes to support the full outgoing limit. Smaller

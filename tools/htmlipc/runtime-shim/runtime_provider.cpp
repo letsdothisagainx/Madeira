@@ -3,8 +3,10 @@
  */
 #include "runtime_provider.h"
 #include "../stream-codec/stream_codec.h"
+#include "../domain-routing/domain_registry.h"
 namespace install=madeira_stream_install;
 namespace codec=madeira_stream_codec;
+namespace domain=madeira_domain;
 using namespace madeira_runtime;
 using Byte=madeira_wire::Byte;
 using Size=madeira_wire::Size;
@@ -59,6 +61,8 @@ struct Entry {
     U32 active,destroyed,destroying;
     bool reported,quarantined,announced;
     WaitThread wait_threads[wait_thread_limit];
+    domain::Registry domains;
+    U32 domain_reports;
 };
 using Destroy=void *(*)(void *,U32);
 struct Originals {Destroy destroy;codec::Original methods;};
@@ -218,10 +222,33 @@ static void release_owned(Entry *e){
     /* Called only after both genuine destructors returned, no admitted callback
      * remains, and no admission can reopen this generation. */
     void *heap=GetProcessHeap();
+    if(e->domains.live)(void)domain::close(&e->domains,{pid,e->scope.generation});
     if(e->state)HeapFree(heap,0,e->state);
     if(e->input)HeapFree(heap,0,e->input);
     if(e->output)HeapFree(heap,0,e->output);
     e->state=nullptr;e->input=nullptr;e->output=nullptr;e->life=Life::Dead;
+}
+static void *domain_allocate(void *heap,Size n){return HeapAlloc(heap,0,n);}
+static void domain_release(void *heap,void *p){HeapFree(heap,0,p);}
+static bool domain_control(void *,U32 command){return command==54;}
+static bool domain_register(void *context,const codec::Scope &scope,U32 command,U32 browser,const Byte *bytes,Size size){
+    auto *e=static_cast<Entry *>(context);
+    if(command!=54||browser!=0xffffffffu||scope.generation!=e->scope.generation||scope.controller!=e->scope.controller)return false;
+    domain::Registration registration{};
+    auto result=domain::parse_registration({bytes,size},&registration);
+    if(result==domain::Error::Ok)result=domain::update(&e->domains,{pid,scope.generation},registration);
+    // No URL, path, credentials or request body enters diagnostics. Registration
+    // changes no browser policy; optional custom-Screensaver routing/activation
+    // remains unsupported, including genuine command53 (SetBlockInput).
+    if(e->domain_reports<4){++e->domain_reports;
+        char line[192];Size n=literal(line,0,"MADEIRA_HTMLIPC domain-register pid=");n=number(line,n,pid);
+        n=literal(line,n," generation=");n=number(line,n,scope.generation);
+        n=literal(line,n," result=");n=number(line,n,U32(result));
+        n=literal(line,n," records=");n=number(line,n,e->domains.records);
+        n=literal(line,n," routing=unsupported\n");line[n]=0;
+        U32 written=0;WriteFile(GetStdHandle(U32(-12)),line,U32(n),&written,nullptr);OutputDebugStringA(line);
+    }
+    return result==domain::Error::Ok;
 }
 static Entry *make_entry_locked(install::Installer *i,void *controller,void *to,void *from,
                                 const Originals &original,Error *failure){
@@ -231,6 +258,7 @@ static Entry *make_entry_locked(install::Installer *i,void *controller,void *to,
     e->scope={controller,(U64(pid)<<32)|++generation_counter,to,from};
     __atomic_store_n(&current_generation,e->scope.generation,__ATOMIC_RELEASE);e->life=Life::Failed;
     void *heap=GetProcessHeap();
+    if(domain::open(&e->domains,{pid,e->scope.generation},{heap,domain_allocate,domain_release})!=domain::Error::Ok){*failure=Error::CodecConfiguration;return e;}
     void *memory=HeapAlloc(heap,8,sizeof(codec::State));
     if(memory)e->state=new(memory)codec::State{};
     e->input=static_cast<Byte *>(HeapAlloc(heap,0,codec::max_frame));
@@ -238,7 +266,7 @@ static Entry *make_entry_locked(install::Installer *i,void *controller,void *to,
     if(!e->state||!e->input||!e->output){*failure=Error::Allocation;return e;}
     codec::Settings settings{e->scope,original.methods,wire_map,
         {e->input,codec::max_frame,e->output,codec::max_frame},
-        {e,codec_enter,codec_leave},64};
+        {e,codec_enter,codec_leave},64,{e,domain_control,domain_register}};
     if(!codec::configure(e->state,settings)){*failure=Error::CodecConfiguration;return e;}
     (void)i;e->life=Life::Live;return e;
 }

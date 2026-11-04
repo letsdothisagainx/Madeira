@@ -13,7 +13,7 @@ p.add_argument('--test-token',required=True)
 p.add_argument('--map-source',type=Path,required=True)
 a=p.parse_args();provider=a.provider_root.resolve()
 copy=here/'build'/'paired-provider-source';copy.mkdir(parents=True,exist_ok=True)
-for name in ('runtime-shim','stream-install','stream-codec','wire-codec'):
+for name in ('runtime-shim','stream-install','stream-codec','wire-codec','domain-routing'):
     source=provider/name;target=copy/name;target.mkdir(exist_ok=True)
     for source_file in source.iterdir():
         if source_file.suffix in ('.cpp','.h','.py','.def') and source_file.is_file():shutil.copy2(source_file,target/source_file.name)

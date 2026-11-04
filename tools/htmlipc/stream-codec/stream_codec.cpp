@@ -45,11 +45,19 @@ static bool tx_header(State *s){
     if(bytes>madeira_wire::max_outgoing_payload)return error(s,Error::WireFailure,madeira_wire::Error::FrameTooLarge);
     s->tx_expected=Size(bytes)+12;
     if(s->tx_expected>s->settings.workspace.input_capacity)return error(s,Error::WireFailure,madeira_wire::Error::Capacity);
-    if(!lookup(s,read32(s->settings.workspace.input+4),false))return error(s,Error::WireFailure,madeira_wire::Error::UnsupportedCommand);
+    U32 command=read32(s->settings.workspace.input+4);const auto &c=s->settings.control;
+    if(!lookup(s,command,false)&&!(c.handles&&c.handles(c.context,command)))return error(s,Error::WireFailure,madeira_wire::Error::UnsupportedCommand);
     return true;
 }
-static bool convert(State *s){
+static bool convert(State *s,U32 &budget){
     auto &w=s->settings.workspace;
+    auto &c=s->settings.control;U32 command=read32(w.input+4);
+    if(c.handles&&c.handles(c.context,command)){
+        --budget;
+        if(!c.consume(c.context,s->settings.scope,command,read32(w.input+8),w.input+12,s->tx_used-12))
+            return error(s,Error::ControlFailure);
+        s->tx_size=s->tx_sent=0;return true;
+    }
     auto r=madeira_wire::convert_frame(madeira_wire::Direction::CurrentToLegacy,
        s->settings.map,w.input,s->tx_used,w.output,w.output_capacity);
     if(r.error!=madeira_wire::Error::Ok)return error(s,Error::WireFailure,r.error);
@@ -97,9 +105,13 @@ bool configure(State *s,const Settings &p){
     if(!p.scope.controller||!p.scope.generation||!p.scope.to_helper||!p.scope.from_helper||p.scope.to_helper==p.scope.from_helper||
        !p.original.available||!p.original.writable||!p.original.put||!p.original.get||!p.original.clear||!p.original.wait||
        !p.lock.enter||!p.lock.leave||!p.io_budget||p.io_budget>4096||
+       (bool(p.control.handles)!=bool(p.control.consume))||
        p.workspace.input_capacity<12||p.workspace.input_capacity>max_frame||p.workspace.output_capacity<12||p.workspace.output_capacity>max_frame||
        !disjoint(p.workspace.input,p.workspace.input_capacity,p.workspace.output,p.workspace.output_capacity)||!valid_map(p.map))
         return error(s,Error::InvalidConfiguration,madeira_wire::Error::InvalidMap);
+    if(p.control.handles)for(Size i=0;i<p.map.count;++i)
+        if(p.control.handles(p.control.context,p.map.entries[i].current_command))
+            return error(s,Error::InvalidConfiguration,madeira_wire::Error::InvalidMap);
     s->settings=p;reset_tx(s);reset_rx(s);s->configured=true;return true;
 }
 Failure status(State *s){
@@ -130,7 +142,7 @@ U32 put(State *s,const Scope &scope,Stream stream,const void *source,U32 bytes){
                 if(!tx_header(s))return accepted;
                 if(s->tx_expected==12){
                     s->tx_final_byte=input[accepted];s->tx_final_unacked=true;
-                    if(!convert(s))return accepted;
+                    if(!convert(s,budget))return accepted;
                     continue;
                 }
                 ++accepted;
@@ -143,7 +155,7 @@ U32 put(State *s,const Scope &scope,Stream stream,const void *source,U32 bytes){
             Size prefix=n-1;copy(s->settings.workspace.input+s->tx_used,input+accepted,prefix);
             s->tx_used+=prefix;accepted+=U32(prefix);
             s->tx_final_byte=input[accepted];s->settings.workspace.input[s->tx_used++]=s->tx_final_byte;
-            s->tx_final_unacked=true;if(!convert(s))return accepted;
+            s->tx_final_unacked=true;if(!convert(s,budget))return accepted;
         }else{copy(s->settings.workspace.input+s->tx_used,input+accepted,n);s->tx_used+=n;accepted+=U32(n);}
     }
     return accepted;

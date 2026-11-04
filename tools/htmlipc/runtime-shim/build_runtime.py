@@ -25,7 +25,7 @@ flags=['-target','x86_64-windows-msvc','-std=c++20','-O2','-ffreestanding',
 if args.experimental:flags+=['-DMADEIRA_RUNTIME_PROVIDER=1','-DMADEIRA_RUNTIME_HAS_PROVEN_MAP=1']
 sources=[here/'runtime_provider.cpp',here.parent/'stream-install/installer.cpp',
          here.parent/'stream-install/loader.cpp',here.parent/'stream-codec/stream_codec.cpp',
-         here.parent/'wire-codec/wire_codec.cpp']
+         here.parent/'wire-codec/wire_codec.cpp',here.parent/'domain-routing/domain_registry.cpp']
 if args.map_source:sources.append(args.map_source.resolve())
 objects=[]
 for source in sources:
