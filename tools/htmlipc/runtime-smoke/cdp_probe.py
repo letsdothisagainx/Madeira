@@ -4,7 +4,7 @@ import json,re,threading,time,urllib.parse,urllib.request
 SNAPSHOT_JS=r'''(()=>{const names=o=>{try{return Object.getOwnPropertyNames(o).slice(0,100)}catch(e){return ['[unavailable]']}};let client=typeof SteamClient==='undefined'?null:SteamClient;let shape={};if(client){for(const key of names(client)){try{let d=Object.getOwnPropertyDescriptor(client,key);shape[key]=!d?'missing':('value'in d?(d.value===null?'null':typeof d.value):'accessor');if(d&&'value'in d&&d.value&&typeof d.value==='object')shape[key]={kind:'object',names:names(d.value)};}catch(e){shape[key]='[unavailable]'}}}return {ready:document.readyState,url:location.href,title:document.title,body:document.body?document.body.innerText.slice(0,900):'',elements:document.getElementsByTagName('*').length,scripts:Array.from(document.scripts).slice(0,24).map(s=>s.src),steamClientType:typeof SteamClient,steamClientShape:shape}})()'''
 class Observer:
  def __init__(self,port):
-  self.port=port;self.stop=threading.Event();self.events=[];self.attached=0;self.requests={};self.sockets={};self.pending={};self.sequence=100;self.snapshots={};self.targets={}
+  self.port=port;self.stop=threading.Event();self.events=[];self.attached=0;self.requests={};self.sockets={};self.pending={};self.sequence=100;self.snapshots={};self.targets={};self.received=0;self.started=time.monotonic()
   self.thread=threading.Thread(target=self.run,daemon=True);self.thread.start()
  def url(self,value):
   try:
@@ -22,7 +22,7 @@ class Observer:
   value=re.sub(r'[A-Za-z0-9_+/=-]{48,}','[opaque]',value)
   return ''.join(c for c in value if c=='\n' or ord(c)>=32)[:900]
  def add(self,event):
-  if len(self.events)<100:self.events.append(event)
+  if len(self.events)<100:self.events.append({'seconds':round(time.monotonic()-self.started,2),**event})
  def sanitized_snapshot(self,data):
   if not isinstance(data,dict):return {}
   out={key:self.message(data.get(key,'')) for key in ('ready','title','body','steamClientType')}
@@ -63,7 +63,7 @@ class Observer:
    d=p.get('exceptionDetails',{});e=d.get('exception',{})
    self.add({'kind':'exception','text':self.message(e.get('description') or d.get('text','')),'url':self.url(d.get('url','')),'line':d.get('lineNumber',0),'frames':[{'function':self.message(f.get('functionName','')),'url':self.url(f.get('url','')),'line':f.get('lineNumber',0),'column':f.get('columnNumber',0)} for f in d.get('stackTrace',{}).get('callFrames',[])[:8]]})
   elif method=='Runtime.consoleAPICalled' and p.get('type') in ('error','warning','warn'):
-   text=' '.join(a.get('value','') for a in p.get('args',[]) if a.get('type')=='string' and isinstance(a.get('value'),str));self.add({'kind':'console','level':p.get('type'),'text':self.message(text)})
+   text=' '.join((a.get('value','') if a.get('type')=='string' else a.get('description','')) for a in p.get('args',[]) if isinstance(a.get('value',''),str));self.add({'kind':'console','level':p.get('type'),'text':self.message(text)})
   elif method=='Log.entryAdded':
    e=p.get('entry',{})
    if e.get('level') in ('error','warning'):self.add({'kind':'log','source':e.get('source'),'level':e.get('level'),'text':self.message(e.get('text','')),'url':self.url(e.get('url',''))})
@@ -83,7 +83,7 @@ class Observer:
       if target.get('type')!='page' or len(self.sockets)>=8:continue
       id=target.get('id');url=target.get('webSocketDebuggerUrl','');u=urllib.parse.urlsplit(url)
       if id in self.sockets or u.hostname not in ('127.0.0.1','localhost') or u.port!=self.port or not u.path.startswith('/devtools/page/'):continue
-      ws=websocket.create_connection(url,timeout=.1,suppress_origin=True,http_proxy_host=None)
+      ws=websocket.create_connection(url,timeout=.005,suppress_origin=True,http_proxy_host=None)
       self.sockets[id]=ws;self.attached+=1;self.targets[id]=self.url(target.get('url',''));self.snapshots[id]=[now,0]
       self.add({'kind':'target','url':self.targets[id],'type':'page'})
       for n,method in enumerate(('Runtime.enable','Log.enable','Network.enable','Page.enable'),1):ws.send(json.dumps({'id':n,'method':method}))
@@ -93,12 +93,15 @@ class Observer:
     try:
      start,number=self.snapshots[id];delays=(0,3,15,45,90,140)
      if number<len(delays) and now-start>=delays[number]:self.send_snapshot(id,ws);self.snapshots[id][1]+=1
-     data=ws.recv()
-     if len(data)<262144:self.receive(json.loads(data),id)
+     # Drain each ready page before waiting on another. A blocking receive
+     # per idle page otherwise throttles another page's Network event backlog.
+     for _ in range(512):
+      data=ws.recv();self.received+=1
+      if len(data)<262144:self.receive(json.loads(data),id)
     except websocket.WebSocketTimeoutException:pass
     except Exception:
      ws.close();del self.sockets[id]
   for ws in self.sockets.values():ws.close()
  def finish(self):
   self.stop.set();self.thread.join(timeout=5)
-  return {'attached':self.attached,'events':self.events,'scope':'readonly CDP; passive DOM/API descriptors only in fresh unauthenticated fixture; no Steam API calls, interception or request changes'}
+  return {'attached':self.attached,'received':self.received,'events':self.events,'scope':'readonly CDP; passive DOM/API descriptors only in fresh unauthenticated fixture; no Steam API calls, interception or request changes'}
