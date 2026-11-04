@@ -17,7 +17,7 @@ with zipfile.ZipFile(io.BytesIO(blobs[0])) as z:
  blob=z.read(names[0])
 assert hashlib.sha256(blob).hexdigest()=='cd9226db4e6c28942df70c22c0475d91fdd62cba5f100baae2d65af57cabb610'
 p=pefile.PE(data=blob);base=p.OPTIONAL_HEADER.ImageBase
-pattern=re.compile(r'browser.?view|loopback|local.?file.?request|domain.?map|file.?mapping|steamui.*(?:legacy|browser)|cef.*(?:legacy|browser|webview)|disable.*(?:browser|loopback)',re.I)
+pattern=re.compile(r'screensaver|browser.?view|loopback|local.?file.?request|domain.?map|file.?mapping|steamui.*(?:legacy|browser)|cef.*(?:legacy|browser|webview)|disable.*(?:browser|loopback)',re.I)
 strings={}
 for m in re.finditer(rb'[\x20-\x7e]{4,}',blob):
  s=m.group().decode()
@@ -42,6 +42,9 @@ for s in p.sections:
     if f:xref.setdefault(f,[]).append({'rva':hex(r),'asm':mn+' '+op,'target':hex(target),'literal':strings.get(target,'controller-global')})
   if mn=='call' and re.search(r'\[[^]]+ \+ 0x130\]',op):slot38.append((r,containing(r),mn+' '+op))
 print('SLOT38 '+json.dumps([(hex(r),tuple(hex(v) for v in f) if f else None,asm) for r,f,asm in slot38]),flush=True)
+f=containing(0x66aa30)
+assert f
+xref.setdefault(f,[]).append({'rva':hex(f[0]),'asm':'explicit exact screensaver-mapping callee','target':'0x66aa30','literal':'registration setup'})
 for f,refs in xref.items():
  print('FUNCTION_REFS '+json.dumps({'range':tuple(hex(v) for v in f),'refs':refs}),flush=True)
  # Preserve complete small functions or bounded context around matching references.
@@ -54,6 +57,6 @@ with zipfile.ZipFile(io.BytesIO(blobs[1])) as z:
   if not name.endswith(('.js','.json')):continue
   text=z.read(name).decode(errors='replace')
   for m in re.finditer(r'bBrowserViewDomainMapping|SetBrowserViewDomainRequestMapping|BrowserViewDomainMapping|BrowserViewDomainRequestMapping|[A-Za-z_][A-Za-z_0-9]*(?:LegacyBrowser|BrowserViewEnabled|EnableBrowserView)[A-Za-z_0-9]*',text):
-   print('JS_ROUTING '+json.dumps({'file':name,'offset':m.start(),'context':text[max(0,m.start()-300):m.end()+500]}),flush=True);count+=1
+   print('JS_ROUTING '+json.dumps({'file':name,'offset':m.start(),'context':text[max(0,m.start()-2200):m.end()+1600]}),flush=True);count+=1
    assert count<100
 print('PASS readonly exact-build browser routing feature inspection',flush=True)
