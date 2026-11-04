@@ -12,7 +12,7 @@ zig=os.environ.get('MADEIRA_ZIG','/workspace/madeira-tools/bin/python-zig')
 build=here/'test-build';build.mkdir(exist_ok=True)
 sources=[here/'runtime_provider.cpp',here/'provider_fixture.cpp',here/'proven_map.cpp',
          here.parent/'stream-codec/stream_codec.cpp',here.parent/'wire-codec/wire_codec.cpp',
-         here.parent/'stream-install/installer.cpp']
+         here.parent/'stream-install/installer.cpp',here.parent/'domain-routing/domain_registry.cpp']
 objects=[]
 for source in sources:
     obj=build/(source.name+'.obj');objects.append(obj)
