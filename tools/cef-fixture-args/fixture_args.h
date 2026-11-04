@@ -7,7 +7,7 @@ using U64=unsigned long long;using Size=decltype(sizeof(0));
 /* Returns output length, or -1 for an unchanged/unsupported call. Never edits
  * input. This mirrors only native Steam browser ARGUMENTS, never child gates. */
 int browser_args(const U16 *image,Size image_length,const U16 *line,Size length,
-                 bool jitless,U16 *out,Size capacity);
+                 bool jitless,U16 *out,Size capacity,U32 cdp_port=0);
 struct Region {void *base,*allocation;Size size;U32 state,protect,type;};
 struct Api {void *context;bool (*query)(void *,const void *,Region *);
     bool (*protect)(void *,void *,Size,U32,U32 *);U32 (*last_error)(void *);};

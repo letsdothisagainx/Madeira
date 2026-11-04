@@ -9,6 +9,7 @@ import shutil
 import signal
 import subprocess
 import time
+from cdp_probe import Observer
 from pathlib import Path
 
 MAX_SECONDS = 180
@@ -144,6 +145,8 @@ def main(root, artifacts):
            'WINEPREFIX': str(prefix), 'WINEARCH': 'win64',
            'WINEDEBUG': '+pid,+loaddll,+debugstr,err+all', 'DISPLAY': ':109',
            'WINEDLLOVERRIDES': 'mscoree,mshtml='})
+    cdp_port=9123
+    env['MADEIRA_CEF_FIXTURE_CDP_PORT']=str(cdp_port)
     if needs_native_args:
         token=os.environ.get('MADEIRA_CEF_ARGS_TEST_TOKEN','')
         assert re.fullmatch(r'[0-9a-fA-F]{32,96}',token)
@@ -166,6 +169,7 @@ def main(root, artifacts):
     xvfb = subprocess.Popen(['Xvfb', ':109', '-screen', '0', '1280x800x24', '-nolisten', 'tcp'],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     processes = [xvfb]
+    observer=Observer(cdp_port)
     try:
         time.sleep(1)
         subprocess.run(['wineboot', '-u'], env=env, timeout=60,
@@ -342,6 +346,7 @@ def main(root, artifacts):
             except subprocess.TimeoutExpired:
                 process.kill();process.wait(timeout=5)
         (root / 'private-frame.png').unlink(missing_ok=True)
+        report['cdp']=observer.finish()
         (artifacts / 'result.json').write_text(json.dumps(report, indent=2) + '\n')
         print(json.dumps(report))
     return 0 if report['login_frame_observed'] else 2

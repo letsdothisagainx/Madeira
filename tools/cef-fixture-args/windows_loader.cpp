@@ -44,6 +44,7 @@ static Size root_length;
 static void *notification_cookie,*pinned_file_handle;
 static U32 transformed,forwarded;
 static bool jitless=true;
+static U32 cdp_port;
 static U16 lower(U16 c){if(c>='A'&&c<='Z')return c+32;return c=='/'?'\\':c;}
 static Size length(const U16 *s,Size cap){Size n=0;while(s&&n<cap&&s[n])++n;return n;}
 static bool same(const U16 *a,const U16 *b,Size n){for(Size i=0;i<n;++i)if(lower(a[i])!=lower(b[i]))return false;return true;}
@@ -74,7 +75,7 @@ extern "C" int MadeiraCefFixtureCreateProcessW(const U16 *app,U16 *line,Security
     if(image&&helper_path(app,line,image,image_length)){
         Size n=length(line,32768);
         if(line&&n<32767){replacement=static_cast<U16*>(HeapAlloc(GetProcessHeap(),0,32767*sizeof(U16)));
-            if(replacement&&browser_args(image,image_length,line,n,jitless,replacement,32767)<0){HeapFree(GetProcessHeap(),0,replacement);replacement=nullptr;}}
+            if(replacement&&browser_args(image,image_length,line,n,jitless,replacement,32767,cdp_port)<0){HeapFree(GetProcessHeap(),0,replacement);replacement=nullptr;}}
     }
     if(image)HeapFree(GetProcessHeap(),0,image);
     if(replacement){__atomic_fetch_add(&transformed,1u,__ATOMIC_RELAXED);
@@ -134,6 +135,11 @@ static bool prepare(void *self){
     pinned_file_handle=file;static U16 mode[32768];
     U32 count=GetEnvironmentVariableW(reinterpret_cast<const U16*>(L"MADEIRA_JITLESS"),mode,32768);
     jitless=!(count&&count<32768&&mode[0]=='0');
+    U16 port[8];U32 port_count=GetEnvironmentVariableW(reinterpret_cast<const U16*>(L"MADEIRA_CEF_FIXTURE_CDP_PORT"),port,8);
+    if(port_count&&port_count<8){U32 value=0;bool valid=true;
+        for(U32 k=0;k<port_count;++k){if(port[k]<'0'||port[k]>'9'){valid=false;break;}value=value*10+U32(port[k]-'0');}
+        if(valid&&value>=1024&&value<=65535)cdp_port=value;
+    }
     return true;
 }
 }
