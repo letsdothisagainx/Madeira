@@ -37,14 +37,11 @@ for i,(name,size,sha) in enumerate(packages):
   print(json.dumps(dict(package=i+1,pinned=True,count=len(members),largest=max(x.file_size for x in members),flags=sorted(set(x.flag_bits for x in members)),methods=sorted(set(x.compress_type for x in members)),non_i386=non_i386,directories=[dict(name=x.filename,size=x.file_size,compressed=x.compress_size) for x in members if x.is_dir()])),flush=True)
 source=RUNTIME.read_text();start=source.index('enum SteamRuntimeFiles {');end=source.index('\n#if canImport(CryptoKit)',start)
 files='import Foundation\nimport zlib\n'+source[start:end]
-files=files.replace('func need(_ condition: Bool) throws { if !condition { throw Failure.invalidPackage } }','func need(_ condition: Bool, line: Int = #line) throws { if !condition { throw ArchiveProbeFailure(file: "ZIP", line: line) } }')
-# Diagnostic copies only: expose the first failed guard while preserving its predicate.
-browser=BROWSER.read_text().replace('throw Failure.invalid','throw ArchiveProbeFailure(file: "Cache", line: #line)')
-browser=browser.replace('guard let http = response as? HTTPURLResponse, http.statusCode == 200, http.url == url,','print("URLSession response status=\\((response as? HTTPURLResponse)?.statusCode ?? -1) length=\\(response.expectedContentLength) encoding=\\((response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Encoding") ?? "none") exact-url=\\(response.url == url)")\n        guard let http = response as? HTTPURLResponse, http.statusCode == 200, http.url == url,')
+# Compile exact production predicates and their structured diagnostics.
+browser=BROWSER.read_text()
 main=r'''
 import Darwin
 func probeLog(_ message: String) { FileHandle.standardOutput.write(Data((message + "\n").utf8)) }
-struct ArchiveProbeFailure: Error { let file: String; let line: Int }
 @main struct RealArchiveProbe {
  @MainActor static func main() async throws {
   typealias F = SteamBrowserRuntimeFiles
@@ -80,6 +77,41 @@ struct ArchiveProbeFailure: Error { let file: String; let line: Int }
   let completion=try JSONDecoder().decode(F.Manifest.self,from:Data(contentsOf:final.appendingPathComponent(F.completion)))
   assert(completion.files.count==80 && completion.files.filter(\.generated).count==1)
   assert(!fm.fileExists(atPath:stage.path))
+  // A previous browser run can leave an output next to its executable. It must
+  // never be added to the trusted completion manifest or accepted by reuse.
+  // Recover from authentic archives through the production transaction, retain
+  // the old tree exactly, and prove the replacement is reusable afterwards.
+  let runtimeName=F.official.prefix+"debug.log", runtimeBytes=Data("CEF runtime output fixture\n".utf8)
+  try runtimeBytes.write(to:final.appendingPathComponent(runtimeName))
+  let originalCompletion=try Data(contentsOf:final.appendingPathComponent(F.completion))
+  let retainedBefore=Set(try fm.contentsOfDirectory(atPath:owner.path).filter{$0.hasPrefix(".retained-")})
+  var diagnostics:[String]=[]
+  let invalidReuse=try F.reuse(final,recipe:F.official,digest:SteamBrowserRuntime.hash,idle:{true},report:{diagnostics.append($0)})
+  assert(invalidReuse==nil && !diagnostics.isEmpty)
+  assert(diagnostics.count==1 && diagnostics[0].contains("phase=reuse reason=unexpected-file"))
+  assert(diagnostics[0].contains("records-expected=80 records-observed=80 relative="+runtimeName))
+  assert(diagnostics.allSatisfy{!$0.contains(base.path) && !$0.contains("\n")})
+  let recoveryStage=owner.appendingPathComponent(".stage-real-recovery",isDirectory:true)
+  try fm.createDirectory(at:recoveryStage,withIntermediateDirectories:false)
+  var recoveryRecords:[F.FileRecord]=[]
+  for package in F.official.packages {
+   let data=try Data(contentsOf:base.appendingPathComponent(package.file),options:.mappedIfSafe)
+   try F.appendArchive(data,package:package,recipe:F.official,stage:recoveryStage,records:&recoveryRecords,
+     digest:{SHA256.hash(data:$0).map{String(format:"%02x",$0)}.joined()},idle:{true})
+  }
+  _ = try F.commit(stage:recoveryStage,destination:final,recipe:F.official,records:recoveryRecords,
+    digest:SteamBrowserRuntime.hash,idle:{true},recheckCore:{})
+  let retainedAfter=Set(try fm.contentsOfDirectory(atPath:owner.path).filter{$0.hasPrefix(".retained-")})
+  let retained=retainedAfter.subtracting(retainedBefore);assert(retained.count==1)
+  let old=owner.appendingPathComponent(retained.first!,isDirectory:true)
+  assert(try! Data(contentsOf:old.appendingPathComponent(runtimeName))==runtimeBytes)
+  assert(try! Data(contentsOf:old.appendingPathComponent(F.completion))==originalCompletion)
+  try F.validateTree(old,recipe:F.official,records:completion.files,extraFiles:[F.completion,runtimeName],digest:SteamBrowserRuntime.hash)
+  diagnostics.removeAll()
+  let recoveredReuse=try F.reuse(final,recipe:F.official,digest:SteamBrowserRuntime.hash,idle:{true},report:{diagnostics.append($0)})
+  assert(recoveredReuse != nil && diagnostics.isEmpty)
+  assert(!fm.fileExists(atPath:final.appendingPathComponent(runtimeName).path))
+  print("PASS genuine official-archive recovery: runtime contamination refused, old 80-record tree retained and rehashed unchanged, all3 authentic archives rebuilt atomically, replacement reused successfully")
   let target=final.appendingPathComponent(F.official.prefix+"msdia140.dll")
   let original=try Data(contentsOf:target);var changed=original;changed[changed.count-1] ^= 1
   try changed.write(to:target)

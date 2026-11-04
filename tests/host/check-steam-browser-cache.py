@@ -36,8 +36,10 @@ assert 'URLSession.download(' not in cache and 'session.data(from:' not in cache
 assert 'completionHandler(nil)' in cache
 assert 'response.expectedContentLength == Int64(package.bytes)' in cache
 assert 'SteamOwnedLibrary.shared.wineSessionActive' in cache
-assert 'try fm.moveItem(at: stage, to: final)' not in cache  # commit uses its own checked transaction
 assert 'moveItem(at: stage, to: final)' in cache
+commit_start = cache.index('static func commit(stage:')
+commit_source = cache[commit_start:cache.index('\n#if canImport(CryptoKit)', commit_start)]
+assert commit_source.index('try validate(stage,') < commit_source.index('moveItem(at: stage, to: final)')
 contract = (ROOT / 'build/htmlipc/runtime/cache-contract.txt').read_bytes()
 assert len(contract) == 363
 assert hashlib.sha256(contract).hexdigest() == 'fff4a23d727dd4f33ec070d29cb0012d7a22bf7f6f4e84e2cffc6709224e1781'
@@ -172,6 +174,12 @@ func checked<T>(_ label: String, _ body: () throws -> T) throws -> T {
 func fails(_ label: String, _ block: () throws -> Void) {
     do { try block(); fatalError("accepted: " + label) } catch {}
 }
+func predicate(_ reason: SteamBrowserRuntimeFiles.Reason, name: String, _ block: () throws -> Void) {
+    do { try block(); fatalError("accepted predicate: " + reason.rawValue) }
+    catch let issue as SteamBrowserRuntimeFiles.ValidationIssue {
+        assert(issue.reason == reason && issue.name == name)
+    } catch { fatalError("wrong failure type for " + reason.rawValue) }
+}
 let temp = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString).resolvingSymlinksInPath()
 try fm.createDirectory(at: temp, withIntermediateDirectories: true)
 defer { try? fm.removeItem(at: temp) }
@@ -254,6 +262,14 @@ for hinted in [false, true] {
     assert(try! F.relativePath(bin, under: stage, directory: true) == "bin")
     assert(try! F.relativePath(bin, under: hintedStage, directory: true) == "bin")
 }
+// The OS /var alias and its /private/var canonical path name the same cache.
+// A sibling symlink models that Foundation enumerator spelling without making
+// a symlink part of the component tree accepted by plain()/validateTree().
+let systemAlias = temp.appendingPathComponent("system-container-alias", isDirectory: true)
+try fm.createSymbolicLink(at: systemAlias, withDestinationURL: base)
+let aliasedStage = systemAlias.appendingPathComponent("SteamBrowserRuntime/" + stage.lastPathComponent, isDirectory: true)
+assert(try! F.relativePath(aliasedStage.appendingPathComponent("bin", isDirectory: true), under: stage, directory: true) == "bin")
+assert(try! F.relativePath(stage.appendingPathComponent(recipe.prefix + "resources.pak"), under: aliasedStage, directory: false) == recipe.prefix + "resources.pak")
 fails("directory relative path outside cache") { _ = try F.relativePath(base, under: stage, directory: true) }
 fails("directory relative path root itself") { _ = try F.relativePath(stage, under: stage, directory: true) }
 if let listing = fm.enumerator(at: stage, includingPropertiesForKeys: [.isDirectoryKey], options: []) {
@@ -318,6 +334,133 @@ let completion = final.appendingPathComponent(F.completion), completed = try Dat
 try fm.removeItem(at: completion)
 fails("incomplete cache cannot be reused") { _ = try F.validate(final, recipe: recipe, digest: digestFile) }
 try completed.write(to: completion)
+
+// Exercise the actual reuse and commit methods, including verified recovery.
+// No malformed cache is adopted, cleaned in place, or allowed to overwrite the
+// old cache before the replacement has passed all production predicates.
+func treeSnapshot(_ root: URL) throws -> [String: Data] {
+    var result: [String: Data] = [:]
+    guard let listing = fm.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey]) else {
+        fatalError("snapshot enumeration failed")
+    }
+    for case let file as URL in listing {
+        let values = try file.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        assert(values.isSymbolicLink != true)
+        if values.isDirectory != true {
+            result[try F.relativePath(file, under: root, directory: false)] = try Data(contentsOf: file)
+        }
+    }
+    return result
+}
+func retainedEntries() throws -> Set<String> {
+    Set(try fm.contentsOfDirectory(atPath: owner.path).filter { $0.hasPrefix(".retained-") })
+}
+func freshRecoveryStage(_ label: String) throws -> (URL, [F.FileRecord]) {
+    let stage = try newStage("repair-" + label + "-" + UUID().uuidString)
+    var records: [F.FileRecord] = []
+    try F.appendArchive(try fixture("good.zip"), package: package, recipe: recipe, stage: stage,
+                        records: &records, digest: digest, idle: { true })
+    return (stage, records)
+}
+func recovery(_ label: String, reason: F.Reason, name: String, _ mutate: () throws -> Void) throws {
+    try mutate()
+    let old = try treeSnapshot(final), retainedBefore = try retainedEntries()
+    predicate(reason, name: name) { _ = try F.validate(final, recipe: recipe, digest: digestFile) }
+    var reports: [String] = []
+    let cached = try F.reuse(final, recipe: recipe, digest: digestFile, idle: { true }, report: { reports.append($0) })
+    assert(cached == nil && !reports.isEmpty)
+    assert(reports.count == 1 && reports[0].contains("phase=reuse") && reports[0].contains("reason=" + reason.rawValue))
+    assert(reports[0].contains("recipe=" + recipe.id) && reports[0].contains("records-expected=5"))
+    assert(reports[0].contains("relative=" + name))
+    assert(try! treeSnapshot(final) == old && retainedEntries() == retainedBefore)
+    for report in reports {
+        assert(!report.contains(temp.path) && !report.contains(steam.path))
+        assert(!report.contains("\n") && !report.contains("\r"))
+    }
+    let (replacement, replacementRecords) = try freshRecoveryStage(label)
+    _ = try F.commit(stage: replacement, destination: final, recipe: recipe, records: replacementRecords,
+                     digest: digestFile, idle: { true }, recheckCore: {
+        try F.core(core, steamRoot: steam, recipe: recipe, digest: digestFile)
+    })
+    let retainedAfter = try retainedEntries(), added = retainedAfter.subtracting(retainedBefore)
+    assert(added.count == 1)
+    assert(try! treeSnapshot(owner.appendingPathComponent(added.first!)) == old)
+    assert(!fm.fileExists(atPath: replacement.path))
+    reports.removeAll()
+    assert(try! F.reuse(final, recipe: recipe, digest: digestFile, idle: { true }, report: { reports.append($0) }) != nil)
+    _ = try F.validate(final, recipe: recipe, digest: digestFile)
+    assert(reports.isEmpty)
+    for name in privateNames { assert(try! Data(contentsOf: steam.appendingPathComponent(name)) == Data(name.utf8)) }
+    checkpoint("recovered-and-reused " + label)
+}
+try recovery("runtime-extra-file", reason: .unexpectedFile, name: recipe.prefix + "debug.log") {
+    try Data("real runtime output fixture".utf8).write(to: final.appendingPathComponent(recipe.prefix + "debug.log"))
+}
+try recovery("runtime-extra-directory", reason: .unexpectedDirectory, name: recipe.prefix + "Crashpad") {
+    try fm.createDirectory(at: final.appendingPathComponent(recipe.prefix + "Crashpad", isDirectory: true), withIntermediateDirectories: false)
+}
+try recovery("modified-browser-dll", reason: .fileHash, name: recipe.prefix + "chrome_elf.dll") {
+    let target = final.appendingPathComponent(recipe.prefix + "chrome_elf.dll")
+    var bytes = try Data(contentsOf: target); bytes[bytes.count - 1] ^= 1
+    try bytes.write(to: target)
+}
+try recovery("wrong-browser-architecture", reason: .architecture, name: recipe.prefix + "steamwebhelper.exe") {
+    let target = final.appendingPathComponent(recipe.prefix + "steamwebhelper.exe")
+    var bytes = try Data(contentsOf: target)
+    bytes[0x84] = 0x64; bytes[0x85] = 0x86; bytes[0x98] = 0x0b; bytes[0x99] = 0x02
+    try bytes.write(to: target)
+}
+try recovery("missing-official-member", reason: .missingFile, name: recipe.prefix + "resources.pak") { try fm.removeItem(at: resource) }
+try recovery("missing-generated-marker", reason: .missingFile, name: recipe.prefix + generated.name) { try fm.removeItem(at: verifiedMarker) }
+try recovery("changed-generated-marker", reason: .fileHash, name: recipe.prefix + generated.name) { try fixture("marker-tampered").write(to: verifiedMarker) }
+try recovery("corrupt-completion-json", reason: .completionMalformed, name: F.completion) { try Data("{not valid JSON".utf8).write(to: completion) }
+try recovery("missing-completion-after-interruption", reason: .missingFile, name: F.completion) { try fm.removeItem(at: completion) }
+// A JSON object of the correct shape still cannot change package or recipe pins.
+try recovery("changed-completion-recipe", reason: .completionMismatch, name: F.completion) {
+    let original = try JSONDecoder().decode(F.Manifest.self, from: Data(contentsOf: completion))
+    let changed = F.Manifest(format: original.format, recipe: "foreign-recipe", coreSHA256: original.coreSHA256,
+                             packages: original.packages, files: original.files)
+    try JSONEncoder().encode(changed).write(to: completion)
+}
+for untrustedName in ["../outside", "config/password-token.txt", String(repeating: "a", count: 80)] {
+    let report = F.ValidationIssue(.unexpectedFile, untrustedName).diagnostic(phase: "reuse", recipe: recipe)
+    assert(!report.contains(untrustedName) && !report.contains("\n") && report.utf8.count < 1024)
+}
+try Data("retained invalid cache".utf8).write(to: resource)
+let beforeFailedRepair = try treeSnapshot(final), retainedBeforeFailedRepair = try retainedEntries()
+fails("active cache recovery") {
+    _ = try F.reuse(final, recipe: recipe, digest: digestFile, idle: { false }, report: { _ in })
+}
+let (rollbackStage, rollbackRecords) = try freshRecoveryStage("owner-became-active-before-publish")
+var retainedForRollback = false
+fails("failed publication restores old cache name and content") {
+    _ = try F.commit(stage: rollbackStage, destination: final, recipe: recipe, records: rollbackRecords,
+                     digest: digestFile, idle: { !retainedForRollback }, report: {
+        if $0.contains("phase=retain") { retainedForRollback = true }
+    }, recheckCore: {})
+}
+assert(retainedForRollback)
+assert(try! treeSnapshot(final) == beforeFailedRepair && retainedEntries() == retainedBeforeFailedRepair)
+let (invalidReplacement, invalidReplacementRecords) = try freshRecoveryStage("must-not-retire-before-verification")
+try fm.removeItem(at: invalidReplacement.appendingPathComponent(recipe.prefix + "resources.pak"))
+fails("invalid replacement never retires existing cache") {
+    _ = try F.commit(stage: invalidReplacement, destination: final, recipe: recipe, records: invalidReplacementRecords,
+                     digest: digestFile, idle: { true }, recheckCore: {})
+}
+assert(try! treeSnapshot(final) == beforeFailedRepair && retainedEntries() == retainedBeforeFailedRepair)
+try originalResource.write(to: resource)
+_ = try F.validate(final, recipe: recipe, digest: digestFile)
+let linkedRuntime = final.appendingPathComponent(recipe.prefix + "unowned-linked-output")
+try fm.createSymbolicLink(at: linkedRuntime, withDestinationURL: core)
+let retainedBeforeLinked = try retainedEntries()
+fails("linked cache remains ownership failure rather than auto-recovery") {
+    _ = try F.reuse(final, recipe: recipe, digest: digestFile, idle: { true }, report: { _ in })
+}
+assert(fm.fileExists(atPath: linkedRuntime.path) && (try! retainedEntries()) == retainedBeforeLinked)
+try fm.removeItem(at: linkedRuntime)
+_ = try F.validate(final, recipe: recipe, digest: digestFile)
+assert(try! Data(contentsOf: interrupted.appendingPathComponent("partial")) == Data("keep".utf8))
+print("PASS production cache recovery/reuse: runtime extras, altered DLL, missing member/marker, malformed/changed/missing completion; old tree retained byte-for-byte only after verified replacement, failed/active/linked recovery refused and Steam/CS2/auth fixtures unchanged")
 var incomplete = records; incomplete.removeLast()
 fails("incomplete manifest") { _ = try F.manifest(recipe: recipe, records: incomplete) }
 let partialStage = try newStage("partial-tree")

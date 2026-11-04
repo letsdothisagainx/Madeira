@@ -87,3 +87,20 @@ and connection succeeded before rejection of command 54. The revised source
 requires genuine login-frame testing, then authenticated Library navigation,
 five-minute on-device responsiveness and normal CS2 process creation. No Steam
 JavaScript, installed game, account data or authentication check is changed.
+
+Browser-cache preflight now reports a fixed first-failure reason, phase, recipe,
+record counts and bounded relative component name. The November 4 device capture
+proves rejection during reuse, but its old generic error cannot identify which
+predicate failed. A reproduced source defect compared `/var` and `/private/var`
+enumeration paths without resolving their OS alias; canonical relative-path
+comparison fixes that case while component symlinks remain rejected.
+
+A rejected cache under the verified dedicated owner root can be rebuilt while
+Wine is inactive. All original package pins, ZIP checks, 79 official members,
+five key pins, PE architectures and generated marker are checked in a fresh
+stage before publication. The previous tree is retained under a unique name;
+failed publication restores its original name. Interrupted stages are never
+adopted. Official downloads and integrity checks are unchanged. Existing runtime
+output is rejected and retained, not added to the trusted manifest; current
+helper redirection preserves Steam's own log/cache arguments and working
+directory. Runtime contamination has not been established by the device log.

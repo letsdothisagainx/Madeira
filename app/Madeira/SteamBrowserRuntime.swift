@@ -80,6 +80,49 @@ enum SteamBrowserRuntimeFiles {
             }
         }
     }
+    // Only fixed predicates and relative component names enter diagnostics.
+    // Foundation errors can contain the app container path; never print them.
+    enum Reason: String, Sendable {
+        case missingFile = "missing-file", fileType = "file-type", fileSize = "file-size"
+        case fileHash = "file-hash", architecture, generatedMarker = "generated-marker"
+        case completionSize = "completion-size", completionMalformed = "completion-malformed"
+        case completionMismatch = "completion-mismatch", recordCount = "record-count"
+        case recordInvalid = "record-invalid", duplicateRecord = "duplicate-record"
+        case keyRecord = "key-record", unexpectedFile = "unexpected-file"
+        case unexpectedDirectory = "unexpected-directory", enumeration, relativePath = "relative-path"
+        case filesystem, archiveSize = "archive-size", archiveHash = "archive-hash"
+        case archiveMember = "archive-member", archiveMetadata = "archive-metadata"
+        case responseStatus = "response-status", responseURL = "response-url"
+        case responseLength = "response-length", responseEncoding = "response-encoding", bodyLength = "body-length"
+        case ownership, active, changedCore = "changed-core", cancelled
+    }
+    struct ValidationIssue: LocalizedError, Equatable, Sendable {
+        let reason: Reason, name: String
+        let expected: Int, observed: Int, records: Int
+        init(_ reason: Reason, _ name: String = "", expected: Int = -1, observed: Int = -1, records: Int = -1) {
+            self.reason = reason; self.name = name; self.expected = expected; self.observed = observed
+            self.records = records
+        }
+        var errorDescription: String? { Failure.invalid.errorDescription }
+        func diagnostic(phase: String, recipe: Recipe) -> String {
+            // Reject path/URL escapes and redact long opaque filename segments.
+            let relative: String
+            if name.isEmpty { relative = "-" }
+            else if !SteamRuntimeFiles.validPath(name) { relative = "<invalid-relative-name>" }
+            else {
+                relative = name.split(separator: "/").prefix(12).map { part in
+                    let lower = part.lowercased()
+                    if part.utf8.count > 64 || ["token", "password", "credential", "cookie"].contains(where: lower.contains) {
+                        return "<private>"
+                    }
+                    return String(part.unicodeScalars.map { scalar in
+                        scalar.isASCII && (CharacterSet.alphanumerics.contains(scalar) || "._-".unicodeScalars.contains(scalar)) ? Character(String(scalar)) : "_"
+                    })
+                }.joined(separator: "/")
+            }
+            return "[steam-browser-cache-v4] phase=\(phase) reason=\(reason.rawValue) recipe=\(recipe.id) expected=\(expected) observed=\(observed) records-expected=\(recipe.expectedFiles + 1) records-observed=\(records) relative=\(relative)"
+        }
+    }
     struct FileRecord: Codable, Equatable, Sendable {
         let name: String, bytes: Int, sha256: String
         let generated: Bool
@@ -170,8 +213,11 @@ enum SteamBrowserRuntimeFiles {
     static func appendArchive(_ archive: Data, package: Package, recipe: Recipe, stage: URL,
                               records: inout [FileRecord], digest: DigestData, idle: () -> Bool) throws {
         // The sole call that raises ZIP budgets follows both exact pin checks.
-        guard archive.count == package.bytes, digest(archive) == package.sha256,
-              recipe.packages.contains(package) else { throw Failure.invalid }
+        guard recipe.packages.contains(package) else { throw ValidationIssue(.archiveMember) }
+        guard archive.count == package.bytes else {
+            throw ValidationIssue(.archiveSize, package.file, expected: package.bytes, observed: archive.count)
+        }
+        guard digest(archive) == package.sha256 else { throw ValidationIssue(.archiveHash, package.file) }
         if let member = package.singleMember {
             guard SteamRuntimeFiles.validPath(member), !member.contains("/") else { throw Failure.invalid }
         }
@@ -180,11 +226,14 @@ enum SteamBrowserRuntimeFiles {
         func install(_ name: String, _ bytes: Data) throws {
             guard name.hasPrefix(recipe.prefix), name.count > recipe.prefix.count,
                   name.lowercased() != (recipe.prefix + recipe.marker.name).lowercased(),
-                  seen.insert(name.lowercased()).inserted, records.count < recipe.expectedFiles else { throw Failure.invalid }
-            if executable(name), machine(bytes) != expectedMachine(name, recipe: recipe) { throw Failure.invalid }
+                  seen.insert(name.lowercased()).inserted, records.count < recipe.expectedFiles else { throw ValidationIssue(.archiveMember, name) }
+            if executable(name), machine(bytes) != expectedMachine(name, recipe: recipe) {
+                throw ValidationIssue(.architecture, name, expected: Int(expectedMachine(name, recipe: recipe)), observed: Int(machine(bytes) ?? 0))
+            }
             let hash = digest(bytes)
             if let key = recipe.keys.first(where: { recipe.prefix + $0.name == name }) {
-                guard key.sha256 == hash, key.bytes.map({ $0 == bytes.count }) ?? true else { throw Failure.invalid }
+                guard key.sha256 == hash else { throw ValidationIssue(.fileHash, name) }
+                if let size = key.bytes, size != bytes.count { throw ValidationIssue(.fileSize, name, expected: size, observed: bytes.count) }
             }
             guard idle() else { throw Failure.active }
             let file = try destination(name, under: stage)
@@ -193,17 +242,17 @@ enum SteamBrowserRuntimeFiles {
             records.append(FileRecord(name: name, bytes: bytes.count, sha256: hash))
         }
         var selected: Data?
-        try SteamRuntimeFiles.unpack(archive, limits: .trustedOfficialI386Browser) { name, bytes in
+        do { try SteamRuntimeFiles.unpack(archive, limits: .trustedOfficialI386Browser) { name, bytes in
             if let member = package.singleMember {
                 // Continue through every other member: unsafe metadata or a bad
                 // CRC anywhere refuses the archive before the SDL file is saved.
                 guard name == member else { return }
-                guard selected == nil else { throw Failure.invalid }
+                guard selected == nil else { throw ValidationIssue(.archiveMember, member) }
                 selected = bytes
             } else { try install(name, bytes) }
-        }
+        } } catch SteamRuntimeFiles.Failure.invalidPackage { throw ValidationIssue(.archiveMetadata, package.file) }
         if let member = package.singleMember {
-            guard let selected else { throw Failure.invalid }
+            guard let selected else { throw ValidationIssue(.missingFile, member, expected: 1, observed: 0) }
             try install(recipe.prefix + member, selected)
         }
     }
@@ -212,7 +261,7 @@ enum SteamBrowserRuntimeFiles {
         // Fixture/custom recipes cannot emit the real native-ready contract.
         // That exact contract requires every immutable production recipe pin.
         guard recipe.marker.bytes != officialMarker.bytes || recipe == official else { throw Failure.invalid }
-        guard records.count == recipe.expectedFiles else { throw Failure.invalid }
+        guard records.count == recipe.expectedFiles else { throw ValidationIssue(.recordCount, expected: recipe.expectedFiles, observed: records.count) }
         var names = Set<String>(), total = 0
         for item in records {
             guard !item.generated, item.name.hasPrefix(recipe.prefix), SteamRuntimeFiles.validPath(item.name),
@@ -221,7 +270,7 @@ enum SteamBrowserRuntimeFiles {
                   item.bytes >= 0, item.bytes <= 256 * 1024 * 1024,
                   item.sha256.utf8.count == 64,
                   item.sha256.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
-                throw Failure.invalid
+                throw ValidationIssue(.recordInvalid, item.name)
             }
             total += item.bytes
             guard total <= 768 * 1024 * 1024 else { throw Failure.invalid }
@@ -229,7 +278,7 @@ enum SteamBrowserRuntimeFiles {
         for key in recipe.keys {
             guard records.contains(where: { record in record.name == recipe.prefix + key.name && record.sha256 == key.sha256
                 && (key.bytes.map({ $0 == record.bytes }) ?? true) }) else {
-                throw Failure.invalid
+                throw ValidationIssue(.keyRecord, recipe.prefix + key.name)
             }
         }
     }
@@ -239,8 +288,12 @@ enum SteamBrowserRuntimeFiles {
                    sha256: recipe.marker.sha256, generated: true)
     }
     static func manifest(recipe: Recipe, records: [FileRecord]) throws -> Manifest {
-        guard records.count == recipe.expectedFiles + 1,
-              records.filter(\.generated) == [generatedRecord(recipe: recipe)] else { throw Failure.invalid }
+        guard records.count == recipe.expectedFiles + 1 else {
+            throw ValidationIssue(.recordCount, completion, expected: recipe.expectedFiles + 1, observed: records.count)
+        }
+        guard records.filter(\.generated) == [generatedRecord(recipe: recipe)] else {
+            throw ValidationIssue(.generatedMarker, recipe.prefix + recipe.marker.name)
+        }
         try checkOfficialRecords(recipe: recipe, records: records.filter { !$0.generated })
         guard records.reduce(0, { $0 + $1.bytes }) <= 768 * 1024 * 1024 else { throw Failure.invalid }
         return Manifest(format: 1, recipe: recipe.id, coreSHA256: recipe.coreSHA256, packages: recipe.packages,
@@ -254,13 +307,13 @@ enum SteamBrowserRuntimeFiles {
         // Darwin's enumerator can use the OS /var alias while its caller uses
         // /private/var, and directory URL hints can add a final slash. Compare
         // standardized filesystem paths before computing the relative suffix.
-        var base = root.standardizedFileURL.path
+        var base = root.resolvingSymlinksInPath().standardizedFileURL.path
         while base.count > 1 && base.hasSuffix("/") { base.removeLast() }
-        let full = target.standardizedFileURL.path
-        guard full.hasPrefix(base + "/") else { throw Failure.invalid }
+        let full = target.resolvingSymlinksInPath().standardizedFileURL.path
+        guard full.hasPrefix(base + "/") else { throw ValidationIssue(.relativePath) }
         var name = String(full.dropFirst(base.count + 1))
         if directory { while name.hasSuffix("/") { name.removeLast() } }
-        guard SteamRuntimeFiles.validPath(name) else { throw Failure.invalid }
+        guard SteamRuntimeFiles.validPath(name) else { throw ValidationIssue(.relativePath) }
         return name
     }
     static func validateTree(_ root: URL, recipe: Recipe, records: [FileRecord],
@@ -269,51 +322,107 @@ enum SteamBrowserRuntimeFiles {
         try plain(root, directory: true)
         var seen = Set<String>()
         for item in records {
-            guard item.name.hasPrefix(recipe.prefix), item.bytes >= 0, item.bytes <= 256 * 1024 * 1024,
-                  seen.insert(item.name.lowercased()).inserted else { throw Failure.invalid }
+            guard item.name.hasPrefix(recipe.prefix), item.bytes >= 0, item.bytes <= 256 * 1024 * 1024 else {
+                throw ValidationIssue(.recordInvalid, item.name)
+            }
+            guard seen.insert(item.name.lowercased()).inserted else { throw ValidationIssue(.duplicateRecord, item.name) }
             let target = try destination(item.name, under: root)
+            guard fm.fileExists(atPath: target.path) else { throw ValidationIssue(.missingFile, item.name, expected: 1, observed: 0) }
+            // Links and aliased parents remain ownership errors, never rebuild
+            // candidates. Canonicalizing enumeration does not adopt symlinks.
+            let kind = try target.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            guard kind.isSymbolicLink != true else { throw Failure.ownership }
+            guard kind.isRegularFile == true else { throw ValidationIssue(.fileType, item.name) }
             try plain(target, directory: false)
-            guard (try target.resourceValues(forKeys: [.fileSizeKey])).fileSize == item.bytes,
-                  try digest(target) == item.sha256 else { throw Failure.invalid }
+            let size = (try target.resourceValues(forKeys: [.fileSizeKey])).fileSize ?? -1
+            guard size == item.bytes else { throw ValidationIssue(.fileSize, item.name, expected: item.bytes, observed: size) }
+            if executable(item.name) {
+                let observed = machine(try Data(contentsOf: target, options: .mappedIfSafe))
+                guard observed == expectedMachine(item.name, recipe: recipe) else {
+                    throw ValidationIssue(.architecture, item.name, expected: Int(expectedMachine(item.name, recipe: recipe)), observed: Int(observed ?? 0))
+                }
+            }
+            guard try digest(target) == item.sha256 else { throw ValidationIssue(.fileHash, item.name) }
             if item.generated {
                 guard item == generatedRecord(recipe: recipe),
-                      try Data(contentsOf: target) == recipe.marker.bytes else { throw Failure.invalid }
-            }
-            if executable(item.name), machine(try Data(contentsOf: target, options: .mappedIfSafe)) != expectedMachine(item.name, recipe: recipe) {
-                throw Failure.invalid
+                      try Data(contentsOf: target) == recipe.marker.bytes else { throw ValidationIssue(.generatedMarker, item.name) }
             }
         }
+        var enumerationFailed = false
         guard let enumerator = fm.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
-                                             options: []) else { throw Failure.invalid }
+                                             options: [], errorHandler: { _, _ in enumerationFailed = true; return false }) else {
+            throw ValidationIssue(.enumeration)
+        }
         var actual = Set<String>()
+        let expected = Set(records.map(\.name)).union(extraFiles)
         for case let target as URL in enumerator {
             let value = try target.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
             guard value.isSymbolicLink != true else { throw Failure.ownership }
             let relative = try relativePath(target, under: root, directory: value.isDirectory == true)
             if value.isDirectory == true {
                 // Empty or unrelated directories do not belong to this tree.
-                guard records.contains(where: { $0.name.hasPrefix(relative + "/") }) else { throw Failure.invalid }
-            } else { actual.insert(relative) }
+                guard records.contains(where: { $0.name.hasPrefix(relative + "/") }) else {
+                    throw ValidationIssue(.unexpectedDirectory, relative, expected: 0, observed: 1)
+                }
+            } else {
+                guard expected.contains(relative) else {
+                    throw ValidationIssue(.unexpectedFile, relative, expected: 0, observed: 1)
+                }
+                actual.insert(relative)
+            }
         }
-        guard actual == Set(records.map(\.name)).union(extraFiles) else { throw Failure.invalid }
+        guard !enumerationFailed else { throw ValidationIssue(.enumeration) }
+        guard actual == expected else {
+            throw ValidationIssue(.missingFile, expected.subtracting(actual).sorted().first ?? "", expected: expected.count, observed: actual.count)
+        }
     }
 
     static func validate(_ root: URL, recipe: Recipe, digest: DigestFile) throws -> Prepared {
         try plain(root, directory: true)
         let file = try destination(completion, under: root)
+        guard FileManager.default.fileExists(atPath: file.path) else { throw ValidationIssue(.missingFile, completion, expected: 1, observed: 0) }
+        let kind = try file.resourceValues(forKeys: [.isSymbolicLinkKey, .isRegularFileKey])
+        guard kind.isSymbolicLink != true else { throw Failure.ownership }
+        guard kind.isRegularFile == true else { throw ValidationIssue(.fileType, completion) }
         try plain(file, directory: false)
-        guard ((try file.resourceValues(forKeys: [.fileSizeKey])).fileSize ?? Int.max) <= 256 * 1024 else { throw Failure.invalid }
-        let decoded = try JSONDecoder().decode(Manifest.self, from: Data(contentsOf: file))
-        let expected = try manifest(recipe: recipe, records: decoded.files)
-        guard decoded == expected else { throw Failure.invalid }
-        try validateTree(root, recipe: recipe, records: decoded.files, extraFiles: [completion], digest: digest)
+        let size = (try file.resourceValues(forKeys: [.fileSizeKey])).fileSize ?? Int.max
+        guard size <= 256 * 1024 else { throw ValidationIssue(.completionSize, completion, expected: 256 * 1024, observed: size) }
+        let decoded: Manifest
+        do { decoded = try JSONDecoder().decode(Manifest.self, from: Data(contentsOf: file)) }
+        catch is DecodingError { throw ValidationIssue(.completionMalformed, completion) }
+        let expected: Manifest
+        do { expected = try manifest(recipe: recipe, records: decoded.files) }
+        catch let issue as ValidationIssue { throw issue }
+        catch {
+            if decoded.files.count != recipe.expectedFiles + 1 {
+                throw ValidationIssue(.recordCount, completion, expected: recipe.expectedFiles + 1, observed: decoded.files.count)
+            }
+            throw ValidationIssue(.recordInvalid, completion)
+        }
+        guard decoded == expected else { throw ValidationIssue(.completionMismatch, completion) }
+        do { try validateTree(root, recipe: recipe, records: decoded.files, extraFiles: [completion], digest: digest) }
+        catch let issue as ValidationIssue {
+            throw ValidationIssue(issue.reason, issue.name, expected: issue.expected, observed: issue.observed, records: decoded.files.count)
+        }
         let browser = try destination(String(recipe.prefix.dropLast()), under: root)
         return Prepared(helper: browser.appendingPathComponent("steamwebhelper.exe"), browserRoot: browser,
                         coreSHA256: recipe.coreSHA256, recipe: recipe.id)
     }
 
+    static func reuse(_ final: URL, recipe: Recipe, digest: DigestFile, idle: () -> Bool,
+                      report: (String) -> Void = { _ in }) throws -> Prepared? {
+        guard idle() else { throw Failure.active }
+        guard FileManager.default.fileExists(atPath: final.path) else { return nil }
+        do { return try validate(final, recipe: recipe, digest: digest) }
+        catch let issue as ValidationIssue {
+            report(issue.diagnostic(phase: "reuse", recipe: recipe) + " action=rebuild-retain")
+            return nil
+        }
+    }
+
     static func commit(stage: URL, destination final: URL, recipe: Recipe, records: [FileRecord],
-                       digest: DigestFile, idle: () -> Bool, recheckCore: () throws -> Void) throws -> Prepared {
+                       digest: DigestFile, idle: () -> Bool, report: (String) -> Void = { _ in },
+                       recheckCore: () throws -> Void) throws -> Prepared {
         let owner = final.deletingLastPathComponent()
         try plain(owner, directory: true); try plain(stage, directory: true)
         let marker = try destination(ownerName, under: owner)
@@ -338,9 +447,35 @@ enum SteamBrowserRuntimeFiles {
         _ = try validate(stage, recipe: recipe, digest: digest)
         try recheckCore()
         guard idle() else { throw Failure.active }
-        guard !FileManager.default.fileExists(atPath: final.path),
-              final.standardizedFileURL.path == final.resolvingSymlinksInPath().standardizedFileURL.path else { throw Failure.ownership }
-        try FileManager.default.moveItem(at: stage, to: final)
+        let fm = FileManager.default
+        guard final.standardizedFileURL.path == final.resolvingSymlinksInPath().standardizedFileURL.path else { throw Failure.ownership }
+        var retained: URL?
+        if fm.fileExists(atPath: final.path) {
+            // The exact recipe path is inside our verified dedicated owner root.
+            // Never adopt its bytes or touch it until the replacement is ready.
+            try plain(final, directory: true)
+            do {
+                let existing = try validate(final, recipe: recipe, digest: digest)
+                guard idle() else { throw Failure.active }
+                return existing
+            } catch let issue as ValidationIssue {
+                guard idle() else { throw Failure.active }
+                let backup = owner.appendingPathComponent(".retained-" + UUID().uuidString, isDirectory: true)
+                try fm.moveItem(at: final, to: backup)
+                retained = backup
+                report(issue.diagnostic(phase: "retain", recipe: recipe) + " action=retained")
+            }
+        }
+        do {
+            guard idle() else { throw Failure.active }
+            try fm.moveItem(at: stage, to: final)
+        } catch {
+            // No active process was admitted. Restore the previous name if the
+            // publish failed; a crash between renames leaves the old tree in its
+            // retained directory and the next invocation can prepare afresh.
+            if let retained, !fm.fileExists(atPath: final.path) { try? fm.moveItem(at: retained, to: final) }
+            throw error
+        }
         return try validate(final, recipe: recipe, digest: digest)
     }
 }
@@ -370,49 +505,77 @@ enum SteamBrowserRuntimeFiles {
         guard !busy, idle() else { throw Files.Failure.active }
         busy = true; defer { busy = false }
         let recipe = Files.official, fm = FileManager.default
-        try Files.core(chromeHTML, steamRoot: steamRoot, recipe: recipe, digest: hash)
-        let root = try Files.ownerRoot(cacheBase: cacheBase, steamRoot: steamRoot, idle: idle)
-        let final = try Files.destination(recipe.id, under: root)
-        if fm.fileExists(atPath: final.path) {
-            let prepared = try Files.validate(final, recipe: recipe, digest: hash)
+        var phase = "core"
+        do {
+            progress("[steam-browser-cache-v4] phase=core recipe=\(recipe.id) action=begin")
             try Files.core(chromeHTML, steamRoot: steamRoot, recipe: recipe, digest: hash)
-            guard idle() else { throw Files.Failure.active }
-            return prepared
-        }
-        let stage = root.appendingPathComponent(".stage-" + UUID().uuidString)
-        try fm.createDirectory(at: stage, withIntermediateDirectories: false)
-        // Only this invocation's new stage can be cleaned up. Interrupted stages
-        // and any completed or conflicting cache version are always retained.
-        defer { if fm.fileExists(atPath: stage.path) { try? fm.removeItem(at: stage) } }
-        var records: [Files.FileRecord] = []
-        progress("[steam-browser-cache-v3] recipe=\(recipe.id) action=prepare")
-        for (index, package) in recipe.packages.enumerated() {
-            try Task.checkCancellation()
-            progress("Preparing Steam browser (\(index + 1) of \(recipe.packages.count))…")
-            var step = "download"
-            do {
-                let temporary = try await SteamBrowserDownload.download(package)
-                defer { try? fm.removeItem(at: temporary) }
+            phase = "owner"
+            let root = try Files.ownerRoot(cacheBase: cacheBase, steamRoot: steamRoot, idle: idle)
+            let final = try Files.destination(recipe.id, under: root)
+            phase = "reuse"
+            if let prepared = try Files.reuse(final, recipe: recipe, digest: hash, idle: idle, report: progress) {
+                try Files.core(chromeHTML, steamRoot: steamRoot, recipe: recipe, digest: hash)
                 guard idle() else { throw Files.Failure.active }
-                step = "sha256"
-                guard try hash(temporary) == package.sha256 else { throw Files.Failure.invalid }
-                step = "extract"
-                let archive = try Data(contentsOf: temporary, options: .mappedIfSafe)
-                try Files.appendArchive(archive, package: package, recipe: recipe, stage: stage,
-                                        records: &records, digest: hashData, idle: idle)
-                progress("[steam-browser-cache-v3] package=\(index + 1) stage=verified records=\(records.count)")
-            } catch {
-                let issue = error as NSError
-                // Fixed stages and numeric codes only: no URLs, account data,
-                // response bodies or user paths are copied into diagnostics.
-                progress("[steam-browser-cache-v3] package=\(index + 1) stage=\(step) result=failed code=\(issue.code)")
-                throw error
+                progress("[steam-browser-cache-v4] phase=reuse recipe=\(recipe.id) action=verified records=\(recipe.expectedFiles + 1)")
+                return prepared
             }
-        }
-        try Task.checkCancellation()
-        return try Files.commit(stage: stage, destination: final, recipe: recipe, records: records,
-                                digest: hash, idle: idle) {
-            try Files.core(chromeHTML, steamRoot: steamRoot, recipe: recipe, digest: hash)
+            phase = "stage"
+            let stage = root.appendingPathComponent(".stage-" + UUID().uuidString)
+            try fm.createDirectory(at: stage, withIntermediateDirectories: false)
+            // Only this invocation's new stage can be cleaned up. Interrupted stages
+            // and any completed or conflicting cache version are always retained.
+            defer { if fm.fileExists(atPath: stage.path) { try? fm.removeItem(at: stage) } }
+            var records: [Files.FileRecord] = []
+            progress("[steam-browser-cache-v3] recipe=\(recipe.id) action=prepare")
+            for (index, package) in recipe.packages.enumerated() {
+                try Task.checkCancellation()
+                progress("Preparing Steam browser (\(index + 1) of \(recipe.packages.count))…")
+                phase = "download-\(index + 1)"
+                do {
+                    let temporary = try await SteamBrowserDownload.download(package)
+                    defer { try? fm.removeItem(at: temporary) }
+                    guard idle() else { throw Files.Failure.active }
+                    phase = "sha256-\(index + 1)"
+                    guard try hash(temporary) == package.sha256 else { throw Files.ValidationIssue(.archiveHash, package.file) }
+                    phase = "extract-\(index + 1)"
+                    let archive = try Data(contentsOf: temporary, options: .mappedIfSafe)
+                    try Files.appendArchive(archive, package: package, recipe: recipe, stage: stage,
+                                            records: &records, digest: hashData, idle: idle)
+                    progress("[steam-browser-cache-v3] package=\(index + 1) stage=verified records=\(records.count)")
+                } catch {
+                    let issue = error as NSError
+                    // Fixed stages and numeric codes only: no URLs, account data,
+                    // response bodies or user paths are copied into diagnostics.
+                    progress("[steam-browser-cache-v3] package=\(index + 1) stage=\(phase) result=failed code=\(issue.code)")
+                    throw error
+                }
+            }
+            try Task.checkCancellation()
+            phase = "commit"
+            let prepared = try Files.commit(stage: stage, destination: final, recipe: recipe, records: records,
+                                    digest: hash, idle: idle, report: progress) {
+                try Files.core(chromeHTML, steamRoot: steamRoot, recipe: recipe, digest: hash)
+            }
+            progress("[steam-browser-cache-v4] phase=commit recipe=\(recipe.id) action=verified records=\(recipe.expectedFiles + 1)")
+            return prepared
+        } catch {
+            let issue: Files.ValidationIssue
+            if let value = error as? Files.ValidationIssue { issue = value }
+            else if error is CancellationError { issue = Files.ValidationIssue(.cancelled) }
+            else if let failure = error as? Files.Failure {
+                switch failure {
+                case .active: issue = Files.ValidationIssue(.active)
+                case .ownership: issue = Files.ValidationIssue(.ownership)
+                case .changedCore: issue = Files.ValidationIssue(.changedCore)
+                case .invalid: issue = Files.ValidationIssue(.recordInvalid)
+                }
+            } else { issue = Files.ValidationIssue(.filesystem) }
+            progress(issue.diagnostic(phase: phase, recipe: recipe) + " action=failed code=\((error as NSError).code)")
+            // Preserve our actionable public failures, but never let a raw
+            // filesystem/network NSError leak private paths through the caller.
+            if let failure = error as? Files.Failure { throw failure }
+            if error is CancellationError { throw CancellationError() }
+            throw issue
         }
     }
 }
@@ -463,18 +626,29 @@ private final class SteamBrowserDownload: NSObject, URLSessionDataDelegate, @unc
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
                     completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200, http.url == url,
+        typealias Files = SteamBrowserRuntimeFiles
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            failure = Files.ValidationIssue(.responseStatus, package.file, expected: 200, observed: (response as? HTTPURLResponse)?.statusCode ?? -1)
+            completionHandler(.cancel); return
+        }
+        guard http.url == url,
               url.scheme == "https", url.host == "client-update.akamai.steamstatic.com",
-              url.port == nil, url.user == nil, url.password == nil,
-              response.expectedContentLength == Int64(package.bytes),
-              http.value(forHTTPHeaderField: "Content-Encoding").map({ $0.lowercased() == "identity" }) ?? true else {
-            failure = SteamBrowserRuntimeFiles.Failure.invalid; completionHandler(.cancel); return
+              url.port == nil, url.user == nil, url.password == nil else {
+            failure = Files.ValidationIssue(.responseURL, package.file); completionHandler(.cancel); return
+        }
+        guard response.expectedContentLength == Int64(package.bytes) else {
+            failure = Files.ValidationIssue(.responseLength, package.file, expected: package.bytes, observed: Int(response.expectedContentLength))
+            completionHandler(.cancel); return
+        }
+        guard http.value(forHTTPHeaderField: "Content-Encoding").map({ $0.lowercased() == "identity" }) ?? true else {
+            failure = Files.ValidationIssue(.responseEncoding, package.file); completionHandler(.cancel); return
         }
         accepted = true; completionHandler(.allow)
     }
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         guard accepted, data.count <= package.bytes - received else {
-            failure = SteamBrowserRuntimeFiles.Failure.invalid; dataTask.cancel(); return
+            failure = SteamBrowserRuntimeFiles.ValidationIssue(.bodyLength, package.file, expected: package.bytes, observed: received + data.count)
+            dataTask.cancel(); return
         }
         do { try handle.write(contentsOf: data); received += data.count }
         catch { failure = error; dataTask.cancel() }
@@ -485,7 +659,8 @@ private final class SteamBrowserDownload: NSObject, URLSessionDataDelegate, @unc
         let issue: Error? = wasCancelled ? CancellationError() : (failure ?? error)
         if let issue { try? FileManager.default.removeItem(at: temporary); next?.resume(throwing: issue) }
         else if !accepted || received != package.bytes {
-            try? FileManager.default.removeItem(at: temporary); next?.resume(throwing: SteamBrowserRuntimeFiles.Failure.invalid)
+            try? FileManager.default.removeItem(at: temporary)
+            next?.resume(throwing: SteamBrowserRuntimeFiles.ValidationIssue(.bodyLength, package.file, expected: package.bytes, observed: received))
         } else { next?.resume(returning: temporary) }
         session.finishTasksAndInvalidate(); self.session = nil
     }
