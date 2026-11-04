@@ -29,7 +29,7 @@ def containing(r):
  i=bisect.bisect_right(starts,r)-1
  return funcs[i] if i>=0 and funcs[i][0]<=r<funcs[i][1] else None
 c=capstone.Cs(capstone.CS_ARCH_X86,capstone.CS_MODE_64);c.skipdata=True
-xref={};slot38=[]
+xref={};slot38=[];force_callers=set()
 for s in p.sections:
  if not s.Characteristics&0x20000000:continue
  for addr,size,mn,op in c.disasm_lite(s.get_data(),base+s.VirtualAddress):
@@ -40,6 +40,9 @@ for s in p.sections:
    if target in strings or target==0x11935b8:
     f=containing(r)
     if f:xref.setdefault(f,[]).append({'rva':hex(r),'asm':mn+' '+op,'target':hex(target),'literal':strings.get(target,'controller-global')})
+  if mn=='call' and op==hex(base+0x5ba600):
+   fn=containing(r)
+   if fn:force_callers.add(fn);xref.setdefault(fn,[]).append({'rva':hex(r),'asm':mn+' '+op,'target':'0x5ba600','literal':'screensaver SetActive caller'})
   if mn=='call' and re.search(r'\[[^]]+ \+ 0x130\]',op):slot38.append((r,containing(r),mn+' '+op))
 print('SLOT38 '+json.dumps([(hex(r),tuple(hex(v) for v in f) if f else None,asm) for r,f,asm in slot38]),flush=True)
 f=containing(0x66aa30)
@@ -51,13 +54,15 @@ for f,refs in xref.items():
  spans=[(f[0],f[1])] if f[1]-f[0]<=2200 else [(max(f[0],int(ref['rva'],16)-120),min(f[1],int(ref['rva'],16)+220)) for ref in refs]
  for a,b in spans:
   print('FUNCTION_CONTEXT '+json.dumps({'function':hex(f[0]),'range':[hex(a),hex(b)],'instructions':[(hex(ad-base),mn+' '+op) for ad,_,mn,op in c.disasm_lite(p.get_data(a,b-a),base+a)]}),flush=True)
-for a,b in [(0x66aa30,0x66ace3),(0x5b9660,0x5b9a30)]:
+for a,b in [(0x66aa30,0x66ace3),(0x5b9660,0x5b9760),(0x5ba600,0x5ba800)]:
  print('EXACT_MAPPING_BODY '+json.dumps({'range':[hex(a),hex(b)],'instructions':[(hex(ad-base),mn+' '+op) for ad,_,mn,op in c.disasm_lite(p.get_data(a,b-a),base+a)]}),flush=True)
 with zipfile.ZipFile(io.BytesIO(blobs[1])) as z:
  count=0
  for name in z.namelist():
   if not name.endswith(('.js','.json')):continue
   text=z.read(name).decode(errors='replace')
+  for match in re.finditer(r'UIMode|UI_MODE|\.Desktop=|\.BigPicture=|\.Gamepad=',text):
+   print('JS_UIMODE '+json.dumps({'file':name,'offset':match.start(),'context':text[max(0,match.start()-150):match.end()+200]}),flush=True)
   for m in re.finditer(r'bBrowserViewDomainMapping|SetBrowserViewDomainRequestMapping|BrowserViewDomainMapping|BrowserViewDomainRequestMapping|[A-Za-z_][A-Za-z_0-9]*(?:LegacyBrowser|BrowserViewEnabled|EnableBrowserView)[A-Za-z_0-9]*',text):
    print('JS_ROUTING '+json.dumps({'file':name,'offset':m.start(),'context':text[max(0,m.start()-2200):m.end()+1600]}),flush=True);count+=1
    assert count<100
