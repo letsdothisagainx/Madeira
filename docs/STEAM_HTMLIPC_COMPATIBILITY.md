@@ -104,3 +104,22 @@ adopted. Official downloads and integrity checks are unchanged. Existing runtime
 output is rejected and retained, not added to the trusted manifest; current
 helper redirection preserves Steam's own log/cache arguments and working
 directory. Runtime contamination has not been established by the device log.
+
+The subsequent November 4 capture identifies `debug.log` as that extra runtime
+file and proves successful 80-record cache recovery. Its next bridge-install
+failure is separately reproduced with the exact `d56ed5f8` Swift installer:
+[baseline macOS test](https://github.com/letsdothisagainx/Madeira/actions/runs/41918986032).
+After an unequal-size atomic DLL upgrade, Foundation retains the old target
+URL's cached `.fileSizeKey`; the installed bytes have the new size, correct hash
+and AMD64 header, but `verify()` rejects the stale size. Equal-size test images
+had concealed this failure. Bridge reads now use a newly opened file descriptor
+for size and bounded content rather than URL resource metadata.
+
+Source/stamp/target/pending/copy/readback phases report fixed numeric metadata,
+hash equality and architecture without private paths. An owned version change
+retains the proven old DLL and exact stamp in a new private transaction folder.
+Failed readback can restore that version only if both old and new ownership are
+still proven; unknown target bytes are never overwritten. Pending fingerprints
+remain recoverable. The cache verifier and its archive pins are unchanged.
+On-device confirmation still requires accepted helper paths, actual Wine thread
+startup, authenticated Steam UI and normal CS2 launching.

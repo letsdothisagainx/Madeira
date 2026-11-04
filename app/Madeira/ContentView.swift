@@ -3841,7 +3841,9 @@ struct ContentView: View {
         let result = wine_process_start(winePrefixPath)
         if result == 0 {
             logStore.log("Wine process thread launched", level: .success)
+            if nativeSteamClient { logStore.log("[steam-browser-bridge-v2] phase=wine-start result=thread-launched code=0") }
         } else {
+            if nativeSteamClient { logStore.log("[steam-browser-bridge-v2] phase=wine-start result=failed code=\(result)", level: .error) }
             unsetenv("MADEIRA_NATIVE_STEAM_LAUNCH")
             unsetenv("MADEIRA_HTMLIPC_HELPER"); unsetenv("MADEIRA_HTMLIPC_CACHE_DIR")
             SteamLibraryDiagnostics.shared.stop()

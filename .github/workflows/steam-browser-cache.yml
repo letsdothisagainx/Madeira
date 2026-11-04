@@ -7,6 +7,8 @@ on:
     paths:
       - app/Madeira/SteamBrowserRuntime.swift
       - app/Madeira/SteamRuntime.swift
+      - app/Madeira/SteamNativeBrowserLaunch.swift
+      - tests/host/check-steam-browser-bridge.py
       - tests/host/check-steam-browser-cache.py
       - tests/integration/check-official-steam-browser-cache.py
       - build/htmlipc/domain-routing/**
@@ -22,6 +24,8 @@ on:
     paths:
       - app/Madeira/SteamBrowserRuntime.swift
       - app/Madeira/SteamRuntime.swift
+      - app/Madeira/SteamNativeBrowserLaunch.swift
+      - tests/host/check-steam-browser-bridge.py
       - tests/host/check-steam-browser-cache.py
       - tests/integration/check-official-steam-browser-cache.py
       - build/htmlipc/domain-routing/**
@@ -38,6 +42,21 @@ permissions:
   contents: read
 
 jobs:
+  browser-bridge:
+    runs-on: xcode-27
+    timeout-minutes: 5
+    env:
+      MADEIRA_VALVE_ARCHIVE_CACHE: ${{ github.workspace }}/.official-browser-archives
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/.official-browser-archives
+          key: official-browser-v2-fee14790-1ab3b383-8b712b2a
+      - name: Test production Swift bridge upgrades, readback and interrupted ownership transactions
+        run: python3 tests/host/check-steam-browser-bridge.py --require-swift --official-archives "$MADEIRA_VALVE_ARCHIVE_CACHE" --download-official
   controller-image:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
