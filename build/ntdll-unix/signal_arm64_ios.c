@@ -1941,6 +1941,35 @@ static int ios_alias_write( uintptr_t addr, const void *source, size_t size, uin
     return 1;
 }
 
+/* GPR STUR / STR post-index / STR pre-index, all four widths. Bit 11
+ * alone cannot distinguish them: mode 11 is a valid pre-indexed store,
+ * while mode 10 is STTR and deliberately outside this decoder. */
+static int ios_alias_store_immediate( uint32_t insn, uintptr_t addr, uint64_t gpr[32], uintptr_t *blocked,
+                                      int honor_guest_prot )
+{
+    unsigned rt = insn & 31, rn = (insn >> 5) & 31;
+    unsigned mode = (insn >> 10) & 3, width = 1u << (insn >> 30);
+    int64_t offset = (insn >> 12) & 0x1ff;
+    uintptr_t effective, updated;
+    uint64_t value;
+
+    *blocked = 0;
+    if ((insn & 0x3fe00000u) != 0x38000000u || mode == 2) return 0;
+    /* Writeback with an overlapping non-SP source/base is constrained
+     * unpredictable. Register 31 is SP as the base, XZR/WZR as the source. */
+    if (mode && rn != 31 && rn == rt) return 0;
+    if (offset & 0x100) offset -= 0x200;
+    updated = gpr[rn] + (uint64_t)offset;
+    effective = mode == 1 ? gpr[rn] : updated;
+    if (effective > UINTPTR_MAX - (width - 1) || addr < effective || addr - effective >= width) return 0;
+    value = rt == 31 ? 0 : gpr[rt];
+    /* FAR can identify a later byte of a cross-page access. Validate and
+     * write the complete effective span before changing the saved base. */
+    if (!ios_alias_write( effective, &value, width, blocked, honor_guest_prot )) return 0;
+    if (mode == 1 || mode == 3) gpr[rn] = updated;
+    return 1;
+}
+
 /* GPR STP/STNP, including pre/post-index writeback. gpr[31] is SP when
  * used as a base, but register 31 as a store source is always zero. */
 static int ios_alias_store_pair( uint32_t insn, uintptr_t addr, uint64_t gpr[32], uintptr_t *blocked,
@@ -5105,70 +5134,27 @@ static void *ios_mach_exception_thread( void *arg )
                         uint32_t value = (uint32_t)IOS_STORE_SRC(rt);
                         emulated = ios_alias_write( fault_addr, &value, sizeof(value), &alias_fault, honor_guest_prot );
                     }
-                    /* STR (immediate, post/pre-index, 64-bit): 1111 1000 00 0imm9 0[10]1 Rn Rt */
-                    else if ((insn & 0xffe00000) == 0xf8000000 && (insn & 0x800) == 0)
+                    /* GPR STR immediate: STUR, post-index and pre-index,
+                     * B/H/W/X. Complete the full alias write before committing
+                     * base writeback, including SP and the separate FP/LR. */
+                    else if ((insn & 0x3fe00000u) == 0x38000000u && ((insn >> 10) & 3) != 2)
                     {
-                        int rt = insn & 0x1f;
-                        uint64_t value = IOS_STORE_SRC(rt);
-                        emulated = ios_alias_write( fault_addr, &value, sizeof(value), &alias_fault, honor_guest_prot );
-                        /* Post-index (bits 11:10 = 01) / pre-index (bits 11:10 = 11):
-                         * MUST update Rn += signed imm9. Without this, memcpy-style
-                         * loops would write the same address forever. */
-                        int idx_mode = (insn >> 10) & 3;  // bits 11:10
-                        if (emulated && (idx_mode == 1 || idx_mode == 3))
+                        uint64_t gpr[32];
+                        memcpy( gpr, state.__x, sizeof(state.__x) );
+                        gpr[29] = state.__fp; gpr[30] = state.__lr; gpr[31] = state.__sp;
+                        if (ios_alias_store_immediate( insn, fault_addr, gpr, &alias_fault, honor_guest_prot ))
                         {
-                            int rn = (insn >> 5) & 0x1f;
-                            int imm9 = (insn >> 12) & 0x1ff;
-                            if (imm9 & 0x100) imm9 |= ~0x1ff;  // sign-extend 9-bit
-                            state.__x[rn] = (uint64_t)((int64_t)state.__x[rn] + imm9);
-                        }
-                    }
-                    /* STR (immediate, post/pre-index, 32-bit): 1011 1000 00 0imm9 0[10]1 Rn Rt */
-                    else if ((insn & 0xffe00000) == 0xb8000000 && (insn & 0x800) == 0)
-                    {
-                        int rt = insn & 0x1f;
-                        uint32_t value = (uint32_t)IOS_STORE_SRC(rt);
-                        emulated = ios_alias_write( fault_addr, &value, sizeof(value), &alias_fault, honor_guest_prot );
-                        int idx_mode = (insn >> 10) & 3;
-                        if (emulated && (idx_mode == 1 || idx_mode == 3))
-                        {
-                            int rn = (insn >> 5) & 0x1f;
-                            int imm9 = (insn >> 12) & 0x1ff;
-                            if (imm9 & 0x100) imm9 |= ~0x1ff;
-                            state.__x[rn] = (uint64_t)((int64_t)state.__x[rn] + imm9);
-                        }
-                    }
-                    /* STRB (immediate, post/pre-index, 8-bit): 0011 1000 00 0imm9 0[10]1 Rn Rt
-                     * Hits when iOS memcpy handles the trailing bytes after the
-                     * 8-byte D-store loop completes (660 bytes = 82*8 + 4 bytes
-                     * tail; the tail is byte-by-byte). */
-                    else if ((insn & 0xffe00000) == 0x38000000 && (insn & 0x800) == 0)
-                    {
-                        int rt = insn & 0x1f;
-                        uint8_t value = (uint8_t)IOS_STORE_SRC(rt);
-                        emulated = ios_alias_write( fault_addr, &value, sizeof(value), &alias_fault, honor_guest_prot );
-                        int idx_mode = (insn >> 10) & 3;
-                        if (emulated && (idx_mode == 1 || idx_mode == 3))
-                        {
-                            int rn = (insn >> 5) & 0x1f;
-                            int imm9 = (insn >> 12) & 0x1ff;
-                            if (imm9 & 0x100) imm9 |= ~0x1ff;
-                            state.__x[rn] = (uint64_t)((int64_t)state.__x[rn] + imm9);
-                        }
-                    }
-                    /* STRH (immediate, post/pre-index, 16-bit): 0111 1000 00 0imm9 0[10]1 Rn Rt */
-                    else if ((insn & 0xffe00000) == 0x78000000 && (insn & 0x800) == 0)
-                    {
-                        int rt = insn & 0x1f;
-                        uint16_t value = (uint16_t)IOS_STORE_SRC(rt);
-                        emulated = ios_alias_write( fault_addr, &value, sizeof(value), &alias_fault, honor_guest_prot );
-                        int idx_mode = (insn >> 10) & 3;
-                        if (emulated && (idx_mode == 1 || idx_mode == 3))
-                        {
-                            int rn = (insn >> 5) & 0x1f;
-                            int imm9 = (insn >> 12) & 0x1ff;
-                            if (imm9 & 0x100) imm9 |= ~0x1ff;
-                            state.__x[rn] = (uint64_t)((int64_t)state.__x[rn] + imm9);
+                            memcpy( state.__x, gpr, sizeof(state.__x) );
+                            state.__fp = gpr[29]; state.__lr = gpr[30]; state.__sp = gpr[31];
+                            emulated = 1;
+                            if (((insn >> 10) & 3) == 3)
+                            {
+                                static unsigned immediate_logs;
+                                if (immediate_logs++ < 16)
+                                    dprintf( 2, "[alias-str-immediate] insn=%08x pc=%llx addr=%llx base-after=%llx bytes=%u\n",
+                                             insn, (unsigned long long)fault_pc, (unsigned long long)fault_addr,
+                                             (unsigned long long)gpr[(insn >> 5) & 31], 1u << (insn >> 30) );
+                            }
                         }
                     }
                     /* SIMD/FP STR (immediate, post/pre-index, D-reg = 64-bit):
