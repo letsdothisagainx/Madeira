@@ -370,6 +370,17 @@ enum NativeSteamPlay {
     static let mode = "client"
     static let script = "madeira-native-steam.cmd"
     static let clientArguments = "-no-cef-sandbox -cef-disable-gpu -console -nocrashmonitor -cef-disable-features=SegmentationPlatform,OptimizationTargetPrediction,OptimizationHints"
+    // This route launches Valve's real client, which owns service availability,
+    // updates and game requirements. The preparer's result is diagnostic, not a
+    // replacement for Steam's own decision. Dock's separate host policy stays
+    // unchanged. Callers already validate the directory and numeric App ID.
+    static func clientLaunchScript(windowsDirectory: String, appID: Int? = nil) -> String {
+        let launch = appID.map { " -applaunch \($0)" } ?? ""
+        return "@echo off\r\n\"C:\\windows\\system32\\madeira-steam-service.exe\" \"\(windowsDirectory)\"\r\n" +
+            "if not \"%errorlevel%\"==\"0\" echo [steam-client-start-v2] service-result=%errorlevel% policy=steam-managed\r\n" +
+            "cd /d \"\(windowsDirectory)\"\r\n\"\(windowsDirectory)\\steam.exe\" \(clientArguments)\(launch)\r\n" +
+            "exit /b %errorlevel%\r\n"
+    }
     static func libraryListed(_ game: DockGame, root: String, drive: URL) -> Bool {
         if game.library.caseInsensitiveCompare(root + "/steamapps") == .orderedSame { return true }
         let file = drive.appendingPathComponent(root + "/steamapps/libraryfolders.vdf")
@@ -405,7 +416,7 @@ enum NativeSteamPlay {
             throw DockError.message("The Windows Steam client does not list this existing library folder. Add it in Steam Storage before launching; no game files were changed.")
         }
         let windows = "C:\\" + root.replacingOccurrences(of: "/", with: "\\")
-        let body = "@echo off\r\n\"C:\\windows\\system32\\madeira-steam-service.exe\" \"\(windows)\"\r\nif not \"%errorlevel%\"==\"0\" exit /b %errorlevel%\r\ncd /d \"\(windows)\"\r\n\"\(windows)\\steam.exe\" \(clientArguments) -applaunch \(game.id)\r\n"
+        let body = clientLaunchScript(windowsDirectory: windows, appID: game.id)
         try body.write(to: drive.appendingPathComponent(script), atomically: true, encoding: .utf8)
         return script
     }

@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Compile actual native-client launch preparation with real VDF parsing on macOS."""
 from pathlib import Path
-import subprocess,tempfile,os
+import argparse,subprocess,tempfile,os
+parser=argparse.ArgumentParser()
+parser.add_argument("--emit-script-dir", type=Path)
+args=parser.parse_args()
 root=Path(__file__).resolve().parents[2]
 s=(root/'app/Madeira/SteamRuntime.swift').read_text();helper=s[s.index('enum NativeSteamPlay {'):]
-assert '-applaunch \\(game.id)' in helper and 'clientArguments' in helper
+assert 'clientLaunchScript' in helper and 'clientArguments' in helper and '-applaunch' in helper
 assert all(x not in helper for x in ['removeItem','refreshToken','credentialsForDock','writeHandoff','DockStartProgram.apply'])
 content=(root/'app/Madeira/ContentView.swift').read_text();a=content.index('entry.steamStart == NativeSteamPlay.mode');b=content.index('if let appID = entry.steamAppID, !entry.startsSteamGameDirectly',a)
 assert 'launch.steamAppID = nil' in content[a:b] and 'NativeSteamPlay.prepare' in content[a:b]
@@ -42,13 +45,24 @@ code='import Foundation\n'+game+'\nenum DockError:Error{case message(String)}\ne
   let script=try NativeSteamPlay.prepare(game,drive:drive)
   let body=try String(contentsOf:drive.appendingPathComponent(script),encoding:.utf8)
   assert(body.contains("steam.exe\" \(NativeSteamPlay.clientArguments) -applaunch 730"))
+  assert(body.contains("madeira-steam-service.exe") && body.contains("policy=steam-managed"))
+  assert(!body.contains("exit /b %errorlevel%\r\ncd /d") && !body.contains("&&"))
+  assert(body.hasSuffix("exit /b %errorlevel%\r\n"))
+  let clientOnly=NativeSteamPlay.clientLaunchScript(windowsDirectory:"C:\\Program Files (x86)\\Steam")
+  assert(!clientOnly.contains("-applaunch") && clientOnly.contains("policy=steam-managed"))
+  if CommandLine.arguments.count==2 {
+   let output=URL(fileURLWithPath:CommandLine.arguments[1],isDirectory:true)
+   try fm.createDirectory(at:output,withIntermediateDirectories:true)
+   try clientOnly.write(to:output.appendingPathComponent("steam-client.cmd"),atomically:true,encoding:.utf8)
+   try body.write(to:output.appendingPathComponent("steam-applaunch.cmd"),atomically:true,encoding:.utf8)
+  }
   assert(try Data(contentsOf:manifest)==data);assert(try String(contentsOf:login,encoding:.utf8)=="auth-fixture-must-stay")
   let image=try String(contentsOf:folder.appendingPathComponent("game/bin/win64/cs2.exe"),encoding:.utf8);assert(image=="game-fixture")
   try fm.removeItem(at:manifest)
   do {_=try NativeSteamPlay.prepare(game,drive:drive);assertionFailure("missing manifest must reject")}catch{}
   try data.write(to:manifest);try fm.removeItem(at:folder)
   do {_=try NativeSteamPlay.prepare(game,drive:drive);assertionFailure("missing install directory must reject")}catch{}
-  print("PASS actual native Steam launch: real appmanifest parser, numeric AppID, service prerequisite, unchanged client flags plus normal applaunch; installed/auth files unchanged and missing data rejected")
+  print("PASS actual native Steam launch: real appmanifest parser, numeric AppID, truthful optional service preparation, unchanged client flags plus normal applaunch; installed/auth files unchanged and missing data rejected")
  }
 }
 '''
@@ -56,4 +70,4 @@ code='import Foundation\n'+game+'\nenum DockError:Error{case message(String)}\ne
 code=code.replace('assert(try Data(contentsOf:manifest)==data);assert(try String(contentsOf:login,encoding:.utf8)=="auth-fixture-must-stay")','let unchanged=try Data(contentsOf:manifest);let auth=try String(contentsOf:login,encoding:.utf8);assert(unchanged==data);assert(auth=="auth-fixture-must-stay")')
 with tempfile.TemporaryDirectory() as t:
  p=Path(t)/'check.swift';p.write_text(code);exe=Path(t)/'check'
- subprocess.run(['swiftc','-parse-as-library','-swift-version','5',str(root/'app/Madeira/SteamKeyValues.swift'),str(p),'-o',str(exe)],check=True);subprocess.run([str(exe)],check=True)
+ subprocess.run(['swiftc','-parse-as-library','-swift-version','5',str(root/'app/Madeira/SteamKeyValues.swift'),str(p),'-o',str(exe)],check=True);subprocess.run([str(exe)] + ([str(args.emit_script_dir.resolve())] if args.emit_script_dir else []),check=True)
