@@ -69,6 +69,7 @@ jobs:
       - name: Install isolated Wine WoW64 and PE fixture compilers
         run: |
           sudo dpkg --add-architecture i386
+          sudo sed -i 's@azure.archive.ubuntu.com@archive.ubuntu.com@g' /etc/apt/sources.list.d/ubuntu.sources
           sudo apt-get update -qq -o Acquire::Retries=1 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30
           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends wine wine64 wine32:i386 gcc-mingw-w64-x86-64-posix gcc-mingw-w64-i686-posix xvfb xauth
       - uses: actions/download-artifact@v4
