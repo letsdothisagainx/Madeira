@@ -55,7 +55,7 @@ prefix = r'''
 typedef uintptr_t mach_vm_address_t;
 typedef size_t mach_vm_size_t;
 typedef unsigned mach_msg_type_number_t;
-typedef int mach_port_t;
+typedef unsigned mach_port_t;
 typedef int kern_return_t;
 typedef int *vm_region_info_t;
 typedef struct { int protection, max_protection; } vm_region_basic_info_data_64_t;
@@ -95,7 +95,7 @@ static int mach_vm_read_overwrite(int task, uintptr_t address, size_t length, ui
     memcpy((void *)out, (const void *)address, length); *got = length; return 0;
 }
 static int mach_vm_region(int task, uintptr_t *address, size_t *length, int flavor,
-                          int *raw, unsigned *count, int *object)
+                          int *raw, unsigned *count, mach_port_t *object)
 {
     (void)task; (void)count; assert(flavor == VM_REGION_BASIC_INFO_64);
     vm_region_basic_info_data_64_t *info = (void *)raw;
