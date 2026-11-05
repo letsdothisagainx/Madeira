@@ -10,6 +10,7 @@ from pathlib import Path
 import argparse
 import os
 import shutil
+import re
 import struct
 import subprocess
 import tempfile
@@ -24,11 +25,13 @@ for tool in ['wine', 'wineboot', 'wineserver', 'i686-w64-mingw32-gcc', 'x86_64-w
 for name in ['steam-client.cmd', 'steam-applaunch.cmd']:
     assert (args.script_dir / name).is_file(), 'production Swift script artifact missing'
 
+WINE64 = shutil.which('wine64') or next((str(path) for path in [Path('/usr/lib/wine/wine64'), Path('/usr/lib64/wine/wine64')] if path.is_file()), None)
+assert WINE64, 'explicit AMD64 Wine loader unavailable'
 MAX_OUTPUT = 4 * 1024 * 1024
 with tempfile.TemporaryDirectory(prefix='madeira-service-scm-') as directory:
     temporary = Path(directory)
     prefix = temporary / 'prefix'
-    env = {**os.environ, 'WINEPREFIX': str(prefix), 'WINEARCH': 'win64', 'WINEDEBUG': '-all',
+    env = {**os.environ, 'WINEPREFIX': str(prefix), 'WINEARCH': 'win64', 'WINEDEBUG': '-all,err+module',
            'WINEDLLOVERRIDES': 'mscoree,mshtml='}
     # No Actions/artifact credentials are passed to the fixture processes.
     for key in list(env):
@@ -40,12 +43,17 @@ with tempfile.TemporaryDirectory(prefix='madeira-service-scm-') as directory:
         assert len(result.stdout) <= MAX_OUTPUT, 'fixture output exceeded diagnostic bound'
         text = result.stdout.decode(errors='replace')
         if expected is not None and result.returncode != expected:
-            safe = [line[:400] for line in text.splitlines()
-                    if line.startswith(('[steam-service]', '[service-fixture]'))][-25:]
-            raise AssertionError(f'fixture command failed code={result.returncode}; metadata={safe!r}')
+            safe = []
+            for line in text.splitlines():
+                if not any(token in line for token in ['[steam-service]', '[service-fixture]', 'wine:', 'err:module', 'Library ', 'not found']): continue
+                line = re.sub(r'https?://[^\s]+', '<url>', line)
+                line = re.sub(r"(?:[A-Za-z]:[\\/]|/)[^\"'\r\n]+", '<path>', line)
+                safe.append(line[:400])
+            raise AssertionError(f'fixture command failed code={result.returncode}; metadata={safe[-25:]!r}')
         return result.returncode, text
     def wine(exe, *arguments, expected=0, timeout=90):
-        return command(['wine', str(exe), *arguments], timeout=timeout, expected=expected)
+        loader = WINE64 if exe in ['cmd.exe', installed_helper] else 'wine'
+        return command([loader, str(exe), *arguments], timeout=timeout, expected=expected)
     def compile_pe(compiler, output, source):
         command([compiler, '-std=c11', '-O1', '-Wall', '-Wextra', '-Werror', '-municode',
                  '-static', '-Wl,--no-insert-timestamp', str(source), '-ladvapi32', '-o', str(output)])
@@ -58,7 +66,7 @@ with tempfile.TemporaryDirectory(prefix='madeira-service-scm-') as directory:
         assert data[:2] == b'MZ' and data[pe:pe + 4] == b'PE\0\0'
         assert struct.unpack_from('<H', data, pe + 4)[0] == expected_machine
     try:
-        command(['wineboot', '--init'], timeout=120)
+        command([WINE64, 'wineboot.exe', '--init'], timeout=120)
         fixture = prefix / 'drive_c/Fixture'
         common = fixture / 'Common Files/Steam'
         steam = prefix / 'drive_c/Program Files (x86)/Steam'

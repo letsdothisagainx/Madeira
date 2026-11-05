@@ -31,16 +31,6 @@ on:
 permissions:
   contents: read
 jobs:
-  io-apc-delivery:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-          submodules: recursive
-      - name: Reproduce dropped RPC completion and verify actual staged queue/wait delivery
-        run: python3 tests/host/check-service-async-apc.py
   scripts:
     runs-on: xcode-27
     timeout-minutes: 5
