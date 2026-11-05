@@ -69,6 +69,8 @@ typedef int kern_return_t; typedef unsigned int mach_msg_type_number_t; typedef 
 typedef uint64_t mach_vm_address_t, mach_vm_size_t; typedef unsigned int mach_port_t; typedef int *vm_region_info_t;
 typedef struct { int protection; } vm_region_basic_info_data_64_t;
 #define KERN_SUCCESS 0
+#define KERN_INVALID_ADDRESS 1
+#define min(a,b) ((a) < (b) ? (a) : (b))
 #define TASK_VM_INFO 22
 #define TASK_VM_INFO_COUNT 1
 #define VM_REGION_BASIC_INFO_64 9
@@ -91,6 +93,10 @@ static int mmap_calls, task_info_calls;
 static int ios_cage_holdback_live, ios_cage_window_tail_live;
 static const ULONG_PTR host_page_size = 0x4000;
 static ULONG_PTR ios_usable_va_floor = 0x7038000000ULL, ios_furniture_ceiling = 0x73ffff0000ULL;
+static ULONG_PTR ios_fex_arena_base_unix, ios_fex_arena_end_unix;
+/* This lazy-session fixture has no held FEX arena. The capacity fixture
+ * compiles the production VAD snapshot and exercises measured FEX credit. */
+static ULONG_PTR ios_fex_arena_free_va(void) { return 0; }
 static void *user_space_limit = (void *)0x7fffffff0000ULL;
 static void add_region( ULONG_PTR lo, ULONG_PTR hi, int prot ) {
     int i = 0, j;
@@ -101,6 +107,8 @@ static void add_region( ULONG_PTR lo, ULONG_PTR hi, int prot ) {
 static int overlaps( ULONG_PTR lo, ULONG_PTR hi ) {
     int i; for (i = 0; i < nmap; i++) if (map[i].lo < hi && lo < map[i].hi) return 1; return 0; }
 static task_t mach_task_self( void ) { return 1; }
+static char *ios_query_map_floor( void ) { return (char *)0x100000000ULL; }
+static kern_return_t mach_port_deallocate( task_t task, mach_port_t object ) { (void)task; (void)object; return 0; }
 static kern_return_t task_info( task_t t, int flavor, task_info_t out, mach_msg_type_number_t *cnt ) {
     (void)t; (void)flavor; (void)cnt; task_info_calls++;
     ((task_vm_info_data_t *)out)->max_address = fake_max; return KERN_SUCCESS; }

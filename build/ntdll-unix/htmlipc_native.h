@@ -4,6 +4,7 @@
 #define MADEIRA_HTMLIPC_NATIVE_H
 #include "../scm-rpc/htmlipc_policy.h"
 #include "../scm-rpc/htmlipc_ready_reader.h"
+#include "htmlipc_log_path.h"
 extern void *ios_jit_current_peb(void);
 extern unsigned long long ios_thread_process_snapshot(void *,unsigned *,int *,int *);
 
@@ -20,15 +21,15 @@ static int ios_htmlipc_read(void *context,uint64_t address,void *out,size_t size
     return mach_vm_read_overwrite(mach_task_self(),(mach_vm_address_t)address,size,
         (mach_vm_address_t)out,&got)==KERN_SUCCESS&&got==size;
 }
-static int ios_htmlipc_current_steam(void *owner)
+static int ios_htmlipc_current_steam(void *owner,WCHAR *name,size_t capacity,size_t *length)
 {
     RTL_USER_PROCESS_PARAMETERS *parameters=NULL;UNICODE_STRING image;
-    WCHAR name[32768];
     if(!owner||!ios_htmlipc_read(NULL,(uintptr_t)owner+offsetof(PEB,ProcessParameters),&parameters,sizeof(parameters))||
        !parameters||!ios_htmlipc_read(NULL,(uintptr_t)parameters+offsetof(RTL_USER_PROCESS_PARAMETERS,ImagePathName),&image,sizeof(image))||
-       !image.Buffer||!image.Length||(image.Length&1)||
+       !image.Buffer||!image.Length||(image.Length&1)||image.Length/sizeof(WCHAR)>=capacity||
        !ios_htmlipc_read(NULL,(uintptr_t)image.Buffer,name,image.Length))return 0;
-    return madeira_htmlipc_basename(name,image.Length/sizeof(WCHAR),"steam.exe");
+    *length=image.Length/sizeof(WCHAR);name[*length]=0;
+    return madeira_htmlipc_basename(name,*length,"steam.exe");
 }
 /* Every spawn starts at the current PEB, not a global module list. Native64
  * LDR pointers are already real addresses: no blanket guest-base addition.
@@ -90,11 +91,12 @@ static NTSTATUS ios_htmlipc_redirect(UNICODE_STRING *path,RTL_USER_PROCESS_PARAM
     USHORT requested_machine,HANDLE parent,WCHAR **allocated_path,WCHAR **allocated_command,BOOL *redirected)
 {
     const char *helper_env=getenv("MADEIRA_HTMLIPC_HELPER"),*cache_env=getenv("MADEIRA_HTMLIPC_CACHE_DIR");
-    WCHAR helper[32768],cache[32768],*new_path=NULL,*new_command=NULL;size_t hn,cn,command_n;
+    WCHAR helper[32768],cache[32768],steam[32768],*new_path=NULL,*new_command=NULL;size_t hn,cn,sn,command_n;
+    enum madeira_htmlipc_log_route log_route;
     void *owner=ios_jit_current_peb();uint64_t lease;uint32_t pid;
     *redirected=FALSE;*allocated_path=NULL;*allocated_command=NULL;
     if(!madeira_htmlipc_basename(params->ImagePathName.Buffer,params->ImagePathName.Length/sizeof(WCHAR),"steamwebhelper.exe")||
-       !ios_htmlipc_current_steam(owner)||(!helper_env&&!cache_env))return STATUS_SUCCESS;
+       !ios_htmlipc_current_steam(owner,steam,ARRAY_SIZE(steam),&sn)||(!helper_env&&!cache_env))return STATUS_SUCCESS;
     pid=HandleToULong(NtCurrentTeb()->ClientId.UniqueProcess);
     if((parent&&parent!=GetCurrentProcess())||!helper_env||!cache_env||!path->Buffer||(path->Length&1)||(params->ImagePathName.Length&1)||
        (params->CommandLine.Length&1)||!madeira_htmlipc_basename(path->Buffer,path->Length/sizeof(WCHAR),"steamwebhelper.exe")||
@@ -114,6 +116,9 @@ static NTSTATUS ios_htmlipc_redirect(UNICODE_STRING *path,RTL_USER_PROCESS_PARAM
                                     helper,hn,new_command,32768,&command_n)){
         free(new_path);free(new_command);return STATUS_NOT_SUPPORTED;
     }
+    log_route=madeira_htmlipc_route_log(new_command,command_n,32768,steam,sn,&command_n);
+    /* Logging is best effort; failed parsing/allocation/capacity leaves the
+     * successfully redirected command byte-identical and cannot deny launch. */
     new_path[0]='\\';new_path[1]='?';new_path[2]='?';new_path[3]='\\';
     memcpy(new_path+4,helper,(hn+1)*sizeof(WCHAR));
     path->Buffer=new_path;path->Length=(hn+4)*sizeof(WCHAR);path->MaximumLength=(hn+5)*sizeof(WCHAR);
@@ -123,6 +128,11 @@ static NTSTATUS ios_htmlipc_redirect(UNICODE_STRING *path,RTL_USER_PROCESS_PARAM
     params->CommandLine.MaximumLength=(command_n+1)*sizeof(WCHAR);
     *allocated_path=new_path;*allocated_command=new_command;*redirected=TRUE;
     dprintf(2,"[htmlipc-native-v1] helper=cache readiness=installed owner-lease=verified\n");
+    dprintf(2,"[htmlipc-log-v1] destination=%s cache-default=%s\n",
+        log_route==MADEIRA_HTMLIPC_LOG_ERROR?"unchanged":log_route==MADEIRA_HTMLIPC_LOG_EXPLICIT?"explicit":
+        log_route==MADEIRA_HTMLIPC_LOG_STEAM?"steam-logs":"stderr",
+        log_route==MADEIRA_HTMLIPC_LOG_STEAM||log_route==MADEIRA_HTMLIPC_LOG_STDERR?"avoided":
+        log_route==MADEIRA_HTMLIPC_LOG_EXPLICIT?"not-assessed":"possible");
     return STATUS_SUCCESS;
 }
 #endif

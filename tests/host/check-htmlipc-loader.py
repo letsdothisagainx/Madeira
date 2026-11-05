@@ -8,7 +8,7 @@ ROOT=Path(__file__).resolve().parents[2]
 def run(command,**kw):subprocess.run([str(x) for x in command],check=True,**kw)
 with tempfile.TemporaryDirectory(prefix='madeira-htmlipc-loader-') as folder:
     tmp=Path(folder)
-    for name in ('test_policy','test_ready_reader','test_native','test_pe_loader'):
+    for name in ('test_policy','test_ready_reader','test_native','test_pe_loader','test_log_path'):
         flags=['-fshort-wchar'] if name=='test_pe_loader' else []
         run([os.environ.get('CC','cc'),'-std=c11','-Wall','-Wextra','-Werror',
              '-fsanitize=address,undefined','-fno-omit-frame-pointer','-g',*flags,

@@ -14,6 +14,11 @@ src = (root / "build/ntdll-unix/virtual_ios.c").read_text()
 a = src.index("static ULONG_PTR ios_wow_map_end(void)")
 b = src.index("/* One slot below the FEX band's start")
 band = src[a:b]
+# Guard conflict checks use the full window registry, covered by the lazy and
+# capacity fixtures; retain only this fixture's production band/budget code.
+guard_a = band.index('/* A shared boundary remains an overrun guard')
+guard_b = band.index('extern unsigned long long ios_layerkit_lo', guard_a)
+band = band[:guard_a] + band[guard_b:]
 harness = r"""
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,6 +29,8 @@ typedef int kern_return_t; typedef unsigned int mach_msg_type_number_t; typedef 
 typedef uint64_t mach_vm_address_t, mach_vm_size_t; typedef int mach_port_t; typedef int *vm_region_info_t;
 typedef struct { int protection; } vm_region_basic_info_data_64_t;
 #define KERN_SUCCESS 0
+#define KERN_INVALID_ADDRESS 1
+#define min(a,b) ((a) < (b) ? (a) : (b))
 #define TASK_VM_INFO 22
 #define TASK_VM_INFO_COUNT 1
 #define VM_REGION_BASIC_INFO_64 9
@@ -36,6 +43,8 @@ typedef struct { unsigned long long max_address; } task_vm_info_data_t;
 static unsigned long long fake_max;
 static ULONG_PTR used_lo, used_hi;   /* one occupied region [used_lo, used_hi) */
 static task_t mach_task_self( void ) { return 1; }
+static char *ios_query_map_floor( void ) { return (char *)0x100000000ULL; }
+static kern_return_t mach_port_deallocate( task_t task, mach_port_t object ) { (void)task; (void)object; return 0; }
 static kern_return_t task_info( task_t t, int flavor, task_info_t out, mach_msg_type_number_t *cnt ) {
     (void)t; (void)flavor; (void)cnt; ((task_vm_info_data_t *)out)->max_address = fake_max; return KERN_SUCCESS; }
 static kern_return_t mach_vm_region( task_t t, mach_vm_address_t *a, mach_vm_size_t *s, int f, vm_region_info_t i,
@@ -45,6 +54,11 @@ static kern_return_t mach_vm_region( task_t t, mach_vm_address_t *a, mach_vm_siz
     if (*a < used_lo) *a = used_lo;
     *s = used_hi - *a; return KERN_SUCCESS; }
 static ULONG_PTR ios_usable_va_floor = 0x7038000000ULL, ios_furniture_ceiling = 0x73ffff0000ULL;
+unsigned long long ios_layerkit_lo, ios_layerkit_hi;
+static int ios_main_image_steam;
+static ULONG_PTR ios_fex_arena_base_unix, ios_fex_arena_end_unix;
+static ULONG_PTR ios_wow_guard_size(void) { return 0x4000; }
+static unsigned ios_wow_live_window_count(void) { return 0; }
 static void *user_space_limit = (void *)0x7fffffff0000ULL;
 #define dprintf(fd, ...) fprintf( stderr, __VA_ARGS__ )
 """ + band + r"""
@@ -54,7 +68,7 @@ int main( int argc, char **argv ) {
     if (argc > 3) { used_lo = strtoull( argv[2], NULL, 0 ); used_hi = strtoull( argv[3], NULL, 0 ); }
     ios_wow_band( &f, &c );
     printf( "%llx %llx %u %d\n", (unsigned long long)f, (unsigned long long)c, ios_wow_small_va_slots,
-            ios_wow_map_allows_window() );
+            ios_wow_map_allows_window(0) );
     return 0;
 }
 """

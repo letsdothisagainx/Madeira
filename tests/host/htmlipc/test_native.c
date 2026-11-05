@@ -84,7 +84,12 @@ unsigned long long ios_thread_process_snapshot(void *owner,unsigned *threads,int
     if(owner!=mock_owner)return 0;
     return mock_expire_snapshot&&mock_snapshots>=mock_expire_snapshot?mock_lease+1:mock_lease;
 }
+static unsigned mock_allocations,mock_fail_allocation;
+static void *mock_malloc(size_t size)
+{ return ++mock_allocations==mock_fail_allocation?NULL:malloc(size); }
+#define malloc mock_malloc
 #include "htmlipc_native.h"
+#undef malloc
 
 #define IMAGE_SIZE 0x4000u
 static const char helper[]="C:\\windows\\madeira-compat\\SteamBrowserRuntime\\v1\\bin\\cef\\cef.win7\\steamwebhelper.exe";
@@ -124,6 +129,7 @@ static void build(void)
 {
     unsigned char *p;LIST_ENTRY *head;char cmd[2048],nt[512];
     memset(&f,0,sizeof(f));mock_reads=mock_snapshots=mock_fail_read=mock_expire_snapshot=0;
+    mock_allocations=mock_fail_allocation=0;
     mock_lease=UINT64_C(0x123456789);mock_threads=3;mock_exiting=mock_reclaimed=0;
     mock_owner=&f.peb;mock_parent=NULL;mock_flip_data=NULL;test_teb.ClientId.UniqueProcess=(void *)(uintptr_t)32;
     nranges=0;readable(&f,sizeof(f));
@@ -186,7 +192,7 @@ static void success(USHORT requested)
     assert(path==f.path.Buffer&&f.child.ImagePathName.Buffer==path+4&&command==f.child.CommandLine.Buffer);
     assert(snprintf(expected,sizeof(expected),"\\??\\%s",helper)>0);assert(equals(&f.path,expected));
     assert(equals(&f.child.ImagePathName,helper));
-    assert(snprintf(expected,sizeof(expected),"\"%s\"%s",helper,tail)>0);assert(equals(&f.child.CommandLine,expected));
+    assert(snprintf(expected,sizeof(expected),"\"%s\"%s --enable-logging=stderr",helper,tail)>0);assert(equals(&f.child.CommandLine,expected));
     assert(!memcmp(command+strlen(helper)+2,preserved,tail_size*sizeof(WCHAR)));
     assert(f.path.MaximumLength==f.path.Length+sizeof(WCHAR));
     assert(f.child.ImagePathName.MaximumLength==f.child.ImagePathName.Length+sizeof(WCHAR));
@@ -201,6 +207,36 @@ int main(void)
     build();mock_parent=GetCurrentProcess();success(0);
     build();assert(snprintf(unquoted,sizeof(unquoted),"steamwebhelper.exe%s",tail)>0);
     string(&f.child.CommandLine,f.command,unquoted);success(0);
+    {
+        WCHAR *path,*command;BOOL redirected;char text[2048],expected[2048];
+        static const char logdir[]=" \"-logdir=C:\\Program Files (x86)\\Steam\\logs\"";
+        build();assert(snprintf(text,sizeof(text),"\"%s\"%s%s",original_image,tail,logdir)>0);
+        string(&f.child.CommandLine,f.command,text);
+        assert(run(0,&redirected,&path,&command)==STATUS_SUCCESS&&redirected);
+        assert(snprintf(expected,sizeof(expected),"\"%s\"%s%s --log-file=\"C:\\Program Files (x86)\\Steam\\logs\\madeira-cef-debug.log\"",helper,tail,logdir)>0);
+        assert(equals(&f.child.CommandLine,expected));free(path);free(command);
+    }
+    /* A new diagnostic-allocation failure cannot reject an authorized helper. */
+    {
+        WCHAR *path,*command;BOOL redirected;char expected[2048];
+        build();mock_fail_allocation=3; /* path, command, logging-parser scratch */
+        assert(run(0,&redirected,&path,&command)==STATUS_SUCCESS&&redirected);
+        assert(snprintf(expected,sizeof(expected),"\"%s\"%s",helper,tail)>0);
+        assert(equals(&f.child.CommandLine,expected));free(path);free(command);
+    }
+    /* At the existing Windows command limit logging is omitted, not truncated
+     * and not converted into a new startup failure. */
+    {
+        WCHAR *path,*command,*large;BOOL redirected;size_t count=32764-strlen(helper)+strlen(original_image);
+        build();large=malloc((count+1)*sizeof(*large));assert(large);
+        memcpy(large,f.command,f.child.CommandLine.Length);size_t prefix=f.child.CommandLine.Length/2;
+        for(size_t i=prefix;i<count;i++)large[i]='x';
+        large[count]=0;
+        f.child.CommandLine.Buffer=large;f.child.CommandLine.Length=count*2;f.child.CommandLine.MaximumLength=(count+1)*2;
+        assert(run(0,&redirected,&path,&command)==STATUS_SUCCESS&&redirected);
+        assert(f.child.CommandLine.Length/2==32764);
+        free(path);free(command);free(large);
+    }
     /* Process/owner selection must leave every unrelated request untouched. */
     build();string(&f.parent.ImagePathName,f.parent_name,"C:\\games\\Game.exe");unchanged();
     build();string(&f.child.ImagePathName,f.image_name,"C:\\games\\Game.exe");unchanged();

@@ -86,7 +86,8 @@ static void *ios_jit_current_peb(void) { return current_peb; }
 static void ios_wow_session_arm(void) {}
 static void ios_wow_reclaim_dead_windows(void) {}
 static void ios_wow_band(ULONG_PTR *floor, ULONG_PTR *ceil) { *floor=0; *ceil=0; }
-static int ios_wow_map_allows_window(void) { return allocation_allowed; }
+static ULONG_PTR ios_fex_arena_free_va(void) { return 0; }
+static int ios_wow_map_allows_window(ULONG_PTR fex_free) { (void)fex_free; return allocation_allowed; }
 static ULONG_PTR ios_wow_window_pick(unsigned *guard) {
     ULONG_PTR b = next_base; next_base += 0x200000000; *guard=1; return b;
 }

@@ -404,7 +404,8 @@ jobs:
                          b'[wow-startup]', b'[process-quarantine]', b'[fex-fault] original guest AV', b'[io-apc-handoff-v1]',
                          b'[va-scan-owner]', b'[thread-context-v1]', b'placement=alignment-ends-v1',
                          b'WINE_IOS_JIT_HEAD_RESERVE_MB', b'[cs2-pool]', b'[wow-session]',
-                         b'[steam-validation]', b'[steam-launch-v1]'):
+                         b'[steam-validation]', b'[steam-launch-v1]', b'[wow-budget]',
+                         b'above-FEX=', b'[fixed-main-placement]', b'[htmlipc-log-v1]'):
               assert marker in image, 'missing native diagnostic: ' + repr(marker)
           assert b'SEGV LOOP FATAL' not in image, 'legacy fault-skipping path is still bundled'
           print('PASS native attach/UI/I/O/guard/process-isolation diagnostics included in IPA')

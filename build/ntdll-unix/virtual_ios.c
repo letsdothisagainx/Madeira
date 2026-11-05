@@ -10206,6 +10206,33 @@ static ULONG_PTR get_wow_user_space_limit(void)
 
 
 #ifdef WINE_IOS
+/* Unclaimed VA inside the already-held FEX arena can satisfy future emulator
+ * allocations without consuming another address outside it. Snapshot before
+ * taking ios_wow_mutex: ordinary VM placement takes those locks in that order. */
+static ULONG_PTR ios_fex_arena_free_va(void)
+{
+    ULONG_PTR lo = ios_fex_arena_base_unix, hi = ios_fex_arena_end_unix, cursor, free_bytes = 0;
+    struct file_view *view;
+    sigset_t sigset;
+
+    if (!lo || hi <= lo) return 0;
+    server_enter_uninterrupted_section( &virtual_mutex, &sigset );
+    cursor = lo;
+    WINE_RB_FOR_EACH_ENTRY( view, &views_tree, struct file_view, entry )
+    {
+        ULONG_PTR base = (ULONG_PTR)view->base, end;
+
+        if (base >= hi) break;
+        end = view->size > ~(ULONG_PTR)0 - base ? ~(ULONG_PTR)0 : base + view->size;
+        if (end <= cursor) continue;
+        if (base > cursor) free_bytes += base - cursor;
+        cursor = min( end, hi );
+    }
+    if (cursor < hi) free_bytes += hi - cursor;
+    server_leave_uninterrupted_section( &virtual_mutex, &sigset );
+    return free_bytes;
+}
+
 /* ==== WoW64 guest windows: registry and placement ==== */
 /***********************************************************************
  *           WoW64 guest window (docs/WOW64.md)
@@ -10224,8 +10251,10 @@ static ULONG_PTR get_wow_user_space_limit(void)
  *
  * Placement rules: 4 GB-aligned, inside the furniture band
  * [ios_usable_va_floor, ios_furniture_ceiling) (or the low band on a small
- * address map, see ios_wow_band), below the CEF pools [0x7400000000,
- * 0x7c00000000) and the FEX band [0x7c00000000, 0x8000000000).
+ * address map, see ios_wow_band). Steam may also use a guarded small-map
+ * candidate above the actual FEX arena, within the task's measured map end.
+ * Preferred candidates stay below the CEF pools [0x7400000000, 0x7c00000000)
+ * and the normal FEX band [0x7c00000000, 0x8000000000).
  */
 #define IOS_WOW_MAX_WINDOWS 8
 #define IOS_WOW_CEF_POOLS_START ((ULONG_PTR)0x7400000000)
@@ -10904,8 +10933,8 @@ static unsigned long ios_wow_env_ulong( const char *name, unsigned long dflt )
 static unsigned ios_wow_small_va_slots;
 /* Steam's browser and Crashpad children outlive short driver probes. The
  * configured small-map count is a baseline for this session only; expansion
- * still requires measured free VA, a candidate in the existing band and a
- * successful no-clobber reservation. Games keep their existing hard limit. */
+ * still requires measured free VA, a guarded candidate below the task's real
+ * map end and a successful no-clobber reservation. Games keep their hard limit. */
 static int ios_wow_elastic(void)
 {
     const char *e = getenv( "MADEIRA_WOW_ELASTIC" );
@@ -11022,13 +11051,15 @@ static void ios_wow_band( ULONG_PTR *floor, ULONG_PTR *ceil )
     }
 }
 
-/* Free VA in [4 GB, map_end): the sum of the holes between regions. */
+/* Free usable VA above both 4 GB and the actual task map floor. */
 static ULONG_PTR ios_wow_free_va( ULONG_PTR map_end )
 {
-    mach_vm_address_t addr = (mach_vm_address_t)0x100000000ULL;
+    mach_vm_address_t addr = (mach_vm_address_t)(ULONG_PTR)ios_query_map_floor();
     ULONG_PTR free_bytes = 0;
     unsigned regions = 0;
 
+    if (addr < (mach_vm_address_t)0x100000000ULL) addr = (mach_vm_address_t)0x100000000ULL;
+    if (addr >= map_end) return 0;
     while (addr < map_end && regions++ < 1000000)
     {
         mach_vm_address_t a = addr;
@@ -11037,15 +11068,27 @@ static ULONG_PTR ios_wow_free_va( ULONG_PTR map_end )
         mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64;
         mach_port_t obj = MACH_PORT_NULL;
 
-        if (mach_vm_region( mach_task_self(), &a, &size, VM_REGION_BASIC_INFO_64,
-                            (vm_region_info_t)&info, &cnt, &obj ) != KERN_SUCCESS || a >= map_end)
+        kern_return_t kr = mach_vm_region( mach_task_self(), &a, &size, VM_REGION_BASIC_INFO_64,
+                                          (vm_region_info_t)&info, &cnt, &obj );
+
+        if (obj != MACH_PORT_NULL) mach_port_deallocate( mach_task_self(), obj );
+        if (kr == KERN_INVALID_ADDRESS)
         {
             free_bytes += map_end - addr;              /* free to the end of the map */
+            break;
+        }
+        /* An unavailable VM query is unknown space, never evidence of a hole. */
+        if (kr != KERN_SUCCESS || !size || a > ~(mach_vm_address_t)0 - size || a + size <= addr)
+            return 0;
+        if (a >= map_end)
+        {
+            free_bytes += map_end - addr;
             break;
         }
         if (a > addr) free_bytes += a - addr;
         addr = a + size;
     }
+    if (addr < map_end && regions > 1000000) return 0;
     return free_bytes;
 }
 
@@ -11053,14 +11096,18 @@ static ULONG_PTR ios_wow_free_va( ULONG_PTR map_end )
  *
  * A window is refused, cleanly and once-logged, when the map is smaller than
  * MADEIRA_WOW_MIN_MAP_GB (default 48), or when taking it would leave less than
- * MADEIRA_WOW_MIN_FREE_GB (default 8) of free VA outside it.  The 32-bit
+ * MADEIRA_WOW_MIN_FREE_GB (default 8) of future VA headroom. An explicit
+ * minimum remains a strict outside-VA floor; only the default Steam policy
+ * credits measured unused FEX VA toward the emulator's share. The 32-bit
  * process then fails to start with STATUS_NO_MEMORY instead of squeezing the
  * 64-bit side of the session.  An unknown map size is not a reason to refuse:
  * the reservation itself then decides. */
-static int ios_wow_map_allows_window(void)
+static int ios_wow_map_allows_window( ULONG_PTR fex_free )
 {
     ULONG_PTR map_end = ios_wow_map_end();
-    ULONG_PTR min_map, min_free, free_va;
+    ULONG_PTR min_map, min_free, free_va, credit = 0, charge = IOS_WOW_WINDOW_SIZE + ios_wow_guard_size();
+    const char *explicit_floor = getenv( "MADEIRA_WOW_MIN_FREE_GB" );
+    static unsigned budget_reports;
 
     if (!map_end) return 1;
     min_map  = (ULONG_PTR)ios_wow_env_ulong( "MADEIRA_WOW_MIN_MAP_GB", 48 ) << 30;
@@ -11072,11 +11119,29 @@ static int ios_wow_map_allows_window(void)
         return 0;
     }
     free_va = ios_wow_free_va( map_end );
-    if (free_va < IOS_WOW_WINDOW_SIZE + min_free)
+    /* The default 8 GB covers native growth and emulator growth. FEX already
+     * owns its arena, so its measured unclaimed gaps need no additional VA
+     * outside it. Credit at most half the default: at least 4 GB must remain
+     * outside every new guarded window for native stacks, heaps and images.
+     * An explicit floor keeps its original strict outside-VA meaning. */
+    if (ios_wow_elastic() && (!explicit_floor || !*explicit_floor) &&
+        ios_fex_arena_base_unix && ios_fex_arena_end_unix > ios_fex_arena_base_unix &&
+        ios_fex_arena_end_unix <= map_end)
+        credit = min( fex_free, min_free / 2 );
+    if (ios_wow_elastic() && budget_reports++ < 32)
+        dprintf( 2, "[wow-budget] outside=%luMB charge=%#lx projected-outside=%luMB "
+                    "fex-free=%luMB credit=%luMB native-floor=%luMB combined-target=%luMB live=%u\n",
+                 (unsigned long)(free_va >> 20), (unsigned long)charge,
+                 (unsigned long)((free_va > charge ? free_va - charge : 0) >> 20),
+                 (unsigned long)(fex_free >> 20), (unsigned long)(credit >> 20),
+                 (unsigned long)((min_free - credit) >> 20), (unsigned long)(min_free >> 20),
+                 ios_wow_live_window_count() );
+    if (free_va < charge || free_va - charge < min_free - credit)
     {
-        dprintf( 2, "[wow-window] refused: map too small (%lu MB free VA; a window needs 4096 MB "
-                    "plus MADEIRA_WOW_MIN_FREE_GB=%lu left over)\n",
-                 (unsigned long)(free_va >> 20), (unsigned long)(min_free >> 30) );
+        dprintf( 2, "[wow-window] refused: map too small (%lu MB free VA; a guarded window needs %lu MB "
+                    "plus %lu MB outside headroom, FEX credit %lu MB)\n",
+                 (unsigned long)(free_va >> 20), (unsigned long)((charge + 0xfffff) >> 20),
+                 (unsigned long)((min_free - credit) >> 20), (unsigned long)(credit >> 20) );
         return 0;
     }
     return 1;
@@ -11482,6 +11547,34 @@ static int ios_cage_release_on_exhaustion( void *start, void *end, size_t want )
     return 1;
 }
 
+/* A small map's preferred low band can fill before the registry does. Search
+ * only whole aligned windows above the authoritative held FEX arena, below
+ * the actual task ceiling. For [B6,D6) on a map ending at FC, E..F is the only
+ * extra candidate; D intersects FEX and F..100 runs past the task. The kernel
+ * still has to grant the complete guarded span without replacing anything. */
+static ULONG_PTR ios_wow_window_pick_above_fex( unsigned *guard_owned )
+{
+    ULONG_PTR map_end = ios_wow_map_end(), fex_end = ios_fex_arena_end_unix;
+    ULONG_PTR cand, charge = IOS_WOW_WINDOW_SIZE + ios_wow_guard_size();
+    static unsigned reports;
+
+    if (!ios_wow_elastic() || !ios_wow_small_va_slots || !ios_fex_arena_base_unix ||
+        fex_end <= ios_fex_arena_base_unix || fex_end > map_end ||
+        map_end > IOS_WOW_CEF_POOLS_START || map_end < charge ||
+        fex_end > ~(ULONG_PTR)0 - (IOS_WOW_WINDOW_SIZE - 1)) return 0;
+    for (cand = (fex_end + IOS_WOW_WINDOW_SIZE - 1) & ~(IOS_WOW_WINDOW_SIZE - 1);
+         cand <= map_end - charge; cand += IOS_WOW_WINDOW_SIZE)
+    {
+        if (reports++ < 32)
+            dprintf( 2, "[wow-window] small-map candidate B=%p..%p guard=%p above-FEX=%p map-end=%p live=%u\n",
+                     (void *)cand, (void *)(cand + IOS_WOW_WINDOW_SIZE),
+                     (void *)(cand + IOS_WOW_WINDOW_SIZE + ios_wow_guard_size()),
+                     (void *)fex_end, (void *)map_end, ios_wow_live_window_count() );
+        if (ios_wow_window_try( cand, guard_owned )) return cand;
+    }
+    return 0;
+}
+
 static ULONG_PTR ios_wow_window_pick( unsigned *guard_owned )
 {
     ULONG_PTR floor, ceil;
@@ -11498,6 +11591,8 @@ static ULONG_PTR ios_wow_window_pick( unsigned *guard_owned )
          cand >= floor && cand + IOS_WOW_WINDOW_SIZE <= ceil;
          cand += IOS_WOW_WINDOW_SIZE)
         if (ios_wow_window_try( cand, guard_owned )) return cand;
+
+    if ((cand = ios_wow_window_pick_above_fex( guard_owned ))) return cand;
 
     /* the band is out of slots: a concurrent 32-bit process may trade the
      * [cage] holdback for one (see ios_wow_carve_holdback_slots) */
@@ -11595,7 +11690,7 @@ static void ios_wow_session_start(void)
     else return;
 
     ios_wow_session_arm();
-    if (!ios_wow_map_allows_window()) return;
+    if (!ios_wow_map_allows_window( 0 )) return;
     ios_wow_reserve_placeholders( want );
 }
 /* ---- end of lazy-window policy ---- */
@@ -11743,7 +11838,7 @@ NTSTATUS ios_wow_window_reserve(void)
 {
     struct ios_wow_window *slot = NULL;
     unsigned guard_owned = 0, held = 0, released = 0, quarantined = 0;
-    ULONG_PTR base, floor, ceil;
+    ULONG_PTR base, floor, ceil, fex_free;
     unsigned i;
 
     ios_wow_session_arm();
@@ -11751,6 +11846,10 @@ NTSTATUS ios_wow_window_reserve(void)
     /* give back what a previous 32-bit pseudo-process left behind first —
      * this is what makes launcher -> program work */
     ios_wow_reclaim_dead_windows();
+
+    /* Snapshot with the VM lock before taking the window lock. It is an
+     * advisory budget; the final no-clobber reservation decides placement. */
+    fex_free = ios_wow_elastic() ? ios_fex_arena_free_va() : 0;
 
     pthread_mutex_lock( &ios_wow_mutex );
     if (ios_wow_slot_boot())
@@ -11786,7 +11885,7 @@ NTSTATUS ios_wow_window_reserve(void)
      * only a fresh reservation has to pass the map rule */
     for (i = 0; i < ios_wow_placeholder_count; i++)
         if (!ios_wow_placeholders[i].adopted) break;
-    if (i == ios_wow_placeholder_count && !ios_wow_map_allows_window())
+    if (i == ios_wow_placeholder_count && !ios_wow_map_allows_window( fex_free ))
     {
         pthread_mutex_unlock( &ios_wow_mutex );
         return STATUS_NO_MEMORY;
@@ -25838,6 +25937,89 @@ NTSTATUS virtual_map_builtin_module( HANDLE mapping, void **module, SIZE_T *size
 /***********************************************************************
  *           virtual_map_module
  */
+#ifdef WINE_IOS
+/* This path maps only main images.  A small fixed executable can lose the
+ * shared preferred-base log budget before it is reached (DirectX's infinst
+ * did), then fail in PE ntdll's perform_relocations.  Record the surviving
+ * header and the original server base at this mapping boundary, with a
+ * dedicated 32-line budget that earlier preferred-base notes cannot use. In
+ * particular, do not infer a preferred base from the file name, or rewrite a
+ * stripped image's header without a working translation of its absolutes. */
+static void ios_trace_fixed_main_placement( const void *module, SIZE_T size, ULONGLONG preferred,
+                                           NTSTATUS status, const UNICODE_STRING *nt_name )
+{
+    static unsigned int notes;
+    const IMAGE_DOS_HEADER *dos = module;
+    const IMAGE_NT_HEADERS64 *nt;
+    const SIZE_T opt_offset = offsetof( IMAGE_NT_HEADERS64, OptionalHeader );
+    const SIZE_T dir_offset = offsetof( IMAGE_OPTIONAL_HEADER64, DataDirectory );
+    const unsigned int reloc_index = IMAGE_DIRECTORY_ENTRY_BASERELOC;
+    SIZE_T nt_offset, optional_size;
+    unsigned int reloc_rva = 0, reloc_size = 0, reloc_fields;
+    unsigned int n, i, name_chars;
+    UNICODE_STRING basename = {0};
+    ULONG_PTR floor;
+    TEB *teb;
+    int saved_errno;
+
+    if (!NT_SUCCESS(status) || !module || size < sizeof(*dos)) return;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE || (LONG)dos->e_lfanew < 0) return;
+    nt_offset = dos->e_lfanew;
+    if (nt_offset > size || size - nt_offset < opt_offset + dir_offset) return;
+    nt = (const IMAGE_NT_HEADERS64 *)((const char *)module + nt_offset);
+    optional_size = nt->FileHeader.SizeOfOptionalHeader;
+    if (nt->Signature != IMAGE_NT_SIGNATURE || optional_size < dir_offset ||
+        optional_size > size - nt_offset - opt_offset ||
+        nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
+        !(nt->FileHeader.Characteristics & IMAGE_FILE_RELOCS_STRIPPED) ||
+        (nt->FileHeader.Characteristics & IMAGE_FILE_DLL) ||
+        nt->OptionalHeader.SectionAlignment < page_size ||
+        nt->OptionalHeader.ImageBase == (ULONG_PTR)module || preferred == (ULONG_PTR)module)
+        return;
+
+    /* Raw directory fields matter even when the directory is unusable.  A
+     * validated-data lookup would hide malformed/nonzero relocation records. */
+    reloc_fields = nt->OptionalHeader.NumberOfRvaAndSizes > reloc_index &&
+                   optional_size >= dir_offset + (reloc_index + 1) * sizeof(IMAGE_DATA_DIRECTORY);
+    if (reloc_fields)
+    {
+        reloc_rva = nt->OptionalHeader.DataDirectory[reloc_index].VirtualAddress;
+        reloc_size = nt->OptionalHeader.DataDirectory[reloc_index].Size;
+    }
+    n = __atomic_load_n( &notes, __ATOMIC_RELAXED );
+    do
+    {
+        if (n >= 32) return;
+    } while (!__atomic_compare_exchange_n( &notes, &n, n + 1, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED ));
+    /* Paths can contain account names. Only include a bounded basename. */
+    if (nt_name && nt_name->Buffer)
+    {
+        basename.Buffer = nt_name->Buffer;
+        name_chars = nt_name->Length / sizeof(WCHAR);
+        for (i = 0; i < name_chars; i++)
+            if (nt_name->Buffer[i] == '\\' || nt_name->Buffer[i] == '/')
+                basename.Buffer = nt_name->Buffer + i + 1;
+        name_chars -= basename.Buffer - nt_name->Buffer;
+        basename.Length = min( name_chars, 80 ) * sizeof(WCHAR);
+        basename.MaximumLength = basename.Length;
+    }
+    saved_errno = errno;
+    floor = (ULONG_PTR)ios_query_map_floor();
+    teb = NtCurrentTeb();
+    dprintf( 2, "[fixed-main-placement] pid=%04x owner=%p image=%s map_status=%08x "
+                "machine=%04x chars=%04x preferred=%#llx header_base=%#llx mapped=%p size=%#lx "
+                "reloc_fields=%u reloc_rva=%#x reloc_size=%#x task_floor=%#lx "
+                "preferred_below_floor=%u cannot_relocate=1\n",
+             teb ? (unsigned int)(ULONG_PTR)teb->ClientId.UniqueProcess : 0,
+             ios_jit_current_peb(), basename.Length ? debugstr_us(&basename) : "?", (unsigned int)status,
+             nt->FileHeader.Machine, nt->FileHeader.Characteristics,
+             (unsigned long long)preferred, (unsigned long long)nt->OptionalHeader.ImageBase,
+             module, (unsigned long)size, reloc_fields, reloc_rva, reloc_size,
+             (unsigned long)floor, (unsigned int)(preferred < floor) );
+    errno = saved_errno;
+}
+#endif
+
 NTSTATUS virtual_map_module( HANDLE mapping, void **module, SIZE_T *size, SECTION_IMAGE_INFORMATION *info,
                              ULONG_PTR limit_low, ULONG_PTR limit_high, USHORT machine )
 {
@@ -25848,6 +26030,9 @@ NTSTATUS virtual_map_module( HANDLE mapping, void **module, SIZE_T *size, SECTIO
     struct pe_image_info *image_info = NULL;
     UNICODE_STRING nt_name;
     ANSI_STRING exp_name;
+#ifdef WINE_IOS
+    ULONGLONG preferred;
+#endif
 
     if ((status = get_mapping_info( mapping, SECTION_MAP_READ, &sec_flags, &full_size, &shared_file,
                                     &image_info, &nt_name, &exp_name )))
@@ -25855,6 +26040,9 @@ NTSTATUS virtual_map_module( HANDLE mapping, void **module, SIZE_T *size, SECTIO
 
     if (!image_info) return STATUS_INVALID_PARAMETER;
 
+#ifdef WINE_IOS
+    preferred = image_info->base; /* virtual_map_image replaces this with the actual mapping. */
+#endif
     *module = NULL;
     *size = 0;
 
@@ -25868,6 +26056,9 @@ NTSTATUS virtual_map_module( HANDLE mapping, void **module, SIZE_T *size, SECTIO
                                     machine, image_info, &nt_name, FALSE, 0 );
         virtual_fill_image_information( image_info, info );
     }
+#ifdef WINE_IOS
+    ios_trace_fixed_main_placement( *module, *size, preferred, status, &nt_name );
+#endif
     if (shared_file) NtClose( shared_file );
     free( image_info );
     return status;

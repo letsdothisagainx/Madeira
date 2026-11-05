@@ -20,7 +20,7 @@ static void ios_cef_log_observe( int fd, const void *buffer, unsigned int length
             params->ImagePathName.Length / sizeof(WCHAR) ) != 2 || !buffer || !length) return;
     if (!ios_guest_log_fd_path( fd, path, sizeof(path) )) goto out;
     name = strrchr( path, '/' ); name = name ? name + 1 : path;
-    if (strcasecmp( name, "debug.log" )) goto out;
+    if (strcasecmp( name, "debug.log" ) && strcasecmp( name, "madeira-cef-debug.log" )) goto out;
     n = length < 4096 ? length : 4096;
     for (start = 0; start < n; start = end + 1)
     {

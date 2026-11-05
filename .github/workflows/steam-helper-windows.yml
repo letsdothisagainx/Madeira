@@ -5,20 +5,36 @@ on:
     branches: [main, 'codex/pr-build-*']
     paths:
       - app/Madeira/WineProcessBridge.m
+      - build/ntdll-unix/virtual_ios.c
+      - build/ntdll-unix/htmlipc_native.h
+      - build/ntdll-unix/htmlipc_log_path.h
+      - build/ntdll-unix/cef_log_context.h
       - build/ntdll-unix/build.sh
       - build/ntdll-unix/thread_ios.c
       - build/ntdll-unix/steam_*_trace.h
       - tests/host/check-wow-window-capacity.py
+      - tests/host/check-fixed-main-placement.py
+      - tests/host/check-htmlipc-loader.py
+      - tests/host/check-cef-context.py
+      - tests/host/htmlipc/*.c
       - tests/host/check-steam-validation-trace.py
       - tests/host/check-steam-launch-trace.py
       - .github/workflows/steam-helper-windows.yml
   pull_request:
     paths:
       - app/Madeira/WineProcessBridge.m
+      - build/ntdll-unix/virtual_ios.c
+      - build/ntdll-unix/htmlipc_native.h
+      - build/ntdll-unix/htmlipc_log_path.h
+      - build/ntdll-unix/cef_log_context.h
       - build/ntdll-unix/build.sh
       - build/ntdll-unix/thread_ios.c
       - build/ntdll-unix/steam_*_trace.h
       - tests/host/check-wow-window-capacity.py
+      - tests/host/check-fixed-main-placement.py
+      - tests/host/check-htmlipc-loader.py
+      - tests/host/check-cef-context.py
+      - tests/host/htmlipc/*.c
       - tests/host/check-steam-validation-trace.py
       - tests/host/check-steam-launch-trace.py
       - .github/workflows/steam-helper-windows.yml
@@ -40,6 +56,11 @@ jobs:
         run: |
           python3 tests/host/check-wow-window-capacity.py
           python3 tests/host/check-lazy-windows.py
+          python3 tests/host/check-small-va-band.py
+          python3 tests/host/check-process-isolation.py
+          python3 tests/host/check-fixed-main-placement.py
+          python3 tests/host/check-htmlipc-loader.py
+          python3 tests/host/check-cef-context.py
           python3 tests/host/check-steam-validation-trace.py
           python3 tests/host/check-steam-launch-trace.py
           python3 tests/host/check-steam-handoff.py

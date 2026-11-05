@@ -44,7 +44,8 @@ static char output[32768];static size_t used;
 static int capture(int fd,const char *fmt,...) {assert(fd==2);va_list ap;va_start(ap,fmt);int n=vsnprintf(output+used,sizeof(output)-used,fmt,ap);va_end(ap);assert(n>=0 && (size_t)n<sizeof(output)-used);used+=n;errno=EBADF;return n;}
 #define dprintf capture
 static int path_calls;
-static int ios_guest_log_fd_path(int fd,char *path,size_t size) {path_calls++;errno=EINTR;snprintf(path,size,"/private/account/debug.log");return fd==7;}
+static const char *mock_log_path="/private/account/madeira-cef-debug.log";
+static int ios_guest_log_fd_path(int fd,char *path,size_t size) {path_calls++;errno=EINTR;snprintf(path,size,"%s",mock_log_path);return fd==7;}
 ''' + read_helper + r'''
 #include "guest32_origin.h"
 #include "guest32_cxx.h"
@@ -73,6 +74,8 @@ int main(void) {
  // An unreadable saved CPU frame remains unresolved and does not dereference it.
  deny=1;errno=EAGAIN;ios_cef_assert_context();assert(errno==EAGAIN);assert(strstr(output,"context unavailable"));deny=0;
  size_t old=used;ios_cef_log_observe(8,assertion,strlen(assertion));assert(used==old);
+ mock_log_path="/private/account/other-madeira-cef-debug.log";ios_cef_log_observe(7,assertion,strlen(assertion));assert(used==old);
+ mock_log_path="/private/account/debug.log";
  ios_cef_log_observe(7,assertion,strlen(assertion));old=used;ios_cef_log_observe(7,assertion,strlen(assertion));assert(used==old);
  puts("PASS real CEF observer: adjacent source tags, guest32 module candidates, unreadable contexts, privacy, event bounds and errno");
 }
