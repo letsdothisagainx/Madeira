@@ -7936,6 +7936,9 @@ static void *address_space_start = (void *)0x100010000; /* above iOS 4GB __PAGEZ
 #else
 static void *address_space_start = (void *)0x10000;
 #endif
+#ifdef WINE_IOS
+static char *ios_query_map_floor(void);
+#endif
 #ifdef _WIN64
 static void *address_space_limit = (void *)0x7fffffff0000;  /* top of the total available address space */
 static void *user_space_limit    = (void *)0x7fffffff0000;  /* top of the user address space */
@@ -21033,6 +21036,8 @@ static NTSTATUS map_view( struct file_view **view_ret, void *base, size_t size,
         {
             unsigned int tries0 = ios_va_scan_tries;
             unsigned int skips0 = ios_va_scan_skips;
+            static unsigned int scan_attributions;
+            unsigned long long scan_started = scan_attributions < 4 ? ios_now_ms() : 0;
 
             ptr = map_free_area( start, end, host_size, top_down, unix_prot, align_mask );
 #ifdef WINE_IOS
@@ -21050,6 +21055,28 @@ static NTSTATUS map_view( struct file_view **view_ret, void *base, size_t size,
             {
                 static int described;
                 char what[128];
+
+                /* Keep failures and the first extreme scans attributable even
+                 * when the host PC is in a Mach wrapper. Ordinary boot-time
+                 * scans must not spend this budget before Steam starts.
+                 * CPUArea is a pointer only; no emulator state is read here. */
+                if (scan_attributions < 4 && (!ptr || ios_va_scan_tries - tries0 >= 16384))
+                {
+                    TEB *teb = NtCurrentTeb();
+                    int saved_errno = errno;
+
+                    scan_attributions++;
+                    dprintf( 2, "[va-scan-owner] tid=%04x peb=%p teb=%p cpu-area=%p native-caller=%p "
+                                "base=%p size=%p type=%x vprot=%x request-low=%p request-high=%p "
+                                "window=%p..%p tries=%u skips=%u elapsed-ms=%llu result=%p\n",
+                             teb ? (unsigned)(ULONG_PTR)teb->ClientId.UniqueThread : 0,
+                             ios_jit_current_peb(), teb, teb ? teb->ChpeV2CpuAreaInfo : NULL,
+                             __builtin_return_address(0), base, (void *)size, alloc_type, vprot,
+                             (void *)limit_low, (void *)limit_high, start, end,
+                             ios_va_scan_tries - tries0, ios_va_scan_skips - skips0,
+                             ios_now_ms() - scan_started, ptr );
+                    errno = saved_errno;
+                }
 
                 /* ml207: latch furniture pressure — see ios_va_pressure. Deliberately a
                  * much stricter test than this probe's own 64-try "SLOW" threshold: an
@@ -28350,7 +28377,15 @@ void virtual_set_large_address_space(void)
     {
         if (!wow)
         {
+#ifdef WINE_IOS
+            /* iOS cannot map below its 4 GB __PAGEZERO. Keep the host floor
+             * and the kernel's ASLR prefix: lowering it makes each unhinted
+             * allocation below the first WoW window repeat 65,535+ failing
+             * Mach mappings. Guest limits are translated separately. */
+            address_space_start = ios_query_map_floor();
+#else
             address_space_start = (void *)0x10000;
+#endif
 #ifndef __APPLE__  /* don't free the zerofill section on macOS */
             if ((main_image_info.DllCharacteristics & IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA) &&
                 (main_image_info.DllCharacteristics & IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE))

@@ -810,7 +810,8 @@ static int ios_ts_nmaps;
 static int ios_ts_read(uint64_t a, void *o, size_t n)
 {
     vm_size_t got = 0;
-    return a > 0x10000 && vm_read_overwrite(mach_task_self(), (vm_address_t)a, n, (vm_address_t)o, &got) == KERN_SUCCESS && got == n;
+    return a > 0x10000 && n <= UINT64_MAX - a &&
+           vm_read_overwrite(mach_task_self(), (vm_address_t)a, n, (vm_address_t)o, &got) == KERN_SUCCESS && got == n;
 }
 
 /* ml876: thread_get_state returns x18 == 0 for every thread (the kernel does
@@ -890,11 +891,115 @@ static int ios_ts_sym(uint64_t a, char *out, size_t cap)
     return 1;
 }
 
+/* A native syscall does not preserve FEX's use of x28. For at most two hot
+ * threads in pass 1, copy a small native FP chain and the ARM64EC CPU area's
+ * LAST guest exit while suspended. No callbacks, locks, symbolization or Wine
+ * server requests belong in this window. There is no identity/context cache:
+ * a recycled TEB must be validated against this capture's TID and owner. */
+struct ios_ts_hot_context
+{
+    uint64_t teb, pid, tid, owner, area, frame, thread, rip, rsp;
+    uint64_t host[10], stack[16];
+    unsigned nhost, have_guest, have_stack, simulation;
+};
+
+static unsigned ios_ts_host_chain(uint64_t sp, uint64_t fp, uint64_t lr, uint64_t out[10])
+{
+    unsigned n = 0, i;
+    if (lr) out[n++] = lr;
+    for (i = 0; i < 9 && fp && n < 10; i++)
+    {
+        uint64_t rec[2], ret;
+        if ((fp & 15) || fp < sp || fp - sp > 0x100000 || !ios_ts_read(fp, rec, sizeof(rec))) break;
+        ret = rec[1] & 0x0000ffffffffffffull; /* same PAC strip as the worker profiler */
+        if (ret > 0x10000 && (n == 0 || ret != out[n - 1])) out[n++] = ret;
+        if (rec[0] <= fp) break;
+        fp = rec[0];
+    }
+    return n;
+}
+
+static void ios_ts_saved_guest64(uint64_t teb, struct ios_ts_hot_context *out)
+{
+    uint64_t self = 0, area = 0, current = 0, again = 0, pid = 0, tid = 0, owner = 0;
+    CHPE_V2_CPU_AREA_INFO cpu;
+    ARM64EC_NT_CONTEXT ec;
+    _Static_assert(offsetof(TEB, ChpeV2CpuAreaInfo) == 0x1788, "native TEB CPU area layout");
+    _Static_assert(offsetof(CHPE_V2_CPU_AREA_INFO, EmulatorData[0]) == 0x30, "CPU area frame layout");
+    _Static_assert(offsetof(ARM64EC_NT_CONTEXT, Pc) == 0xf8, "saved guest RIP layout");
+    _Static_assert(offsetof(ARM64EC_NT_CONTEXT, Sp) == 0x98, "saved guest RSP layout");
+    if (!teb || teb >= 0x8000000000ull || (teb & 0xfff) ||
+        !ios_ts_read(teb + offsetof(TEB, Tib.Self), &self, 8) || self != teb ||
+        !ios_ts_read(teb + offsetof(TEB, ClientId.UniqueProcess), &pid, 8) || !pid ||
+        !ios_ts_read(teb + offsetof(TEB, ClientId.UniqueThread), &tid, 8) || !tid ||
+        !ios_ts_read(teb + offsetof(TEB, Peb), &owner, 8) || !owner) return;
+    out->teb = teb; out->pid = pid; out->tid = tid; out->owner = owner;
+    if (!ios_ts_read(teb + offsetof(TEB, ChpeV2CpuAreaInfo), &area, 8) || !area || area >= 0x8000000000ull || (area & 15) ||
+        !ios_ts_read(area, &cpu, sizeof(cpu)) ||
+        !cpu.ContextAmd64 || ((uintptr_t)cpu.ContextAmd64 & 15) ||
+        !cpu.EmulatorData[0] || ((uintptr_t)cpu.EmulatorData[0] & 15) ||
+        !cpu.EmulatorData[1] || ((uintptr_t)cpu.EmulatorData[1] & 15) ||
+        !ios_ts_read((uintptr_t)cpu.EmulatorData[1], &current, 8) || current != (uintptr_t)cpu.EmulatorData[0] ||
+        !ios_ts_read(current, &again, 8) ||
+        !ios_ts_read((uintptr_t)cpu.ContextAmd64, &ec, sizeof(ec)) ||
+        ec.Pc < 0x10000 || ec.Pc >= 0x8000000000ull || ec.Sp < 0x10000 || ec.Sp >= 0x8000000000ull) return;
+    /* Recheck the pointer chain and identity: teardown can recycle the TEB even
+     * though this Mach thread is suspended. Fail closed instead of attributing
+     * an old frame to its successor. */
+    if (!ios_ts_read(teb + offsetof(TEB, ClientId.UniqueProcess), &again, 8) || again != pid ||
+        !ios_ts_read(teb + offsetof(TEB, ClientId.UniqueThread), &again, 8) || again != tid ||
+        !ios_ts_read(teb + offsetof(TEB, Peb), &again, 8) || again != owner ||
+        !ios_ts_read(teb + offsetof(TEB, ChpeV2CpuAreaInfo), &again, 8) || again != area ||
+        !ios_ts_read(area + offsetof(CHPE_V2_CPU_AREA_INFO, ContextAmd64), &again, 8) || again != (uintptr_t)cpu.ContextAmd64 ||
+        !ios_ts_read(area + offsetof(CHPE_V2_CPU_AREA_INFO, EmulatorData[1]), &again, 8) || again != (uintptr_t)cpu.EmulatorData[1] ||
+        !ios_ts_read(area + offsetof(CHPE_V2_CPU_AREA_INFO, EmulatorData[0]), &again, 8) || again != current) return;
+    out->area = area; out->frame = current; out->thread = (uintptr_t)cpu.EmulatorData[1]; out->simulation = cpu.InSimulation;
+    out->rip = ec.Pc; out->rsp = ec.Sp; out->have_guest = 1;
+    out->have_stack = !(ec.Sp & 7) && ios_ts_read(ec.Sp, out->stack, sizeof(out->stack));
+}
+
+static void ios_ts_print_hot_context(const struct ios_ts_hot_context *hot, uint64_t pc,
+                                     struct ios_ts_map *mp)
+{
+    char line[900], sym[120]; int n; unsigned i, shown = 0; uint64_t rva; const char *mn;
+    if (mp && mp->peb != hot->owner) mp = NULL;
+    n = snprintf(line, sizeof(line), "[thread-context-v1] pid=%04llx tid=%04llx teb=%#llx owner=%#llx sampled-host-pc=%#llx host-continuations=[",
+                 (unsigned long long)hot->pid, (unsigned long long)hot->tid,
+                 (unsigned long long)hot->teb, (unsigned long long)hot->owner, (unsigned long long)pc);
+    for (i = 0; i < hot->nhost && n < (int)sizeof(line) - 150; i++)
+    {
+        extern int ios_jit_pool_image_pc(uintptr_t pc, uintptr_t *pe_addr_out);
+        uintptr_t pe = 0;
+        if (ios_jit_pool_image_pc(hot->host[i], &pe) && (mn = ios_ts_mod_for(mp, pe, &rva)))
+            n += snprintf(line + n, sizeof(line) - n, " %s+%#llx", mn, (unsigned long long)rva);
+        else { ios_ts_sym(hot->host[i], sym, sizeof(sym)); n += snprintf(line + n, sizeof(line) - n, " %s", sym); }
+    }
+    snprintf(line + n, sizeof(line) - n, " ]"); wine_log_write("%s", line);
+    if (!hot->have_guest)
+    {
+        wine_log_write("[thread-context-v1] tid=%04llx teb=%#llx owner=%#llx saved-guest=unavailable source=CPUArea.ContextAmd64 current=false",
+                       (unsigned long long)hot->tid, (unsigned long long)hot->teb, (unsigned long long)hot->owner);
+        return;
+    }
+    mn = ios_ts_mod_for(mp, hot->rip, &rva);
+    n = snprintf(line, sizeof(line), "[thread-context-v1] tid=%04llx teb=%#llx owner=%#llx area=%#llx frame=%#llx fex-thread=%#llx saved-guest-rip=%#llx",
+                 (unsigned long long)hot->tid, (unsigned long long)hot->teb, (unsigned long long)hot->owner,
+                 (unsigned long long)hot->area, (unsigned long long)hot->frame,
+                 (unsigned long long)hot->thread, (unsigned long long)hot->rip);
+    if (mn) n += snprintf(line + n, sizeof(line) - n, "(%s+%#llx)", mn, (unsigned long long)rva);
+    n += snprintf(line + n, sizeof(line) - n, " saved-guest-rsp=%#llx source=CPUArea.ContextAmd64 current=false in-simulation=%u stack-cand=[",
+                  (unsigned long long)hot->rsp, hot->simulation);
+    for (i = 0; hot->have_stack && i < 16 && shown < 6 && n < (int)sizeof(line) - 100; i++)
+        if ((mn = ios_ts_mod_for(mp, hot->stack[i], &rva)) && rva >= 0x1000)
+        { n += snprintf(line + n, sizeof(line) - n, " %s+%#llx", mn, (unsigned long long)rva); shown++; }
+    snprintf(line + n, sizeof(line) - n, " ]"); wine_log_write("%s", line);
+}
+
 static void ios_thread_sampler_pass(int burst)
 {
     extern uint64_t ios_native_rip_from_hostpc( uint64_t, uint64_t, const char ** );
     mach_port_t self_port = pthread_mach_thread_np(pthread_self());
-    thread_act_array_t tlist; mach_msg_type_number_t tcount; unsigned k, printed = 0;
+    thread_act_array_t tlist; mach_msg_type_number_t tcount; unsigned k, printed = 0, hot_captures = 0;
     if (task_threads(mach_task_self(), &tlist, &tcount) != KERN_SUCCESS) return;
     ios_ts_nmaps = 0;                                   /* fresh maps every pass */
     for (k = 0; k < tcount && printed < 64; k++) {
@@ -903,6 +1008,8 @@ static void ios_thread_sampler_pass(int burst)
         char tname[40] = ""; pthread_t pt; int running, is_game;
         uint64_t pc, lr, sp, x28, x17, x18, x23, bb = 0, rip = 0, cr[16], stk[64], nstk[64];
         int have_bb, have_cr, have_stk, have_nstk;
+        struct ios_ts_hot_context hot = {0};
+        int capture_hot;
         const char *why = "";
         if (tlist[k] == self_port) continue;
         if (thread_info(tlist[k], THREAD_BASIC_INFO, (thread_info_t)&bi, &bic) != KERN_SUCCESS) continue;
@@ -917,10 +1024,17 @@ static void ios_thread_sampler_pass(int burst)
         x28 = st.__x[28]; x17 = st.__x[17]; x23 = st.__x[23];
         x18 = ios_ts_teb(pt);                          /* ml876: TEB from TSD, not x18 */
         if (!x18) x18 = st.__x[18];
+        capture_hot = burst == 1 && running && bi.cpu_usage >= 900 && x18 && hot_captures < 2;
         have_bb  = ios_ts_read(x28, &bb, 8) && bb > 0x10000;
         have_cr  = ios_ts_read(x17, cr, sizeof(cr));
         have_stk = !(x23 & 7) && ios_ts_read(x23, stk, sizeof(stk));
         have_nstk = !(sp & 7) && ios_ts_read(sp, nstk, sizeof(nstk));
+        if (capture_hot)
+        {
+            hot_captures++;
+            hot.nhost = ios_ts_host_chain(sp, arm_thread_state64_get_fp(st), lr, hot.host);
+            ios_ts_saved_guest64(x18, &hot);
+        }
         thread_resume(tlist[k]);
         if (have_bb) rip = ios_native_rip_from_hostpc(bb, pc, &why);
         {
@@ -958,6 +1072,7 @@ static void ios_thread_sampler_pass(int burst)
                 n += snprintf(line + n, sizeof(line) - n, " ]");
             }
             wine_log_write("%s", line);
+            if (capture_hot && !rip) ios_ts_print_hot_context(&hot, pc, mp);
             printed++;
         }
     }

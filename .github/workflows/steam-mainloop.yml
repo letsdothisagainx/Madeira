@@ -1,0 +1,51 @@
+name: Verify Steam native allocation and worker context
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'codex/pr-build-*']
+    paths:
+      - build/ntdll-unix/virtual_ios.c
+      - build/ntdll-unix/server_ios.c
+      - tests/host/check-ios-host-va-floor.py
+      - tests/host/check-hot-thread-context.py
+      - tests/integration/check-steam-observer-noninterference.py
+      - app/Madeira/SteamLibraryDiagnostics.swift
+      - .github/workflows/steam-mainloop.yml
+  pull_request:
+    paths:
+      - build/ntdll-unix/virtual_ios.c
+      - build/ntdll-unix/server_ios.c
+      - tests/host/check-ios-host-va-floor.py
+      - tests/host/check-hot-thread-context.py
+      - tests/integration/check-steam-observer-noninterference.py
+      - app/Madeira/SteamLibraryDiagnostics.swift
+      - .github/workflows/steam-mainloop.yml
+permissions:
+  contents: read
+jobs:
+  native-regressions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Load pinned Wine declarations used by the context regression
+        run: git submodule update --init --depth 1 wine
+      - name: Reproduce invalid host reservation scans and validate saved worker context
+        run: |
+          python3 tests/host/check-ios-host-va-floor.py
+          python3 tests/host/check-hot-thread-context.py
+          python3 tests/host/check-suspend-windows.py
+          python3 tests/host/check-lean-diag.py
+  observer-comparison:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compare a real browser with the production observer expressions disabled and enabled
+        run: |
+          python3 -m pip install websockets==16.0
+          python3 tests/integration/check-steam-observer-noninterference.py

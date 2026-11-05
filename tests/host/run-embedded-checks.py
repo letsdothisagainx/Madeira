@@ -64,6 +64,8 @@ commands = [
     ['python3', 'tests/host/check-wow-self-write.py'],
     ['python3', 'tests/host/check-guest32-origin.py'],
     ['python3', 'tests/host/check-steam-allocation.py'],
+    ['python3', 'tests/host/check-ios-host-va-floor.py'],
+    ['python3', 'tests/host/check-hot-thread-context.py'],
     ['python3', 'tests/host/check-lazy-windows.py'],
     ['python3', 'tests/host/check-steam-protection.py'],
     ['python3', 'tests/host/check-jit-exclusive.py'],

@@ -87,7 +87,7 @@ def compile_run(code, name, env_list):
         outs = []
         clean = {k: v for k, v in os.environ.items() if not k.startswith("MADEIRA_")}
         for extra in env_list:
-            rr = subprocess.run([str(exe)], capture_output=True, text=True, env=dict(clean, **extra))
+            rr = subprocess.run([str(exe)], capture_output=True, text=True, env=dict(clean, **extra), timeout=20)
             outs.append((rr.returncode, rr.stdout, rr.stderr))
         return outs, ""
 
@@ -137,16 +137,19 @@ harness = r'''
 #include <time.h>
 typedef struct { uint32_t numer, denom; } mach_timebase_info_data_t;
 static void mach_timebase_info( mach_timebase_info_data_t *t ) { t->numer = 125; t->denom = 3; }
-static jmp_buf done; static int sleeps, passes, profiles, census1115, census1122, bursts, armed_lean, armed_full;
+static jmp_buf done; static int sleeps, ticks, passes, profiles, census1115, census1122, bursts, armed_lean, armed_full;
 static int ios_lean_diag;
 volatile long long ios_alert_wakes, ios_alert_waits, ios_qpc_syscalls, ios_affinity_sets;
 volatile int ios_srv_req_count;
 volatile long long ios_alert_lat_n, ios_alert_lat_ticks, ios_alert_lat_hist[6], ios_alert_spin_tries, ios_alert_spin_hits;
 static void ios_ts_calibrate( void ) {}
+static void ios_stuck_store_check( void ) {}
 static void ios_thread_sampler_pass( int b ) { (void)b; passes++; }
 static void ios_guest_rip_profile( int gen ) { (void)gen; profiles++; }
-static int h_usleep( unsigned us ) { (void)us; return 0; }
 static unsigned h_sleep( unsigned s ) { if (s != 20) abort(); if (++sleeps > 5) longjmp( done, 1 ); ios_alert_wakes += 100; return 0; }
+/* The production loop now uses 200 short sleeps so it can check stuck stores
+ * between bursts. Preserve the fixture's five-burst stop for that clock too. */
+static int h_usleep( unsigned us ) { if (us == 100000 && !(ticks++ % 200)) h_sleep(20); return 0; }
 static void wine_log_write( const char *fmt, ... ) __attribute__((format(printf, 1, 2)));
 static void wine_log_write( const char *fmt, ... )
 {
