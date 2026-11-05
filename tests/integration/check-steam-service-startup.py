@@ -65,6 +65,7 @@ with tempfile.TemporaryDirectory(prefix='madeira-service-scm-') as directory:
         data = image.read_bytes(); pe = struct.unpack_from('<I', data, 0x3c)[0]
         assert data[:2] == b'MZ' and data[pe:pe + 4] == b'PE\0\0'
         assert struct.unpack_from('<H', data, pe + 4)[0] == expected_machine
+    anchor = None
     try:
         command([WINE64, 'wineboot.exe', '--init'], timeout=120)
         fixture = prefix / 'drive_c/Fixture'
@@ -74,6 +75,17 @@ with tempfile.TemporaryDirectory(prefix='madeira-service-scm-') as directory:
         shutil.copyfile(fixture32, common / 'SteamService.exe')
         shutil.copyfile(fixture32, common / 'SteamServiceTmp.exe')
         control = fixture / 'control32.exe'; shutil.copyfile(fixture32, control)
+        # Wine's service host becomes a system process and exits after the last
+        # ordinary application. The real launcher retains cmd.exe throughout;
+        # keep the equivalent event-owned PE alive across helper/query calls.
+        anchor = subprocess.Popen(['wine', str(control), '--anchor'], env=env,
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        ready = fixture / 'anchor-ready.fixture'; deadline = time.monotonic() + 20
+        while not ready.exists():
+            assert anchor.poll() is None, 'session anchor exited before readiness'
+            assert time.monotonic() < deadline, 'session anchor did not become ready'
+            time.sleep(.05)
+
         shutil.copyfile(fixture64, steam / 'steam.exe')
         installed_helper = prefix / 'drive_c/windows/system32/madeira-steam-service.exe'
         shutil.copyfile(helper, installed_helper)
@@ -137,5 +149,11 @@ with tempfile.TemporaryDirectory(prefix='madeira-service-scm-') as directory:
         assert all(file.read_bytes() == data for file, data in protected.items())
         print('PASS production Swift scripts continue after truthful helper1053 to real AMD64 PE client fixture and preserve its exit43; authentication and game fixtures unchanged', flush=True)
     finally:
+        if anchor is not None:
+            try:
+                wine(control, '--anchor-stop', timeout=15)
+                anchor.wait(timeout=10)
+            except (AssertionError, subprocess.TimeoutExpired):
+                pass
         subprocess.run(['wineserver', '-k'], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                        check=False, timeout=20)

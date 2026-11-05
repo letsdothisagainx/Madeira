@@ -86,6 +86,18 @@ int wmain(int argc,wchar_t **argv) {
         }
         mark(L"C:\\Fixture\\client-started.fixture");puts("[service-fixture] client-entered=1 exit=43");return 43;
     }
+    if(argc==2&&!wcscmp(argv[1],L"--anchor")) {
+        HANDLE anchor=CreateEventW(NULL,TRUE,FALSE,L"Local\\MadeiraServiceIntegrationAnchor");
+        if(!anchor)fail("anchor-create");
+        mark(L"C:\\Fixture\\anchor-ready.fixture");
+        DWORD wait=WaitForSingleObject(anchor,180000);CloseHandle(anchor);
+        return wait==WAIT_OBJECT_0?0:90;
+    }
+    if(argc==2&&!wcscmp(argv[1],L"--anchor-stop")) {
+        HANDLE anchor=OpenEventW(EVENT_MODIFY_STATE,FALSE,L"Local\\MadeiraServiceIntegrationAnchor");
+        if(!anchor)fail("anchor-open");
+        if(!SetEvent(anchor))fail("anchor-stop");CloseHandle(anchor);return 0;
+    }
     if(argc>=3&&!wcscmp(argv[1],L"--setup"))return setup(argv[2]);
     if(argc==2&&!wcscmp(argv[1],L"--query"))return query();
     if(argc==2&&!wcscmp(argv[1],L"--stop"))return stop();
