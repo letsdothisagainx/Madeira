@@ -3278,6 +3278,20 @@ BOOL get_thread_times(int unix_pid, int unix_tid, LARGE_INTEGER *kernel_time, LA
 #endif
 }
 
+/* The validation observer follows the named worker, never a launch-specific
+ * Windows TID. A self rename clears the tag before another task can use it. */
+static __thread int ios_steam_validation_worker;
+
+int ios_steam_validation_active(void)
+{
+    return ios_steam_validation_worker;
+}
+
+static void ios_steam_validation_thread_named( int self, const char *name )
+{
+    if (self) ios_steam_validation_worker = name && !strcmp( name, "ThreadedValidateFiles worker" );
+}
+
 static void set_native_thread_name( HANDLE handle, const UNICODE_STRING *name )
 {
     /* iOS-Madeira ml810: publish the thread name <-> TID <-> TEB mapping.
@@ -3298,6 +3312,7 @@ static void set_native_thread_name( HANDLE handle, const UNICODE_STRING *name )
                                     nm, sizeof(nm) - 1, FALSE );
         if (nlen < 0) nlen = 0;
         nm[nlen] = 0;
+        ios_steam_validation_thread_named( ios_terminate_is_self( handle ), nm );
         if (ios_terminate_is_self( handle ))
             ERR( "[thr-name] ml810 tid=%04x teb=%p name=\"%s\"\n",
                  (unsigned)(ULONG_PTR)NtCurrentTeb()->ClientId.UniqueThread,

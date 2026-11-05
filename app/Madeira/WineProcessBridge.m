@@ -1593,7 +1593,8 @@ static void *wine_process_thread(void *arg) {
          * environment, even when direct-game metadata from an older entry is present.
          * The two app-generated native Steam batches carry a one-launch signal too:
          * their main image is cmd/explorer, and Steam starts later inside that wrapper.
-         * This signal changes identity only, without any Dock process/memory policies.
+         * Steam-specific identity, child tracking and guest-window policy share
+         * this signal; Dock process/memory policies stay independent.
          * Launch metadata is consumed here so no guest or later launch inherits it. */
         const char *native_launch = getenv("MADEIRA_NATIVE_STEAM_LAUNCH");
         const int native_steam = native_launch && !strcmp(native_launch, "1");
@@ -2516,16 +2517,20 @@ static void *wine_process_thread(void *arg) {
 
         LOG("Calling __wine_main...");
 
+        const int steam_session = native_steam || steam_client;
         /* WoW64: publish the main image's machine so the unix side reserves
          * this process's guest window before its first TEB, and hand FEX's
-         * WOW64 module the host features it cannot query itself. */
+         * WOW64 module the host features it cannot query itself. The Steam
+         * window policy follows the session, including a native Steam launch
+         * through the generated command/service wrapper. */
         ios_main_image_i386 = is_i386_target ? 1 : 0;
-        ios_main_image_steam = madeira_is_steam_client_image(getenv("MADEIRA_EXE"));
+        ios_main_image_steam = steam_session;
+        if (steam_session)
+            dprintf(STDERR_FILENO, "[wow-session] steam=1 native-wrapper=%d root-steam=%d\n", native_steam, steam_client);
         madeira_publish_host_probe();   /* both FEX modules read it (A12/A13: FlagM, FlagM2) */
 
         extern void madeira_child_session_begin(int native_steam, int root_steam);
         extern void madeira_steam_main_returned(int status);
-        const int steam_session = native_steam || steam_client;
         madeira_child_session_begin(steam_session, steam_client);
         if (setjmp(wine_ios_exit_jmpbuf) == 0) {
             __wine_main(argc, argv);

@@ -311,6 +311,17 @@ if source.name == 'file.c':
         raise SystemExit('CEF log observer boundary changed; refusing stale diagnostics')
     text = text.replace(boundary, boundary + '\n#include "' + str(header.with_name('cef_log_context.h')) + '"')
     text = text.replace(call, call + '\n    if (total) ios_cef_log_observe( unix_handle, buffer, total );')
+    cef_include = '#include "' + str(header.with_name('cef_log_context.h')) + '"'
+    text = text.replace(cef_include, cef_include + '\n#include "' + str(header.with_name('steam_launch_trace.h')) + '"')
+    cef_call = '    if (total) ios_cef_log_observe( unix_handle, buffer, total );'
+    text = text.replace(cef_call, cef_call + '\n    if (total) ios_steam_launch_log_observe( unix_handle, buffer, total );')
+    read_done = '    ios_video_read_note( handle, status, total, offset );'
+    if text.count(read_done) != 1:
+        raise SystemExit('Validation read completion boundary changed; refusing stale diagnostics')
+    validation_include = '#include "' + str(header.with_name('steam_validation_trace.h')) + '"'
+    read_include = '#include "' + str(header.with_name('js_read_trace.h')) + '"'
+    text = text.replace(read_include, read_include + '\n' + validation_include)
+    text = text.replace(read_done, read_done + '\n    if (type == FD_TYPE_FILE && status == STATUS_SUCCESS && total)\n        ios_steam_validation_read_note( unix_handle, total, offset );')
 output.write_text(text)
 PYCODE
             IO_FAILED_BEFORE=$FAILED

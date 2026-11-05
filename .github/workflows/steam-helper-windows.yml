@@ -1,0 +1,45 @@
+name: Verify Steam helper windows and launch progress
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'codex/pr-build-*']
+    paths:
+      - app/Madeira/WineProcessBridge.m
+      - build/ntdll-unix/build.sh
+      - build/ntdll-unix/thread_ios.c
+      - build/ntdll-unix/steam_*_trace.h
+      - tests/host/check-wow-window-capacity.py
+      - tests/host/check-steam-validation-trace.py
+      - tests/host/check-steam-launch-trace.py
+      - .github/workflows/steam-helper-windows.yml
+  pull_request:
+    paths:
+      - app/Madeira/WineProcessBridge.m
+      - build/ntdll-unix/build.sh
+      - build/ntdll-unix/thread_ios.c
+      - build/ntdll-unix/steam_*_trace.h
+      - tests/host/check-wow-window-capacity.py
+      - tests/host/check-steam-validation-trace.py
+      - tests/host/check-steam-launch-trace.py
+      - .github/workflows/steam-helper-windows.yml
+permissions:
+  contents: read
+jobs:
+  helper-regressions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      CC: clang
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Load pinned Wine declarations for production staging checks
+        run: git submodule update --init --depth 1 wine
+      - name: Exercise concurrent helper ownership and passive validation progress
+        run: |
+          python3 tests/host/check-wow-window-capacity.py
+          python3 tests/host/check-lazy-windows.py
+          python3 tests/host/check-steam-validation-trace.py
+          python3 tests/host/check-steam-launch-trace.py
+          python3 tests/host/check-steam-handoff.py
