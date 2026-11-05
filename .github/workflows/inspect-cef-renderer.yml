@@ -1,31 +1,41 @@
-name: Check exact Valve CEF symbol availability
+name: Inspect exact captured Wine allocation API frames
 on:
   push:
     branches: [codex/inspect-cef-renderer-20261105]
     paths: [.github/workflows/inspect-cef-renderer.yml]
 permissions:
   contents: read
+  actions: read
 jobs:
-  symbols:
+  inspect:
     runs-on: ubuntu-24.04
-    timeout-minutes: 2
+    timeout-minutes: 3
     steps:
-      - name: Request exact GUID and age from symbol endpoints
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 41967578223
+          name: native-i386-a130d203a0ff613c8962
+          path: native-i386
+          github-token: ${{ github.token }}
+      - run: python3 -m pip install pefile==2024.8.26 capstone==5.0.6 xxhash==3.5.0
+      - name: Verify captured module identity and resolve allocation API callers
         run: |
           python3 - <<'PYINSPECT'
-          import json,urllib.request,urllib.error
-          from concurrent.futures import ThreadPoolExecutor
-          GUID='4D133C5B4FBE41474C4C44205044422E1'
-          urls=[base+'/libcef.dll.pdb/'+GUID+'/'+file for base in ['https://cef-symbols.spotifycdn.com','https://cef-builds.spotifycdn.com/symbols','https://chromium-browser-symsrv.commondatastorage.googleapis.com'] for file in ['libcef.dll.pdb','file.ptr']]
-          def check(url):
-           try:
-            req=urllib.request.Request(url,headers={'User-Agent':'Madeira-exact-symbol-inspection/1.0','Range':'bytes=0-255'})
-            with urllib.request.urlopen(req,timeout=20) as r:
-             sample=r.read(256)
-             return dict(url=url,status=r.status,final_url=r.geturl(),content_type=r.headers.get('content-type'),content_length=r.headers.get('content-length'),sample_hex=sample.hex())
-           except urllib.error.HTTPError as e:return dict(url=url,status=e.code,reason=str(e.reason))
-           except Exception as e:return dict(url=url,error=type(e).__name__,reason=str(e))
-          with ThreadPoolExecutor(max_workers=6) as pool:
-           for result in pool.map(check,urls): print('EXACT_SYMBOL_REQUEST',json.dumps(result),flush=True)
-          print('FINISHED exact GUID symbol availability requests; only 256-byte identity probes; no symbols presumed',flush=True)
+          import bisect,hashlib,json
+          from pathlib import Path
+          import pefile,capstone,xxhash
+          for name,target,expected_id in [('ntdll.dll',0x4d5ac,0x3903196a83c9afab),('kernelbase.dll',0x3897f,0x1ba254728aa3a4cf)]:
+           data=(Path('native-i386')/name).read_bytes();p=pefile.PE(data=data)
+           assert p.FILE_HEADER.Machine==0x14c
+           mid=xxhash.xxh3_64_intdigest(name.encode()) ^ ((p.OPTIONAL_HEADER.SizeOfImage<<32)|p.FILE_HEADER.TimeDateStamp)
+           assert mid==expected_id,(name,hex(mid),hex(expected_id))
+           if name=='ntdll.dll':assert p.OPTIONAL_HEADER.SizeOfImage==0xaa000 and p.FILE_HEADER.TimeDateStamp==0x6ae3ebba
+           print('MATCHED_WINE_IMAGE',json.dumps(dict(name=name,sha256=hashlib.sha256(data).hexdigest(),timestamp=hex(p.FILE_HEADER.TimeDateStamp),image_size=hex(p.OPTIONAL_HEADER.SizeOfImage),image_base=hex(p.OPTIONAL_HEADER.ImageBase),fex_id=hex(mid))),flush=True)
+           exports=sorted((e.address,e.name.decode()) for e in p.DIRECTORY_ENTRY_EXPORT.symbols if e.name)
+           at=bisect.bisect_right(exports,(target,'ZZZZZZZ'))-1
+           print('EXPORT_CONTEXT',name,hex(target),json.dumps([(hex(a),n,hex(target-a)) for a,n in exports[max(0,at-3):at+4]]),flush=True)
+           imports={i.address:e.dll.decode()+'!'+(i.name.decode() if i.name else '#'+str(i.ordinal)) for e in getattr(p,'DIRECTORY_ENTRY_IMPORT',[]) for i in e.imports}
+           cs=capstone.Cs(capstone.CS_ARCH_X86,capstone.CS_MODE_32)
+           lo=max(0,target-128)
+           for i in cs.disasm(p.get_data(lo,256),lo):print('WINE_DISASM',name,f'{i.address:08x}',i.bytes.hex(),i.mnemonic,i.op_str,' '.join(v for k,v in imports.items() if hex(k) in i.op_str),flush=True)
           PYINSPECT
