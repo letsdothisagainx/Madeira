@@ -47,6 +47,8 @@ commands = [
     ['python3', 'tests/host/check-fex-startup-failure.py'],
     ['python3', 'tests/host/check-vm-failure-trace.py'],
     ['python3', 'tests/host/check-fex-arena-census.py'],
+    ['python3', 'tests/host/check-fex-arena-placement.py'],
+    ['python3', 'tests/host/check-rpmalloc-thread-reuse.py'],
     ['python3', 'tests/host/check-steam-handoff.py'],
     ['python3', 'tests/host/check-steam-arch-trace.py'],
     ['python3', 'tests/host/check-steam-installed-inventory.py'],

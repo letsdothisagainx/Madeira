@@ -20479,6 +20479,14 @@ static void *map_reserved_area_inner( void *limit_low, void *limit_high, size_t 
         {
             void *start = area->base;
             void *end = (char *)start + area->size;
+            /* rpmalloc's exact 16 MB spans require 16 MB alignment. Mixing
+             * them with 64 KB-aligned FEX views at the low end strands gaps
+             * below 16 MB between live spans. The observed 8 MB holes cannot
+             * hold an 8 MB call/ret stack plus its two guard pages. Pack the
+             * more-aligned requests from the high end of this same arena;
+             * ordinary views keep the low end. No space is partitioned or
+             * reserved for either class, and explicit top-down stays above. */
+            int area_top_down = area->fex_only && align_mask > granularity_mask;
 
             /* ml799: the FEX arena serves only requests contained in it. */
             if (area->fex_only && !fex_allowed) continue;
@@ -20487,7 +20495,7 @@ static void *map_reserved_area_inner( void *limit_low, void *limit_high, size_t 
             if (end <= limit_low) continue;
             if (start < limit_low) start = (void *)ROUND_SIZE( 0, limit_low, host_page_mask );
             if (end > limit_high) end = ROUND_ADDR( limit_high, host_page_mask );
-            ptr = find_reserved_free_area_outside_preloader( start, end, size, top_down, align_mask );
+            ptr = find_reserved_free_area_outside_preloader( start, end, size, area_top_down, align_mask );
             if (ptr) break;
         }
     }
@@ -31824,7 +31832,7 @@ void ios_reserve_fex_arena(void)
             setenv( "WINE_IOS_FEX_ARENA_VERSION", "1", 1 );
             ios_fex_arena_base_unix = (ULONG_PTR)base;
             ios_fex_arena_end_unix  = (ULONG_PTR)base + size;
-            dprintf( 2, "[fex-arena] ml793 PUBLISHED [%p,0x%llx) size=0x%llx version=1 -- the "
+            dprintf( 2, "[fex-arena] ml793 PUBLISHED [%p,0x%llx) size=0x%llx version=1 placement=alignment-ends-v1 -- the "
                         "emulator must CONSUME this range; it must not run its own selector\n",
                      base, (unsigned long long)((ULONG_PTR)base + size),
                      (unsigned long long)size );

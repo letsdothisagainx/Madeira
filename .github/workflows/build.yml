@@ -402,7 +402,7 @@ jobs:
                          b'[x18-load] signed-load recovered', b'[steam-cef] request role=browser', b'[steam-cef] request role=crashpad',
                          b'[pool-section]', b'[stik-protocol]', b'[cef-origin]', b'[cef-adjacent]', b'[steam-frame]', b'[steam-helper]',
                          b'[wow-startup]', b'[process-quarantine]', b'[fex-fault] original guest AV', b'[io-apc-handoff-v1]',
-                         b'[va-scan-owner]', b'[thread-context-v1]'):
+                         b'[va-scan-owner]', b'[thread-context-v1]', b'placement=alignment-ends-v1'):
               assert marker in image, 'missing native diagnostic: ' + repr(marker)
           assert b'SEGV LOOP FATAL' not in image, 'legacy fault-skipping path is still bundled'
           print('PASS native attach/UI/I/O/guard/process-isolation diagnostics included in IPA')
