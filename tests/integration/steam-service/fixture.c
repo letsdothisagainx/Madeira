@@ -96,7 +96,7 @@ int wmain(int argc,wchar_t **argv) {
     if(argc==2&&!wcscmp(argv[1],L"--anchor-stop")) {
         HANDLE anchor=OpenEventW(EVENT_MODIFY_STATE,FALSE,L"Local\\MadeiraServiceIntegrationAnchor");
         if(!anchor)fail("anchor-open");
-        if(!SetEvent(anchor))fail("anchor-stop");CloseHandle(anchor);return 0;
+        if(!SetEvent(anchor)){fail("anchor-stop");}CloseHandle(anchor);return 0;
     }
     if(argc>=3&&!wcscmp(argv[1],L"--setup"))return setup(argv[2]);
     if(argc==2&&!wcscmp(argv[1],L"--query"))return query();

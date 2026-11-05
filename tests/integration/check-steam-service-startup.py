@@ -45,9 +45,10 @@ with tempfile.TemporaryDirectory(prefix='madeira-service-scm-') as directory:
         if expected is not None and result.returncode != expected:
             safe = []
             for line in text.splitlines():
-                if not any(token in line for token in ['[steam-service]', '[service-fixture]', 'wine:', 'err:module', 'Library ', 'not found']): continue
+                if not any(token in line for token in ['[steam-service]', '[service-fixture]', 'wine:', 'err:module', 'Library ', 'not found', 'error:', 'warning:', 'note:']): continue
                 line = re.sub(r'https?://[^\s]+', '<url>', line)
-                line = re.sub(r"(?:[A-Za-z]:[\\/]|/)[^\"'\r\n]+", '<path>', line)
+                line = line.replace(str(ROOT), "<repo>").replace(str(temporary), "<fixture>")
+                line = re.sub(r"(?:[A-Za-z]:[\\/]|/)[^\s\"']+", "<path>", line)
                 safe.append(line[:400])
             raise AssertionError(f'fixture command failed code={result.returncode}; metadata={safe[-25:]!r}')
         return result.returncode, text
