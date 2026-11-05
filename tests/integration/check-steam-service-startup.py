@@ -10,6 +10,7 @@ from pathlib import Path
 import argparse
 import os
 import shutil
+import struct
 import subprocess
 import tempfile
 import time
@@ -52,6 +53,10 @@ with tempfile.TemporaryDirectory(prefix='madeira-service-scm-') as directory:
     compile_pe('i686-w64-mingw32-gcc', fixture32, ROOT / 'tests/integration/steam-service/fixture.c')
     compile_pe('x86_64-w64-mingw32-gcc', fixture64, ROOT / 'tests/integration/steam-service/fixture.c')
     compile_pe('x86_64-w64-mingw32-gcc', helper, ROOT / 'build/steam-service/main.c')
+    for image, expected_machine in [(fixture32, 0x014c), (fixture64, 0x8664), (helper, 0x8664)]:
+        data = image.read_bytes(); pe = struct.unpack_from('<I', data, 0x3c)[0]
+        assert data[:2] == b'MZ' and data[pe:pe + 4] == b'PE\0\0'
+        assert struct.unpack_from('<H', data, pe + 4)[0] == expected_machine
     try:
         command(['wineboot', '--init'], timeout=120)
         fixture = prefix / 'drive_c/Fixture'
@@ -76,10 +81,15 @@ with tempfile.TemporaryDirectory(prefix='madeira-service-scm-') as directory:
         elapsed = time.monotonic() - begin
         assert '[steam-service] result=1053' in output
         assert '[steam-service] update-witness=0' in output
+        assert output.count('[steam-service] start-error=1053') == 1
         assert elapsed < 20, 'early child exit was incorrectly treated as a full startup timeout'
         assert not states.exists(), 'early-exit fixture unexpectedly registered its dispatcher'
-        _, status = wine(control, '--query', expected=21)
-        assert 'query-state=1' in status
+        deadline = time.monotonic() + 3
+        while True:
+            _, status = wine(control, '--query', expected=21)
+            if 'query-state=1' in status: break
+            assert time.monotonic() < deadline, 'terminated service was not retired by SCM'
+            time.sleep(.05)
         print('PASS real I386 early exit zero -> actual SCM/helper1053 before dispatcher; no running state or updater witness invented', flush=True)
         _, enumeration = wine(control, '--pipe-enumeration')
         value = enumeration.split('pipe-enumeration-error=', 1)[1].split()[0]

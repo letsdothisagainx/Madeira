@@ -5,6 +5,9 @@ on:
     branches: [main, 'codex/pr-build-*']
     paths:
       - build/steam-service/**
+      - build/wineserver/stage-async-apc.py
+      - build/wineserver/build.sh
+      - tests/host/check-service-async-apc.py
       - app/Madeira/SteamRuntime.swift
       - app/Madeira/ContentView.swift
       - tests/host/check-steam-service.py
@@ -15,6 +18,9 @@ on:
   pull_request:
     paths:
       - build/steam-service/**
+      - build/wineserver/stage-async-apc.py
+      - build/wineserver/build.sh
+      - tests/host/check-service-async-apc.py
       - app/Madeira/SteamRuntime.swift
       - app/Madeira/ContentView.swift
       - tests/host/check-steam-service.py
@@ -25,6 +31,16 @@ on:
 permissions:
   contents: read
 jobs:
+  io-apc-delivery:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - name: Reproduce dropped RPC completion and verify actual staged queue/wait delivery
+        run: python3 tests/host/check-service-async-apc.py
   scripts:
     runs-on: xcode-27
     timeout-minutes: 5
@@ -53,8 +69,8 @@ jobs:
       - name: Install isolated Wine WoW64 and PE fixture compilers
         run: |
           sudo dpkg --add-architecture i386
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends wine wine32:i386 gcc-mingw-w64-x86-64 gcc-mingw-w64-i686 xvfb xauth
+          sudo apt-get update -qq -o Acquire::Retries=1 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends wine wine64 wine32:i386 gcc-mingw-w64-x86-64-posix gcc-mingw-w64-i686-posix xvfb xauth
       - uses: actions/download-artifact@v4
         with:
           name: service-native-client-scripts
