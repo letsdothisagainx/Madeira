@@ -71,6 +71,24 @@ bool jit_task_map_range(uint64_t *min_address, uint64_t *max_address);
 // Memory this process may still allocate before the system's limit.
 uint64_t jit_available_memory(void);
 
+// The current process's charged footprint and remaining allocation budget.
+// False means the footprint could not be measured; outputs are then zero.
+bool jit_memory_snapshot(uint64_t *available_bytes, uint64_t *footprint_bytes);
+
+// Measured CS2 startup policy, called only for Steam app 730. Both aliases
+// share one physical charge; their separate virtual ranges still must fit.
+// Invalid/unknown measurements decline the policy and zero both outputs.
+bool jit_cs2_pool_plan(uint64_t requested_pool_mb, uint64_t available_bytes,
+                       uint64_t footprint_bytes, uint64_t physical_bytes,
+                       uint64_t map_min, uint64_t map_max,
+                       uint64_t *pool_mb, uint64_t *head_reserve_mb);
+
+// Validate the actual single-region mapping before accepting its aliases.
+// Includes address bounds, arithmetic, alignment and executable-window guards.
+bool jit_pool_alias_layout_valid(uint64_t rx, uint64_t rw, uint64_t size,
+                                 uint64_t map_min, uint64_t map_max,
+                                 uint64_t exe_base, uint64_t exe_size);
+
 // iOS 26 BRK-based protocol: Ask attached debugger (StikDebug) to
 // prepare a memory region for JIT execution.
 // Returns the prepared address (may differ from input on allocation).

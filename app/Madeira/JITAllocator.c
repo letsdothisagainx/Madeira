@@ -444,6 +444,79 @@ uint64_t jit_available_memory(void) {
     return (uint64_t)os_proc_available_memory();
 }
 
+bool jit_memory_snapshot(uint64_t *available_bytes, uint64_t *footprint_bytes) {
+    task_vm_info_data_t vmi;
+    mach_msg_type_number_t cnt = TASK_VM_INFO_COUNT;
+    if (available_bytes) *available_bytes = 0;
+    if (footprint_bytes) *footprint_bytes = 0;
+    if (!available_bytes || !footprint_bytes) return false;
+    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vmi, &cnt) != KERN_SUCCESS)
+        return false;
+    *footprint_bytes = vmi.phys_footprint;
+    *available_bytes = (uint64_t)os_proc_available_memory();
+    return true;
+}
+
+/* CS2's measured 1024MB run had 476.8MB of image head and 512.1MB of
+ * retained code buffers when phonon.dll needed a contiguous 51.1MB. Merely
+ * adding 128MB lets the next FEX generation consume that whole increase.
+ * Pair 1152MB with 176MB of image reserve: 1152-176 == 1024-48, so the
+ * existing code-buffer budget is unchanged and the extra pages serve images.
+ * These are startup choices, never a request to resize a live pool.
+ *
+ * All bytes are charged once physically, even though RX/RW need two virtual
+ * ranges. No no-footprint exemption is assumed. The observed 3818MB peak,
+ * 128MB growth and a further 2GB reserve must fit the measured process budget;
+ * a RAM value or an entitlement alone is not evidence of that budget. */
+bool jit_cs2_pool_plan(uint64_t requested_pool_mb, uint64_t available_bytes,
+                       uint64_t footprint_bytes, uint64_t physical_bytes,
+                       uint64_t map_min, uint64_t map_max,
+                       uint64_t *pool_mb, uint64_t *head_reserve_mb) {
+    const uint64_t mb = UINT64_C(1) << 20;
+    const uint64_t selected = UINT64_C(1152) << 20;
+    const uint64_t reserve = UINT64_C(2048) << 20;
+    const uint64_t peak_with_growth = (UINT64_C(3818) + 128) << 20;
+    const uint64_t budget_cap = UINT64_C(6144) << 20;
+    uint64_t budget;
+
+    if (pool_mb) *pool_mb = 0;
+    if (head_reserve_mb) *head_reserve_mb = 0;
+    if (!pool_mb || !head_reserve_mb || requested_pool_mb < 256 || requested_pool_mb > 1152 ||
+        !available_bytes || !footprint_bytes || !physical_bytes || physical_bytes > INT64_MAX ||
+        available_bytes > physical_bytes || footprint_bytes > physical_bytes - available_bytes)
+        return false;
+    budget = available_bytes + footprint_bytes;
+    if (budget > budget_cap) budget = budget_cap;
+    if (budget <= peak_with_growth + reserve || available_bytes < selected + reserve ||
+        map_min >= map_max || map_max > INT64_MAX || map_max - map_min < selected * 2)
+        return false;
+    *pool_mb = selected / mb;
+    *head_reserve_mb = 176;
+    return true;
+}
+
+bool jit_pool_alias_layout_valid(uint64_t rx, uint64_t rw, uint64_t size,
+                                 uint64_t map_min, uint64_t map_max,
+                                 uint64_t exe_base, uint64_t exe_size) {
+    const uint64_t good_low = UINT64_C(0x119000000);
+    const uint64_t guest_low = UINT64_C(0x7000000000);
+    const uint64_t guest_high = UINT64_C(0x8000000000);
+    uint64_t rx_end, rw_end, exe_end;
+
+    if (!size || ((rx | rw | size) & UINT64_C(0x3fff)) || map_min >= map_max ||
+        map_max > INT64_MAX || rx < map_min || rx >= map_max || rw < map_min || rw >= map_max ||
+        size > map_max - rx || size > map_max - rw || exe_size > UINT64_MAX - exe_base)
+        return false;
+    rx_end = rx + size;
+    rw_end = rw + size;
+    exe_end = exe_base + exe_size;
+    if (rx < good_low || (rx < guest_high && rx_end > guest_low) ||
+        (rx < rw_end && rw < rx_end) ||
+        (exe_size && ((rx < exe_end && rx_end > exe_base) || (rw < exe_end && rw_end > exe_base))))
+        return false;
+    return true;
+}
+
 // iOS 26 BRK-based JIT syscalls.
 // These use BRK #0xf00d with x16 indicating the command.
 // When a debugger (StikDebug) is attached, it intercepts the BRK,

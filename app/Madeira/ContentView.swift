@@ -2817,6 +2817,9 @@ struct ContentView: View {
         ws_log_quiet = 1
 
         DispatchQueue.global(qos: .userInitiated).async {
+            // Private startup policy belongs to this launch only. The generated
+            // Steam command keeps the original game's profile in `profile`.
+            unsetenv("WINE_IOS_JIT_HEAD_RESERVE_MB")
             // A library entry's launch profile (executable, arguments, x87
             // precision, frame limit).
             if let profile {
@@ -2976,6 +2979,36 @@ struct ContentView: View {
                mb >= 256, mb <= 1152 {
                 poolSizeMB = mb
                 logStore.log("JIT pool overridden to \(mb)MB via \(gamePool != nil ? "the game's settings" : "madeira.cfg") pool")
+            }
+            var cs2PoolPreflightFailure: String?
+            var minimumPoolSize = 0
+            if profile?.steamAppID == 730 {
+                var available: UInt64 = 0, footprint: UInt64 = 0
+                var mapMin: UInt64 = 0, mapMax: UInt64 = 0
+                var selectedMB: UInt64 = 0, imageReserveMB: UInt64 = 0
+                let physical = ProcessInfo.processInfo.physicalMemory
+                let measured = jit_memory_snapshot(&available, &footprint)
+                    && jit_task_map_range(&mapMin, &mapMax)
+                let safe = !StikJITHelper.poolTaken && measured && jit_cs2_pool_plan(UInt64(poolSizeMB), available, footprint,
+                    physical, mapMin, mapMax, &selectedMB, &imageReserveMB)
+                let budget = available <= physical && footprint <= physical - available
+                    ? min(available + footprint, UInt64(6144) << 20) : 0
+                logStore.log(String(format: "[cs2-pool] startup measured=%d available=%lluMB footprint=%lluMB budget=%lluMB cap=6144MB map=[0x%llx,0x%llx)",
+                    measured ? 1 : 0, available >> 20, footprint >> 20, budget >> 20, mapMin, mapMax))
+                if safe {
+                    poolSizeMB = Int(selectedMB)
+                    minimumPoolSize = poolSizeMB * 1024 * 1024
+                    setenv("WINE_IOS_JIT_HEAD_RESERVE_MB", String(imageReserveMB), 1)
+                    logStore.log("[cs2-pool] automatic pool=\(poolSizeMB)MB image-reserve=\(imageReserveMB)MB; "
+                        + "the full pool is charged once for both aliases, with 2048MB of additional session reserve")
+                } else {
+                    cs2PoolPreflightFailure = StikJITHelper.poolTaken
+                        ? "Restart Madeira before starting CS2: this app run already created its JIT memory."
+                        : "CS2 needs a 1152 MB JIT pool and enough memory for the game. "
+                            + "Madeira could not verify a safe memory and address-space budget on this launch. "
+                            + "Close other apps, restart Madeira and try again."
+                    logStore.log("[cs2-pool] startup budget refused; not requesting a smaller pool", level: .error)
+                }
             }
             // ml694: W^X A/B switch. Documents/madeira-wx.txt containing "0"
             // disables page demotion for the SAME binary, so the on/off
@@ -3177,9 +3210,13 @@ struct ContentView: View {
             }
 
             winios_phase("pool-alloc-begin")
-            logStore.log("Allocating \(poolSizeMB)MB JIT pool (BRK will suspend process)...")
+            if cs2PoolPreflightFailure == nil {
+                logStore.log("Allocating \(poolSizeMB)MB JIT pool (BRK will suspend process)...")
+            }
             let t0 = CFAbsoluteTimeGetCurrent()
-            let pool = StikJITHelper.allocatePool(poolSize: poolSizeMB * 1024 * 1024)
+            let pool = cs2PoolPreflightFailure == nil
+                ? StikJITHelper.allocatePool(poolSize: poolSizeMB * 1024 * 1024, minimumPoolSize: minimumPoolSize)
+                : nil
             let elapsed = CFAbsoluteTimeGetCurrent() - t0
             winios_phase("pool-ready")
             logStore.log("BRK suspension lasted \(String(format: "%.2f", elapsed))s")
@@ -3378,7 +3415,8 @@ struct ContentView: View {
                 logStore.log("JIT pool allocation FAILED — not starting Wine.", level: .error)
                 // The reason allocatePool recorded (no debugger, placement, alias);
                 // the lines above this one in the log carry the detail.
-                let reason = StikJITHelper.poolFailure
+                unsetenv("WINE_IOS_JIT_HEAD_RESERVE_MB")
+                let reason = cs2PoolPreflightFailure ?? StikJITHelper.poolFailure
                 logStore.log("  " + (reason ?? "No reason was recorded; see the pool lines above."), level: .info)
                 logStore.uiPaused = false
                 // A library session that never started returns to the library.

@@ -121,6 +121,9 @@ enum StikJITHelper {
     /// This app run's pool exists. The debugger detaches right after the pool is
     /// made, by design, so from then on "no debugger attached" is the normal state.
     private(set) static var poolTaken = false
+    // A debugger-created mapping can refuse deallocation. Its charge remains
+    // live, so a later CS2 attempt must restart instead of budgeting it again.
+    private static var cs2PoolRetryRequiresRestart = false
 
     /// madeira-bcd split pool (`pool-split = 1`): the pool offsets [off, end) that
     /// lie between its two debugger regions (the main thread's stack and our
@@ -285,10 +288,29 @@ enum StikJITHelper {
 
     /// Allocate a JIT memory pool via BRK #0xf00d WITHOUT detaching the debugger.
     /// The debugger stays attached so Wine can use BRK to prepare PE code pages.
-    static func allocatePool(poolSize requestedPoolSize: Int = 128 * 1024 * 1024) -> (rx: UnsafeMutableRawPointer, rw: UnsafeMutableRawPointer, size: Int)? {
+    static func allocatePool(poolSize requestedPoolSize: Int = 128 * 1024 * 1024,
+                             minimumPoolSize: Int = 0) -> (rx: UnsafeMutableRawPointer, rw: UnsafeMutableRawPointer, size: Int)? {
         var poolSize = requestedPoolSize      // ml1036: may shrink to fit, see the hole census below
         poolFailure = nil
         LogStore.shared.log("Allocating \(poolSize / 1024 / 1024)MB JIT pool via debugger...")
+        // The measured CS2 plan accounts for one complete pool. Region C would
+        // add a separate physical charge, outside that plan; leave its existing
+        // implementation untouched for launches that select it themselves.
+        if minimumPoolSize > 0 {
+            if poolTaken || cs2PoolRetryRequiresRestart {
+                poolFailure = "Restart Madeira before starting CS2: this app run already created its JIT memory."
+                LogStore.shared.log("[cs2-pool] an existing pool cannot be resized for this launch", level: .error)
+                return nil
+            }
+            let low = (MadeiraConfig.gameValue("pool-low") ?? MadeiraConfig.get("pool-low") ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if minimumPoolSize > requestedPoolSize || ["1", "on", "true", "yes"].contains(low) {
+                poolFailure = "CS2 needs 1152 MB of JIT memory. This launch's memory layout is outside its "
+                    + "startup budget. Restart Madeira and try again."
+                LogStore.shared.log("[cs2-pool] separate pool-low region or undersized request is outside the measured startup budget", level: .error)
+                return nil
+            }
+        }
         // madeira-bcd Social Club layout 2: take the [0x7000000000, +4 GB) hold
         // FIRST. Taken at alias time it lost the race on build 348 (GTA log
         // 2026-10-03 08:00: "is not free (kr=3)", the RW alias then landed at
@@ -440,7 +462,7 @@ enum StikJITHelper {
             return min(mb, 960)                             // the window must end below 0x180000000
         }()
         func overlapsExeWindow(_ base: vm_address_t, _ len: vm_address_t) -> Bool {
-            return base < exeWinBase + exeWinSize && base + len > exeWinBase
+            return base < exeWinBase + exeWinSize && (base >= exeWinBase || len > exeWinBase - base)
         }
         let skipWindow = (ProcessInfo.processInfo.environment["MADEIRA_NO_EXE_WINDOW"].map { $0 != "0" } ?? false)
         var windowHeld = false
@@ -738,6 +760,13 @@ enum StikJITHelper {
 
         var rxPtrOpt: UnsafeMutableRawPointer? = nil
         var requestUnanswered = false
+        if poolSize < minimumPoolSize {
+            for (a, sz) in plugs { vm_deallocate(mach_task_self_, a, sz) }
+            poolFailure = "CS2 needs its complete 1152 MB JIT pool, but this launch's address layout only "
+                + "fits \(poolSize >> 20) MB. Restart Madeira and try again."
+            LogStore.shared.log("[cs2-pool] refusing a shrunk \(poolSize >> 20)MB pool before the debugger request", level: .error)
+            return nil
+        }
         for attempt in 0..<3 {
             guard let p = jit26_prepare_region(nil, poolSize), p != UnsafeMutableRawPointer(bitPattern: 0) else {
                 LogStore.shared.log("Debugger failed to allocate RX memory (attempt \(attempt))", level: .error)
@@ -745,11 +774,13 @@ enum StikJITHelper {
                 break
             }
             let a = Int(bitPattern: p)
-            let inGuestWindow = a + poolSize > guestLo && a < guestHi
+            let aV = vm_address_t(bitPattern: p)
+            let (end, overflow) = a.addingReportingOverflow(poolSize)
+            let inGuestWindow = overflow || (end > guestLo && a < guestHi)
             // ml1034: a pool covering 0x140000000 displaces a non-relocatable
             // main image, which is fatal later and unrecoverable.
-            let hitsExeWindow = overlapsExeWindow(vm_address_t(a), vm_address_t(poolSize))
-            if a >= goodLow && !inGuestWindow && !hitsExeWindow {
+            let hitsExeWindow = overlapsExeWindow(aV, vm_address_t(poolSize))
+            if !overflow && a >= goodLow && !inGuestWindow && !hitsExeWindow {
                 rxPtrOpt = p
                 break
             }
@@ -759,10 +790,15 @@ enum StikJITHelper {
                                          : (hitsExeWindow ? "swallows the 0x140000000 executable window"
                                                           : "guest 64G window"),
                                        attempt), level: .error)
-            let dkr = vm_deallocate(mach_task_self_, vm_address_t(a), vm_size_t(poolSize))
+            let dkr = vm_deallocate(mach_task_self_, aV, vm_size_t(poolSize))
             LogStore.shared.log(dkr == KERN_SUCCESS
                 ? "  bad region freed"
                 : "  bad region kept as pin (vm_deallocate kr=\(dkr))")
+            if minimumPoolSize > 0 && dkr != KERN_SUCCESS {
+                cs2PoolRetryRequiresRestart = true
+                LogStore.shared.log("[cs2-pool] retained RX pages already consume the startup budget; no additional pool request", level: .error)
+                break
+            }
         }
         // ml1040: the plugs existed only to steer first-fit; give the VA back.
         for (a, sz) in plugs { vm_deallocate(mach_task_self_, a, sz) }
@@ -1221,11 +1257,34 @@ enum StikJITHelper {
 
         guard kr1 == KERN_SUCCESS else {
             LogStore.shared.log("vm_remap failed: \(kr1)", level: .error)
+            if minimumPoolSize > 0 {
+                let cleanup = vm_deallocate(mach_task_self_, rxAddrV, vm_size_t(poolSize))
+                if cleanup != KERN_SUCCESS { cs2PoolRetryRequiresRestart = true }
+                LogStore.shared.log("[cs2-pool] failed-alias RX cleanup kr=\(cleanup)")
+            }
             poolFailure = "Madeira could not map its JIT memory (vm_remap error \(kr1)). Restart Madeira and try again; "
                 + "if it keeps happening, send the diagnostic log."
             return nil
         }
 
+        // Validate the real aliases against the task's current map, rather than
+        // inferring its limit from the EVA entitlement or the requested hint.
+        // This path owns two contiguous mappings, so failure releases only those.
+        if minimumPoolSize > 0 {
+            var mapMin: UInt64 = 0, mapMax: UInt64 = 0
+            guard jit_task_map_range(&mapMin, &mapMax),
+                  jit_pool_alias_layout_valid(UInt64(rxAddrV), UInt64(rwAddr), UInt64(poolSize),
+                      mapMin, mapMax, UInt64(exeWinBase), UInt64(exeWinSize)) else {
+                let rwCleanup = vm_deallocate(mach_task_self_, rwAddr, vm_size_t(poolSize))
+                let rxCleanup = vm_deallocate(mach_task_self_, rxAddrV, vm_size_t(poolSize))
+                if rwCleanup != KERN_SUCCESS || rxCleanup != KERN_SUCCESS { cs2PoolRetryRequiresRestart = true }
+                poolFailure = "Madeira could not safely place CS2's 1152 MB of JIT memory. "
+                    + "Restart Madeira and try again."
+                LogStore.shared.log(String(format: "[jit-pool-layout] rejected RX=0x%llx RW=0x%llx size=0x%llx map=[0x%llx,0x%llx); cleanup RX=%d RW=%d",
+                    UInt64(rxAddrV), UInt64(rwAddr), UInt64(poolSize), mapMin, mapMax, rxCleanup, rwCleanup), level: .error)
+                return nil
+            }
+        }
         let rwOverlaps = overlapsExeWindow(rwAddr, vm_address_t(poolSize))
         LogStore.shared.log("ml977: RX=[\(String(format:"%p",Int(rxAddrV))),"
             + "\(String(format:"%p",Int(rxAddrV + vm_address_t(poolSize))))) "
@@ -1239,7 +1298,12 @@ enum StikJITHelper {
         let kr2 = vm_protect(mach_task_self_, rwAddr, vm_size_t(poolSize), 0, VM_PROT_READ | VM_PROT_WRITE)
         guard kr2 == KERN_SUCCESS else {
             LogStore.shared.log("vm_protect(RW) failed: \(kr2)", level: .error)
-            vm_deallocate(mach_task_self_, rwAddr, vm_size_t(poolSize))
+            let rwCleanup = vm_deallocate(mach_task_self_, rwAddr, vm_size_t(poolSize))
+            if minimumPoolSize > 0 {
+                let rxCleanup = vm_deallocate(mach_task_self_, rxAddrV, vm_size_t(poolSize))
+                if rwCleanup != KERN_SUCCESS || rxCleanup != KERN_SUCCESS { cs2PoolRetryRequiresRestart = true }
+                LogStore.shared.log("[cs2-pool] failed-protection cleanup RX=\(rxCleanup) RW=\(rwCleanup)")
+            }
             poolFailure = "Madeira could not make its JIT memory writable (vm_protect error \(kr2)). Restart Madeira and try again; "
                 + "if it keeps happening, send the diagnostic log."
             return nil

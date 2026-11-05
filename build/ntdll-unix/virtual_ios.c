@@ -18177,6 +18177,14 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
                 /* 48 to 256 MB of image headroom in the FEX pool-tail budget;
                  * 48/default keeps the existing policy. Region C is unchanged. */
                 ios_pool_head_reserve = ios_pool_parse_head_reserve( getenv( "MADEIRA_POOL_HEAD_RESERVE_MB" ) );
+                /* The app may budget additional image capacity before creating
+                 * the pool. Keep that coupled reserve separate from user env
+                 * imports, which are applied later by the Wine launcher. The
+                 * normal default and a larger explicit user reserve survive. */
+                {
+                    size_t launch_reserve = ios_pool_parse_head_reserve( getenv( "WINE_IOS_JIT_HEAD_RESERVE_MB" ) );
+                    if (launch_reserve > ios_pool_head_reserve) ios_pool_head_reserve = launch_reserve;
+                }
                 dprintf( 2, "[pool-head] code-buffer budget targets %lu MB of image headroom (region C and recycled buffers unchanged)\n",
                          (unsigned long)(ios_pool_head_reserve >> 20) );
                 /* madeira-bcd pool-low: region C (see ios_jit_low_rx_global). Taken only

@@ -6,6 +6,12 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[2]
 commands = [
+    ['python3', 'tests/host/check-pool-cs2-budget.py'],
+    ['python3', 'tests/host/check-jit-pool-meter.py'],
+    ['python3', 'tests/host/check-pool-failure-census.py'],
+    ['python3', 'tests/host/check-pool-split.py'],
+    ['python3', 'tests/host/check-pool-startup-budget.py', '--require-swift'],
+    ['python3', 'tests/host/check-pool-code-exit.py'],
     ['python3', 'tests/host/check-htmlipc-domain-registry.py'],
     ['python3', 'tests/host/check-steam-browser-cache.py', '--require-swift'],
     ['python3', 'tests/host/check-steam-browser-bridge.py', '--require-swift'],
