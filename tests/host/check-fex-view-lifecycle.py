@@ -292,6 +292,12 @@ assert retire.index('ios_thread_finish_fex()') < retire.index('pthread_mutex_loc
 # and the tree's backing mappings are synthetic. Wine's own RB tree executes.
 vad_code = lease_code[:lease_code.index('int main(void) {')]
 vad_code += f'#include "{root / "wine/include/wine/rbtree.h"}"\n'
+vad_code += r'''
+/* Keep Wine's null iteration sentinel portable under Clang's UBSan while
+ * executing its unchanged RB tree and production ownership/reaping code. */
+#undef RB_ENTRY_VALUE
+#define RB_ENTRY_VALUE(element,type,field) ((type *)((uintptr_t)(element) - offsetof(type,field)))
+'''
 vad_code += body(virtual, 'struct file_view\n{') + ';\n'
 for macro in ('IOS_VIEW_QUARANTINED', 'VPROT_READ', 'VPROT_WRITE', 'VPROT_EXEC',
               'VPROT_WRITEWATCH', 'VPROT_COMMITTED', 'VPROT_ARM64EC', 'VPROT_SYSTEM', 'VPROT_PLACEHOLDER', 'VPROT_FREE_PLACEHOLDER'):

@@ -51,14 +51,18 @@ The matching FEX loop checks zero and decrements its count; its inspected
 control flow contains no allocation retry. Separate captured libcef return
 sites immediately follow calls through the exact image's `VirtualAlloc` IAT.
 
-Exact GUID/age PDB and `file.ptr` requests returned 404 from the tested public
-CEF and Chromium symbol endpoints in
+Exact GUID/age PDB and `file.ptr` requests returned 404 from the tested candidate
+CEF/Chromium symbol paths in
 [the symbol lookup run](https://github.com/letsdothisagainx/Madeira/actions/runs/41976509870).
-No matching PDB was obtained. The operation above is established by verified
-instruction bytes, not an invented internal Chromium function name.
+No matching PDB was obtained. Candidate URL failures do not establish absence
+from an authoritative symbol service; upstream CEF also publishes symbol
+archives, and Valve uses a custom build. The operation above is established by
+verified instruction bytes, not an invented internal Chromium function name.
 
-The sampled copy lacks live count/source/destination registers and a validated
-caller stack. Separate `alloc-sustained` captures describe allocation collisions
+The sampler labels raw host x23 as `rsp`, but this emitted copy block uses x23
+as its original source operand. Its printed `0x7c004000` is not validated guest
+ESP. Destination x22 and count x7 were not logged, so the copy lacks a validated
+length and caller stack. Separate `alloc-sustained` captures describe allocation collisions
 and must not be treated as the same execution point. No Chromium throttling,
 instruction skipping or copy-loop change is justified by this capture.
 

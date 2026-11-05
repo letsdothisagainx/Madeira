@@ -8,11 +8,13 @@ The production Swift observer itself is exercised by the macOS host fixture.
 """
 import argparse
 import asyncio
+import errno
 import http.server
 import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import tempfile
 import threading
@@ -89,7 +91,10 @@ async def run(mode):
         if mode != 'off':
             command += ['--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0']
         command += [f'http://127.0.0.1:{server.server_port}/?mode={mode}']
-        process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Own the entire fixture browser group, including asynchronous profile
+        # writers. Waiting only for the main process can race directory cleanup.
+        process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   start_new_session=True)
         outcomes = []
         try:
             for _ in range(200):
@@ -173,12 +178,36 @@ async def run(mode):
             print(json.dumps({'mode': mode, 'inspectorEnabled': mode != 'off',
                               'report': report, 'queries': outcomes}), flush=True)
         finally:
-            process.terminate()
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
             try:
                 process.wait(timeout=3)
             except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait(timeout=3)
+            # A renderer may outlive the primary process. This group was
+            # created solely for this disposable profile, never a user browser.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            # SIGKILL delivery/profile I/O completion is asynchronous. Retry
+            # only ENOTEMPTY on our uniquely owned directory, with a fixed cap.
+            for attempt in range(10):
+                try:
+                    shutil.rmtree(profile)
+                    break
+                except FileNotFoundError:
+                    break
+                except OSError as error:
+                    if error.errno != errno.ENOTEMPTY or attempt == 9:
+                        raise
+                    await asyncio.sleep(.1)
 
 
 async def main():
