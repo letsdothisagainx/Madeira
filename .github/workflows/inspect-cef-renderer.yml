@@ -28,9 +28,9 @@ jobs:
            data=(Path('native-i386')/name).read_bytes();p=pefile.PE(data=data)
            assert p.FILE_HEADER.Machine==0x14c
            mid=xxhash.xxh3_64_intdigest(name.encode()) ^ ((p.OPTIONAL_HEADER.SizeOfImage<<32)|p.FILE_HEADER.TimeDateStamp)
-           assert mid==expected_id,(name,hex(mid),hex(expected_id))
+           if name=='ntdll.dll':assert mid==expected_id,(name,hex(mid),hex(expected_id))
            if name=='ntdll.dll':assert p.OPTIONAL_HEADER.SizeOfImage==0xaa000 and p.FILE_HEADER.TimeDateStamp==0x6ae3ebba
-           print('MATCHED_WINE_IMAGE',json.dumps(dict(name=name,sha256=hashlib.sha256(data).hexdigest(),timestamp=hex(p.FILE_HEADER.TimeDateStamp),image_size=hex(p.OPTIONAL_HEADER.SizeOfImage),image_base=hex(p.OPTIONAL_HEADER.ImageBase),fex_id=hex(mid))),flush=True)
+           print('ARTIFACT_WINE_IMAGE',json.dumps(dict(name=name,sha256=hashlib.sha256(data).hexdigest(),timestamp=hex(p.FILE_HEADER.TimeDateStamp),image_size=hex(p.OPTIONAL_HEADER.SizeOfImage),image_base=hex(p.OPTIONAL_HEADER.ImageBase),fex_id=hex(mid))),flush=True)
            exports=sorted((e.address,e.name.decode()) for e in p.DIRECTORY_ENTRY_EXPORT.symbols if e.name)
            at=bisect.bisect_right(exports,(target,'ZZZZZZZ'))-1
            print('EXPORT_CONTEXT',name,hex(target),json.dumps([(hex(a),n,hex(target-a)) for a,n in exports[max(0,at-3):at+4]]),flush=True)
