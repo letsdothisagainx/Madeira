@@ -60,6 +60,13 @@ typedef unsigned NTSTATUS;
 '''
 code += f'#include "{root / "wine/include/wine/rbtree.h"}"\n'
 code += f'#include "{root / "wine/include/wine/list.h"}"\n'
+code += r'''
+/* Wine's container-of also forms a null iteration sentinel. Use equivalent
+ * integer address arithmetic in this portable fixture so Clang can validate
+ * the unchanged tree/search/reaper code without null-pointer arithmetic. */
+#undef RB_ENTRY_VALUE
+#define RB_ENTRY_VALUE(element,type,field) ((type *)((uintptr_t)(element) - offsetof(type,field)))
+'''
 for struct in ('struct file_view\n{', 'struct reserved_area\n{', 'struct range_entry\n{'):
     code += body(source, struct) + ';\n'
 for macro in ('IOS_VIEW_QUARANTINED', 'VPROT_READ', 'VPROT_WRITE', 'VPROT_EXEC',
