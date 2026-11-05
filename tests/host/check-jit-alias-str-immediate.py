@@ -85,6 +85,7 @@ static int old_route(uint32_t insn, uintptr_t fault_addr, struct state *input)
     gpr[29] = input->__fp; gpr[30] = input->__lr; gpr[31] = input->__sp;
     return old_store_immediate(insn, fault_addr, gpr, &blocked, 1);
 }
+#undef __darwin_arm_thread_state64_set_pc_fptr
 #define __darwin_arm_thread_state64_set_pc_fptr(st, p) ((st).__pc = (uintptr_t)(p))
 static int actual_route(uint32_t insn, uintptr_t fault_addr, struct state *input,
                         uintptr_t *blocked, int honor_guest_prot)
