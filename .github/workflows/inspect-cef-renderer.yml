@@ -1,0 +1,54 @@
+name: Inspect exact Valve CEF renderer code
+on:
+  push:
+    branches: [codex/inspect-cef-renderer-20261105]
+    paths: [.github/workflows/inspect-cef-renderer.yml]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - run: python3 -m pip install pefile==2024.8.26 capstone==5.0.6
+      - name: Verify exact official image and inspect bounded code windows
+        run: |
+          python3 - <<'PYINSPECT'
+          import base64,hashlib,io,json,struct,urllib.request,uuid,zipfile
+          import pefile,capstone
+          URL='https://client-update.akamai.steamstatic.com/bins_cef_win32.zip.1c1d9dc1d899e7c8d1cff9cb0fcc11b89e412b98'
+          ARCHIVE_SHA='fee14790d59463f31693ef95e10327824f5bdd95baf0aa8fae3b81aea98e794f'
+          IMAGE_SHA='b2dc73b55ca1d6a44a594e97b4ddd57bd19e79b2d09521faf2dfb83f51e2a94e'
+          with urllib.request.urlopen(URL,timeout=150) as r:archive=r.read(400*1024*1024+1)
+          assert len(archive)<=400*1024*1024
+          assert hashlib.sha256(archive).hexdigest()==ARCHIVE_SHA
+          with zipfile.ZipFile(io.BytesIO(archive)) as z:data=z.read('bin/cef/cef.win7/libcef.dll')
+          assert hashlib.sha256(data).hexdigest()==IMAGE_SHA
+          p=pefile.PE(data=data)
+          assert p.FILE_HEADER.Machine==0x14c and p.OPTIONAL_HEADER.SizeOfImage==0xb42a000
+          pdb=[]
+          for e in p.DIRECTORY_ENTRY_DEBUG:
+           if e.struct.Type==2:
+            b=p.get_data(e.struct.AddressOfRawData,e.struct.SizeOfData)
+            if b[:4]==b'RSDS':pdb.append(dict(guid=uuid.UUID(bytes_le=b[4:20]).hex.upper(),age=struct.unpack_from('<I',b,20)[0],path=b[24:].split(b'\0')[0].decode(errors='replace')))
+          assert len(pdb)==1 and pdb[0]['guid']=='4D133C5B4FBE41474C4C44205044422E' and pdb[0]['age']==1
+          ver={}
+          for group in p.FileInfo:
+           for entry in group:
+            for table in getattr(entry,'StringTable',[]):ver.update({k.decode():v.decode() for k,v in table.entries.items() if k in [b'FileVersion',b'ProductVersion',b'LastChange']})
+          print('PROVENANCE',json.dumps(dict(url=URL,archive_bytes=len(archive),archive_sha256=ARCHIVE_SHA,image_bytes=len(data),image_sha256=IMAGE_SHA,image_base=hex(p.OPTIONAL_HEADER.ImageBase),image_size=hex(p.OPTIONAL_HEADER.SizeOfImage),timestamp=hex(p.FILE_HEADER.TimeDateStamp),checksum=hex(p.OPTIONAL_HEADER.CheckSum),pdb=pdb,versions=ver)),flush=True)
+          imports={i.address:e.dll.decode()+'!'+(i.name.decode() if i.name else '#'+str(i.ordinal)) for e in p.DIRECTORY_ENTRY_IMPORT for i in e.imports}
+          print('IMPORTS',json.dumps({hex(k):v for k,v in imports.items()},sort_keys=True),flush=True)
+          print('EXPORTS',json.dumps({hex(e.address):e.name.decode() for e in p.DIRECTORY_ENTRY_EXPORT.symbols if e.name and any(s in e.name.lower() for s in [b'message_loop',b'alloc',b'free',b'version',b'api_hash'])},sort_keys=True),flush=True)
+          windows=[(0x2ffa800,0x2ffb100),(0x2a5ae00,0x2a5c200),(0x1218700,0x1218900),(0x13c3d00,0x13c3e20),(0x2507e00,0x2508040),(0x2505300,0x2505580),(0x2507900,0x2507c00),(0x2504700,0x2504a00),(0x2e02280,0x2e02500),(0x2a70500,0x2a70800),(0x293f800,0x293fb00),(0x293f200,0x293f600),(0x2940b00,0x2940e00),(0x2904500,0x2904800),(0x2940600,0x2940900),(0x2ff5800,0x2ff5c00)]
+          cs=capstone.Cs(capstone.CS_ARCH_X86,capstone.CS_MODE_32);cs.skipdata=True
+          for lo,hi in windows:
+           assert any(s.VirtualAddress<=lo<hi<=s.VirtualAddress+s.Misc_VirtualSize and s.Characteristics&0x20000000 for s in p.sections)
+           raw=p.get_data(lo,hi-lo)
+           print('CODEWINDOW',hex(lo),hex(hi),base64.b64encode(raw).decode(),flush=True)
+           if lo in [0x2ffa800,0x2a5ae00]:
+            for i in cs.disasm(raw,lo):
+             annotations=[v for k,v in imports.items() if hex(k) in i.op_str]
+             print('DISASM',f'{i.address:08x}',i.bytes.hex(),i.mnemonic,i.op_str,' '.join(annotations),flush=True)
+          print('FINISHED read-only exact image inspection; no image executed',flush=True)
+          PYINSPECT
