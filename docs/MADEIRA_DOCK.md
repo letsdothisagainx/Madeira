@@ -585,7 +585,9 @@ Madeira runs `madeira-steam-service.exe` before ordinary Dock launches and the
 Steam Testing batch. It waits for Wine's SCM RPC endpoint, checks `Steam Client
 Service`, and runs the local, unmodified `bin\SteamService.exe /install` only
 when OpenService returns 1060. It then reopens the service and uses StartService
-and QueryServiceStatusEx. A failure stops that launch; success means SCM reported
+and QueryServiceStatusEx. A failure stops the separate Dock host launch. Native
+Steam client scripts preserve/log the helper failure and let the real Steam
+client handle service availability and its own requirements. Helper success means SCM reported
 SERVICE_RUNNING, not that Valve authentication or a private service protocol
 succeeded. It does not guarantee VAC compatibility.
 

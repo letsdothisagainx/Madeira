@@ -58,7 +58,11 @@ compile_one() {
 # Stage the process-death observer from the pinned source. Always replace its
 # object, including when the rest of the base archive is cached.
 python3 "$BUILD_DIR/stage-steam-lifecycle.py" "$WINE_SRC/server/process.c" "$OBJ_DIR/process_lifecycle.c"
-python3 "$BUILD_DIR/stage-steam-lifecycle.py" "$WINE_SRC/server/thread.c" "$OBJ_DIR/thread_lifecycle.c"
+# Preserve the pinned Wine source. Correct async-APC delivery before adding the
+# existing retirement observer; retaining the basename keeps that stage's type
+# selection explicit. The final thread.o is always replaced in the archive.
+python3 "$BUILD_DIR/stage-async-apc.py" --source "$WINE_SRC/server/thread.c" --output "$OBJ_DIR/async-apc/thread.c"
+python3 "$BUILD_DIR/stage-steam-lifecycle.py" "$OBJ_DIR/async-apc/thread.c" "$OBJ_DIR/thread_lifecycle.c"
 
 # Patched files: name:source_file:replaces_in_archive
 PATCHED_FILES=(
@@ -191,6 +195,11 @@ if ! xcrun nm -m "$OBJ_DIR/process_ios.o" | awk '
     echo "ERROR: staged wineserver process.o lacks the weak native Steam lifecycle callback; rebuild all sources"
     exit 1
 fi
+python3 - "$OBJ_DIR/thread.o" <<'PY'
+import sys
+from pathlib import Path
+assert b'[io-apc-handoff-v1]' in Path(sys.argv[1]).read_bytes(), 'stale wineserver thread.o: async-APC correction missing'
+PY
 
 echo ""
 echo "=== Updating libwineserver.a ==="
@@ -295,4 +304,9 @@ echo "  symbol rename + repack OK"
 
 echo "Copying to app..."
 cp "$OBJ_DIR/libwineserver.a" "$APP_LIB"
+python3 - "$APP_LIB" <<'PY'
+import sys
+from pathlib import Path
+assert b'[io-apc-handoff-v1]' in Path(sys.argv[1]).read_bytes(), 'async-APC correction missing from staged wineserver archive'
+PY
 echo "Done! libwineserver.a: $(wc -c < "$APP_LIB" | tr -d ' ') bytes"

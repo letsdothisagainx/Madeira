@@ -51,8 +51,11 @@ assert 'QueryServiceStatusEx' in s and 'SERVICE_RUNNING' in s
 swift=(root/'app/Madeira/MadeiraDock.swift').read_text()
 assert 'madeira-steam-service.exe' in swift and '&& \\(executable)' in swift
 view=(root/'app/Madeira/ContentView.swift').read_text()
-assert 'madeira-steam-service.exe' in view and 'if not "%errorlevel%"=="0" exit /b %errorlevel%' in view
-print('PASS helper uses real SCM and installer APIs; both launch routes gate on genuine results')
+assert 'NativeSteamPlay.clientLaunchScript(windowsDirectory: winDir)' in view
+native=(root/'app/Madeira/SteamRuntime.swift').read_text().split('enum NativeSteamPlay {',1)[1]
+assert 'policy=steam-managed' in native and 'clientLaunchScript' in native
+assert 'if not \"%errorlevel%\"==\"0\" exit /b' not in native
+print('PASS helper uses real SCM and installer APIs; helper preserves genuine SCM results; native Steam client owns its service policy and Dock prerequisite remains strict')
 
 # The actual handoff policy requires evidence from held native handles. It must
 # not turn an ordinary 1053, failed updater or second failed start into success.
