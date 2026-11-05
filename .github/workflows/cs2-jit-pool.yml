@@ -46,6 +46,8 @@ jobs:
           python3 tests/host/check-pool-cs2-scenesystem.py
           python3 tests/host/check-pool-rx-demotion.py
           python3 tests/host/check-jit-alias-atomics.py
+          python3 tests/host/check-jit-alias-exclusive.py
+          python3 tests/host/check-jit-exclusive.py
           python3 tests/host/check-pool-failure-census.py
           python3 tests/host/check-pool-split.py
           python3 tests/host/check-pool-code-exit.py

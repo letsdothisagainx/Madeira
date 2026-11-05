@@ -19,7 +19,9 @@ that faulted. Checks:
     bits, Rs gets the zero-extended old value, Rt = 31 stores zero;
   - the decoder case: x29/x30 as Rs/Rt go through FP/LR, SP is never written,
     CAS is taken only off the pool, SWP/LDSMAX/LDAPR/CASP/LDAXR/STLXR/STP are
-    not taken, and a misaligned access is refused with nothing changed;
+    not taken, and a misaligned access is refused with nothing changed. The
+    captured shcore STLXR 0xc80afd28 must reach the dedicated exclusive-loop
+    recovery tested by check-jit-alias-exclusive.py, never this LSE decoder;
   - atomicity: threads doing emulated LDADDAL, CASAL, LDSETAL and LDCLRAL on the
     alias race threads doing host atomics through another writable view of the
     same pages, and no update is lost.
@@ -41,7 +43,7 @@ def between(first, last):
 
 helper = between('#define IOS_MACH_RMW(type)', '#undef IOS_MACH_RMW')
 case_start = source.index('                    else if ((insn & 0x3f20cc00u) == 0x38200000u ||')
-case_end = source.index("                    /* FEX's native backpatch lock uses CASAL on the pool RX", case_start)
+case_end = source.index('                    /* Aligned load-discard exclusive loop:', case_start)
 case = source[case_start:case_end]
 assert 'ios_mach_emulate_rmw( insn, rw_addr, gpr )' in case
 # It continues the decoder's else-if chain after SWP, ahead of the [store-undecoded] report.
@@ -288,10 +290,14 @@ int main( void )
         assert( load( rx + 16, size ) == (desired & mask) );         /* Rs = 31 compares with zero */
     }
 
-    /* Not this helper's: SWPAL, LDSMAXAL, LDAPR, CASPAL, LDAXR, STLXR, STP, an FP LD<OP>. */
+    /* Not this helper's: SWPAL, LDSMAXAL, LDAPR, CASPAL, LDAXR, STLXR, STP, an FP LD<OP>.
+     * The final instruction is the exact shcore startup failure, STLXR W10,
+     * X8, [X9]. Its matching load discards the value (LDAXR XZR, [X9]); it
+     * needs the verified exclusive-loop path, not LSE arithmetic emulation. */
     {
         static const uint32_t other[] = { 0xf8fa80dau, 0xb8e64020u, 0xb8bfc020u, 0x4866fc02u,
-                                          0x885ffd0bu, 0x880cfd0bu, 0xa9882149u, 0xbce60020u };
+                                          0x885ffd0bu, 0x880cfd0bu, 0xa9882149u, 0xbce60020u,
+                                          0xc80afd28u };
         for (unsigned i = 0; i < sizeof(other) / sizeof(other[0]); i++)
         {
             fill( 16, 3, 0x1122334455667788ull );
@@ -335,7 +341,8 @@ int main( void )
     /* Other encodings fall through to their own cases. */
     {
         static const uint32_t other[] = { 0xf8fa80dau, 0xb8e64020u, 0xb8bfc020u, 0x4866fc02u,
-                                          0x885ffd0bu, 0x880cfd0bu, 0xa9882149u, 0xbce60020u };
+                                          0x885ffd0bu, 0x880cfd0bu, 0xa9882149u, 0xbce60020u,
+                                          0xc80afd28u };
         for (unsigned i = 0; i < sizeof(other) / sizeof(other[0]); i++)
             for (int in_jit = 0; in_jit < 2; in_jit++)
             {
