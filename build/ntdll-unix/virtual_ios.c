@@ -13607,7 +13607,12 @@ extern unsigned long long ios_thread_process_snapshot(void *, unsigned *, int *,
  * never read guest/FEX payloads or reclaim a live or dead thread's memory. */
 static void ios_fex_arena_census( void *start, void *end, size_t request, size_t align_mask )
 {
-    struct fex_va_bucket { size_t size, bytes, committed; unsigned flags, views; } buckets[32] = {{0}};
+    /* Keep the two dominant 16 MB classes visible even when the low-address
+     * small views fill the bounded table before the high-end spans appear. */
+    struct fex_va_bucket { size_t size, bytes, committed; unsigned flags, views; } buckets[32] = {
+        {.size = 0x1000000, .flags = VPROT_READ | VPROT_WRITE},
+        {.size = 0x1000000, .flags = VPROT_READ | VPROT_WRITE | VPROT_COMMITTED}
+    };
     struct fex_owner_bucket {
         void *owner; unsigned long long lease;
         ULONG_PTR first, last;
@@ -13618,7 +13623,7 @@ static void ios_fex_arena_census( void *start, void *end, size_t request, size_t
     ULONG_PTR lo = ios_fex_arena_base_unix, hi = ios_fex_arena_end_unix, cursor;
     size_t covered = 0, committed = 0, overlap = 0, biggest = 0, aligned_biggest = 0;
     size_t other_bytes = 0, other_committed = 0;
-    unsigned nviews = 0, holes = 0, used = 0, other_views = 0, i, j;
+    unsigned nviews = 0, holes = 0, used = 2, other_views = 0, i, j;
     unsigned owner_used = 0, owner_overflow_views = 0;
     size_t owner_overflow_bytes = 0;
     static unsigned printed;
@@ -13733,6 +13738,7 @@ static void ios_fex_arena_census( void *start, void *end, size_t request, size_t
         struct fex_va_bucket tmp;
         for (j = i + 1; j < used; j++) if (buckets[j].bytes > buckets[largest].bytes) largest = j;
         tmp = buckets[i]; buckets[i] = buckets[largest]; buckets[largest] = tmp;
+        if (!buckets[i].views) continue;
         dprintf( 2, "[fex-va] size=0x%llx view_flags=0x%x views=%u reserved=0x%llx committed=0x%llx\n",
                  (unsigned long long)buckets[i].size, buckets[i].flags, buckets[i].views,
                  (unsigned long long)buckets[i].bytes, (unsigned long long)buckets[i].committed );
@@ -17848,32 +17854,35 @@ static int ios_guest_anon_rwx_is_host_data( const void *base, size_t size )
 }
 
 
-/* Only whole host pages exclusively containing data may lose execute access.
- * Mixed pages keep RX and receive writes through the existing RW alias emulator. */
+/* The debugger's original RX mapping must remain executable for its entire
+ * lifetime, including pages currently holding only image data. On iOS a grant
+ * of RW on such a page can leave cur=max=RW permanently: retiring that image
+ * cannot make the page usable as another image's code again. Keep the same
+ * RW-alias store path already required by mixed code/data pages, without
+ * changing Wine's logical guest protections. */
 static void ios_pool_protect_image_data( void *rx, const void *rw, size_t size,
                                          size_t pe, size_t host_page, const char *site )
 {
-    uintptr_t first = (uintptr_t)rx & ~(uintptr_t)(host_page - 1), end;
+    uintptr_t first, end;
     static unsigned int logged;
-    if (!host_page || (host_page & (host_page - 1)) || size > UINTPTR_MAX - (uintptr_t)rx) return;
+    if (!rx || !rw || !host_page || (host_page & (host_page - 1)) ||
+        size > UINTPTR_MAX - (uintptr_t)rx || size > UINTPTR_MAX - (uintptr_t)rw ||
+        pe > size || size - pe < 24) return;
+    if (__atomic_load_n( &logged, __ATOMIC_RELAXED ) >= 48) return;
+    first = (uintptr_t)rx & ~(uintptr_t)(host_page - 1);
     end = (uintptr_t)rx + size;
-    for (uintptr_t page = first; page < end; page += host_page)
+    for (uintptr_t page = first; page < end && page <= UINTPTR_MAX - host_page; page += host_page)
     {
         unsigned flags = ios_pool_page_policy( rw, size, pe, (uintptr_t)rx, page, host_page );
-        int saved_errno = errno, rc = 0, error = 0;
         if (!(flags & IOS_POOL_PAGE_DATA)) continue;
-        if (!(flags & IOS_POOL_PAGE_CODE))
-        {
-            rc = mprotect( (void *)page, host_page, PROT_READ | PROT_WRITE );
-            error = rc ? errno : 0;
-        }
-        /* Record mixed boundaries and failed data transitions, with readback.
-         * No probe attempts to re-grant EXEC after max_protection lost it. */
-        if ((flags & IOS_POOL_PAGE_CODE) || rc)
+        /* Read back the unchanged mapping for bounded production evidence.
+         * No probe changes protections or tries to re-grant lost execute. */
+        if (__atomic_load_n( &logged, __ATOMIC_RELAXED ) < 48)
         {
             unsigned n = __atomic_fetch_add( &logged, 1, __ATOMIC_RELAXED );
             if (n < 48)
             {
+                int saved_errno = errno;
                 mach_vm_address_t region = page;
                 mach_vm_size_t bytes = 0;
                 natural_t depth = 0;
@@ -17882,15 +17891,14 @@ static void ios_pool_protect_image_data( void *rx, const void *rw, size_t size,
                 kern_return_t query = mach_vm_region_recurse( mach_task_self(), &region, &bytes,
                     &depth, (vm_region_recurse_info_t)&info, &count );
                 dprintf( 2, "[pool-section] site=%s image=%p page=%p+%#lx mixed=%u "
-                            "operation=%s rc=%d errno=%d query=%d region=%p+%#llx prot=%x max=%x owner=%p\n",
+                            "operation=keep-rx-use-alias policy=preserve-pool-rx-v1 query=%d region=%p+%#llx prot=%x max=%x owner=%p\n",
                          site, rx, (void *)page, (unsigned long)host_page, !!(flags & IOS_POOL_PAGE_CODE),
-                         flags & IOS_POOL_PAGE_CODE ? "keep-rx-use-alias" : "mprotect-rw", rc, error,
                          query, (void *)(uintptr_t)region, (unsigned long long)bytes,
                          (unsigned)info.protection, (unsigned)info.max_protection, ios_jit_current_peb() );
+                errno = saved_errno;
             }
         }
-        errno = saved_errno;
-        if (page > UINTPTR_MAX - host_page) break;
+        if (__atomic_load_n( &logged, __ATOMIC_RELAXED ) >= 48) break;
     }
 }
 
@@ -20586,14 +20594,18 @@ static void *map_reserved_area_inner( void *limit_low, void *limit_high, size_t 
         {
             void *start = area->base;
             void *end = (char *)start + area->size;
-            /* rpmalloc's exact 16 MB spans require 16 MB alignment. Mixing
-             * them with 64 KB-aligned FEX views at the low end strands gaps
-             * below 16 MB between live spans. The observed 8 MB holes cannot
-             * hold an 8 MB call/ret stack plus its two guard pages. Pack the
-             * more-aligned requests from the high end of this same arena;
-             * ordinary views keep the low end. No space is partitioned or
-             * reserved for either class, and explicit top-down stays above. */
-            int area_top_down = area->fex_only && align_mask > granularity_mask;
+            /* rpmalloc spans and OpDispatcher scratch both use exact 16 MB
+             * units, but scratch only requests 64 KB alignment. Mixing that
+             * scratch with smaller low-end views leaves released 16 MB holes
+             * that cannot serve a 16 MB-aligned span. Prefer the same high-end
+             * grid for both classes. The original alignment remains a fallback
+             * when only an off-grid hole fits; neither size nor caller bounds
+             * change. Smaller views keep the low end, no space is partitioned,
+             * and explicit top-down requests retain their original policy. */
+            size_t area_align_mask = area->fex_only && size >= 0x1000000 && !(size & 0xffffff)
+                                   ? max( align_mask, (size_t)0xffffff ) : align_mask;
+            int area_top_down = area->fex_only &&
+                               (align_mask > granularity_mask || area_align_mask > align_mask);
 
             /* ml799: the FEX arena serves only requests contained in it. */
             if (area->fex_only && !fex_allowed) continue;
@@ -20602,7 +20614,9 @@ static void *map_reserved_area_inner( void *limit_low, void *limit_high, size_t 
             if (end <= limit_low) continue;
             if (start < limit_low) start = (void *)ROUND_SIZE( 0, limit_low, host_page_mask );
             if (end > limit_high) end = ROUND_ADDR( limit_high, host_page_mask );
-            ptr = find_reserved_free_area_outside_preloader( start, end, size, area_top_down, align_mask );
+            ptr = find_reserved_free_area_outside_preloader( start, end, size, area_top_down, area_align_mask );
+            if (!ptr && area_align_mask != align_mask)
+                ptr = find_reserved_free_area_outside_preloader( start, end, size, area_top_down, align_mask );
             if (ptr) break;
         }
     }
@@ -32031,7 +32045,7 @@ void ios_reserve_fex_arena(void)
             setenv( "WINE_IOS_FEX_ARENA_VERSION", "1", 1 );
             ios_fex_arena_base_unix = (ULONG_PTR)base;
             ios_fex_arena_end_unix  = (ULONG_PTR)base + size;
-            dprintf( 2, "[fex-arena] ml793 PUBLISHED [%p,0x%llx) size=0x%llx version=1 placement=alignment-ends-v1 -- the "
+            dprintf( 2, "[fex-arena] ml793 PUBLISHED [%p,0x%llx) size=0x%llx version=1 placement=alignment-ends-v1 scratch-placement=span-grid-v2 -- the "
                         "emulator must CONSUME this range; it must not run its own selector\n",
                      base, (unsigned long long)((ULONG_PTR)base + size),
                      (unsigned long long)size );

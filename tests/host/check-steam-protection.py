@@ -21,11 +21,11 @@ typedef void *vm_region_recurse_info_t;
 #define VM_REGION_SUBMAP_SHORT_INFO_COUNT_64 1
 #define PROT_READ 1
 #define PROT_WRITE 2
-static uintptr_t transitions[32];static unsigned calls;
-static int mprotect(void *p,size_t n,int prot) {assert(n==0x4000 && prot==3 && calls<32);transitions[calls++]=(uintptr_t)p;return 0;}
+static uintptr_t transitions[32];static unsigned calls,queries;static int query_error;
+static int __attribute__((unused)) mprotect(void *p,size_t n,int prot) {assert(n==0x4000 && prot==3 && calls<32);transitions[calls++]=(uintptr_t)p;return 0;}
 static unsigned mach_task_self(void) {return 1;}
 static void *ios_jit_current_peb(void) {return (void*)0x1234;}
-static int mach_vm_region_recurse(unsigned task,uintptr_t *a,size_t *n,unsigned *d,void *i,unsigned *c) {(void)a;(void)n;(void)d;(void)c;assert(task==1);vm_region_submap_short_info_data_64_t *q=i;q->protection=5;q->max_protection=7;return 0;}
+static int mach_vm_region_recurse(unsigned task,uintptr_t *a,size_t *n,unsigned *d,void *i,unsigned *c) {(void)a;(void)n;(void)d;(void)c;assert(task==1);queries++;errno=EACCES;vm_region_submap_short_info_data_64_t *q=i;q->protection=5;q->max_protection=7;return query_error;}
 static int capture(int fd,const char *fmt,...) {(void)fd;(void)fmt;errno=EINTR;return 0;}
 #define dprintf capture
 ''' + protect + r'''
@@ -45,7 +45,23 @@ int main(void) {
  assert(policy(rx,rx+0x8000)==IOS_POOL_PAGE_DATA);
  assert(policy(rx,rx+0x10000)==IOS_POOL_PAGE_DATA);
  errno=EAGAIN;ios_pool_protect_image_data((void*)rx,pe,sizeof(pe),0x100,0x4000,"test");assert(errno==EAGAIN);
- assert(calls==3 && transitions[0]==rx+0x8000 && transitions[1]==rx+0xc000 && transitions[2]==rx+0x10000);
+ assert(!calls && queries); // Pure data and mixed pages both keep their original RX mapping.
+ query_error=1;errno=EAGAIN;ios_pool_protect_image_data((void*)rx,pe,sizeof(pe),0x100,0x4000,"query-error");assert(errno==EAGAIN && !calls);query_error=0;
+ unsigned before=queries;
+ ios_pool_protect_image_data(NULL,pe,sizeof(pe),0x100,0x4000,"null-rx");
+ ios_pool_protect_image_data((void*)rx,NULL,sizeof(pe),0x100,0x4000,"null-rw");
+ ios_pool_protect_image_data((void*)rx,pe,sizeof(pe),0x100,0,"zero-page");
+ ios_pool_protect_image_data((void*)rx,pe,sizeof(pe),0x100,0x3000,"invalid-page");
+ ios_pool_protect_image_data((void*)(UINTPTR_MAX-0x1000),pe,sizeof(pe),0x100,0x4000,"overflow");
+ ios_pool_protect_image_data((void*)rx,(void*)(UINTPTR_MAX-0x1000),sizeof(pe),0x100,0x4000,"rw-overflow");
+ ios_pool_protect_image_data((void*)rx,pe,sizeof(pe),SIZE_MAX,0x4000,"invalid-pe");
+ ios_pool_protect_image_data((void*)rx,pe,0x110,0x100,0x4000,"short-header");
+ assert(!calls && queries==before && errno==EAGAIN);
+ // A valid image ending exactly at UINTPTR_MAX must terminate at its last
+ // partial host page without wrapping the page iterator back to zero.
+ init(1);section(0,0,sizeof(pe),0xc0000040);before=queries;
+ ios_pool_protect_image_data((void*)(UINTPTR_MAX-sizeof(pe)),pe,sizeof(pe),0x100,0x4000,"last-page");
+ assert(!calls && queries>before && queries<=before+sizeof(pe)/0x4000 && errno==EAGAIN);
  // A later executable section, and a writable+executable section, are protected too.
  init(3);section(0,0x1000,0x1000,0x60000020);section(1,0x5000,0xa000,0xc0000040);section(2,0xe000,0x1000,0x60000020);
  assert(policy(rx,rx+0xc000)==3);section(1,0x5000,0xa000,0xe0000020);assert(policy(rx,rx+0x8000)==3);
@@ -77,7 +93,7 @@ int main(void) {
  assert(helper("C:/Steam/bin/vulkandriverquery.exe"));
  assert(!helper("C:/Steam/bin/vulkandriverquery.exe.bak"));
  assert(!helper("C:/Steam/steam.exe"));
- puts("PASS production policy preserves mixed/late executable sections, rejects malformed layouts; exact JIT protocol and helper identities");
+ puts("PASS production policy preserves original RX for pure/mixed data, keeps errno on query failure and rejects malformed bounds; exact JIT protocol and helper identities");
 }
 '''
 virtual=(root/'build/ntdll-unix/virtual_ios.c').read_text()

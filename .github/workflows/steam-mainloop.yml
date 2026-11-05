@@ -9,6 +9,8 @@ on:
       - tests/host/check-ios-host-va-floor.py
       - tests/host/check-hot-thread-context.py
       - tests/host/check-fex-arena-placement.py
+      - tests/host/check-fex-arena-steam-pressure.py
+      - tests/fixtures/fex-arena/*.json
       - tests/host/check-rpmalloc-thread-reuse.py
       - tests/integration/check-steam-observer-noninterference.py
       - app/Madeira/SteamLibraryDiagnostics.swift
@@ -20,6 +22,8 @@ on:
       - tests/host/check-ios-host-va-floor.py
       - tests/host/check-hot-thread-context.py
       - tests/host/check-fex-arena-placement.py
+      - tests/host/check-fex-arena-steam-pressure.py
+      - tests/fixtures/fex-arena/*.json
       - tests/host/check-rpmalloc-thread-reuse.py
       - tests/integration/check-steam-observer-noninterference.py
       - app/Madeira/SteamLibraryDiagnostics.swift
@@ -44,6 +48,8 @@ jobs:
         run: |
           python3 tests/host/check-ios-host-va-floor.py
           python3 tests/host/check-fex-arena-placement.py
+          python3 tests/host/check-fex-arena-steam-pressure.py
+          python3 tests/host/check-fex-arena-census.py
           python3 tests/host/check-rpmalloc-thread-reuse.py
           python3 tests/host/check-fex-view-lifecycle.py
           python3 tests/host/check-hot-thread-context.py

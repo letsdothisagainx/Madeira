@@ -164,11 +164,20 @@ static void *anon_mmap_fixed(void *p,size_t n,int prot,int flags)
 marker = ('static void *map_reserved_area_inner( void *limit_low, void *limit_high, size_t size, int top_down,\n'
           '                                      int unix_prot, size_t align_mask, int fex_allowed )\n{')
 placement = body(source, marker)
-policy = 'int area_top_down = area->fex_only && align_mask > granularity_mask;'
-assert placement.count(policy) == 1
+policies = re.findall(r'int area_top_down\s*=\s*[^;]+;', placement)
+assert len(policies) == 1
+policy = policies[0]
 code += placement + '\n'
-code += placement.replace('map_reserved_area_inner(', 'legacy_map_reserved_area_inner(', 1).replace(
-    policy, 'int area_top_down = top_down;') + '\n'
+def placement_control(name, direction):
+    variant = placement.replace('map_reserved_area_inner(', name + '(', 1).replace(policy, direction)
+    # The optional grid preference must also be disabled in old controls;
+    # changing only direction would accidentally retain half of the fix.
+    variant = re.sub(r'size_t area_align_mask\s*=\s*[^;]+;',
+                     'size_t area_align_mask = align_mask;', variant)
+    return variant + '\n'
+code += placement_control('legacy_map_reserved_area_inner', 'int area_top_down = top_down;')
+code += placement_control('alignment_only_map_reserved_area_inner',
+                          'int area_top_down = area->fex_only && align_mask > granularity_mask;')
 code += r'''
 static unsigned ios_scan_views;
 static size_t ios_scan_maxgap, ios_scan_tailgap;
@@ -359,17 +368,22 @@ int main(void)
 }
 '''
 
-with tempfile.TemporaryDirectory(prefix='fex-arena-placement-') as temporary:
-    path = Path(temporary) / 'placement.c'
-    executable = Path(temporary) / 'placement'
-    path.write_text(code)
-    subprocess.run([os.environ.get('CC', 'cc'), '-std=gnu11', '-g', '-O1',
-                    '-Wall', '-Wextra', '-Werror', '-Wno-unused-function', '-Wno-sign-compare',
-                    '-fsanitize=address,undefined', '-fno-sanitize-recover=all',
-                    str(path), '-o', str(executable)], check=True)
-    result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=30,
-                            env=dict(os.environ, ASAN_OPTIONS='detect_leaks=0'))
-    print(result.stdout, end='')
-    if result.returncode:
-        print(result.stderr, end='')
-        result.check_returncode()
+def run_fixture(code, prefix='fex-arena-placement-'):
+    with tempfile.TemporaryDirectory(prefix=prefix) as temporary:
+        path = Path(temporary) / 'placement.c'
+        executable = Path(temporary) / 'placement'
+        path.write_text(code)
+        subprocess.run([os.environ.get('CC', 'cc'), '-std=gnu11', '-g', '-O1',
+                        '-Wall', '-Wextra', '-Werror', '-Wno-unused-function', '-Wno-sign-compare',
+                        '-fsanitize=address,undefined', '-fno-sanitize-recover=all',
+                        str(path), '-o', str(executable)], check=True)
+        result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=30,
+                                env=dict(os.environ, ASAN_OPTIONS='detect_leaks=0'))
+        print(result.stdout, end='')
+        if result.returncode:
+            print(result.stderr, end='')
+            result.check_returncode()
+
+
+if __name__ == '__main__':
+    run_fixture(code)

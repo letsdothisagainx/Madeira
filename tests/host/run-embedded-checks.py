@@ -6,6 +6,11 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[2]
 commands = [
+    ['python3', 'tests/host/check-fex-arena-steam-pressure.py'],
+    ['python3', 'tests/host/check-jit-alias-write-fault.py'],
+    ['python3', 'tests/host/check-jit-alias-atomics.py'],
+    ['python3', 'tests/host/check-pool-cs2-scenesystem.py'],
+    ['python3', 'tests/host/check-pool-rx-demotion.py'],
     ['python3', 'tests/host/check-fixed-main-placement.py'],
     ['python3', 'tests/host/check-wow-window-capacity.py'],
     ['python3', 'tests/host/check-steam-validation-trace.py'],

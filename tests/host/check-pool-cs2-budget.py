@@ -146,7 +146,7 @@ fixture = r'''
 #define MEM_RELEASE 0x8000
 #define IOS_POOL_BIG_MIN (64u * 1024 * 1024)
 #define IOS_POOL_LEDGER_MAX 1024
-#define IOS_POOL_FREE_MAX 256
+#define IOS_POOL_FREE_MAX 1024
 #define IOS_POOL_REUSE_GRACE_SEC 3
 #define IOS_POOL_LOW_CARVE_MAX 0x8000000u
 #define ERR(...) ((void)0)
@@ -561,16 +561,17 @@ int main(void)
 }
 '''
 
-with tempfile.TemporaryDirectory(prefix='madeira-pool-cs2-') as directory:
-    temporary = Path(directory)
-    unit, binary = temporary / 'cs2.c', temporary / 'cs2'
-    unit.write_text(fixture)
-    subprocess.run([os.environ.get('CC', 'cc'), '-std=c11', '-D_POSIX_C_SOURCE=200809L',
-                    '-Wall', '-Wextra', '-Werror', '-fsanitize=address,undefined',
-                    '-fno-sanitize-recover=all', '-fno-omit-frame-pointer', '-pthread',
-                    str(unit), '-o', str(binary)], check=True)
-    result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=30)
-    print(result.stdout, end='')
-    if result.returncode:
-        print(result.stderr, end='')
-        result.check_returncode()
+if __name__ == '__main__':
+    with tempfile.TemporaryDirectory(prefix='madeira-pool-cs2-') as directory:
+        temporary = Path(directory)
+        unit, binary = temporary / 'cs2.c', temporary / 'cs2'
+        unit.write_text(fixture)
+        subprocess.run([os.environ.get('CC', 'cc'), '-std=c11', '-D_POSIX_C_SOURCE=200809L',
+                        '-Wall', '-Wextra', '-Werror', '-fsanitize=address,undefined',
+                        '-fno-sanitize-recover=all', '-fno-omit-frame-pointer', '-pthread',
+                        str(unit), '-o', str(binary)], check=True)
+        result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=30)
+        print(result.stdout, end='')
+        if result.returncode:
+            print(result.stderr, end='')
+            result.check_returncode()

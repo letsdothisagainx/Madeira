@@ -2,6 +2,7 @@
 """Compile the actual failure census; verify clipping, protection accounting,
 alignment, bounded output and its failure-only integration."""
 from pathlib import Path
+import json
 import os
 import re
 import subprocess
@@ -31,9 +32,11 @@ harness = r'''
 typedef uintptr_t ULONG_PTR;
 typedef unsigned char BYTE;
 #define VPROT_COMMITTED 0x20
+#define VPROT_READ 1
+#define VPROT_WRITE 2
 #define ARRAY_SIZE(a) (sizeof(a)/sizeof((a)[0]))
 struct file_view { void *base; size_t size; unsigned protect; void *ios_fex_owner; unsigned long long ios_fex_lease; };
-static struct { struct file_view entries[48]; unsigned count; } views_tree;
+static struct { struct file_view entries[1200]; unsigned count; } views_tree;
 #define WINE_RB_FOR_EACH_ENTRY(v,t,type,field) \
  for (unsigned iter = 0; iter < (t)->count && ((v) = &(t)->entries[iter], 1); ++iter)
 static ULONG_PTR ios_fex_arena_base_unix, ios_fex_arena_end_unix;
@@ -96,6 +99,7 @@ int main(int argc, char **argv)
     if (which == 3) hi = lo + 0x400000;
     if (which == 8) { lo = 0xb40000000ULL; hi = 0xd40000000ULL; }
     if (which >= 9) hi = lo + 0x4000000;
+    if (which == 11) { lo=0xb60000000ULL;hi=0xd60000000ULL; }
     ios_fex_arena_base_unix = lo;
     ios_fex_arena_end_unix = hi;
     /* Rejected calls must neither read protections nor consume the cap. */
@@ -149,6 +153,15 @@ int main(int argc, char **argv)
             views_tree.entries[i].ios_fex_owner=(void *)(uintptr_t)(0x100+i);
             views_tree.entries[i].ios_fex_lease=i+1;
         }
+    } else if (which == 11) {
+        uintptr_t cursor=lo;
+        static const struct { size_t size;unsigned flags,count; } rows[]={ @STEAM_CENSUS_ROWS@ };
+        /* Early distinct classes may overflow the table, but must never hide
+         * the dominant16MiB classes. Unknown sizes/positions are synthetic. */
+        for(unsigned i=0;i<ARRAY_SIZE(rows);i++)for(unsigned j=0;j<rows[i].count;j++){
+            view(cursor,rows[i].size,rows[i].flags);cursor+=rows[i].size;
+        }
+        assert(views_tree.count==1005&&cursor-lo==0x1f7ced000ULL);
     }
     ios_fex_arena_census((void *)lo, (void *)hi, 4096, mask);
     assert(length && strstr(output, "(virtual bytes, not residency)"));
@@ -164,6 +177,21 @@ int main(int argc, char **argv)
     return 0;
 }
 '''
+steam=json.loads((root/'tests/fixtures/fex-arena/steam-1005-view-census.json').read_text())
+known={(row['size'],row['flags']) for row in steam['visible_size_buckets']}
+unknown=[]
+candidate=0x10000
+while len(unknown)<40:
+    if (candidate,0x23) not in known:unknown.append(candidate)
+    candidate+=0x1000
+remaining=0x2c64000-sum(unknown)-18*0x201000
+assert remaining>0 and (remaining,0x23) not in known
+steam_rows=[(n,0x23,1) for n in unknown]
+steam_rows.extend((row['size'],row['flags'],row['views']) for row in steam['visible_size_buckets'])
+steam_rows.extend([(0x1000000,3,336),(0x201000,0x23,18),(remaining,0x23,1)])
+assert sum(n for size,flags,n in steam_rows)==1005
+assert sum(size*n for size,flags,n in steam_rows)==0x1f7ced000
+harness=harness.replace('@STEAM_CENSUS_ROWS@',','.join('{0x%x,0x%x,%d}'%row for row in steam_rows))
 expected = [
     dict(views=0, covered=0, free=0x10000, committed=0, overlap=0, holes=1, maxgap=0x10000, max_aligned_gap=0x10000),
     dict(views=1, covered=0x10000, free=0, committed=0x10000, overlap=0, holes=0, maxgap=0, max_aligned_gap=0),
@@ -191,8 +219,8 @@ with tempfile.TemporaryDirectory(prefix='fex-arena-census-') as temp:
         if case == 2:
             assert 'size=0x3000 view_flags=0x3 views=1 reserved=0x2000 committed=0x1000' in result
         if case == 3:
-            assert 'other_sizes views=8 reserved=0x124000 committed=0x0' in result
-            assert len(result.strip().splitlines()) == 35
+            assert 'other_sizes views=10 reserved=0x163000 committed=0x0' in result
+            assert len(result.strip().splitlines()) == 33
         if case == 7:
             assert 'failed_range=0x7d00008000..0x7d00010000' in summary
         if case == 8:
@@ -213,5 +241,16 @@ with tempfile.TemporaryDirectory(prefix='fex-arena-census-') as temp:
     overflow = subprocess.check_output([str(exe), '10'], text=True)
     assert overflow.count('reason=first-allocation-failure') == 16
     assert 'owner-table-overflow live-views=4 live-reserved=0x4000' in overflow
+    pressure=subprocess.check_output([str(exe),'11'],text=True)
+    assert 'views=1005 covered=0x1f7ced000 free=0x8313000' in pressure.splitlines()[0]
+    assert 'size=0x1000000 view_flags=0x3 views=336 reserved=0x150000000' in pressure
+    assert 'size=0x1000000 view_flags=0x23 views=61 reserved=0x3d000000' in pressure
+    counted_views=counted_bytes=0
+    for line in pressure.splitlines():
+        if line.startswith('[fex-va] size=') or line.startswith('[fex-va] other_sizes '):
+            counted_views+=int(re.search(r'\bviews=(\d+)',line)[1])
+            counted_bytes+=int(re.search(r'\breserved=(0x[0-9a-f]+)',line)[1],16)
+    assert counted_views==1005 and counted_bytes==0x1f7ced000
 print('PASS: live census clipping, committed accounting, alignment, overlaps, overflow, bucket/output cap and failure-only integration')
 print('PASS: actual per-owner live VAD totals, lease/state snapshots and size classes; quiescent pending cleanup differs from stale/unowned; owner output bounded')
+print('PASS:1005-view census keeps336reserved and61committed16MiB classes visible after overflow; view/byte totals conserved')

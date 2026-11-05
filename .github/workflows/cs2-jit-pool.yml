@@ -9,6 +9,8 @@ on:
       - app/Madeira/StikJITHelper.swift
       - app/Madeira/ContentView.swift
       - build/ntdll-unix/virtual_ios.c
+      - build/ntdll-unix/signal_arm64_ios.c
+      - tests/host/check-jit-alias-*.py
       - tests/host/check-pool-*.py
       - tests/host/check-jit-pool-meter.py
       - .github/workflows/cs2-jit-pool.yml
@@ -19,6 +21,8 @@ on:
       - app/Madeira/StikJITHelper.swift
       - app/Madeira/ContentView.swift
       - build/ntdll-unix/virtual_ios.c
+      - build/ntdll-unix/signal_arm64_ios.c
+      - tests/host/check-jit-alias-*.py
       - tests/host/check-pool-*.py
       - tests/host/check-jit-pool-meter.py
       - .github/workflows/cs2-jit-pool.yml
@@ -34,9 +38,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Load pinned Wine PE declarations
+        run: git submodule update --init --depth 1 wine
       - name: Replay real head/tail allocations and measured startup policy
         run: |
           python3 tests/host/check-pool-cs2-budget.py
+          python3 tests/host/check-pool-cs2-scenesystem.py
+          python3 tests/host/check-pool-rx-demotion.py
+          python3 tests/host/check-jit-alias-atomics.py
           python3 tests/host/check-pool-failure-census.py
           python3 tests/host/check-pool-split.py
           python3 tests/host/check-pool-code-exit.py

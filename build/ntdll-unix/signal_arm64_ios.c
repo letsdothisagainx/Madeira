@@ -5715,7 +5715,13 @@ static void *ios_mach_exception_thread( void *arg )
                                 extern int ios_wx_enabled( void );
                                 int wi, victim = -1;
 
-                                if (ios_wx_enabled() && !watch_hit)   /* ml1201: a watched page keeps its trap */
+                                /* The original debugger-created RX mapping is
+                                 * reusable executable storage, including its
+                                 * temporary image-data pages. Making it RW can
+                                 * permanently remove maximum EXEC on iOS. Keep
+                                 * main/low pool stores on the RW-alias path;
+                                 * this opt-in policy applies only to user VAs. */
+                                if (ios_wx_enabled() && !watch_hit && !in_jit)
                                 {
                                     for (wi = 0; wi < WX_SLOTS; wi++)
                                     {

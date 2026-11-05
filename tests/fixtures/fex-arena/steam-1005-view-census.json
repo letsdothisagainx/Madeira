@@ -1,0 +1,398 @@
+{
+  "source_log": "madeira-log(20261105), FEX failure on TID0350",
+  "arena_start": 48855252992,
+  "arena_end": 57445187584,
+  "request_size": 16777216,
+  "request_alignment": 16777216,
+  "summary": {
+    "arena": 48855252992,
+    "failed_range": 48855252992,
+    "request": 16777216,
+    "align_mask": 16777215,
+    "views": 1005,
+    "covered": 8452493312,
+    "free": 137441280,
+    "committed": 5319778304,
+    "overlap": 0,
+    "holes": 461,
+    "maxgap": 15728640,
+    "max_aligned_gap": 5701632
+  },
+  "visible_size_buckets": [
+    {
+      "size": 16777216,
+      "flags": 35,
+      "views": 61,
+      "reserved": 1023410176,
+      "committed": 1023410176
+    },
+    {
+      "size": 8396800,
+      "flags": 0,
+      "views": 111,
+      "reserved": 932044800,
+      "committed": 931135488
+    },
+    {
+      "size": 9437184,
+      "flags": 35,
+      "views": 46,
+      "reserved": 434110464,
+      "committed": 434110464
+    },
+    {
+      "size": 2097152,
+      "flags": 35,
+      "views": 111,
+      "reserved": 232783872,
+      "committed": 67371008
+    },
+    {
+      "size": 8388608,
+      "flags": 35,
+      "views": 15,
+      "reserved": 125829120,
+      "committed": 125829120
+    },
+    {
+      "size": 860160,
+      "flags": 35,
+      "views": 5,
+      "reserved": 4300800,
+      "committed": 4300800
+    },
+    {
+      "size": 569344,
+      "flags": 35,
+      "views": 5,
+      "reserved": 2846720,
+      "committed": 2846720
+    },
+    {
+      "size": 1290240,
+      "flags": 35,
+      "views": 2,
+      "reserved": 2580480,
+      "committed": 2580480
+    },
+    {
+      "size": 380928,
+      "flags": 35,
+      "views": 5,
+      "reserved": 1904640,
+      "committed": 1904640
+    },
+    {
+      "size": 163840,
+      "flags": 35,
+      "views": 8,
+      "reserved": 1310720,
+      "committed": 1310720
+    },
+    {
+      "size": 167936,
+      "flags": 35,
+      "views": 7,
+      "reserved": 1175552,
+      "committed": 1175552
+    },
+    {
+      "size": 135168,
+      "flags": 35,
+      "views": 7,
+      "reserved": 946176,
+      "committed": 946176
+    },
+    {
+      "size": 110592,
+      "flags": 35,
+      "views": 7,
+      "reserved": 774144,
+      "committed": 774144
+    },
+    {
+      "size": 73728,
+      "flags": 35,
+      "views": 9,
+      "reserved": 663552,
+      "committed": 663552
+    },
+    {
+      "size": 495616,
+      "flags": 35,
+      "views": 1,
+      "reserved": 495616,
+      "committed": 495616
+    },
+    {
+      "size": 49152,
+      "flags": 35,
+      "views": 10,
+      "reserved": 491520,
+      "committed": 491520
+    },
+    {
+      "size": 4096,
+      "flags": 3,
+      "views": 116,
+      "reserved": 475136,
+      "committed": 475136
+    },
+    {
+      "size": 32768,
+      "flags": 35,
+      "views": 13,
+      "reserved": 425984,
+      "committed": 425984
+    },
+    {
+      "size": 425984,
+      "flags": 35,
+      "views": 1,
+      "reserved": 425984,
+      "committed": 425984
+    },
+    {
+      "size": 315392,
+      "flags": 35,
+      "views": 1,
+      "reserved": 315392,
+      "committed": 315392
+    },
+    {
+      "size": 278528,
+      "flags": 35,
+      "views": 1,
+      "reserved": 278528,
+      "committed": 278528
+    },
+    {
+      "size": 12288,
+      "flags": 35,
+      "views": 22,
+      "reserved": 270336,
+      "committed": 270336
+    },
+    {
+      "size": 20480,
+      "flags": 35,
+      "views": 13,
+      "reserved": 266240,
+      "committed": 266240
+    },
+    {
+      "size": 36864,
+      "flags": 35,
+      "views": 3,
+      "reserved": 110592,
+      "committed": 110592
+    },
+    {
+      "size": 106496,
+      "flags": 35,
+      "views": 1,
+      "reserved": 106496,
+      "committed": 106496
+    },
+    {
+      "size": 102400,
+      "flags": 35,
+      "views": 1,
+      "reserved": 102400,
+      "committed": 102400
+    },
+    {
+      "size": 8192,
+      "flags": 35,
+      "views": 12,
+      "reserved": 98304,
+      "committed": 98304
+    },
+    {
+      "size": 81920,
+      "flags": 35,
+      "views": 1,
+      "reserved": 81920,
+      "committed": 81920
+    },
+    {
+      "size": 69632,
+      "flags": 35,
+      "views": 1,
+      "reserved": 69632,
+      "committed": 69632
+    },
+    {
+      "size": 4096,
+      "flags": 35,
+      "views": 12,
+      "reserved": 49152,
+      "committed": 49152
+    },
+    {
+      "size": 40960,
+      "flags": 35,
+      "views": 1,
+      "reserved": 40960,
+      "committed": 40960
+    },
+    {
+      "size": 16384,
+      "flags": 35,
+      "views": 1,
+      "reserved": 16384,
+      "committed": 16384
+    }
+  ],
+  "other": {
+    "views": 395,
+    "reserved": 5683691520
+  },
+  "owners": [
+    {
+      "owner": 17183080448,
+      "lease": 4,
+      "native_threads": 4,
+      "views": 40,
+      "reserved": 297095168,
+      "classes": [
+        12,
+        2,
+        4,
+        4,
+        2,
+        0,
+        16
+      ]
+    },
+    {
+      "owner": 4305534976,
+      "lease": 5,
+      "native_threads": 33,
+      "views": 278,
+      "reserved": 2426875904,
+      "classes": [
+        101,
+        15,
+        33,
+        33,
+        0,
+        15,
+        81
+      ]
+    },
+    {
+      "owner": 38657916928,
+      "lease": 27,
+      "native_threads": 1,
+      "views": 27,
+      "reserved": 181592064,
+      "classes": [
+        7,
+        2,
+        1,
+        1,
+        2,
+        0,
+        14
+      ]
+    },
+    {
+      "owner": 21478047744,
+      "lease": 7,
+      "native_threads": 61,
+      "views": 497,
+      "reserved": 4494049280,
+      "classes": [
+        180,
+        30,
+        61,
+        61,
+        30,
+        0,
+        135
+      ]
+    },
+    {
+      "owner": 42952884224,
+      "lease": 28,
+      "native_threads": 7,
+      "views": 68,
+      "reserved": 508923904,
+      "classes": [
+        17,
+        6,
+        6,
+        6,
+        6,
+        0,
+        27
+      ]
+    },
+    {
+      "owner": 60132753408,
+      "lease": 29,
+      "native_threads": 3,
+      "views": 37,
+      "reserved": 262557696,
+      "classes": [
+        9,
+        3,
+        3,
+        3,
+        3,
+        0,
+        16
+      ]
+    },
+    {
+      "owner": 25773015040,
+      "lease": 18,
+      "native_threads": 1,
+      "views": 20,
+      "reserved": 104968192,
+      "classes": [
+        4,
+        1,
+        1,
+        1,
+        1,
+        0,
+        12
+      ]
+    },
+    {
+      "owner": 30067982336,
+      "lease": 21,
+      "native_threads": 1,
+      "views": 19,
+      "reserved": 88215552,
+      "classes": [
+        3,
+        1,
+        1,
+        1,
+        1,
+        0,
+        12
+      ]
+    },
+    {
+      "owner": 34362949632,
+      "lease": 24,
+      "native_threads": 1,
+      "views": 19,
+      "reserved": 88215552,
+      "classes": [
+        3,
+        1,
+        1,
+        1,
+        1,
+        0,
+        12
+      ]
+    }
+  ],
+  "replay_note": "Actual aggregate counts/bytes and nine owner leases. Allocation order and the 59 unlisted small sizes are synthetic; exact source allocation addresses cannot be recovered from bounded logging."
+}
