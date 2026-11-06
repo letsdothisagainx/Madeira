@@ -2971,6 +2971,17 @@ static size_t ios_pool_alloc_range_ex( size_t alloc_size, size_t pool_limit,
 
     pthread_mutex_lock( &ios_pool_lock );
 
+    /* A caller may have sampled its main-pool limit before waiting for this
+     * lock. A tiny fresh-tail reservation can have reduced that limit since.
+     * Never let the stale snapshot grow the image head into the reserved tail.
+     * pool_limit==0 remains the intentional freelist-only mode. */
+    if (pool_limit)
+    {
+        size_t tail = ios_jit_tail_reserved;
+        size_t current = tail <= ios_jit_pool_size_global ? ios_jit_pool_size_global - tail : 0;
+        if (pool_limit > current) pool_limit = current;
+    }
+
     /* ml1052: a LARGE request that a freed range could serve, but only once its
      * grace expires, used to fall through to the bump allocator. A launcher
      * generation that maps a 117 MB fixed-base image and exits, followed at once
@@ -3272,6 +3283,15 @@ static size_t ios_pool_alloc_range_ex( size_t alloc_size, size_t pool_limit,
 
     if (off == (size_t)-1)
     {
+        /* The reuse-grace waits above release this lock. Refresh again at the
+         * actual bump decision so a fresh tail claim during that wait is also
+         * observed; reclaimed ranges retain their independent ownership rules. */
+        if (pool_limit)
+        {
+            size_t tail = ios_jit_tail_reserved;
+            size_t current = tail <= ios_jit_pool_size_global ? ios_jit_pool_size_global - tail : 0;
+            if (pool_limit > current) pool_limit = current;
+        }
         /* madeira-bcd split pool: never into a hole (ios_jit_hole_off, pool-mid's
          * ios_jit_hole2_off). Without a split `cand` is the cursor itself and this
          * is the old bump. */
@@ -3733,11 +3753,29 @@ static int ios_tail_carve_in_low( size_t off )
 }
 
 /* A tiny dispatcher allocation must not consume a whole retired code buffer
- * while region C can serve the tiny request. Keep the large buffer intact for
- * the next code-cache allocation; no live carve is split or migrated. */
-static int ios_pool_preserve_code_carve( size_t available, size_t want, int low_fits )
+ * while fresh executable storage can serve the tiny request. This includes
+ * the main tail when region C is disabled: handing a 16MB retired generation
+ * to a 16KB misc request forces the next real code buffer to grow the tail by
+ * another 16MB. Keep the large buffer intact; no live carve is split or moved.
+ * The snapshot is only a placement preference. A fresh reservation still goes
+ * through its normal collision check and can fall back to the old reuse. */
+static int ios_pool_preserve_code_carve( size_t available, size_t want, int fresh_fits )
 {
-    return low_fits && want <= 0x10000 && available >= 0x100000 && available / 4 >= want;
+    return fresh_fits && want <= 0x10000 && available >= 0x100000 && available / 4 >= want;
+}
+
+/* Does the normal main-tail placement fit this snapshot? Use the exact hole
+ * placement and collision bounds of the real reservation below, with staged
+ * subtraction so a malformed/transient cursor cannot manufacture room. */
+static int ios_pool_fresh_tail_fits( size_t total, size_t head, size_t tail, size_t want,
+                                    size_t h1_off, size_t h1_end, size_t h2_off, size_t h2_end )
+{
+    size_t start;
+
+    if (!want || head > total || tail > total || want > total - tail) return 0;
+    start = ios_pool_holes_tail_start( total, tail, want, h1_off, h1_end, h2_off, h2_end );
+    if (start > total || want > total - start || start + want > (total / 4) * 3) return 0;
+    return total - start - want >= head;
 }
 
 /* ml557 (#74 REGRESSION): is any thread's PC currently INSIDE this tail carve?
@@ -32431,15 +32469,26 @@ retry_code_carve_reuse:
         {
             unsigned i, best = ~0u;
             time_t now = time( NULL );
+            int fresh_fits;
             pthread_mutex_lock( &ios_tail_carve_lock );
+            fresh_fits = ios_tail_carve_n < IOS_TAIL_CARVE_MAX &&
+                (low_fits || (!low_ok && ios_pool_fresh_tail_fits( ios_jit_pool_size_global, jit_pool_offset,
+                    ios_jit_tail_reserved, alloc_size, ios_jit_hole_off_eff, ios_jit_hole_end_eff,
+                    ios_jit_hole2_off, ios_jit_hole2_end ) ));
             for (i = 0; i < ios_tail_carve_n; i++)
                 if (ios_tail_carve_ready( &ios_tail_carves[i], now ) && ios_tail_carves[i].size >= alloc_size &&
                     (low_ok || !ios_tail_carve_in_low( ios_tail_carves[i].off )) &&   /* madeira-bcd pool-low */
                     (best == ~0u || ios_tail_carves[i].size < ios_tail_carves[best].size))
                     best = i;
             if (best != ~0u && !reuse_all_carves &&
-                ios_pool_preserve_code_carve( ios_tail_carves[best].size, alloc_size, low_fits ))
+                ios_pool_preserve_code_carve( ios_tail_carves[best].size, alloc_size, fresh_fits ))
             {
+                static unsigned preserve_n;
+                if (__sync_add_and_fetch( &preserve_n, 1 ) <= 16)
+                    dprintf(2, "[pool-carve] keep-large=0x%lx tiny=0x%lx fresh=%s "
+                               "(normal reservation checks and reuse fallback kept)\n",
+                            (unsigned long)ios_tail_carves[best].size, (unsigned long)alloc_size,
+                            low_fits ? "region-C" : "main-tail");
                 kept_large_carve = 1;
                 best = ~0u;
             }
@@ -32568,6 +32617,30 @@ retry_code_carve_reuse:
         size_t reserve_offset, tail_added, tail_skipped = 0;
         size_t skip_off[3], skip_size[3];
         int skip_n = 0;
+        int preserved_carve_locked = kept_large_carve && !reuse_all_carves && !low_ok;
+        if (preserved_carve_locked)
+        {
+            /* Only the new tiny-main preference takes this path. Reserve its
+             * metadata slot through publication; a capacity snapshot alone
+             * could let two tiny requests both consume the last table slot.
+             * Both allocator locks then cover the real head collision check
+             * and at most the existing 64KB prefill/publication. This uses the
+             * same carve -> pool order as retired region-C transfer. Ordinary
+             * and region-C allocations retain their existing locking. */
+            pthread_mutex_lock( &ios_tail_carve_lock );
+            if (ios_tail_carve_n >= IOS_TAIL_CARVE_MAX)
+            {
+                static unsigned preserve_full_n;
+                pthread_mutex_unlock( &ios_tail_carve_lock );
+                reuse_all_carves = 1;
+                low_fits = 0;
+                if (__sync_add_and_fetch( &preserve_full_n, 1 ) <= 16)
+                    dprintf(2, "[pool-carve] tiny=0x%lx fresh=main-tail result=metadata-full "
+                               "action=retry-original-reuse\n", (unsigned long)alloc_size);
+                goto retry_code_carve_reuse;
+            }
+            pthread_mutex_lock( &ios_pool_lock );
+        }
         if (ios_jit_hole_end > ios_jit_hole_off)
         {
             /* madeira-bcd split pool: a carve that would overlap a hole goes
@@ -32604,6 +32677,27 @@ retry_code_carve_reuse:
         if (reserve_offset + alloc_size > (ios_jit_pool_size_global / 4) * 3 ||
             pool_tail_off < jit_pool_offset)
         {
+            /* The tiny-request preference above is not an allocation guard.
+             * Another thread can consume the snapshot's room before this real
+             * reservation. Roll it back once and retry the original free-list
+             * policy, rather than rejecting an allocation that used to work. */
+            if (kept_large_carve && !reuse_all_carves)
+            {
+                static unsigned preserve_race_n;
+                ios_pool_tail_unreserve( &ios_jit_tail_reserved, reserve_offset + alloc_size, tail_added,
+                                         ios_jit_hole_end > ios_jit_hole_off );
+                if (preserved_carve_locked)
+                {
+                    pthread_mutex_unlock( &ios_pool_lock );
+                    pthread_mutex_unlock( &ios_tail_carve_lock );
+                }
+                reuse_all_carves = 1;
+                low_fits = 0;
+                if (__sync_add_and_fetch( &preserve_race_n, 1 ) <= 16)
+                    dprintf(2, "[pool-carve] tiny=0x%lx fresh=main-tail result=collision "
+                               "action=retry-original-reuse\n", (unsigned long)alloc_size);
+                goto retry_code_carve_reuse;
+            }
             /* ml1039: before refusing, take a reclaimed head range if one fits. */
             {
                 size_t foff = ios_pool_take_freed_for_tail( alloc_size );
@@ -32722,7 +32816,7 @@ retry_code_carve_reuse:
             ERR("NtAllocateVirtualMemoryEx iOS: redirected EC_CODE %zu bytes to JIT pool tail rx=%p rw=%p NOP-prefilled\n",
                 alloc_size, jit_rx, jit_rw);
             /* ml438 (#74): record the carve so a later free can recycle it. */
-            pthread_mutex_lock( &ios_tail_carve_lock );
+            if (!preserved_carve_locked) pthread_mutex_lock( &ios_tail_carve_lock );
             if (ios_tail_carve_n < IOS_TAIL_CARVE_MAX)
             {
                 ios_tail_carves[ios_tail_carve_n].off = pool_tail_off;
@@ -32750,6 +32844,7 @@ retry_code_carve_reuse:
                     ios_tail_carve_n++;
                 }
             }
+            if (preserved_carve_locked) pthread_mutex_unlock( &ios_pool_lock );
             pthread_mutex_unlock( &ios_tail_carve_lock );
             if (tail_added != alloc_size)
                 dprintf(2, "[jit-pool] split pool: tail carve 0x%lx would overlap the hole [0x%lx,0x%lx) -- "

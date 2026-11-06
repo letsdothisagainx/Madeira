@@ -82,6 +82,7 @@ static pthread_mutex_t ios_pool_lock = PTHREAD_MUTEX_INITIALIZER;
 static void *ios_jit_rx_base_global = (void *)(uintptr_t)0x148000000ULL;
 static void *ios_jit_rw_base_global = (void *)(uintptr_t)0x7929000000ULL;
 static size_t ios_jit_pool_size_global, ios_jit_low_size_global;
+static volatile size_t ios_jit_tail_reserved;
 static uintptr_t ios_wow_base(void) { return 0; }
 static struct { uintptr_t user_va, user_va_end, jit_rw_alias; } ios_jit_anon_aliases[16];
 static int ios_jit_anon_alias_count;
@@ -113,6 +114,8 @@ static size_t total = 0x37690000, native_lo = 560 * MB, native_hi = 0x23690000;
 static void setup(int below)
 {
     jit_pool_offset = 0;
+    ios_jit_pool_size_global = total;
+    ios_jit_tail_reserved = 0;
     ios_pool_free_count = ios_pool_ledger_count = ios_jit_anon_alias_count = 0;
     ios_pool_big_taken = 0; ios_pool_big_freed_at = 0;
     ios_pool_big_size = 240 * MB;
@@ -321,6 +324,16 @@ int main(void)
     CHECK(ios_pool_alloc_range_ex(MB, total, 0, MB, 77) != 4 * MB);
     CHECK(!ios_pool_last_same_image);
     puts("PASS: same layout bypasses quarantine only after overlap and reach checks; other layouts retain quarantine");
+    /* The caller sampled its limit before another thread reserved tail bytes.
+     * The real locked bump decision must use the newer capacity boundary. */
+    setup(0); ios_pool_big_size = 0;
+    jit_pool_offset = total - 0x10000;
+    ios_jit_tail_reserved = 0xc000;
+    CHECK(ios_pool_alloc_range_ex(0x8000, total, (size_t)-1, 0, 0) == (size_t)-1);
+    CHECK(jit_pool_offset == total - 0x10000 && !ios_pool_ledger_count);
+    CHECK(ios_pool_alloc_range_ex(0x4000, total, (size_t)-1, 0, 0) == total - 0x10000);
+    CHECK(jit_pool_offset == total - 0xc000 && ios_jit_tail_reserved == 0xc000);
+    puts("PASS: a stale caller limit cannot grow the image head into a newer tail reservation; exact boundary fits");
     return 0;
 }
 '''

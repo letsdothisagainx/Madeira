@@ -12,6 +12,7 @@ on:
       - build/ntdll-unix/signal_arm64_ios.c
       - tests/host/check-jit-alias-*.py
       - tests/host/check-pool-*.py
+      - tests/host/fixtures/pool-cs2-*.json
       - tests/host/check-jit-pool-meter.py
       - .github/workflows/cs2-jit-pool.yml
   pull_request:
@@ -24,22 +25,29 @@ on:
       - build/ntdll-unix/signal_arm64_ios.c
       - tests/host/check-jit-alias-*.py
       - tests/host/check-pool-*.py
+      - tests/host/fixtures/pool-cs2-*.json
       - tests/host/check-jit-pool-meter.py
       - .github/workflows/cs2-jit-pool.yml
 permissions:
   contents: read
 jobs:
   pool-replay:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, xcode-27]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
     env:
       CC: clang
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Load pinned Wine PE declarations
-        run: git submodule update --init --depth 1 wine
+      - name: Load pinned Wine and FEX declarations
+        run: |
+          git submodule update --init --depth 1 wine FEX
+          git -C FEX submodule update --init --depth 1 External/fmt
       - name: Replay real head/tail allocations and measured startup policy
         run: |
           python3 tests/host/check-pool-cs2-budget.py
@@ -54,3 +62,15 @@ jobs:
           python3 tests/host/check-pool-split.py
           python3 tests/host/check-pool-code-exit.py
           python3 tests/host/check-pool-placement.py
+          python3 tests/host/check-pool-low.py
+          python3 tests/host/check-pool-low-images.py
+          python3 tests/host/check-pool-image-tag.py
+          python3 tests/host/check-fex-arena-census.py
+          python3 tests/host/check-fex-arena-placement.py
+          python3 tests/host/check-fex-arena-steam-pressure.py
+          python3 tests/host/check-fex-thread-retirement.py
+      - name: Verify startup and overlay Swift policies on Apple host
+        if: runner.os == 'macOS'
+        run: |
+          python3 tests/host/check-pool-startup-budget.py --require-swift
+          python3 tests/host/check-jit-pool-meter.py

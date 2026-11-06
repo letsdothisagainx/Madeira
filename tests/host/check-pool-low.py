@@ -110,7 +110,17 @@ assert 'ios_jit_low_contains( (uintptr_t)frame->pc ))' in signal, 'NtContinue ke
 assert 'int in_low = rx && rw && sz && ios_jit_low_contains( (uintptr_t)fault_addr );' in signal
 assert 'fault_addr >= rx && fault_addr < rx + sz) || in_low;' in signal, 'Mach store emulation into C'
 assert 'fault_addr - ios_jit_low_rx_global <= ios_jit_low_size_global - cas_width' in signal, 'CASAL lock word in C, bounded by C'
-assert "(in_low && !ios_jit_low_contains( (uintptr_t)fault_addr + 31 ))" in signal, 'STP Q never leaves C'
+pair_start = signal.index('else if (have_neon && (insn & 0xFE400000) == 0xAC000000)')
+pair = signal[pair_start:signal.index('/* STR (immediate, unsigned offset, 64-bit)', pair_start)]
+assert 'unsigned char values[32];' in pair and \
+    'ios_alias_write( effective, values, sizeof(values), &alias_fault, honor_guest_prot )' in pair, \
+    'STP Q routes its entire 32-byte access through checked alias spans'
+writer = function(signal, 'static int ios_alias_write(')
+assert 'ios_write_alias( at + length - 1 ) != rw + length - 1' in writer, \
+    'every page fragment must have the complete matching alias, including the end of C'
+assert writer.index('destinations[count] = rw;') < writer.index('memcpy(') and \
+    writer.index('done += length;') < writer.index('memcpy('), \
+    'every fragment is validated before any store reaches an alias'
 assert signal.count('ios_jit_low_contains( (uintptr_t)fault_pc )') >= 2, 'Mach exec-fault branch and LDAPR backpatch'
 assert 'ios_jit_low_rw_contains( (uintptr_t)fault_pc )))   /* madeira-bcd pool-low */' in signal, 'RW-alias pc redirect'
 assert 'ios_jit_low_contains( (uintptr_t)fa );   /* madeira-bcd pool-low */' in signal, 'exec recovery'
