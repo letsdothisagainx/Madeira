@@ -1,8 +1,12 @@
 /* SPDX-License-Identifier: MIT
  * Owned integration fixture. Every NT/MSI result comes from real Windows APIs;
  * no service, installer, file operation or registry response is fabricated. */
-#define UNICODE
-#define _UNICODE
+#ifndef UNICODE
+#define UNICODE 1
+#endif
+#ifndef _UNICODE
+#define _UNICODE 1
+#endif
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <winternl.h>

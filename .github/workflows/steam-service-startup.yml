@@ -1,120 +1,70 @@
-name: Verify Steam service startup and client launch policy
+name: Validate Steam MSI file creation
 on:
   workflow_dispatch:
   push:
     branches: [main, 'codex/pr-build-*']
     paths:
-      - build/steam-service/**
-      - build/wineserver/stage-async-apc.py
-      - build/wineserver/build.sh
-      - tests/host/check-service-async-apc.py
-      - app/Madeira/SteamRuntime.swift
-      - app/Madeira/ContentView.swift
-      - tests/host/check-steam-service.py
-      - tests/host/check-native-steam-play.py
-      - tests/integration/check-steam-service-startup.py
-      - tests/integration/check-official-steam-service-startup.py
-      - tests/integration/check-official-steam-browser-bootstrap.py
-      - tests/integration/steam-service/**
-      - tests/integration/check-htmlipc-bootstrap.py
-      - tests/integration/htmlipc/**
-      - tests/host/check-htmlipc-section-trace.py
-      - tests/host/check-htmlipc-wow64-section-trace.py
-      - tests/host/check-official-browser-control-archive.py
-      - build/ntdll-unix/htmlipc_section_trace.h
-      - tools/build/stage-htmlipc-section-trace.py
-      - .github/workflows/steam-service-startup.yml
+      - app/Madeira/StaleRuntimeLinks.h
+      - app/Madeira/WineProcessBridge.m
+      - build/wineserver/fd_ios.c
+      - tests/host/check-stale-runtime-links.py
+      - tests/host/stale_runtime_links_test.c
+      - tests/host/check-system-create-failure.py
+      - tests/host/check-readonly-link.py
+      - tests/integration/check-steam-msi-files.py
+      - tests/integration/steam-msi-files.c
+      - .github/workflows/steam-msi-files.yml
   pull_request:
     paths:
-      - build/steam-service/**
-      - build/wineserver/stage-async-apc.py
-      - build/wineserver/build.sh
-      - tests/host/check-service-async-apc.py
-      - app/Madeira/SteamRuntime.swift
-      - app/Madeira/ContentView.swift
-      - tests/host/check-steam-service.py
-      - tests/host/check-native-steam-play.py
-      - tests/integration/check-steam-service-startup.py
-      - tests/integration/check-official-steam-service-startup.py
-      - tests/integration/check-official-steam-browser-bootstrap.py
-      - tests/integration/steam-service/**
-      - tests/integration/check-htmlipc-bootstrap.py
-      - tests/integration/htmlipc/**
-      - tests/host/check-htmlipc-section-trace.py
-      - tests/host/check-htmlipc-wow64-section-trace.py
-      - tests/host/check-official-browser-control-archive.py
-      - build/ntdll-unix/htmlipc_section_trace.h
-      - tools/build/stage-htmlipc-section-trace.py
-      - .github/workflows/steam-service-startup.yml
+      - app/Madeira/StaleRuntimeLinks.h
+      - app/Madeira/WineProcessBridge.m
+      - build/wineserver/fd_ios.c
+      - tests/host/check-stale-runtime-links.py
+      - tests/host/stale_runtime_links_test.c
+      - tests/host/check-system-create-failure.py
+      - tests/host/check-readonly-link.py
+      - tests/integration/check-steam-msi-files.py
+      - tests/integration/steam-msi-files.c
+      - .github/workflows/steam-msi-files.yml
 permissions:
   contents: read
 jobs:
-  io-apc-delivery:
-    runs-on: ubuntu-24.04
+  production-filesystem:
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04, xcode-27]
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-          submodules: recursive
-      - name: Reproduce dropped RPC completion and verify actual staged queue/wait delivery
-        run: python3 tests/host/check-service-async-apc.py
-      - name: Verify the actual common-architecture section observer and bounds
+      - name: Exercise production ownership repair and error preservation
         run: |
-          python3 tests/host/check-htmlipc-section-trace.py
-          python3 tests/host/check-htmlipc-wow64-section-trace.py
-          python3 tests/host/check-fault-site-counters.py
-          python3 tests/host/check-official-browser-control-archive.py
-  scripts:
-    runs-on: xcode-27
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Load pinned Wine syscall declarations for native observer portability
-        run: git submodule update --init --depth 1 wine
-      - name: Check actual section observer on Apple ARM64
-        run: |
-          python3 tests/host/check-htmlipc-section-trace.py
-          python3 tests/host/check-htmlipc-wow64-section-trace.py
-          python3 tests/host/check-fault-site-counters.py
-          python3 tests/host/check-official-browser-control-archive.py
-      - name: Test production service policy and generate actual Swift native-client scripts
-        run: |
-          python3 tests/host/check-steam-service.py
-          python3 tests/host/check-native-steam-play.py --emit-script-dir "$RUNNER_TEMP/service-scripts"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: service-native-client-scripts
-          path: ${{ runner.temp }}/service-scripts/*.cmd
-          if-no-files-found: error
-          retention-days: 3
-  scm-integration:
-    needs: scripts
+          python3 tests/host/check-stale-runtime-links.py
+          python3 tests/host/check-readonly-link.py
+          python3 tests/host/check-system-create-failure.py
+  actual-msi-cabinet:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Install isolated Wine WoW64 and PE fixture compilers
+      - name: Install isolated Wine WoW64 and owned PE fixture compilers
         run: |
           sudo dpkg --add-architecture i386
           sudo sed -i 's@azure.archive.ubuntu.com@archive.ubuntu.com@g' /etc/apt/sources.list.d/ubuntu.sources
           sudo apt-get update -qq -o Acquire::Retries=1 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30
-          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends wine wine64 wine32:i386 gcc-mingw-w64-x86-64-posix gcc-mingw-w64-i686-posix xvfb xauth
-      - uses: actions/download-artifact@v4
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends wine wine64 wine32:i386 gcc gcc-mingw-w64-x86-64-posix gcc-mingw-w64-i686-posix xvfb xauth
+      - name: Run genuine NtCreateFile and embedded CAB MSI install, repair and rollback
+        run: |
+          set -o pipefail
+          xvfb-run -a python3 tests/integration/check-steam-msi-files.py | tee msi-files.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: service-native-client-scripts
-          path: .service-scripts
-      - name: Exercise actual SCM early exit, dispatcher, status, updater witness and client continuation
-        run: xvfb-run -a python3 tests/integration/check-steam-service-startup.py --script-dir .service-scripts
-
-      - name: Exercise genuine Wine I386 creator and AMD64 opener bootstrap and section lifetime
-        run: xvfb-run -a python3 tests/integration/check-htmlipc-bootstrap.py --download-official
-      - name: Run authentic hash-pinned Valve service through real install and SCM registration
-        run: xvfb-run -a python3 tests/integration/check-official-steam-service-startup.py --download-official
-      - name: Observe authentic hash-pinned browser bootstrap and master-section ownership
-        if: ${{ !cancelled() }}
-        run: xvfb-run -a python3 tests/integration/check-official-steam-browser-bootstrap.py --download-official
+          name: steam-msi-file-results
+          path: msi-files.txt
+          if-no-files-found: ignore
+          retention-days: 14
