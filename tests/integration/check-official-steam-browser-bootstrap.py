@@ -9,10 +9,10 @@ This stock-Wine control cannot prove iOS/FEX runtime compatibility.
 from pathlib import Path,PurePosixPath
 import argparse
 import hashlib
+import importlib.util
 import os
 import re
 import shutil
-import stat
 import struct
 import subprocess
 import tempfile
@@ -21,6 +21,9 @@ import urllib.request
 import zipfile
 
 ROOT=Path(__file__).resolve().parents[2]
+spec=importlib.util.spec_from_file_location('official_archive',ROOT/'tests/integration/htmlipc/official_archive.py')
+archive_policy=importlib.util.module_from_spec(spec);spec.loader.exec_module(archive_policy)
+
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--download-official',action='store_true')
 args=parser.parse_args()
@@ -74,17 +77,17 @@ with tempfile.TemporaryDirectory(prefix='madeira-official-browser-') as folder:
             assert len(data)==size and sha(data)==digest
             path.write_bytes(data)
         assert path.stat().st_size==size and sha(path.read_bytes())==digest
+        print('[official-browser] package-sha-verified=1 bytes='+str(size),flush=True)
         return path
+    def old_rejection(raw,canonical):
+        # Called only after fetch() verifies the entire official package SHA.
+        # Names are public archive metadata, escaped and capped; no user paths.
+        if not old_rejection.reported:
+            print('[official-browser] old-path-predicate-rejected raw='+ascii(raw)[:120]+' canonical='+ascii(canonical)[:120],flush=True)
+            old_rejection.reported=True
+    old_rejection.reported=False
     def members(archive):
-        entries=archive.infolist();assert len(entries)<5000 and sum(x.file_size for x in entries)<768*1024**2
-        seen=set()
-        for entry in entries:
-            path=PurePosixPath(entry.filename)
-            assert path.parts and not path.is_absolute() and '..' not in path.parts and '\\' not in entry.filename and ':' not in entry.filename
-            assert not entry.flag_bits&1 and entry.compress_type in (0,8)
-            assert stat.S_IFMT(entry.external_attr>>16)!=stat.S_IFLNK
-            assert entry.filename.casefold() not in seen;seen.add(entry.filename.casefold())
-            if not entry.is_dir():yield entry,path
+        return archive_policy.validated_members(archive,on_legacy_rejection=old_rejection)
     peer=temporary/'browser-witness.exe';process=None;raw_log=temporary/'private-wine.log'
     try:
         browser_names=set()

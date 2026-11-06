@@ -70,6 +70,7 @@
  * was corrupting memory this way. */
 #define IOS_STORE_SRC(r) ((r) == 31 ? 0ULL : state.__x[r])
 #include "jit_store_census.h"
+#include "fault_site_counters.h"
 
 #include <mach/mach_vm.h>
 #include <mach/thread_act.h>
@@ -353,6 +354,85 @@ static unsigned long long ios_store_family_counts[MADEIRA_STORE_FAMILIES];
  * (in which case W^X should move the frame rate) or only the tree worker (in
  * which case it buys a core but may not move FPS at all)? */
 volatile unsigned int ios_cur_fault_port = 0;
+
+/* Exact bounded replacement evidence for the older lossy hot-PC sample.
+ * Only ios_mach_exception_thread writes this table. First-event attribution
+ * is cached; a hit performs no Mach call, metadata callback, lock or allocation. */
+static struct ios_fault_site_table ios_fault_sites;
+static void ios_fault_site_snapshot_first( void *context, const struct ios_fault_site_key *key,
+                                          struct ios_fault_site_metadata *meta )
+{
+    unsigned char teb_bytes[offsetof(TEB, Peb) + sizeof(void *)];
+    uintptr_t self = 0;
+    mach_vm_size_t got = 0;
+    meta->target = *(const uintptr_t *)context;
+    if (key->teb && mach_vm_read_overwrite( mach_task_self(), key->teb, sizeof(teb_bytes),
+            (mach_vm_address_t)(uintptr_t)teb_bytes, &got ) == KERN_SUCCESS && got == sizeof(teb_bytes))
+    {
+        memcpy( &self, teb_bytes + offsetof(TEB, Tib.Self), sizeof(self) );
+        if (self == key->teb)
+        {
+            memcpy( &meta->pid, teb_bytes + offsetof(TEB, ClientId.UniqueProcess), sizeof(meta->pid) );
+            memcpy( &meta->tid, teb_bytes + offsetof(TEB, ClientId.UniqueThread), sizeof(meta->tid) );
+            memcpy( &meta->peb, teb_bytes + offsetof(TEB, Peb), sizeof(meta->peb) );
+            meta->teb_read = 1;
+        }
+    }
+    ios_jit_pool_mapping_snapshot( key->pc, &meta->code );
+    ios_jit_pool_mapping_snapshot( meta->target, &meta->data );
+}
+
+static void ios_fault_site_report_epoch(void)
+{
+    static const char *const names[MADEIRA_STORE_FAMILIES] =
+        { "other", "lse-rmw", "exclusive", "swap", "release", "gpr", "simd-pair" };
+    const struct ios_fault_site_entry *top[MADEIRA_STORE_FAMILIES][2];
+    unsigned family,rank;
+    dprintf( 2, "[fault-sites-v1] epoch=%llu total=%llu tracked=%llu overflow=%llu slots=%u/%u "
+             "probe-limit=%u ranking=tracked-keys-only metadata=first-event\n",
+             (unsigned long long)(ios_fault_sites.epoch + 1), (unsigned long long)ios_fault_sites.total,
+             (unsigned long long)ios_fault_sites.tracked, (unsigned long long)ios_fault_sites.overflow,
+             ios_fault_sites.occupied, IOS_FAULT_SITE_SLOTS, IOS_FAULT_SITE_PROBES );
+    /* Array order is named explicitly; unlike a lossy-PC table, every event
+     * belongs to either tracked or overflow in its instruction family. */
+    dprintf( 2, "[fault-site-coverage-v1] order=other,lse-rmw,exclusive,swap,release,gpr,simd-pair "
+             "total=%llu,%llu,%llu,%llu,%llu,%llu,%llu tracked=%llu,%llu,%llu,%llu,%llu,%llu,%llu "
+             "overflow=%llu,%llu,%llu,%llu,%llu,%llu,%llu\n",
+#define IOS_FAULT_SITE_VALUES(field) \
+        (unsigned long long)ios_fault_sites.field[0], (unsigned long long)ios_fault_sites.field[1], \
+        (unsigned long long)ios_fault_sites.field[2], (unsigned long long)ios_fault_sites.field[3], \
+        (unsigned long long)ios_fault_sites.field[4], (unsigned long long)ios_fault_sites.field[5], \
+        (unsigned long long)ios_fault_sites.field[6]
+             IOS_FAULT_SITE_VALUES(family_total), IOS_FAULT_SITE_VALUES(family_tracked),
+             IOS_FAULT_SITE_VALUES(family_overflow) );
+#undef IOS_FAULT_SITE_VALUES
+    ios_fault_site_top( &ios_fault_sites, top );
+    for (family = 0; family < MADEIRA_STORE_FAMILIES; family++) for (rank = 0; rank < 2; rank++)
+    {
+        const struct ios_fault_site_entry *entry = top[family][rank];
+        const struct ios_fault_mapping_meta *code,*data;
+        int generation;
+        if (!entry) continue;
+        code = &entry->first.code;data = &entry->first.data;
+        generation = ios_fault_site_generation( entry );
+        dprintf( 2, "[fault-site-v1] family=%s tracked-rank=%u hits=%llu pc=%p insn=%08x "
+                 "target-page=%p first-target=%p teb=%p port=%x first-pid=%llx first-tid=%llx "
+                 "first-peb=%p teb-read=%u code-pe=%p code-rx=%p code-rva=%llx code-size=%zu "
+                 "code-owner=%p code-mapped-by=%p code-generation=%llu data-pe=%p data-rx=%p data-rva=%llx "
+                 "data-size=%zu data-owner=%p data-mapped-by=%p data-generation=%llu cookies=%s metadata=first-event\n",
+                 names[family], rank + 1, (unsigned long long)entry->count, (void *)entry->key.pc,
+                 entry->key.insn, (void *)entry->key.target_page, (void *)entry->first.target,
+                 (void *)entry->key.teb, entry->key.port, (unsigned long long)entry->first.pid,
+                 (unsigned long long)entry->first.tid, (void *)entry->first.peb, entry->first.teb_read,
+                 (void *)code->pe_base, (void *)code->rx_base,
+                 (unsigned long long)(code->rx_base ? entry->key.pc - code->rx_base : 0), code->image_size,
+                 (void *)code->owner, (void *)code->mapped_by, code->generation, (void *)data->pe_base, (void *)data->rx_base,
+                 (unsigned long long)(data->rx_base ? entry->first.target - data->rx_base : 0), data->image_size,
+                 (void *)data->owner, (void *)data->mapped_by, data->generation,
+                 generation < 0 ? "changed" : generation ? "unchanged" : "unverifiable" );
+    }
+    ios_fault_site_reset( &ios_fault_sites );
+}
 
 /* ml691: pages demoted to RW by the W^X path, so an execute fault on one can be
  * recovered. Kept OUTSIDE the store handler's static so the exec path can reach
@@ -5995,6 +6075,15 @@ wx_done: ;
                         static volatile int emul_count = 0;
                         int ec = __sync_add_and_fetch(&emul_count, 1);
                         __atomic_fetch_add(&ios_store_family_counts[madeira_jit_store_family(insn)], 1, __ATOMIC_RELAXED);
+                        {
+                            struct ios_fault_site_key key = {
+                                .pc = fault_pc, .teb = thread_teb,
+                                .target_page = fault_addr & ~(uintptr_t)0x3fff,
+                                .port = thread, .insn = insn, .family = madeira_jit_store_family(insn)
+                            };
+                            if (ios_fault_site_note( &ios_fault_sites, &key, ios_fault_site_snapshot_first,
+                                                     &fault_addr ) > 0) ios_fault_site_report_epoch();
+                        }
 
                         /* ============ ml680 WHAT DOES A FAULT ACTUALLY COST? ==
                          *

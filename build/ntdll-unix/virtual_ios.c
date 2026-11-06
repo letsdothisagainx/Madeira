@@ -4317,9 +4317,10 @@ static void ios_jit_lower_native_atomics(void *source, void *rw, void *rx, size_
         __sync_synchronize();
         sys_icache_invalidate(rx, size);
     }
-    dprintf(2, "[native-atomic-alias-v1] module=%s lse=%lu exclusive=%lu ranges=%lu "
-               "phase=private-copy rx-protection=unchanged\n", name,
-            (unsigned long)stats.lse, (unsigned long)stats.exclusive, (unsigned long)stats.ranges);
+    dprintf(2, "[native-data-alias-v2] module=%s atomic-lse=%lu atomic-exclusive=%lu "
+               "mutable=%lu ranges=%lu phase=private-copy rx-protection=unchanged\n", name,
+            (unsigned long)stats.lse, (unsigned long)stats.exclusive,
+            (unsigned long)stats.data, (unsigned long)stats.ranges);
 }
 
 void ios_jit_add_mapping(void *pe_base, void *jit_base, size_t size)
@@ -6310,6 +6311,38 @@ void *ios_jit_pool_copy_owner(const void *addr, void **pe_base_out)
     }
     if (pe_base_out) *pe_base_out = NULL;
     return (void *)(uintptr_t)-1;  /* not in any pool mapping */
+}
+
+#include "fault_site_mapping.h"
+/* Capture only fixed-table publication fields. Never read a PE header or
+ * source mapping from the exception server; another thread could unload it.
+ * The fault-site counter checks both generation cookies on subsequent hits. */
+int ios_jit_pool_mapping_snapshot(uintptr_t address, struct ios_fault_mapping_meta *out)
+{
+    int i, count = __atomic_load_n(&ios_jit_mapping_count, __ATOMIC_ACQUIRE);
+    if (!out) return 0;
+    memset(out, 0, sizeof(*out));
+    if (count < 0 || count > IOS_JIT_MAX_MAPPINGS) return 0;
+    for (i = 0; i < count; i++)
+    {
+        struct ios_jit_mapping *m = &ios_jit_mappings[i];
+        struct ios_fault_mapping_meta snapshot;
+        unsigned long long generation = __atomic_load_n(&m->generation, __ATOMIC_ACQUIRE);
+        snapshot.rx_base = (uintptr_t)__atomic_load_n(&m->jit_base, __ATOMIC_RELAXED);
+        snapshot.image_size = __atomic_load_n(&m->size, __ATOMIC_RELAXED);
+        snapshot.pe_base = (uintptr_t)__atomic_load_n(&m->pe_base, __ATOMIC_RELAXED);
+        snapshot.owner = (uintptr_t)__atomic_load_n(&m->owner_peb, __ATOMIC_RELAXED);
+        snapshot.mapped_by = (uintptr_t)__atomic_load_n(&m->map_peb, __ATOMIC_RELAXED);
+        if (!generation || !snapshot.pe_base || !snapshot.rx_base ||
+            __atomic_load_n(&m->unmapped, __ATOMIC_RELAXED) ||
+            address < snapshot.rx_base || address - snapshot.rx_base >= snapshot.image_size) continue;
+        snapshot.generation = generation;
+        snapshot.generation_address = &m->generation;
+        if (__atomic_load_n(&m->generation, __ATOMIC_ACQUIRE) != generation) continue;
+        *out = snapshot;
+        return 1;
+    }
+    return 0;
 }
 
 /* Authorization snapshot for native alias operations, not a lifetime pin.

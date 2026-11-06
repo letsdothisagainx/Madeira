@@ -20,6 +20,7 @@ on:
       - tests/integration/htmlipc/**
       - tests/host/check-htmlipc-section-trace.py
       - tests/host/check-htmlipc-wow64-section-trace.py
+      - tests/host/check-official-browser-control-archive.py
       - build/ntdll-unix/htmlipc_section_trace.h
       - tools/build/stage-htmlipc-section-trace.py
       - .github/workflows/steam-service-startup.yml
@@ -41,6 +42,7 @@ on:
       - tests/integration/htmlipc/**
       - tests/host/check-htmlipc-section-trace.py
       - tests/host/check-htmlipc-wow64-section-trace.py
+      - tests/host/check-official-browser-control-archive.py
       - build/ntdll-unix/htmlipc_section_trace.h
       - tools/build/stage-htmlipc-section-trace.py
       - .github/workflows/steam-service-startup.yml
@@ -61,6 +63,8 @@ jobs:
         run: |
           python3 tests/host/check-htmlipc-section-trace.py
           python3 tests/host/check-htmlipc-wow64-section-trace.py
+          python3 tests/host/check-fault-site-counters.py
+          python3 tests/host/check-official-browser-control-archive.py
   scripts:
     runs-on: xcode-27
     timeout-minutes: 5
@@ -74,6 +78,8 @@ jobs:
         run: |
           python3 tests/host/check-htmlipc-section-trace.py
           python3 tests/host/check-htmlipc-wow64-section-trace.py
+          python3 tests/host/check-fault-site-counters.py
+          python3 tests/host/check-official-browser-control-archive.py
       - name: Test production service policy and generate actual Swift native-client scripts
         run: |
           python3 tests/host/check-steam-service.py
