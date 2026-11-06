@@ -121,6 +121,7 @@ pe_helpers = r'''
 #include "winnt.h"
 #include "pool_section_policy.h"
 #include "native_atomic_image.h"
+#include "native_counter_alias.h"
 #include <strings.h>
 #undef STATUS_NO_MEMORY
 #define STATUS_NO_MEMORY ((int)0xc0000017u)
@@ -153,6 +154,7 @@ static void ios_jit_add_mapping(void *pe, void *rx, size_t size)
 # Include the production native-only copy hook; these synthetic game images
 # must retain their exact bytes. Its full lowering is covered independently.
 pe_helpers += function(native, 'static void ios_jit_lower_native_atomics(')
+pe_helpers += function(native, 'static void ios_jit_bind_native_counter_writer(')
 allocate = r'''
 static int allocate_pe(void *image_base, size_t image_size, size_t alloc_size, size_t *result)
 {
