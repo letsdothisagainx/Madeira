@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Execute the shipped DXMT conditional maximum loop through real Mach faults.
+"""Execute both shipped DXMT conditional CAS families through real Mach faults.
 
 The complete captured native instruction sequence executes unchanged. The
 production recovery, ownership-generation accessor, alias and host-protection
@@ -52,7 +52,8 @@ static uint64_t conditional_successes, conditional_conflicts;
 for name in ('ios_jit_new_generation', 'ios_jit_code_bounds', 'ios_jit_pool_access_token'):
     header += function(virtual, name)
 for name in ('ios_write_alias', 'ios_alias_write_is_trapped', 'ios_alias_exclusive_span',
-             'ios_exclusive_code_readable', 'ios_mach_emulate_exclusive_conditional_loop'):
+             'ios_exclusive_code_readable', 'ios_mach_emulate_exclusive_conditional_loop',
+             'ios_mach_emulate_exclusive_compare_loop'):
     header += function(signal, name)
 header += r'''
 static int baseline_emulate(uint32_t insn, uintptr_t fault_pc, uintptr_t fault_addr,
@@ -69,7 +70,9 @@ static int baseline_emulate(uint32_t insn, uintptr_t fault_pc, uintptr_t fault_a
     memcpy(original, gpr, sizeof(gpr));
     conditional_before_cas();
     if (!ios_mach_emulate_exclusive_conditional_loop(insn, fault_pc, fault_addr,
-                                                    gpr, flags, &active)) return 0;
+                                                    gpr, flags, &active) &&
+        !ios_mach_emulate_exclusive_compare_loop(insn, fault_pc, fault_addr,
+                                                gpr, flags, &active)) return 0;
     for (unsigned reg = 0; reg < 32; ++reg)
         assert(reg == status ? gpr[reg] <= 1 : gpr[reg] == original[reg]);
     if (gpr[status]) __atomic_add_fetch(&conditional_conflicts, 1, __ATOMIC_RELAXED);

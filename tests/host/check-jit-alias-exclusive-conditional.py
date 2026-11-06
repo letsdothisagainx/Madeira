@@ -33,6 +33,7 @@ for helper in ("ios_mach_emulate_exclusive_loop", "ios_mach_emulate_exclusive_ad
 header += "\n#define HAVE_CONDITIONAL_RECOVERY " + str(int(present)) + "\n"
 if present:
     header += base["function"](source, name)
+header += base["function"](source, "ios_mach_emulate_exclusive_compare_loop")
 header += r'''
 struct state { uint64_t __x[29],__fp,__lr,__sp,__pc; uint32_t __cpsr; };
 static pthread_mutex_t route_lock=PTHREAD_MUTEX_INITIALIZER;
@@ -65,13 +66,18 @@ static int route(uint32_t insn,uintptr_t fault_addr,struct state *input,void *ow
 }
 '''
 
-with tempfile.TemporaryDirectory(prefix="madeira-exclusive-conditional-") as folder:
-    directory = Path(folder)
-    (directory / "conditional-production.h").write_text(header)
-    binary = directory / "conditional"
-    subprocess.run([os.environ.get("CC", "cc"), "-std=gnu11", "-O1", "-Wall", "-Wextra", "-Werror",
-                    "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-pthread",
-                    "-I" + str(directory), str(root / "tests/host/jit_alias_exclusive_conditional_test.c"),
-                    "-o", str(binary)], check=True)
-    subprocess.run([str(binary)], check=True)
-print("PASS production conditional-exclusive recovery on " + platform.machine())
+def main():
+    with tempfile.TemporaryDirectory(prefix="madeira-exclusive-conditional-") as folder:
+        directory = Path(folder)
+        (directory / "conditional-production.h").write_text(header)
+        binary = directory / "conditional"
+        subprocess.run([os.environ.get("CC", "cc"), "-std=gnu11", "-O1", "-Wall", "-Wextra", "-Werror",
+                        "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-pthread",
+                        "-I" + str(directory), str(root / "tests/host/jit_alias_exclusive_conditional_test.c"),
+                        "-o", str(binary)], check=True)
+        subprocess.run([str(binary)], check=True)
+    print("PASS production conditional-exclusive recovery on " + platform.machine())
+
+
+if __name__ == "__main__":
+    main()
