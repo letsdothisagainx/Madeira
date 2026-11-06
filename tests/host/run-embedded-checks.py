@@ -6,6 +6,9 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[2]
 commands = [
+    ['python3', 'tests/host/check-stale-runtime-links.py'],
+    ['python3', 'tests/host/check-readonly-link.py'],
+    ['python3', 'tests/host/check-system-create-failure.py'],
     ['python3', 'tests/host/check-steam-browser-transfer.py', '--require-swift'],
     ['python3', 'tests/host/check-fault-site-counters.py'],
     ['python3', 'tests/host/check-native-data-alias.py'],

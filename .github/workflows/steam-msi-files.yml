@@ -1,0 +1,70 @@
+name: Verify Steam MSI file creation
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'codex/pr-build-*']
+    paths:
+      - app/Madeira/StaleRuntimeLinks.h
+      - app/Madeira/WineProcessBridge.m
+      - build/wineserver/fd_ios.c
+      - tests/host/check-stale-runtime-links.py
+      - tests/host/stale_runtime_links_test.c
+      - tests/host/check-system-create-failure.py
+      - tests/host/check-readonly-link.py
+      - tests/integration/check-steam-msi-files.py
+      - tests/integration/steam-msi-files.c
+      - .github/workflows/steam-msi-files.yml
+  pull_request:
+    paths:
+      - app/Madeira/StaleRuntimeLinks.h
+      - app/Madeira/WineProcessBridge.m
+      - build/wineserver/fd_ios.c
+      - tests/host/check-stale-runtime-links.py
+      - tests/host/stale_runtime_links_test.c
+      - tests/host/check-system-create-failure.py
+      - tests/host/check-readonly-link.py
+      - tests/integration/check-steam-msi-files.py
+      - tests/integration/steam-msi-files.c
+      - .github/workflows/steam-msi-files.yml
+permissions:
+  contents: read
+jobs:
+  production-filesystem:
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04, xcode-27]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Exercise production ownership repair and error preservation
+        run: |
+          python3 tests/host/check-stale-runtime-links.py
+          python3 tests/host/check-readonly-link.py
+          python3 tests/host/check-system-create-failure.py
+  actual-msi-cabinet:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install isolated Wine WoW64 and owned PE fixture compilers
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo sed -i 's@azure.archive.ubuntu.com@archive.ubuntu.com@g' /etc/apt/sources.list.d/ubuntu.sources
+          sudo apt-get update -qq -o Acquire::Retries=1 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends wine wine64 wine32:i386 gcc gcc-mingw-w64-x86-64-posix gcc-mingw-w64-i686-posix xvfb xauth
+      - name: Run genuine NtCreateFile and embedded CAB MSI install, repair and rollback
+        run: |
+          set -o pipefail
+          xvfb-run -a python3 tests/integration/check-steam-msi-files.py | tee msi-files.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: steam-msi-file-results
+          path: msi-files.txt
+          if-no-files-found: ignore
+          retention-days: 14
