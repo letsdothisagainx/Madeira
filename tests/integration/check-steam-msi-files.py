@@ -46,11 +46,11 @@ with tempfile.TemporaryDirectory(prefix='madeira-msi-files-') as directory:
          'WINEDLLOVERRIDES':'mscoree,mshtml='}
     for key in list(env):
         if any(word in key.upper() for word in ('TOKEN','PASSWORD','SECRET','CREDENTIAL')):env.pop(key)
-    def command(argv,timeout=120):
+    def command(argv,timeout=120,allowed=(0,)):
         result=subprocess.run([str(x) for x in argv],env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=timeout)
         assert len(result.stdout)<=4*1024*1024,'fixture output exceeded diagnostic bound'
         output=result.stdout.decode(errors='replace')
-        if result.returncode:
+        if result.returncode not in allowed:
             safe=output.replace(str(temporary),'<fixture>').replace(str(ROOT),'<repo>')
             raise AssertionError('fixture command failed code='+str(result.returncode)+'; '+safe[-4500:])
         for line in output.splitlines():
@@ -76,7 +76,10 @@ with tempfile.TemporaryDirectory(prefix='madeira-msi-files-') as directory:
     def repair(bundle):
         # Production invokes migration before Wine starts. End only this owned
         # fixture's server and wait for every client/service to quiesce first.
-        command(['wineserver','-k']);command(['wineserver','-w'],timeout=30)
+        # Wine server/main.c exits !kill_lock_owner(): -k returns1 when
+        # already stopped. The subsequent lock wait must still succeed.
+        command(['wineserver','-k'],allowed=(0,1));command(['wineserver','-w'],timeout=30)
+        print('[msi-files] owned-prefix-server-quiescent lock-wait=complete',flush=True)
         return command([helper,prefix,bundle])
     try:
         command([WINE64,'wineboot.exe','--init'])
