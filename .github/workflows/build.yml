@@ -449,27 +449,71 @@ jobs:
       - name: Inspect exact installed readonly-link retry
         run: |
           unzip -q previous-ipa/Madeira.ipa 'Payload/Madeira.app/Madeira.debug.dylib' -d previous-ipa
-          python3 - <<'PYCODE'
+          python3 -m venv "$RUNNER_TEMP/native-readonly-tools"
+          "$RUNNER_TEMP/native-readonly-tools/bin/pip" install capstone==5.0.6
+          "$RUNNER_TEMP/native-readonly-tools/bin/python" - <<'PYCODE'
           from pathlib import Path
-          import hashlib,os,struct,uuid
+          import hashlib, os, struct, uuid
+          from capstone import Cs, CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN
           p=Path('previous-ipa/Payload/Madeira.app/Madeira.debug.dylib')
           b=p.read_bytes(); assert struct.unpack_from('<I',b)[0]==0xfeedfacf
-          pos=32; found=None
+          pos=32; found=None; segments=[]; code_sections=set(); stubs=[]; section_id=0; symtab=None; indirect=None
           for _ in range(struct.unpack_from('<I',b,16)[0]):
            cmd,n=struct.unpack_from('<II',b,pos)
+           assert n>=8 and pos+n<=len(b)
            if cmd==0x1b: found=str(uuid.UUID(bytes=b[pos+8:pos+24])).upper()
+           if cmd==2: symtab=struct.unpack_from('<4I',b,pos+8)
+           if cmd==0xb: indirect=struct.unpack_from('<II',b,pos+56)
+           if cmd==0x19:
+            va,vs,fo,fs=struct.unpack_from('<4Q',b,pos+24);segments.append((va,vs,fo,fs))
+            for i in range(struct.unpack_from('<I',b,pos+64)[0]):
+             at=pos+72+i*80; section_id+=1
+             name=b[at:at+16].rstrip(b'\0'); addr,size=struct.unpack_from('<QQ',b,at+32)
+             flags,r1,r2=struct.unpack_from('<III',b,at+64)
+             if name==b'__text': code_sections.add(section_id)
+             if flags&255==8: stubs.append((addr,size,r1,r2))
            pos+=n
-          assert found==os.environ['MADEIRA_INSPECT_UUID'].upper(),(found,os.environ['MADEIRA_INSPECT_UUID'])
-          print('::notice title=Exact readonly-link binary::UUID='+str(found)+' SHA256='+hashlib.sha256(b).hexdigest()+' artifact=13503723825 source=d64b6d94627a1ff620445d85c7292d239dcecab7')
-          PYCODE
-          xcrun llvm-objdump --macho --disassemble-symbols=_open_fd previous-ipa/Payload/Madeira.app/Madeira.debug.dylib > "$RUNNER_TEMP/readonly-open-fd.txt"
-          python3 - "$RUNNER_TEMP/readonly-open-fd.txt" <<'PYCODE'
-          import sys
-          from pathlib import Path
-          s=Path(sys.argv[1]).read_text()
-          assert '_open_fd' in s,'native open_fd symbol not present'
-          lines=s.splitlines(); print('NATIVE_OPEN_FD_DISASSEMBLY lines='+str(len(lines)))
-          print('\n'.join(lines[:2200]))
+          assert found==os.environ['MADEIRA_INSPECT_UUID'].upper(),found
+          assert symtab and indirect
+          symoff,count,stroff,strsize=symtab; names={}; records=[]; function_addresses=set()
+          for i in range(count):
+           ix,kind,sect,desc,addr=struct.unpack_from('<IBBHQ',b,symoff+16*i)
+           assert ix<strsize
+           end=b.find(b'\0',stroff+ix,stroff+strsize);assert end>=0
+           name=b[stroff+ix:end].decode('utf8','replace');records.append((name,addr,kind,sect))
+           if kind&0xe0: continue
+           if addr: names.setdefault(addr,[]).append(name)
+           if kind&0x0e==0x0e and sect in code_sections and addr: function_addresses.add(addr)
+          stub_names={}
+          for addr,size,index,stride in stubs:
+           assert stride and not size%stride
+           for i in range(size//stride):
+            assert index+i<indirect[1]
+            sym=struct.unpack_from('<I',b,indirect[0]+4*(index+i))[0]
+            if sym&0xc0000000: continue
+            assert sym<count
+            stub_names[addr+stride*i]=records[sym][0]
+          print('::notice title=Exact readonly-link binary::UUID='+found+' SHA256='+hashlib.sha256(b).hexdigest()+' artifact=13503723825 source=d64b6d94627a1ff620445d85c7292d239dcecab7')
+          decoder=Cs(CS_ARCH_ARM64,CS_MODE_LITTLE_ENDIAN)
+          for symbol in ('_open_fd','_ios_replace_readonly_link'):
+           starts=[addr for name,addr,kind,sect in records if name==symbol and not kind&0xe0 and addr]
+           if not starts:
+            print(symbol+': no standalone symbol (may be inlined)');continue
+           assert len(set(starts))==1
+           start=starts[0]; end=min([x for x in function_addresses if x>start] or [start+0x5000])
+           assert start<end<=start+0x5000,(symbol,start,end)
+           for va,vs,fo,fs in segments:
+            if va<=start and end<=va+fs:
+             raw=b[fo+start-va:fo+end-va];break
+           else:raise AssertionError('function not filebacked')
+           print('FUNCTION',symbol,'start='+hex(start),'end='+hex(end),'bytes='+hex(len(raw)))
+           for ins in decoder.disasm(raw,start):
+            extra=''
+            if ins.mnemonic in ('b','bl') and ins.op_str.startswith('#0x'):
+             target=int(ins.op_str[1:],16)
+             if target in stub_names:extra=' ; stub '+stub_names[target]
+             elif target in names:extra=' ; '+','.join(names[target][:3])
+            print(hex(ins.address)+': '+ins.bytes.hex()+' '+ins.mnemonic+' '+ins.op_str+extra)
           PYCODE
 
   inspect-fex:
