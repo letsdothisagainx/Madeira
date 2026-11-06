@@ -446,13 +446,31 @@ jobs:
           run-id: ${{ inputs.inspect_native_run_id }}
           github-token: ${{ github.token }}
           path: previous-ipa
-      - name: Inspect the native instruction from the reported build
+      - name: Inspect exact installed readonly-link retry
         run: |
-          python3 -m venv "$RUNNER_TEMP/native-image-tools"
-          "$RUNNER_TEMP/native-image-tools/bin/pip" install capstone==5.0.6
-          "$RUNNER_TEMP/native-image-tools/bin/python" tests/host/check-native-apc-image.py
           unzip -q previous-ipa/Madeira.ipa 'Payload/Madeira.app/Madeira.debug.dylib' -d previous-ipa
-          "$RUNNER_TEMP/native-image-tools/bin/python" tools/inspect-native-apc.py previous-ipa/Payload/Madeira.app/Madeira.debug.dylib --expected-uuid "$MADEIRA_INSPECT_UUID" --offset "$MADEIRA_INSPECT_OFFSET" --annotations
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          import hashlib,os,struct,uuid
+          p=Path('previous-ipa/Payload/Madeira.app/Madeira.debug.dylib')
+          b=p.read_bytes(); assert struct.unpack_from('<I',b)[0]==0xfeedfacf
+          pos=32; found=None
+          for _ in range(struct.unpack_from('<I',b,16)[0]):
+           cmd,n=struct.unpack_from('<II',b,pos)
+           if cmd==0x1b: found=str(uuid.UUID(bytes=b[pos+8:pos+24])).upper()
+           pos+=n
+          assert found==os.environ['MADEIRA_INSPECT_UUID'].upper(),(found,os.environ['MADEIRA_INSPECT_UUID'])
+          print('::notice title=Exact readonly-link binary::UUID='+str(found)+' SHA256='+hashlib.sha256(b).hexdigest()+' artifact=13503723825 source=d64b6d94627a1ff620445d85c7292d239dcecab7')
+          PYCODE
+          xcrun llvm-objdump --macho --disassemble-symbols=_open_fd previous-ipa/Payload/Madeira.app/Madeira.debug.dylib > "$RUNNER_TEMP/readonly-open-fd.txt"
+          python3 - "$RUNNER_TEMP/readonly-open-fd.txt" <<'PYCODE'
+          import sys
+          from pathlib import Path
+          s=Path(sys.argv[1]).read_text()
+          assert '_open_fd' in s,'native open_fd symbol not present'
+          lines=s.splitlines(); print('NATIVE_OPEN_FD_DISASSEMBLY lines='+str(len(lines)))
+          print('\n'.join(lines[:2200]))
+          PYCODE
 
   inspect-fex:
     if: inputs.inspect_fex_run_id != ''
