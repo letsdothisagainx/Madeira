@@ -72,6 +72,17 @@ static int query(void) {
     printf("[service-fixture] query-state=%lu pid=%lu exit=%lu\n",(unsigned long)p.dwCurrentState,(unsigned long)p.dwProcessId,(unsigned long)p.dwWin32ExitCode);
     CloseServiceHandle(s);CloseServiceHandle(m);return p.dwCurrentState==SERVICE_RUNNING?0:21;
 }
+static int query_image(void) {
+    SC_HANDLE m=manager(),s=opened(m);SERVICE_STATUS_PROCESS p;DWORD n;
+    if(!QueryServiceStatusEx(s,SC_STATUS_PROCESS_INFO,(BYTE*)&p,sizeof(p),&n))fail("QueryServiceStatusEx-image");
+    if(p.dwCurrentState!=SERVICE_RUNNING||!p.dwProcessId){CloseServiceHandle(s);CloseServiceHandle(m);return 21;}
+    HANDLE process=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,FALSE,p.dwProcessId);
+    if(!process)fail("OpenProcess-image");
+    wchar_t path[32768];DWORD length=32768;
+    if(!QueryFullProcessImageNameW(process,0,path,&length)||!length||length>=32768)fail("QueryFullProcessImageName");
+    wprintf(L"[service-fixture] query-image=%ls\n",path);
+    CloseHandle(process);CloseServiceHandle(s);CloseServiceHandle(m);return 0;
+}
 static int stop(void) {
     SC_HANDLE m=manager(),s=opened(m);SERVICE_STATUS p;
     if(!ControlService(s,SERVICE_CONTROL_STOP,&p)&&GetLastError()!=ERROR_SERVICE_NOT_ACTIVE)fail("ControlService");
@@ -107,6 +118,7 @@ int wmain(int argc,wchar_t **argv) {
     }
     if(argc>=3&&!wcscmp(argv[1],L"--setup"))return setup(argv[2]);
     if(argc==2&&!wcscmp(argv[1],L"--query"))return query();
+    if(argc==2&&!wcscmp(argv[1],L"--query-image"))return query_image();
     if(argc==2&&!wcscmp(argv[1],L"--stop"))return stop();
     if(argc==2&&!wcscmp(argv[1],L"--pipe-enumeration")) {
         WIN32_FIND_DATAW data;HANDLE find=FindFirstFileW(L"\\\\.\\pipe\\*",&data);DWORD error=find==INVALID_HANDLE_VALUE?GetLastError():0;

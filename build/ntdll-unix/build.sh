@@ -324,6 +324,9 @@ if source.name == 'file.c':
     text = text.replace(read_done, read_done + '\n    if (type == FD_TYPE_FILE && status == STATUS_SUCCESS && total)\n        ios_steam_validation_read_note( unix_handle, total, offset );')
 output.write_text(text)
 PYCODE
+            if [ "$name" = file ]; then
+                python3 "$REPO_ROOT/tools/build/stage-htmlipc-log-file.py" "$OBJ_DIR/${name}_ios.c"
+            fi
             IO_FAILED_BEFORE=$FAILED
             compile_one "$OBJ_DIR/${name}_ios.c" "$name"
             if [ "$FAILED" -ne "$IO_FAILED_BEFORE" ]; then

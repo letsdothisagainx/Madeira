@@ -11,17 +11,17 @@ stager=importlib.util.module_from_spec(spec);spec.loader.exec_module(stager)
 original=(ROOT/'wine/dlls/ntdll/unix/sync.c').read_text()
 header=ROOT/'build/ntdll-unix/htmlipc_section_trace.h'
 staged=stager.stage(original,header)
-assert staged.count('ios_htmlipc_section_note("create",&ios_trace,ret,handle,protect,sec_flags);')==1
-assert staged.count('ios_htmlipc_section_note("open",&ios_trace,ret,handle,0,0);')==1
-for function in ['NtCreateSection','NtOpenSection']:
-    start=staged.index('NTSTATUS WINAPI '+function+'(');end=staged.index('\n}',start);body=staged[start:end]
-    assert body.index('ios_htmlipc_section_capture(')<body.index('SERVER_START_REQ(')
-    assert body.index('SERVER_END_REQ;')<body.index('ios_htmlipc_section_note(')<body.rindex('return ret;')
-    assert '*handle' not in body[body.index('ios_htmlipc_section_note('):]
-# No original request, early return, status assignment or output write changes.
 restored=staged.replace('#include "'+str(header)+'"\n\n','')
-restored='\n'.join(line for line in restored.split('\n') if not any(mark in line for mark in [
-    'struct ios_htmlipc_section_snapshot ios_trace;','ios_htmlipc_section_capture(','ios_htmlipc_section_note(']))
+for function in ['NtCreateSection','NtOpenSection']:
+    start=staged.index('NTSTATUS WINAPI '+function+'(');end=stager.function_end(staged,start)
+    body=staged[start:end]
+    assert body.index('ios_htmlipc_section_capture(')<body.index('ios_htmlipc_impl_')<body.index('ios_htmlipc_section_note(')<body.rindex('return status;')
+    assert '*handle' not in body[body.index('{'):]
+    # Remove the public observation wrapper and restore the unchanged original
+    # implementation name; exact equality proves every original early guard,
+    # return status, output write and server request is retained.
+    restored=restored.replace(body+'\n\n\n','',1)
+    restored=restored.replace('static NTSTATUS WINAPI ios_htmlipc_impl_'+function+'(', 'NTSTATUS WINAPI '+function+'(',1)
 assert restored==original
 assert 'stage-htmlipc-section-trace.py' in (ROOT/'build/ntdll-unix/build.sh').read_text()
 wow64=(ROOT/'wine/dlls/wow64/sync.c').read_text()

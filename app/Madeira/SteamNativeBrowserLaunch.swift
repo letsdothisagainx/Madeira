@@ -12,6 +12,9 @@ enum SteamNativeBrowserLaunchFiles {
     static let bridgeName = "madeira-htmlipc-bridge.dll"
     static let manifestName = "madeira-htmlipc-bridge.manifest.json"
     static let stampName = "madeira-htmlipc-bridge.madeira-owned-v1.json"
+    static let logRootName = "SteamBrowserLogs"
+    static let logOwnerName = ".madeira-browser-logs-owner-v1"
+    static let logOwnerBytes = Data("org.madeira.SteamBrowserLogs/v1\n".utf8)
     static let abiSHA256 = "431e697a27ea58bd662359d3c8bc41a37b4afca2692d6a3b77862743b181fd76"
     static let nativePrefix = "C:\\windows\\madeira-compat\\SteamBrowserRuntime\\"
     static let nativeCache = nativePrefix + SteamBrowserRuntimeFiles.official.id + "\\bin\\cef\\cef.win7"
@@ -273,6 +276,46 @@ enum SteamNativeBrowserLaunchFiles {
         try JSONEncoder().encode(complete).write(to: stamp, options: .atomic)
         trace(.pending, result: "completed", observed: manifest.bytes, hash: "match", machine: 0x8664, state: "installed", report: report)
     }
+    // The helper executable's statically linked logger writes debug.log next
+    // to its executable even when libcef receives an explicit --log-file.
+    // Prepare a separate owned namespace. Logging must never add a launch gate:
+    // if unavailable, the native exact-file policy returns a real I/O error.
+    @discardableResult
+    static func prepareMutableLogs(drive: URL, idle: () -> Bool,
+                                   report: (String) -> Void = { _ in }) -> Bool {
+        typealias Files = SteamBrowserRuntimeFiles
+        let fm = FileManager.default
+        var reason = "filesystem"
+        do {
+            guard idle() else { reason = "active"; throw Failure.active }
+            let compat = try compatRoot(drive: drive, idle: idle)
+            let root = URL(fileURLWithPath: try Files.destination(logRootName, under: compat).path, isDirectory: true)
+            if fm.fileExists(atPath: root.path) {
+                reason = "ownership"
+                try Files.plain(root, directory: true)
+                let owner = try Files.destination(logOwnerName, under: root)
+                guard try bounded(owner, maximum: 128) == logOwnerBytes else { throw Failure.ownership }
+                guard (try fm.attributesOfItem(atPath: owner.path)[.referenceCount] as? NSNumber)?.intValue == 1 else { throw Failure.ownership }
+            } else {
+                let stage = compat.appendingPathComponent(".browser-logs-" + UUID().uuidString, isDirectory: true)
+                try fm.createDirectory(at: stage, withIntermediateDirectories: false)
+                defer { if fm.fileExists(atPath: stage.path) { try? fm.removeItem(at: stage) } }
+                try logOwnerBytes.write(to: stage.appendingPathComponent(logOwnerName), options: .withoutOverwriting)
+                guard idle() else { reason = "active"; throw Failure.active }
+                try fm.moveItem(at: stage, to: root)
+            }
+            let log = try Files.destination("debug.log", under: root)
+            if fm.fileExists(atPath: log.path) {
+                reason = "log-type"; try Files.plain(log, directory: false)
+                guard (try fm.attributesOfItem(atPath: log.path)[.referenceCount] as? NSNumber)?.intValue == 1 else { throw Failure.ownership }
+            }
+            report("[steam-browser-log-v2] destination=owned-mutable result=ready immutable-default=redirected")
+            return true
+        } catch {
+            report("[steam-browser-log-v2] destination=owned-mutable result=unavailable reason=\(reason) immutable-default=denied")
+            return false
+        }
+    }
     static func windowsPath(_ file: URL, drive: URL) throws -> String {
         let root = drive.standardizedFileURL.path, path = file.standardizedFileURL.path
         guard path.hasPrefix(root + "/"),
@@ -354,6 +397,7 @@ enum SteamNativeBrowserLaunchFiles {
                                                             idle: idle, progress: progress)
             guard idle() else { throw Files.Failure.active }
             try Files.installBridge(source, manifest: manifest, drive: drive, digest: SteamBrowserRuntime.hash, idle: idle, report: progress)
+            Files.prepareMutableLogs(drive: drive, idle: idle, report: progress)
             try SteamBrowserRuntimeFiles.core(chromeHTML, steamRoot: steam, recipe: SteamBrowserRuntimeFiles.official, digest: SteamBrowserRuntime.hash)
             guard idle() else { throw Files.Failure.active }
             progress("[steam-browser-bridge-v2] phase=bridge-paths result=begin")

@@ -70,6 +70,7 @@
  * was corrupting memory this way. */
 #define IOS_STORE_SRC(r) ((r) == 31 ? 0ULL : state.__x[r])
 #include "jit_store_census.h"
+#include "fault_site_counters.h"
 
 #include <mach/mach_vm.h>
 #include <mach/thread_act.h>
@@ -353,6 +354,85 @@ static unsigned long long ios_store_family_counts[MADEIRA_STORE_FAMILIES];
  * (in which case W^X should move the frame rate) or only the tree worker (in
  * which case it buys a core but may not move FPS at all)? */
 volatile unsigned int ios_cur_fault_port = 0;
+
+/* Exact bounded replacement evidence for the older lossy hot-PC sample.
+ * Only ios_mach_exception_thread writes this table. First-event attribution
+ * is cached; a hit performs no Mach call, metadata callback, lock or allocation. */
+static struct ios_fault_site_table ios_fault_sites;
+static void ios_fault_site_snapshot_first( void *context, const struct ios_fault_site_key *key,
+                                          struct ios_fault_site_metadata *meta )
+{
+    unsigned char teb_bytes[offsetof(TEB, Peb) + sizeof(void *)];
+    uintptr_t self = 0;
+    mach_vm_size_t got = 0;
+    meta->target = *(const uintptr_t *)context;
+    if (key->teb && mach_vm_read_overwrite( mach_task_self(), key->teb, sizeof(teb_bytes),
+            (mach_vm_address_t)(uintptr_t)teb_bytes, &got ) == KERN_SUCCESS && got == sizeof(teb_bytes))
+    {
+        memcpy( &self, teb_bytes + offsetof(TEB, Tib.Self), sizeof(self) );
+        if (self == key->teb)
+        {
+            memcpy( &meta->pid, teb_bytes + offsetof(TEB, ClientId.UniqueProcess), sizeof(meta->pid) );
+            memcpy( &meta->tid, teb_bytes + offsetof(TEB, ClientId.UniqueThread), sizeof(meta->tid) );
+            memcpy( &meta->peb, teb_bytes + offsetof(TEB, Peb), sizeof(meta->peb) );
+            meta->teb_read = 1;
+        }
+    }
+    ios_jit_pool_mapping_snapshot( key->pc, &meta->code );
+    ios_jit_pool_mapping_snapshot( meta->target, &meta->data );
+}
+
+static void ios_fault_site_report_epoch(void)
+{
+    static const char *const names[MADEIRA_STORE_FAMILIES] =
+        { "other", "lse-rmw", "exclusive", "swap", "release", "gpr", "simd-pair" };
+    const struct ios_fault_site_entry *top[MADEIRA_STORE_FAMILIES][2];
+    unsigned family,rank;
+    dprintf( 2, "[fault-sites-v1] epoch=%llu total=%llu tracked=%llu overflow=%llu slots=%u/%u "
+             "probe-limit=%u ranking=tracked-keys-only metadata=first-event\n",
+             (unsigned long long)(ios_fault_sites.epoch + 1), (unsigned long long)ios_fault_sites.total,
+             (unsigned long long)ios_fault_sites.tracked, (unsigned long long)ios_fault_sites.overflow,
+             ios_fault_sites.occupied, IOS_FAULT_SITE_SLOTS, IOS_FAULT_SITE_PROBES );
+    /* Array order is named explicitly; unlike a lossy-PC table, every event
+     * belongs to either tracked or overflow in its instruction family. */
+    dprintf( 2, "[fault-site-coverage-v1] order=other,lse-rmw,exclusive,swap,release,gpr,simd-pair "
+             "total=%llu,%llu,%llu,%llu,%llu,%llu,%llu tracked=%llu,%llu,%llu,%llu,%llu,%llu,%llu "
+             "overflow=%llu,%llu,%llu,%llu,%llu,%llu,%llu\n",
+#define IOS_FAULT_SITE_VALUES(field) \
+        (unsigned long long)ios_fault_sites.field[0], (unsigned long long)ios_fault_sites.field[1], \
+        (unsigned long long)ios_fault_sites.field[2], (unsigned long long)ios_fault_sites.field[3], \
+        (unsigned long long)ios_fault_sites.field[4], (unsigned long long)ios_fault_sites.field[5], \
+        (unsigned long long)ios_fault_sites.field[6]
+             IOS_FAULT_SITE_VALUES(family_total), IOS_FAULT_SITE_VALUES(family_tracked),
+             IOS_FAULT_SITE_VALUES(family_overflow) );
+#undef IOS_FAULT_SITE_VALUES
+    ios_fault_site_top( &ios_fault_sites, top );
+    for (family = 0; family < MADEIRA_STORE_FAMILIES; family++) for (rank = 0; rank < 2; rank++)
+    {
+        const struct ios_fault_site_entry *entry = top[family][rank];
+        const struct ios_fault_mapping_meta *code,*data;
+        int generation;
+        if (!entry) continue;
+        code = &entry->first.code;data = &entry->first.data;
+        generation = ios_fault_site_generation( entry );
+        dprintf( 2, "[fault-site-v1] family=%s tracked-rank=%u hits=%llu pc=%p insn=%08x "
+                 "target-page=%p first-target=%p teb=%p port=%x first-pid=%llx first-tid=%llx "
+                 "first-peb=%p teb-read=%u code-pe=%p code-rx=%p code-rva=%llx code-size=%zu "
+                 "code-owner=%p code-mapped-by=%p code-generation=%llu data-pe=%p data-rx=%p data-rva=%llx "
+                 "data-size=%zu data-owner=%p data-mapped-by=%p data-generation=%llu cookies=%s metadata=first-event\n",
+                 names[family], rank + 1, (unsigned long long)entry->count, (void *)entry->key.pc,
+                 entry->key.insn, (void *)entry->key.target_page, (void *)entry->first.target,
+                 (void *)entry->key.teb, entry->key.port, (unsigned long long)entry->first.pid,
+                 (unsigned long long)entry->first.tid, (void *)entry->first.peb, entry->first.teb_read,
+                 (void *)code->pe_base, (void *)code->rx_base,
+                 (unsigned long long)(code->rx_base ? entry->key.pc - code->rx_base : 0), code->image_size,
+                 (void *)code->owner, (void *)code->mapped_by, code->generation, (void *)data->pe_base, (void *)data->rx_base,
+                 (unsigned long long)(data->rx_base ? entry->first.target - data->rx_base : 0), data->image_size,
+                 (void *)data->owner, (void *)data->mapped_by, data->generation,
+                 generation < 0 ? "changed" : generation ? "unchanged" : "unverifiable" );
+    }
+    ios_fault_site_reset( &ios_fault_sites );
+}
 
 /* ml691: pages demoted to RW by the W^X path, so an execute fault on one can be
  * recovered. Kept OUTSIDE the store handler's static so the exec path can reach
@@ -5995,6 +6075,15 @@ wx_done: ;
                         static volatile int emul_count = 0;
                         int ec = __sync_add_and_fetch(&emul_count, 1);
                         __atomic_fetch_add(&ios_store_family_counts[madeira_jit_store_family(insn)], 1, __ATOMIC_RELAXED);
+                        {
+                            struct ios_fault_site_key key = {
+                                .pc = fault_pc, .teb = thread_teb,
+                                .target_page = fault_addr & ~(uintptr_t)0x3fff,
+                                .port = thread, .insn = insn, .family = madeira_jit_store_family(insn)
+                            };
+                            if (ios_fault_site_note( &ios_fault_sites, &key, ios_fault_site_snapshot_first,
+                                                     &fault_addr ) > 0) ios_fault_site_report_epoch();
+                        }
 
                         /* ============ ml680 WHAT DOES A FAULT ACTUALLY COST? ==
                          *
@@ -6047,211 +6136,9 @@ wx_done: ;
                             }
                         }
 
-                        /* ============ ml678 FAULT CLASSIFIER ==================
-                         *
-                         * ml677 sampled 13,299 of 13.3M faults as LOG LINES and
-                         * I then matched their instruction ENCODING against the
-                         * spinning worker's block and declared them the same
-                         * code. They are not: 0 of 13,299 fault pcs and 0 of
-                         * 3,248 EXC_SAMPLE pcs fall inside that block. c89ffcc1
-                         * is FEX's TSO lowering of an ordinary store and occurs
-                         * all over translated code, so encoding proves nothing.
-                         *
-                         * Aggregate IN-PROBE by host pc instead -- real event
-                         * counts, not sampled lines -- and carry the facts that
-                         * identify the emitter: the block-granular guest RIP
-                         * from FEX's ThreadState (x28+0x18, a plain load: NEVER
-                         * call an EC export from a fault path, ml613), the
-                         * target page, and how many distinct pages that pc hits
-                         * (one page = a hot data structure, many = a memcpy-like
-                         * sweep). */
-                        {
-                            enum { FC_SLOTS = 24 };
-                            enum { FC_PAGESET = 64, FC_SAMPLES = 12 };
-                            static struct {
-                                unsigned long long pc, rip, page, page2;
-                                unsigned long long hits; unsigned pages_seen;
-                                unsigned long long lo, hi, prev, stride;
-                                unsigned restarts, nset;
-                                unsigned long long pset[FC_PAGESET];
-                                unsigned nsmp;
-                                struct { unsigned long long hits, rsp, rcx, rdx, r8, addr; } smp[FC_SAMPLES];
-                            } fc[FC_SLOTS];
-                            static volatile int fc_lock;
-                            unsigned long long fpage = (unsigned long long)fault_addr & ~0x3fffull;
-                            unsigned long long grip = 0;
-                            /* x28 = FEX ThreadState; +0x18 = State.rip for this block */
-                            if (state.__x[28] > 0x10000)
-                            {
-                                mach_vm_size_t g = 0;
-                                if (mach_vm_read_overwrite(mach_task_self(),
-                                        (mach_vm_address_t)(state.__x[28] + 0x18), 8,
-                                        (mach_vm_address_t)&grip, &g) != KERN_SUCCESS || g != 8)
-                                    grip = 0;
-                            }
-                            if (!__sync_lock_test_and_set(&fc_lock, 1))
-                            {
-                                int fi, victim = 0;
-                                for (fi = 0; fi < FC_SLOTS; fi++)
-                                {
-                                    if (fc[fi].pc == (unsigned long long)fault_pc) break;
-                                    if (!fc[fi].pc) { victim = fi; break; }
-                                    if (fc[fi].hits < fc[victim].hits) victim = fi;
-                                }
-                                if (fi == FC_SLOTS) fi = victim;
-                                if (fc[fi].pc != (unsigned long long)fault_pc)
-                                {
-                                    fc[fi].pc = (unsigned long long)fault_pc;
-                                    fc[fi].rip = grip; fc[fi].page = fpage;
-                                    fc[fi].page2 = 0; fc[fi].hits = 0; fc[fi].pages_seen = 1;
-                                }
-                                fc[fi].hits++;
-                                if (fpage != fc[fi].page && fpage != fc[fi].page2)
-                                { fc[fi].page2 = fpage; fc[fi].pages_seen++; }
-
-                                /* ml725: IS THE DOMINANT SITE ONE BULK COPY, OR THE SAME
-                                 * COPY RESTARTING FOREVER?
-                                 *
-                                 * One site produced ~43M of ~44M emulated stores. Whether
-                                 * removing the per-store Mach fault is worth anything
-                                 * depends entirely on which of those it is: a genuine
-                                 * copy gets ~1000x faster, a retry livelock just spins
-                                 * faster and the game still never renders.
-                                 *
-                                 * Two prior readings from this very probe were wrong and
-                                 * must not be repeated. `rip` here is FEX's block-level
-                                 * State.rip, NOT the faulting instruction -- it names the
-                                 * surrounding block/call site only. And `pages_seen`
-                                 * remembers just TWO pages, so alternating over three or
-                                 * more inflates it without bound; the 7.6M it reported is
-                                 * not a cardinality. The exact guest RIP is NOT
-                                 * obtainable here: BTCpu64IosRipFromHostPC is an ARM64EC
-                                 * PE export and calling it from this native handler is
-                                 * what crashed every launch in ml613.
-                                 *
-                                 * So measure what IS available natively: the fault-address
-                                 * sequence. Ascending with a fixed stride and a
-                                 * monotonically rising span = a bulk copy. Addresses that
-                                 * jump backwards to a previous low-water mark = restarts,
-                                 * and the count says how many. A small saturating page set
-                                 * gives a cardinality that is honest about its own limit.
-                                 */
-                                if (fc[fi].hits == 1) {
-                                    fc[fi].lo = fc[fi].hi = (unsigned long long)fault_addr;
-                                    fc[fi].prev = (unsigned long long)fault_addr;
-                                    fc[fi].restarts = 0; fc[fi].stride = 0; fc[fi].nset = 0;
-                                } else {
-                                    unsigned long long a = (unsigned long long)fault_addr;
-                                    if (a < fc[fi].lo) fc[fi].lo = a;
-                                    if (a > fc[fi].hi) fc[fi].hi = a;
-                                    if (a > fc[fi].prev) {
-                                        unsigned long long d = a - fc[fi].prev;
-                                        if (d <= 64 && (!fc[fi].stride || d == fc[fi].stride))
-                                            fc[fi].stride = d;
-                                    } else if (a + 0x10000 < fc[fi].prev) {
-                                        fc[fi].restarts++;   /* big backward jump */
-                                    }
-                                    fc[fi].prev = a;
-                                }
-                                /* ml726: SAMPLE THE CALL FRAME AND ARGUMENTS.
-                                 *
-                                 * ml725's `restarts` counter cannot answer the question it
-                                 * was built for: it increments on ANY backward destination
-                                 * jump over 64KiB, so sequential memcpys to unrelated
-                                 * destinations inflate it exactly like a retry would. Its
-                                 * value must NOT be divided by hits to infer a copy length
-                                 * -- that denominator is backward jumps, not invocations.
-                                 *
-                                 * What separates "one slow copy", "the same copy retried"
-                                 * and "many legitimate copies" is the call frame and the
-                                 * arguments over time. Windows x64 puts memcpy's dst/src/len
-                                 * in RCX/RDX/R8, and FEX's SRA keeps those in x0/x1/x2 with
-                                 * RSP in x23 -- all readable here without touching FEX.
-                                 *
-                                 * A constant RSP with dst/len resetting to the same values
-                                 * is a retry. A marching dst with RSP constant is one long
-                                 * copy. Changing RSP with changing args is ordinary work
-                                 * made slow by the fault cost -- and only in that last case
-                                 * is optimising the store path the thing that reaches a
-                                 * frame. Sampled sparsely so the fault path stays cheap. */
-                                if ((fc[fi].hits % 250000ull) == 1 && fc[fi].nsmp < FC_SAMPLES) {
-                                    unsigned si2 = fc[fi].nsmp++;
-                                    fc[fi].smp[si2].hits = fc[fi].hits;
-                                    fc[fi].smp[si2].rsp  = (unsigned long long)state.__x[23];
-                                    fc[fi].smp[si2].rcx  = (unsigned long long)state.__x[0];
-                                    fc[fi].smp[si2].rdx  = (unsigned long long)state.__x[1];
-                                    fc[fi].smp[si2].r8   = (unsigned long long)state.__x[2];
-                                    fc[fi].smp[si2].addr = (unsigned long long)fault_addr;
-                                }
-
-                                {   /* saturating distinct-page set, honest about its cap */
-                                    unsigned pi; int seen = 0;
-                                    for (pi = 0; pi < fc[fi].nset; pi++)
-                                        if (fc[fi].pset[pi] == fpage) { seen = 1; break; }
-                                    if (!seen && fc[fi].nset < FC_PAGESET) fc[fi].pset[fc[fi].nset++] = fpage;
-                                }
-
-                                /* ml690: attribute faults to the ORIGINATING thread.
-                                 * The aggregate rate cannot say whether the main
-                                 * thread is the one being stalled -- and that is
-                                 * exactly what decides whether W^X moves the frame
-                                 * rate or merely frees a core. */
-                                {
-                                    enum { FP_SLOTS = 24 };
-                                    static struct { unsigned port; unsigned long long n; } fp[FP_SLOTS];
-                                    unsigned pi;
-                                    extern volatile unsigned int ios_cur_fault_port;
-                                    for (pi = 0; pi < FP_SLOTS; pi++)
-                                    {
-                                        if (fp[pi].port == ios_cur_fault_port) { fp[pi].n++; break; }
-                                        if (!fp[pi].port) { fp[pi].port = ios_cur_fault_port; fp[pi].n = 1; break; }
-                                    }
-                                    if ((ec % 400000) == 0)
-                                    {
-                                        unsigned q;
-                                        dprintf(STDERR_FILENO, "[fault-by-thread] ml690 after %d stores:\n", ec);
-                                        for (q = 0; q < FP_SLOTS; q++)
-                                            if (fp[q].port)
-                                                dprintf(STDERR_FILENO,
-                                                    "[fault-by-thread]   port=0x%x faults=%llu (%llu%%)\n",
-                                                    fp[q].port, fp[q].n,
-                                                    (fp[q].n * 100ull) / (unsigned long long)ec);
-                                    }
-                                }
-                                if ((ec % 200000) == 0)
-                                {
-                                    int k;
-                                    dprintf(STDERR_FILENO,
-                                        "[fault-class] ml678 ==== %d emulated stores so far ====\n", ec);
-                                    for (k = 0; k < FC_SLOTS; k++)
-                                    {
-                                        if (!fc[k].hits) continue;
-                                        dprintf(STDERR_FILENO,
-                                                "[fault-class]   pc=0x%llx blockRIP=0x%llx hits=%llu "
-                                                "page=0x%llx pages2slot=%u | ml725 span=[0x%llx..0x%llx] "
-                                                "=%lluKB stride=%llu restarts=%u pages%s%u\n",
-                                                fc[k].pc, fc[k].rip, fc[k].hits,
-                                                fc[k].page, fc[k].pages_seen,
-                                                fc[k].lo, fc[k].hi,
-                                                (fc[k].hi >= fc[k].lo) ? (fc[k].hi - fc[k].lo) / 1024 : 0,
-                                                fc[k].stride, fc[k].restarts,
-                                                (fc[k].nset >= FC_PAGESET) ? ">=" : "=", fc[k].nset);
-                                        if (fc[k].hits > 1000000ull) {
-                                            unsigned sj;
-                                            for (sj = 0; sj < fc[k].nsmp; sj++)
-                                                dprintf(STDERR_FILENO,
-                                                    "[fault-args] ml726 pc=0x%llx @%lluk rsp=0x%llx "
-                                                    "rcx/dst=0x%llx rdx/src=0x%llx r8/len=0x%llx addr=0x%llx\n",
-                                                    fc[k].pc, fc[k].smp[sj].hits / 1000ull,
-                                                    fc[k].smp[sj].rsp, fc[k].smp[sj].rcx,
-                                                    fc[k].smp[sj].rdx, fc[k].smp[sj].r8,
-                                                    fc[k].smp[sj].addr);
-                                        }
-                                    }
-                                }
-                                __sync_lock_release(&fc_lock);
-                            }
-                        }
+                        /* The bounded exact epoch census above replaces the
+                         * lossy 24-PC classifier. Do not read x28/guest state
+                         * or query VM on every completed store for profiling. */
                         if (madeira_diag_enabled && (ec <= 5 || (ec % 1000) == 0))
                         {   /* ml649: the readback below touches both aliases */
                             /* Verify dual-map sharing: read back via the RX

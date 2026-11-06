@@ -9,6 +9,10 @@ on:
       - app/Madeira/SteamRuntime.swift
       - app/Madeira/SteamNativeBrowserLaunch.swift
       - tests/host/check-steam-browser-bridge.py
+      - tests/host/check-steam-browser-logs.py
+      - tests/host/htmlipc/test_log_file.c
+      - build/ntdll-unix/htmlipc_log_file.h
+      - tools/build/stage-htmlipc-log-file.py
       - tests/host/check-steam-browser-cache.py
       - tests/integration/check-official-steam-browser-cache.py
       - build/htmlipc/domain-routing/**
@@ -26,6 +30,10 @@ on:
       - app/Madeira/SteamRuntime.swift
       - app/Madeira/SteamNativeBrowserLaunch.swift
       - tests/host/check-steam-browser-bridge.py
+      - tests/host/check-steam-browser-logs.py
+      - tests/host/htmlipc/test_log_file.c
+      - build/ntdll-unix/htmlipc_log_file.h
+      - tools/build/stage-htmlipc-log-file.py
       - tests/host/check-steam-browser-cache.py
       - tests/integration/check-official-steam-browser-cache.py
       - build/htmlipc/domain-routing/**
@@ -57,6 +65,10 @@ jobs:
           key: official-browser-v2-fee14790-1ab3b383-8b712b2a
       - name: Test production Swift bridge upgrades, readback and interrupted ownership transactions
         run: python3 tests/host/check-steam-browser-bridge.py --require-swift --official-archives "$MADEIRA_VALVE_ARCHIVE_CACHE" --download-official
+      - name: Load pinned Wine file syscall source
+        run: git submodule update --init --depth 1 wine
+      - name: Test native mutable logging and production Swift strict cache reuse
+        run: python3 tests/host/check-steam-browser-logs.py --require-swift
   controller-image:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -64,11 +76,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Load pinned Wine file syscall source
+        run: git submodule update --init --depth 1 wine
       - name: Test committed image ownership and exact writable data protections
         run: |
           python3 tests/host/check-htmlipc-controller.py
           python3 tests/host/check-htmlipc-domain-registry.py
           python3 tests/host/check-htmlipc-codecs.py
+          python3 tests/host/check-steam-browser-logs.py
   browser-cache:
     runs-on: xcode-27
     timeout-minutes: 15

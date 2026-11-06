@@ -6,11 +6,16 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[2]
 commands = [
+    ['python3', 'tests/host/check-fault-site-counters.py'],
+    ['python3', 'tests/host/check-native-data-alias.py'],
+    ['python3', 'tests/host/check-native-data-alias-performance.py', '--require-arm64-darwin'],
     ['python3', 'tests/host/check-native-atomic-alias.py'],
     ['python3', 'tests/host/check-native-atomic-image.py'],
     ['python3', 'tests/host/check-native-atomic-alias-performance.py', '--require-arm64-darwin'],
     ['python3', 'tests/host/check-jit-store-census.py'],
     ['python3', 'tests/host/check-htmlipc-section-trace.py'],
+    ['python3', 'tests/host/check-htmlipc-wow64-section-trace.py'],
+    ['python3', 'tests/host/check-official-browser-control-archive.py'],
     ['python3', 'tests/host/check-jit-alias-exclusive-add.py'],
     ['python3', 'tests/host/check-jit-alias-str-immediate.py'],
     ['python3', 'tests/host/check-jit-alias-exclusive.py'],
@@ -32,6 +37,7 @@ commands = [
     ['python3', 'tests/host/check-htmlipc-domain-registry.py'],
     ['python3', 'tests/host/check-steam-browser-cache.py', '--require-swift'],
     ['python3', 'tests/host/check-steam-browser-bridge.py', '--require-swift'],
+    ['python3', 'tests/host/check-steam-browser-logs.py', '--require-swift'],
     ['python3', 'tests/host/check-htmlipc-loader.py'],
     ['python3', 'tests/host/check-htmlipc-ready-state.py'],
     ['python3', 'tests/host/check-htmlipc-codecs.py'],

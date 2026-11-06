@@ -32,6 +32,9 @@ static mach_port_t exception_port, server_thread_port;
 static uint64_t fault_count, phase_failures;
 static unsigned char seen[(WORKERS + 1) * ROUNDS];
 static uint64_t worker_cpu_ns;
+#ifndef MADEIRA_PERF_RECORD_FAULT
+#define MADEIRA_PERF_RECORD_FAULT(insn) ((void)(insn))
+#endif
 
 static uint64_t clock_ns(clockid_t clock)
 {
@@ -113,6 +116,7 @@ static void *exception_server(void *unused)
         assert(thread_set_state(req->thread.name, ARM_THREAD_STATE64,
                                 (thread_state_t)&state, ARM_THREAD_STATE64_COUNT) == KERN_SUCCESS);
         __atomic_add_fetch(&fault_count, 1, __ATOMIC_RELAXED);
+        MADEIRA_PERF_RECORD_FAULT(insn);
         struct exception_reply reply = {0};
         reply.head.msgh_bits = MACH_MSGH_BITS(MACH_MSGH_BITS_REMOTE(req->head.msgh_bits), 0);
         reply.head.msgh_size = sizeof(reply);
