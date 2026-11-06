@@ -121,6 +121,27 @@ static void preserved_case(const char *target_suffix,const char *leaf)
     entry(&f,"system32",leaf,name);path(target,"%s/%s",f.base,target_suffix);assert(!symlink(target,name));
     assert(!repair(&f));same_link(name,target);assert(!quarantines(&f,NULL));cases++;
 }
+static void ancestor_case(void)
+{
+    struct fixture f;
+    char target[PATH_MAX],name[PATH_MAX],folder[PATH_MAX],quarantine[PATH_MAX],kept[PATH_MAX];
+    /* App containers can grant search but deny enumeration of ancestors.
+     * Ordinary relative DLL creation still works under the trusted prefix;
+     * requiring O_RDONLY on every ancestor was the failing control. */
+    f=fixture();catalog(&f,"ancestor.dll");old_target(&f,"ancestor.dll",target);
+    entry(&f,"system32","ancestor.dll",name);assert(!symlink(target,name));
+    assert(madeira_stale_target_missing(target)==1);
+    path(folder,"%s/system32",f.windows);assert(!chmod(f.base,0111));
+    if(geteuid()!=0){errno=0;int enumerating=open(f.base,O_RDONLY|O_DIRECTORY);assert(enumerating<0&&errno==EACCES);}
+    int searchable_farm=open(folder,O_RDONLY|O_DIRECTORY);unsigned migrated=repair(&f);
+    int installed=searchable_farm<0?-1:openat(searchable_farm,"ancestor.dll",O_WRONLY|O_CREAT|O_EXCL,0600);
+    ssize_t installed_bytes=installed<0?-1:write(installed,"NORMAL_INSTALLER_WRITE",22);
+    if(installed>=0)assert(!close(installed));
+    if(searchable_farm>=0)assert(!close(searchable_farm));
+    assert(!chmod(f.base,0700));assert(migrated==1&&installed>=0&&installed_bytes==22);
+    same_file(name,"NORMAL_INSTALLER_WRITE");assert(quarantines(&f,quarantine)==1);
+    path(kept,"%s/system32/ancestor.dll",quarantine);same_link(kept,target);cases++;
+}
 int main(int argc,char **argv)
 {
     assert(argc==2);root=argv[1];
@@ -150,6 +171,7 @@ int main(int argc,char **argv)
     assert(!stat(bundle_file,&after)&&before.st_dev==after.st_dev&&before.st_ino==after.st_ino&&
            before.st_mode==after.st_mode&&before.st_size==after.st_size);
     same_file(bundle_file,"TRUSTED_BUNDLE_BYTES");cases++;
+    ancestor_case();
     /* Predicate normalizes only Apple's exact OS-owned /private/var alias. */
     const char *bundle="/var/containers/Bundle/Application/12345678-1234-4567-89ab-1234567890ab/Madeira.app";
     const char *alias="/private/var/containers/Bundle/Application/89ABCDEF-0123-4567-89AB-0123456789AB/Madeira.app/x86_64-vcruntime/genuine.dll";
@@ -210,6 +232,7 @@ int main(int argc,char **argv)
         path(folder,"%s",target);*strrchr(folder,'/')=0;mkdirs(folder);write_file(target,"DENIED_BUT_PRESENT");
         entry(&f,"system32","denied.dll",name);assert(!symlink(target,name));assert(!chmod(folder,0000));
         errno=0;assert(stat(name,&after)<0&&errno==EACCES);unsigned attempted=exclusive_calls;
+        errno=0;assert(madeira_stale_target_missing(target)==-1&&errno==EACCES);
         assert(!repair(&f)&&exclusive_calls==attempted);same_link(name,target);assert(!quarantines(&f,NULL));
         assert(!chmod(folder,0700));same_file(target,"DENIED_BUT_PRESENT");cases++;
     }
@@ -246,6 +269,10 @@ int main(int argc,char **argv)
     assert(lines==16&&!strstr(messages,root)&&!strstr(messages,current_uuid)&&
            !strstr(messages,old_uuid)&&!strstr(messages,"PRIVATE_TOKEN"));
     assert(strstr(messages,"[stale-runtime-link-v1]")&&strstr(messages,"relative=windows/"));
+    if(geteuid()!=0){
+        char unavailable[256];snprintf(unavailable,sizeof(unavailable),"relative=windows/system32/denied.dll reason=target-unavailable action=not-authorized result=unknown code=%d",EACCES);
+        assert(strstr(messages,unavailable));
+    }
     free(messages);fclose(diagnostics);
     printf("PASS production stale-runtime-link repair: %u contracts, real ENOENT/installer replacement, catalog/bundle preservation, exclusive-capture races and bounded private diagnostics\n",cases);
     return 0;

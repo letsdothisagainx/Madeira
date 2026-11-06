@@ -55,6 +55,10 @@ with tempfile.TemporaryDirectory(prefix='madeira-msi-files-') as directory:
             raise AssertionError('fixture command failed code='+str(result.returncode)+'; '+safe[-4500:])
         for line in output.splitlines():
             if '[msi-files]' in line:print(line[:450],flush=True)
+        diagnostics=[line for line in output.splitlines() if 'err:msi:' in line]
+        for line in diagnostics[-12:]:
+            safe=line.replace(str(temporary),'<fixture>').replace(str(ROOT),'<repo>')
+            print('[msi-files] wine-diagnostic '+safe[:400],flush=True)
         return output
     clients={}
     for bits,compiler in ((32,'i686-w64-mingw32-gcc'),(64,'x86_64-w64-mingw32-gcc')):
@@ -113,8 +117,14 @@ with tempfile.TemporaryDirectory(prefix='madeira-msi-files-') as directory:
                 # Require the genuine cabinet/create path, not an invented
                 # result or an earlier MSI validation action.
                 raw=(Path(str(msi)+'.log')).read_bytes()
-                log=raw.decode('utf-16' if raw.startswith((b'\xff\xfe',b'\xfe\xff')) else 'utf-8',errors='replace')
-                assert 'InstallFiles' in log and ('1603' in log or 'Return value 3' in log)
+                codec='utf-16' if raw.startswith((b'\xff\xfe',b'\xfe\xff')) else ('utf-16-le' if raw and raw.count(0)>len(raw)//4 else 'utf-8')
+                log=raw.decode(codec,errors='replace')
+                valid_stage='InstallFiles' in log and ('1603' in log or 'Return value 3' in log)
+                print('[msi-files] baseline-log bytes='+str(len(raw))+' encoding='+codec+' installfiles='+str('InstallFiles' in log)+' failure='+str('1603' in log or 'Return value 3' in log),flush=True)
+                if not valid_stage:
+                    safe=log.replace(str(temporary),'<fixture>').replace(str(ROOT),'<repo>')
+                    print('[msi-files] baseline-log-tail '+repr(safe[-6000:]),flush=True)
+                assert valid_stage,'real MSI failed before the expected cabinet extraction stage; see bounded log above'
                 if not target.is_symlink():
                     assert not target.exists(),'failed owned install replaced the source unexpectedly'
                     target.symlink_to(stale)
