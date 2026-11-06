@@ -74,38 +74,41 @@ static inline int madeira_stale_target_owned(const char *target,const char *bund
     n=snprintf(expected,sizeof(expected),"/%s/x86_64-vcruntime/%s",app+1,leaf);
     return n>0&&(size_t)n<sizeof(expected)&&!strcmp(old+root+37,expected);
 }
-/* Every supplied path component is opened without following a link. Darwin's
- * OS-owned /var alias is the only normalized exception. */
+/* The caller supplies these two trusted app-managed anchors. Open their
+ * final directory without following it, but do not require directory-read
+ * access on OS container ancestors. Relative children remain nofollow. */
 static inline int madeira_stale_open_directory(const char *path)
 {
-    char normalized[PATH_MAX],*part,*end;int fd,next;
+    char normalized[PATH_MAX];
     if(!madeira_stale_normalize(path,normalized)){errno=EINVAL;return -1;}
-#if defined(__APPLE__)
-    if(!strncmp(normalized,"/var/",5)){
-        fd=open("/private/var",O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW);part=normalized+5;
-    }else
-#endif
-    {fd=open("/",O_RDONLY|O_DIRECTORY|O_CLOEXEC);part=normalized+1;}
-    if(fd<0)return -1;
-    for(;;){
-        end=strchr(part,'/');if(end)*end=0;
-        next=openat(fd,part,O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW);close(fd);
-        if(next<0)return -1;
-        fd=next;if(!end)return fd;part=end+1;
-    }
+    return open(path,O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW);
 }
-/* Check absence without following any target-parent or target-leaf link.
- * ENOENT is proof of absence; permissions and other errors are not proof. */
+/* 1 = proven absent, 0 = present, -1 = unavailable/unsafe. Metadata-only
+ * traversal needs search permission, not permission to enumerate app roots.
+ * Every existing parent is inspected without following a symlink. */
 static inline int madeira_stale_target_missing(const char *target)
 {
-    char path[PATH_MAX],leaf[256];char *last;struct stat st;int parent,result,error;
-    if(!madeira_stale_normalize(target,path)||(last=strrchr(path,'/'))==NULL||
-       !madeira_stale_leaf(last+1))return 0;
-    memcpy(leaf,last+1,strlen(last+1)+1);*last=0;
-    parent=madeira_stale_open_directory(path);
-    if(parent<0)return errno==ENOENT;
-    result=fstatat(parent,leaf,&st,AT_SYMLINK_NOFOLLOW);error=errno;close(parent);
-    return result<0&&error==ENOENT;
+    char normalized[PATH_MAX],path[PATH_MAX];struct stat st;size_t length;
+    if(!madeira_stale_normalize(target,normalized)){errno=EINVAL;return -1;}
+#if defined(__APPLE__)
+    if(!strncmp(normalized,"/var/",5)){
+        int n=snprintf(path,sizeof(path),"/private%s",normalized);
+        if(n<0||(size_t)n>=sizeof(path)){errno=ENAMETOOLONG;return -1;}
+    }else
+#endif
+    memcpy(path,normalized,strlen(normalized)+1);
+    length=strlen(path);
+    for(size_t i=1;i<=length;i++){
+        char saved;
+        if(i<length&&path[i]!='/')continue;
+        saved=path[i];path[i]=0;
+        if(lstat(path,&st)){int error=errno;path[i]=saved;errno=error;return error==ENOENT?1:-1;}
+        path[i]=saved;
+        if(i==length)return 0;
+        if(S_ISLNK(st.st_mode)){errno=ELOOP;return -1;}
+        if(!S_ISDIR(st.st_mode)){errno=ENOTDIR;return -1;}
+    }
+    errno=EINVAL;return -1;
 }
 static inline int madeira_stale_same_object(const struct stat *a,const struct stat *b)
 {
@@ -155,6 +158,13 @@ static inline void madeira_stale_note(const char *folder,const char *leaf,const 
     fprintf(stderr,"[stale-runtime-link-v1] relative=windows/%s/%s reason=%s action=%s result=%s code=%d quarantine=%s\n",
         folder,leaf,reason,action,result,error,quarantine?quarantine:"-");
 }
+static inline int madeira_stale_proven_missing(const char *target,const char *folder,const char *leaf,
+                                              const char *quarantine)
+{
+    int state=madeira_stale_target_missing(target),error=errno;
+    if(state<0)madeira_stale_note(folder,leaf,"target-unavailable","not-authorized","unknown",error,quarantine);
+    errno=error;return state==1;
+}
 /* mkdtemp creates the only directory this invocation adopts. Bind it back to
  * the held prefix fd before moving anything, then retain all evidence. */
 static inline int madeira_stale_quarantine(const char *prefix,int root,char name[80])
@@ -197,7 +207,7 @@ static inline unsigned madeira_repair_stale_runtime_links(const char *prefix,con
                !S_ISREG(current.st_mode)||current.st_size<=0||
                fstatat(farm,leaf,&source,AT_SYMLINK_NOFOLLOW)||!S_ISLNK(source.st_mode)||
                !madeira_stale_readlink(farm,leaf,target)||!madeira_stale_target_owned(target,bundle,leaf))continue;
-            if(!madeira_stale_target_missing(target))continue;
+            if(!madeira_stale_proven_missing(target,folders[folder],leaf,NULL))continue;
             if(!madeira_stale_same_directory(root,"drive_c",drive)||
                !madeira_stale_same_directory(drive,"windows",windows)||
                !madeira_stale_same_directory(windows,folders[folder],farm)||
@@ -206,7 +216,7 @@ static inline unsigned madeira_repair_stale_runtime_links(const char *prefix,con
                !madeira_stale_same_before(&current,&current_check)||
                fstatat(farm,leaf,&check,AT_SYMLINK_NOFOLLOW)||!madeira_stale_same_before(&source,&check)||
                !madeira_stale_readlink(farm,leaf,again)||strcmp(target,again)||
-               !madeira_stale_target_missing(target))continue;
+               !madeira_stale_proven_missing(target,folders[folder],leaf,NULL))continue;
             if(quarantine<0)quarantine=madeira_stale_quarantine(prefix,root,quarantine_name);
             if(quarantine<0){madeira_stale_note(folders[folder],leaf,"owned-dangling","kept","quarantine-failed",errno,NULL);continue;}
             if(qfarm<0){
@@ -220,7 +230,7 @@ static inline unsigned madeira_repair_stale_runtime_links(const char *prefix,con
             }
             if(!fstatat(qfarm,leaf,&moved,AT_SYMLINK_NOFOLLOW)&&madeira_stale_same_object(&source,&moved)&&
                madeira_stale_readlink(qfarm,leaf,again)&&!strcmp(target,again)&&
-               madeira_stale_target_missing(target)&&
+               madeira_stale_proven_missing(target,folders[folder],leaf,quarantine_name)&&
                !fstatat(catalog,leaf,&current_check,AT_SYMLINK_NOFOLLOW)&&
                madeira_stale_same_before(&current,&current_check)&&
                madeira_stale_same_directory(bundle_fd,"x86_64-vcruntime",catalog)&&
