@@ -33,6 +33,7 @@
 #include <sys/sysctl.h>
 #include <dlfcn.h>
 #include <mach-o/loader.h>
+#include "StaleRuntimeLinks.h"
 
 #include "WineProcessBridge.h"
 #include "WineServerBridge.h"
@@ -2637,6 +2638,13 @@ int wine_process_start(const char *prefix_path) {
     LOG("Starting Wine process with prefix: %{public}s", prefix_path);
 
     g_wine_running = 1;
+
+    /* The root launch is claimed, but no client fd or guest thread exists yet.
+     * A native-aarch64 bootstrap does not refresh the x64 VC-runtime overlay;
+     * retain and remove only proven dangling links to an older app container
+     * so the genuine installer can create its own ordinary prefix files. */
+    madeira_repair_stale_runtime_links(prefix_path,
+        [[[NSBundle mainBundle] bundlePath] fileSystemRepresentation]);
 
     // Create socketpair to bypass broken iOS UDS accept()
     // pair[0] = wineserver side (injected as client fd)

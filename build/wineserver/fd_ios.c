@@ -3195,12 +3195,70 @@ static int ios_replace_readonly_link( const char *name, int flags, unsigned int 
     if (unlink( name ) == -1) goto keep;
     dircache_changed();
     if (++count <= 16)
-        fprintf( stderr, "[readonly-link] #%u an overwrite replaced a link to a read-only file with a new file "
+        fprintf( stderr, "[readonly-link] #%u phase=unlink result=success; replacement open is pending "
                  "(MADEIRA_REPLACE_READONLY_LINK=0 fails it)\n", count );
     return 1;
 keep:
     errno = err;
     return 0;
+}
+#endif
+
+#ifdef WINE_IOS
+/* Failure-only context for system-DLL creation. This never follows a link to
+ * write, changes a file, or changes the errno consumed by file_set_error().
+ * In particular an unlink message above is not proof that retry-open worked. */
+static void ios_report_system_create_failure( const char *name, int flags, unsigned int access,
+                                              unsigned int sharing, unsigned int options )
+{
+    static unsigned int count;
+    int saved_errno = errno, leaf_errno, target_errno = 0, parent_errno = 0;
+    const char *relative, *leaf, *kind = "other", *parent_kind = "unknown";
+    char parent[4096];
+    struct stat st;
+    size_t n, i;
+
+    if (!name || !(flags & O_CREAT) || !(flags & O_TRUNC) ||
+        !(access & FILE_UNIX_WRITE_ACCESS) || count >= 16) return;
+    relative = strstr( name, "/windows/" );
+    if (!relative) return;
+    relative++;
+    leaf = relative + sizeof("windows/") - 1;
+    if (!strncmp( leaf, "system32/", 9 )) leaf += 9;
+    else if (!strncmp( leaf, "syswow64/", 9 )) leaf += 9;
+    else if (!strncmp( leaf, "sysx64/", 7 )) leaf += 7;
+    else return;
+    n = strlen( leaf );
+    if (n < 5 || n > 128 || leaf[n-4] != '.' ||
+        (leaf[n-3] | 0x20) != 'd' || (leaf[n-2] | 0x20) != 'l' || (leaf[n-1] | 0x20) != 'l') return;
+    for (i = 0; i < n; ++i)
+        if (!((leaf[i] >= 'a' && leaf[i] <= 'z') || (leaf[i] >= 'A' && leaf[i] <= 'Z') ||
+              (leaf[i] >= '0' && leaf[i] <= '9') || leaf[i] == '.' || leaf[i] == '_' || leaf[i] == '-')) return;
+    leaf_errno = lstat( name, &st ) ? errno : 0;
+    if (leaf_errno == ENOENT) kind = "absent";
+    else if (!leaf_errno)
+    {
+        if (S_ISLNK(st.st_mode))
+        {
+            kind = "symlink";
+            if (stat( name, &st )) target_errno = errno;
+        }
+        else if (S_ISREG(st.st_mode)) kind = "regular";
+    }
+    n = leaf - name - 1;
+    if (n < sizeof(parent))
+    {
+        memcpy( parent, name, n ); parent[n] = 0;
+        parent_errno = stat( parent, &st ) ? errno : 0;
+        parent_kind = parent_errno ? "unavailable" : S_ISDIR(st.st_mode) ? "directory" : "other";
+    }
+    fprintf( stderr, "[system-file-create] #%u pid=%04x tid=%04x phase=failed-open relative=%s "
+             "errno=%d flags=%x access=%x sharing=%x options=%x leaf=%s leaf-errno=%d "
+             "target-errno=%d parent=%s parent-errno=%d\n", ++count,
+             current ? (unsigned)current->process->id : 0, current ? (unsigned)current->id : 0,
+             relative, saved_errno, flags, access, sharing, options, kind, leaf_errno,
+             target_errno, parent_kind, parent_errno );
+    errno = saved_errno;
 }
 #endif
 
@@ -3281,6 +3339,9 @@ struct fd *open_fd( struct fd *root, const char *name, struct unicode_str nt_nam
 
         if (fd->unix_fd == -1)
         {
+#ifdef WINE_IOS
+            ios_report_system_create_failure( name, flags, access, sharing, options );
+#endif
             /* check for trailing slash on file path */
             if ((errno == ENOENT || (errno == ENOTDIR && !(options & FILE_DIRECTORY_FILE))) && name[strlen(name) - 1] == '/')
                 set_error( STATUS_OBJECT_NAME_INVALID );
