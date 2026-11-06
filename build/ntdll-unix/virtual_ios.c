@@ -4299,6 +4299,27 @@ static unsigned char ios_image_is_fex( const void *pe_base, size_t size )
 }
 
 #include "native_atomic_image.h"
+#include "native_counter_alias.h"
+
+/* ntdll's source-built probe block remains visible at its original DATA
+ * export. Its explicit writer contract selects the SAME physical bytes
+ * through this copy's RW alias. Called only after copying an owned image,
+ * before registering/publishing it; no published process pointer is reused.
+ */
+static void ios_jit_bind_native_counter_writer(void *source, void *rw, void *rx, size_t size)
+{
+    static unsigned int reports;
+    int bound;
+    if (strcasecmp(ios_pe_module_name(source,size),"ntdll.dll")) return;
+    bound=ios_native_counter_alias_bind(rw,size,(uintptr_t)rx,
+            (intptr_t)((uintptr_t)rw-(uintptr_t)rx),1);
+    if (bound) __sync_synchronize();
+    if (__atomic_fetch_add(&reports,1,__ATOMIC_RELAXED)<64)
+        dprintf(2,"[native-counter-alias-v1] module=ntdll.dll bytes=%u action=%s "
+                  "phase=private-copy result=%s counters=preserved rx-protection=unchanged\n",
+                MADEIRA_NATIVE_COUNTER_BYTES,bound?"bound":"unchanged",
+                bound?"ready":"contract-unavailable");
+}
 
 /* Only Madeira's native CPU modules, in a newly allocated private image copy.
  * Never run this on Valve/guest code, anonymous guest SMC, a published mapping,
@@ -19325,6 +19346,11 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
                 ios_jit_lower_native_atomics(image_base, (char *)jit_rw_base + offset,
                                              (char *)jit_rx_base + offset, image_size);
 
+            /* An unloaded-image rebuild also recopies its original BSS/data.
+             * Bind that new instance just as for the initial private copy. */
+            ios_jit_bind_native_counter_writer(image_base, (char *)jit_rw_base + offset,
+                                               (char *)jit_rx_base + offset, image_size);
+
             /* Record mapping for the entire image */
             ios_jit_add_mapping(image_base, (char *)jit_rx_base + offset, image_size);
 
@@ -20102,6 +20128,10 @@ int ios_jit_copy_module_for_child(void *module_addr, void *child_peb)
     }
 
     ios_jit_mark_ec_ranges_for_copy(rw_dest, rx_dest, m->size);
+
+    /* Relocations and the parent-pool sweep must precede the explicit data
+     * binding. Never carry a parent's writer pointer into its child's copy. */
+    ios_jit_bind_native_counter_writer(src, rw_dest, rx_dest, m->size);
 
     __asm__ __volatile__("dsb sy" ::: "memory");
     sys_icache_invalidate(rx_dest, m->size);
