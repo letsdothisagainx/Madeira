@@ -61,9 +61,17 @@ jobs:
         run: |
           set -o pipefail
           python3 tests/host/check-native-data-alias-performance.py --require-arm64-darwin | tee native-data-throughput.txt
-          python3 tests/host/check-native-qpc-counter-performance.py --require-arm64-darwin | tee native-qpc-throughput.txt
-          python3 tests/host/check-native-counter-call-performance.py --require-arm64-darwin | tee native-counter-call-throughput.txt
           python3 tests/host/check-native-atomic-alias-performance.py --require-arm64-darwin | tee native-atomic-throughput.txt
+      - name: Measure production QPC counter writer with real Mach faults
+        if: always()
+        run: |
+          set -o pipefail
+          python3 tests/host/check-native-qpc-counter-performance.py --require-arm64-darwin | tee native-qpc-throughput.txt
+      - name: Measure captured FEX statistics counter with real exclusive retry
+        if: always()
+        run: |
+          set -o pipefail
+          python3 tests/host/check-native-counter-call-performance.py --require-arm64-darwin | tee native-counter-call-throughput.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:

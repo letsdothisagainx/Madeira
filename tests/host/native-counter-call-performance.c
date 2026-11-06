@@ -64,7 +64,7 @@ static void counter_once(unsigned char context[256])
     /* This legitimate per-thread input selects the function's documented
      * fast branch after its counter operation; the original branch remains. */
     memset(context,0,256);operation(context,NULL);
-    assert(*(uint64_t *)(context+0x80)==1);
+    uint64_t calls;memcpy(&calls,context+0x80,sizeof(calls));assert(calls==1);
 }
 struct counter_worker { unsigned direct; };
 static void *run_counter_worker(void *argument)

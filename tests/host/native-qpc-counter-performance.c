@@ -247,6 +247,9 @@ static void run_phase(int bound)
 }
 int main(void)
 {
+    /* The binder shares the native-image parser header; its separate FEX
+     * lowering entry is exercised by the existing image test, not this probe. */
+    (void)ios_native_atomic_image_lower;
     assert(mach_timebase_info(&timebase)==KERN_SUCCESS);
     assert(mach_port_allocate(mach_task_self(),MACH_PORT_RIGHT_RECEIVE,&exception_port)==KERN_SUCCESS);
     assert(mach_port_insert_right(mach_task_self(),exception_port,exception_port,MACH_MSG_TYPE_MAKE_SEND)==KERN_SUCCESS);
