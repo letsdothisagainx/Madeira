@@ -299,7 +299,8 @@ int main(void)
     assert(mach_msg(&stop, MACH_SEND_MSG, sizeof(stop), 0, MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL) == KERN_SUCCESS);
     assert(!pthread_join(server, NULL));
     mach_port_deallocate(mach_task_self(), server_thread_port);
-    mach_port_destroy(mach_task_self(), exception_port);
+    assert(mach_port_deallocate(mach_task_self(), exception_port) == KERN_SUCCESS);
+    assert(mach_port_mod_refs(mach_task_self(), exception_port, MACH_PORT_RIGHT_RECEIVE, -1) == KERN_SUCCESS);
     puts("PASS native atomic alias hardware throughput: real Mach baseline, zero-fault production plan, no lost updates");
     return 0;
 }

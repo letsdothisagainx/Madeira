@@ -4314,7 +4314,7 @@ static void ios_jit_lower_native_atomics(void *source, void *rw, void *rx, size_
                                           (intptr_t)((uintptr_t)rw - (uintptr_t)rx));
     if (stats.planned)
     {
-        __asm__ __volatile__("dsb sy" ::: "memory");
+        __sync_synchronize();
         sys_icache_invalidate(rx, size);
     }
     dprintf(2, "[native-atomic-alias-v1] module=%s lse=%lu exclusive=%lu ranges=%lu "
