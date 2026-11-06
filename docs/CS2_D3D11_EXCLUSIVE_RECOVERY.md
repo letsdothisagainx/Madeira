@@ -1,0 +1,65 @@
+# CS2 D3D11 construction: November 6 capture
+
+The iPhone capture `madeira-log(20261106-073643).txt` runs public source
+`54b91d50636922db9e1b90bd71e87af3a7debe56`. Exact packaged-image inspection
+in Actions 42183627986 identifies ARM64EC d3d11.dll SHA-256
+`08e2eccae5a758ed6c15a3e8ca34de0d56266565aa69f1d0e87d07449d318671`.
+
+## Proven failure
+
+`d3d11.dll+0x102ddc`, instruction `c80f7d89` (`STXR W15,X9,[X12]`), faults
+writing its live peak-memory census through RX `0x322e94bc0`; the valid RW
+alias is `0x36ae94bc0`. This is inside the ArgumentEncodingContext constructor,
+after creation of its dummy constant buffer. Two preceding atomic additions
+complete. The peak maximum's different compiler-generated weak-CAS sequence
+is rejected: the discard-load helper requires an adjacent exclusive load;
+the add helper requires an adjacent load/arithmetic pair. This sequence has
+an intervening compare, conditional branch and address recomputation instead.
+
+The complete core at RVAs `0x102dc8..0x102e0c` is:
+
+```text
+ADD X10,X8,#0xa0; LDXR X11,[X10]; CMP X11,X12; B.NE mismatch
+ADD X12,X8,#0xa0; STXR W15,X9,[X12]; CBNZ W15,conflict
+MOV W12,#1; test: TBNZ W12,#0,continuation
+CMP X9,X11; MOV X12,X11; B.HI load; B continuation
+mismatch: MOV W12,WZR; CLREX; B test
+conflict: MOV W12,WZR; B test
+```
+
+X11 retains the observed value; X12 has become an address at the fault.
+Using X12 as the expected value or treating STXR as an unconditional store
+would corrupt the operation. Wine delivers the rejected access as
+`0x80000002`, unwinding through d3d11 and rendersystemdx11 into the game's
+device-creation error. This establishes one construction blocker, not the
+absence of further graphics errors.
+
+## Correction and scope
+
+The Mach handler independently validates live code/data ownership tokens,
+generations, the entire 18-word control-flow pattern, retained comparison
+flags, both address producers, original load value and maximum condition.
+It attempts one real compare-exchange through the checked RW alias. Success
+sets W15=0; a conflicting writer leaves data unchanged and sets W15=1 so the
+original native failure/reload path executes. Registers and flags are retained;
+the shared handler advances PC by four only after a completed attempt.
+No exclusive monitor is assumed to survive or transfer across the exception.
+Unknown sequences still follow normal exception delivery.
+
+No DXMT binaries, capabilities, HRESULTs, pool sizes, Steam paths or user data
+are changed. Existing adjacent-loop and STR handling remains intact.
+
+## Validation boundary
+
+Portable tests compile the actual production handler and mapping accessors,
+reproduce old-handler rejection, check 118 success/failure/ownership contracts
+and race six recovery workers with a direct RW writer. The Apple-only gate
+executes the exact captured instructions against real RX/RW aliases, including
+a separate writer forcing a genuine conflict while the faulting thread is
+suspended. Existing atomic, STR, ownership and allocator gates remain required.
+
+The device log proves adapter recognition and selection of feature level 11_1;
+it does not contain a completed device-creation HRESULT, swapchain creation
+or first game Present. A new iPhone run must confirm those operations, absence
+of the rejected STXR and progress toward the actual menu. CI cannot establish
+that CS2 is playable or that this is its final startup blocker.
