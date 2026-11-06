@@ -15,6 +15,8 @@ on:
       - build/ntdll-unix/jit_store_census.h
       - tests/host/check-native-atomic*.py
       - tests/host/check-native-data*.py
+      - tests/host/check-jit-alias-exclusive-conditional*.py
+      - tests/host/jit_alias_exclusive_conditional*.c
       - tests/host/native*atomic*.c
       - tests/host/native*data*alias*.c
       - tests/host/check-jit-store-census.py
@@ -32,6 +34,8 @@ on:
       - build/ntdll-unix/jit_store_census.h
       - tests/host/check-native-atomic*.py
       - tests/host/check-native-data*.py
+      - tests/host/check-jit-alias-exclusive-conditional*.py
+      - tests/host/jit_alias_exclusive_conditional*.c
       - tests/host/native*atomic*.c
       - tests/host/native*data*alias*.c
       - tests/host/check-jit-store-census.py
@@ -57,6 +61,10 @@ jobs:
           python3 tests/host/check-native-atomic-alias.py
           python3 tests/host/check-native-atomic-image.py
           python3 tests/host/check-jit-store-census.py
+          python3 tests/host/check-jit-alias-exclusive-conditional.py
+          python3 tests/host/check-jit-alias-exclusive.py
+          python3 tests/host/check-jit-alias-exclusive-add.py
+          python3 tests/host/check-jit-alias-str-immediate.py
       - name: Measure real Mach faults, native throughput and atomic contention
         run: |
           set -o pipefail

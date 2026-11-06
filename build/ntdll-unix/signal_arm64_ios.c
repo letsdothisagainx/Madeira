@@ -2455,6 +2455,87 @@ static int ios_mach_emulate_exclusive_add_loop( uint32_t insn, uint64_t pc, uint
     return 1;
 }
 
+/* A native C++ weak-CAS maximum update. The complete compiler sequence keeps
+ * the original loaded value while recomputing an address in the expected-value
+ * register. Neither adjacent-loop proof above applies. Validate both address
+ * producers, the comparison/failure/CLREX paths and the full original retry.
+ * NZCV still belongs to the equal comparison (the intervening ADD has no S).
+ *
+ * The interrupted thread's monitor is NOT transferred to this server. Perform
+ * one genuine conditional exchange against the retained observed value. A
+ * conflict sets Ws=1, leaving the loaded register intact for the original
+ * failure/reload path. No unconditional store or fabricated monitor success.
+ */
+static int ios_mach_emulate_exclusive_conditional_loop( uint32_t insn, uint64_t pc, uintptr_t fault_addr,
+                                                       uint64_t gpr[32], uint32_t nzcv, void *owner )
+{
+    extern unsigned long long ios_jit_pool_access_token( uintptr_t, size_t, void *, int );
+    enum { WORDS = 18, BYTES = WORDS * 4 };
+    unsigned desired = insn & 31, address = (insn >> 5) & 31, status = (insn >> 16) & 31;
+    unsigned base, load_address, loaded, registers[6], i, j;
+    uint32_t words[WORDS], expected_words[WORDS];
+    uintptr_t start, addr = gpr[address], rw, offset;
+    unsigned long long code_token, data_token;
+    uint64_t expected;
+    int ok;
+    if ((insn & 0x3fe07c00u) != 0x08007c00u || (insn >> 30) != 3 ||
+        pc < 20 || pc > UINTPTR_MAX - 51 || (pc & 3) || fault_addr != addr ||
+        addr > UINTPTR_MAX - 7 || (addr & 7) || (nzcv & 0xf0000000u) != 0x60000000u) return 0;
+    start = pc - 20;
+    code_token = ios_jit_pool_access_token( start, BYTES, owner, 1 );
+    data_token = ios_jit_pool_access_token( addr, 8, owner, 0 );
+    if (!code_token || !data_token || !ios_exclusive_code_readable( start, BYTES )) return 0;
+    for (i = 0; i < WORDS; ++i)
+        if (!ios_fault_read_insn( start + i * 4, &words[i] )) return 0;
+    if (words[5] != insn || (words[0] & 0xffc00000u) != 0x91000000u ||
+        (words[1] & 0x3fff7c00u) != 0x085f7c00u || (words[1] >> 30) != 3) return 0;
+    base = (words[0] >> 5) & 31;
+    load_address = words[0] & 31;
+    loaded = words[1] & 31;
+    registers[0] = base; registers[1] = load_address; registers[2] = loaded;
+    registers[3] = address; registers[4] = desired; registers[5] = status;
+    for (i = 0; i < sizeof(registers) / sizeof(registers[0]); ++i)
+    {
+        if (registers[i] == 31) return 0;
+        for (j = 0; j < i; ++j) if (registers[i] == registers[j]) return 0;
+    }
+    if (((words[1] >> 5) & 31) != load_address) return 0;
+    offset = (words[0] >> 10) & 0xfff;
+    if (gpr[base] > UINTPTR_MAX - offset || gpr[base] + offset != addr ||
+        gpr[load_address] != addr || gpr[desired] <= gpr[loaded]) return 0;
+    /* Relative targets include the original continuation one past this span.
+     * MOV Waddress is a boolean only AFTER the STXR, not its old expected value. */
+    expected_words[0] = words[0];
+    expected_words[1] = words[1];
+    expected_words[2] = 0xeb00001fu | address << 16 | loaded << 5;  /* CMP loaded,expected */
+    expected_words[3] = 0x54000141u;                              /* B.NE 13 */
+    expected_words[4] = (words[0] & ~31u) | address;               /* recompute same address */
+    expected_words[5] = insn;
+    expected_words[6] = 0x35000140u | status;                     /* CBNZ Ws,16 */
+    expected_words[7] = 0x52800020u | address;                    /* MOV Waddress,1 */
+    expected_words[8] = 0x37000140u | address;                    /* TBNZ Waddress,0,18 */
+    expected_words[9] = 0xeb00001fu | loaded << 16 | desired << 5; /* CMP desired,loaded */
+    expected_words[10] = 0xaa0003e0u | loaded << 16 | address;     /* MOV expected,loaded */
+    expected_words[11] = 0x54fffec8u;                             /* B.HI 1 */
+    expected_words[12] = 0x14000006u;                             /* B 18 */
+    expected_words[13] = 0x2a1f03e0u | address;                    /* MOV Waddress,0 */
+    expected_words[14] = 0xd5033f5fu;                             /* CLREX */
+    expected_words[15] = 0x17fffff9u;                             /* B 8 */
+    expected_words[16] = 0x2a1f03e0u | address;                    /* MOV Waddress,0 */
+    expected_words[17] = 0x17fffff7u;                             /* B 8 */
+    if (memcmp( words, expected_words, sizeof(words) )) return 0;
+    rw = ios_write_alias( addr );
+    if (ios_alias_write_is_trapped( addr ) || ios_alias_write_is_trapped( addr + 7 ) ||
+        !ios_alias_exclusive_span( addr, rw, 8 )) return 0;
+    if (ios_jit_pool_access_token( start, BYTES, owner, 1 ) != code_token ||
+        ios_jit_pool_access_token( addr, 8, owner, 0 ) != data_token) return 0;
+    expected = gpr[loaded];
+    ok = __atomic_compare_exchange_n( (uint64_t *)rw, &expected, gpr[desired], 0,
+                                      __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST );
+    gpr[status] = ok ? 0 : 1;
+    return 1;
+}
+
 #include "x18_scalar_load.h"
 #include "stik_breakpoint.h"
 
@@ -5850,20 +5931,30 @@ static void *ios_mach_exception_thread( void *arg )
                         uint64_t gpr[32];
                         void *owner = NULL;
                         mach_vm_size_t got = 0;
-                        int add_loop = 0;
+                        int add_loop = 0, conditional_loop = 0;
                         memcpy( gpr, state.__x, sizeof(state.__x) );
                         gpr[29] = state.__fp; gpr[30] = state.__lr; gpr[31] = state.__sp;
                         if (thread_teb && mach_vm_read_overwrite( mach_task_self(),
                             thread_teb + offsetof(TEB, Peb), sizeof(owner), (mach_vm_address_t)&owner,
                             &got ) == KERN_SUCCESS && got == sizeof(owner) && owner &&
                             (ios_mach_emulate_exclusive_loop( insn, fault_pc, fault_addr, gpr, owner ) ||
-                             (add_loop = ios_mach_emulate_exclusive_add_loop( insn, fault_pc, fault_addr, gpr, owner ))))
+                             (add_loop = ios_mach_emulate_exclusive_add_loop( insn, fault_pc, fault_addr, gpr, owner )) ||
+                             (conditional_loop = ios_mach_emulate_exclusive_conditional_loop(
+                                 insn, fault_pc, fault_addr, gpr, state.__cpsr, owner ))))
                         {
                             static unsigned exclusive_loop_logs;
                             memcpy( state.__x, gpr, sizeof(state.__x) );
                             state.__fp = gpr[29]; state.__lr = gpr[30];
                             emulated = 1;
-                            if (add_loop)
+                            if (conditional_loop)
+                            {
+                                static unsigned conditional_logs;
+                                if (conditional_logs++ < 16)
+                                    dprintf( 2, "[alias-exclusive-conditional] insn=%08x pc=%llx addr=%llx status=%u method=compare-exchange sequence=peak-max-v1\n",
+                                             insn, (unsigned long long)fault_pc, (unsigned long long)fault_addr,
+                                             (unsigned)gpr[(insn >> 16) & 31] );
+                            }
+                            else if (add_loop)
                             {
                                 static unsigned exclusive_add_logs;
                                 if (exclusive_add_logs++ < 16)
