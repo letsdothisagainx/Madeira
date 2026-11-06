@@ -105,6 +105,114 @@ static void register_variants(void)
         }
     restore_code();
 }
+enum { RECOVERY_THREADS=6, NATIVE_THREADS=1, PEAK_OPERATIONS=3000 };
+struct peak_worker {
+    unsigned index,native;
+    uint64_t attempts,successes,failures,mismatches,skipped;
+};
+static uint64_t peak_tickets;
+static unsigned peak_ready,peak_start,prime_loaded,prime_written,prime_finished;
+static uint64_t ticket(void){return __atomic_add_fetch(&peak_tickets,1,__ATOMIC_RELAXED);}
+static void wait_flag(unsigned *flag)
+{while(!__atomic_load_n(flag,__ATOMIC_ACQUIRE))sched_yield();}
+static unsigned recover_peak(struct peak_worker *worker,uint64_t loaded,uint64_t desired)
+{
+    struct state state,before;initial(&state,loaded,desired);before=state;
+    assert(route(0xc80f7d89,data_address(),&state,NULL));
+    unsigned status=(unsigned)state.__x[15];assert(status<=1);
+    unchanged_except_status(&before,&state,status);
+    /* A failed compare-exchange cannot consume the retained load: the
+     * original CMP/MOV/B.HI tail needs it when selecting its next load. */
+    assert(state.__x[11]==loaded&&state.__x[9]==desired&&state.__cpsr==0x60000000);
+    worker->attempts++;
+    if(status)worker->failures++;else worker->successes++;
+    return status;
+}
+static void retry_recovery_peak(struct peak_worker *worker,uint64_t desired,uint64_t expected)
+{
+    while(desired>expected){
+        uint64_t loaded=cell(); /* original LDXR retained result */
+        if(loaded!=expected){
+            /* Real B.NE -> boolean0/CLREX -> CMP desired,loaded -> MOV
+             * expected,loaded -> B.HI load. A mismatch never attempts STXR. */
+            worker->mismatches++;expected=loaded;continue;
+        }
+        if(!recover_peak(worker,loaded,desired))return;
+        /* Real CBNZ -> boolean0 -> CMP desired,loaded -> MOV expected,loaded
+         * -> B.HI load. Failed stores leave the retained value unchanged. */
+        expected=loaded;
+    }
+    worker->skipped++;
+}
+static void submit_recovery_peak(struct peak_worker *worker,uint64_t desired)
+{
+    retry_recovery_peak(worker,desired,cell()); /* initial expected-value read */
+}
+static void submit_native_peak(struct peak_worker *worker,uint64_t desired)
+{
+    uint64_t expected=cell();
+    while(desired>expected){
+        worker->attempts++;
+        if(__atomic_compare_exchange_n((uint64_t *)(rw+mapped_size/2+0x100),&expected,desired,1,
+                                      __ATOMIC_SEQ_CST,__ATOMIC_SEQ_CST)){
+            worker->successes++;return;
+        }
+        worker->failures++;
+    }
+    worker->skipped++;
+}
+static void *peak_thread(void *opaque)
+{
+    struct peak_worker *worker=opaque;unsigned first=0;
+    __atomic_add_fetch(&peak_ready,1,__ATOMIC_RELEASE);wait_flag(&peak_start);
+    /* Force one real conflict, not a synthetic status injection. The native
+     * RW writer changes0->2 AFTER recovery0 retained its observed0 for value1.
+     * Other workers wait until that failed conditional exchange is verified. */
+    if(!worker->native&&worker->index==0){
+        uint64_t desired=ticket(),loaded=cell();assert(desired==1&&loaded==0);
+        __atomic_store_n(&prime_loaded,1,__ATOMIC_RELEASE);wait_flag(&prime_written);
+        assert(recover_peak(worker,loaded,desired)==1&&cell()==2);
+        retry_recovery_peak(worker,desired,loaded);
+        __atomic_store_n(&prime_finished,1,__ATOMIC_RELEASE);first=1;
+    }else if(worker->native){
+        wait_flag(&prime_loaded);uint64_t desired=ticket();assert(desired==2);
+        submit_native_peak(worker,desired);assert(cell()==2);
+        __atomic_store_n(&prime_written,1,__ATOMIC_RELEASE);wait_flag(&prime_finished);first=1;
+    }else wait_flag(&prime_finished);
+    for(unsigned n=first;n<PEAK_OPERATIONS;n++){
+        uint64_t desired=ticket();
+        if(worker->native)submit_native_peak(worker,desired);
+        else submit_recovery_peak(worker,desired);
+    }
+    return NULL;
+}
+static void conditional_contention(void)
+{
+    enum { THREADS=RECOVERY_THREADS+NATIVE_THREADS };
+    pthread_t threads[THREADS];struct peak_worker workers[THREADS]={{0}};
+    uint64_t attempts=0,successes=0,failures=0,mismatches=0,skipped=0;
+    assert(!memcmp(rx+0x100,captured,sizeof(captured)));
+    put(0);peak_tickets=0;peak_ready=peak_start=prime_loaded=prime_written=prime_finished=0;
+    for(unsigned n=0;n<THREADS;n++){
+        workers[n].index=n;workers[n].native=n==RECOVERY_THREADS;
+        assert(!pthread_create(&threads[n],NULL,peak_thread,&workers[n]));
+    }
+    while(__atomic_load_n(&peak_ready,__ATOMIC_ACQUIRE)!=THREADS)sched_yield();
+    __atomic_store_n(&peak_start,1,__ATOMIC_RELEASE);
+    for(unsigned n=0;n<THREADS;n++){
+        assert(!pthread_join(threads[n],NULL));
+        attempts+=workers[n].attempts;successes+=workers[n].successes;
+        failures+=workers[n].failures;mismatches+=workers[n].mismatches;skipped+=workers[n].skipped;
+    }
+    assert(peak_tickets==THREADS*PEAK_OPERATIONS&&cell()==peak_tickets);
+    assert(workers[0].failures>=1&&attempts==successes+failures);
+    assert(!memcmp(rx+0x100,captured,sizeof(captured)));
+    printf("PASS conditional CAS contention:6 recovery threads+1 native RW max writer, %llu unique requests, finalpeak=%llu, attempts=%llu successes=%llu genuine-failures=%llu pre-store-mismatches=%llu guarded-skips=%llu; retained loads/status/PC/NZCV/allGPR preserved\n",
+        (unsigned long long)peak_tickets,(unsigned long long)cell(),(unsigned long long)attempts,
+        (unsigned long long)successes,(unsigned long long)failures,(unsigned long long)mismatches,
+        (unsigned long long)skipped);
+    cases++;
+}
 int main(void)
 {
     (void)accepted;(void)rejected;
@@ -174,6 +282,7 @@ int main(void)
     assert(route(0xc80f7d89,data_address(),&state,(void *)0x1234));
     unchanged_except_status(&before,&state,0);assert(cell()==20);cases++;
     ios_jit_mappings[0].owner_peb=ios_jit_mappings[1].owner_peb=NULL;
+    conditional_contention();
     /* Both RX and RW names expose the same physical bytes throughout. */
     assert(__atomic_load_n((uint64_t *)data_address(),__ATOMIC_ACQUIRE)==cell());
     assert(!memcmp(rx+0x100,captured,sizeof(captured)));

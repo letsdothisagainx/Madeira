@@ -185,6 +185,10 @@ static int old_route(uint32_t insn, uintptr_t rw_addr, uintptr_t fault_addr, str
 ''' + old_case + r'''
     *input = state; return emulated;
 }
+/* This route uses the fixture's standalone state, not Darwin's state type. */
+#ifdef __darwin_arm_thread_state64_set_pc_fptr
+#undef __darwin_arm_thread_state64_set_pc_fptr
+#endif
 #define __darwin_arm_thread_state64_set_pc_fptr(st, value) ((st).__pc = (uintptr_t)(value))
 static int route(uint32_t insn, uintptr_t fault_addr, struct state *input, void *owner)
 {
