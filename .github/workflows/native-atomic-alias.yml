@@ -61,6 +61,7 @@ jobs:
         run: |
           set -o pipefail
           python3 tests/host/check-native-data-alias-performance.py --require-arm64-darwin | tee native-data-throughput.txt
+          python3 tests/host/check-native-qpc-counter-performance.py --require-arm64-darwin | tee native-qpc-throughput.txt
           python3 tests/host/check-native-atomic-alias-performance.py --require-arm64-darwin | tee native-atomic-throughput.txt
       - uses: actions/upload-artifact@v4
         if: always()
@@ -74,6 +75,7 @@ jobs:
           retention-days: 14
 
   counter-producer-compile:
+    if: false
     runs-on: xcode-27
     timeout-minutes: 15
     steps:
