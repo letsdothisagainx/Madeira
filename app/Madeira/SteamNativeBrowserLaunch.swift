@@ -384,7 +384,7 @@ enum SteamNativeBrowserLaunchFiles {
         }
     }
     private func prepare(drive: URL, resourceRoot: URL?, idle: () -> Bool,
-                         progress: (String) -> Void) async throws -> Prepared {
+                         progress: @escaping (String) -> Void) async throws -> Prepared {
         typealias Files = SteamNativeBrowserLaunchFiles
         do {
             guard idle() else { throw Files.Failure.active }

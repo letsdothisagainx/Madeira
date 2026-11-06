@@ -11,7 +11,7 @@
 int wmain(int argc,WCHAR **argv)
 {
     STARTUPINFOW startup={0};PROCESS_INFORMATION child={0};HANDLE section=NULL,snapshot=INVALID_HANDLE_VALUE;
-    void *view=NULL;WCHAR command[32768],name[128];DWORD exit=0;int result=1,sdl=0,cef=0;ULONGLONG started;
+    void *view=NULL;WCHAR command[32768],name[128];DWORD exit=0;int result=1,sdl=0,cef=0,image_match=0,env_match=0;ULONGLONG started;
     if(argc!=5)return 2;
     CHECK(swprintf(name,128,L"SteamChrome_MasterStream_spid%lu_mem-IPCWrapper",GetCurrentProcessId())>0);
     SetLastError(0);section=OpenFileMappingW(FILE_MAP_READ,FALSE,name);
@@ -20,6 +20,17 @@ int wmain(int argc,WCHAR **argv)
         L"\"%ls\" -nocrashdialog -lang=en_US \"-steampath=%ls\" \"-cachedir=%ls\" \"-logdir=%ls\" -steampid=%lu -buildid=1792618285 -steamid=0 -uimode=7 --single-process --js-flags=--jitless --enable-logging --v=1 --log-severity=verbose --no-proxy-server --winhttp-proxy-resolver",
         argv[1],argv[2],argv[3],argv[4],GetCurrentProcessId())>0);
     startup.cb=sizeof(startup);CHECK(CreateProcessW(argv[1],command,NULL,NULL,FALSE,0,NULL,argv[2],&startup,&child));
+    {WCHAR actual[32768],selected[32768];DWORD length=32768;
+      if(QueryFullProcessImageNameW(child.hProcess,0,actual,&length)){
+        const WCHAR *value=actual;
+        if(length>=4&&!wcsncmp(actual,L"\\??\\",4))value+=4;
+        image_match=!_wcsicmp(value,argv[1]);
+      }
+      DWORD got=GetEnvironmentVariableW(L"MADEIRA_HTMLIPC_HELPER",selected,32768);
+      env_match=got>0&&got<32768&&!_wcsicmp(selected,argv[1]);
+      printf("[official-browser] actual-image-matches-selected=%d inherited-env-helper-matches-selected=%d\n",image_match,env_match);
+      CHECK(image_match&&env_match);
+    }
     started=GetTickCount64();
     while(GetTickCount64()-started<120000){
         section=OpenFileMappingW(FILE_MAP_READ,FALSE,name);
