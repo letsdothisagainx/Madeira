@@ -159,12 +159,12 @@ int main(int argc, char **argv)
     view_lo = new_view; view_len = sizeof(new_view);
     ios_jit_mapping_count = 3;
     ios_jit_mappings[0] = (struct ios_jit_mapping){ .pe_base = (void *)base, .jit_base = old_copy,
-                                                    .size = 0x136000 };
+                                                    .size = 0x136000, .generation = 1 };
     /* a per-process copy of the same image, and the next image up */
     ios_jit_mappings[1] = (struct ios_jit_mapping){ .pe_base = (void *)base, .jit_base = old_copy,
-                                                    .size = 0x136000, .owner_peb = parent };
+                                                    .size = 0x136000, .owner_peb = parent, .generation = 2 };
     ios_jit_mappings[2] = (struct ios_jit_mapping){ .pe_base = (void *)(base + 0x136000), .jit_base = neighbour,
-                                                    .size = 0x10000 };
+                                                    .size = 0x10000, .generation = 3 };
 
     /* live entry: the old early-out (second section of a loaded image) */
     assert(ios_jit_reload_choice(&ios_jit_mappings[0], 1, mode) == 0);
@@ -176,14 +176,17 @@ int main(int argc, char **argv)
     struct file_view image = { (void *)base, 0x136000, SEC_IMAGE };
     delete_view_model(&image);                       /* FreeLibrary(dxgi) */
     assert(!ios_jit_mappings[2].unmapped);           /* adjacency is not overlap */
+    assert(ios_jit_mappings[2].generation == 3);
     if (mode == 0)
     {
         assert(!ios_jit_mappings[0].unmapped && !ios_jit_mappings[1].unmapped);
+        assert(ios_jit_mappings[0].generation == 1 && ios_jit_mappings[1].generation == 2);
         assert(ios_jit_reload_choice(&ios_jit_mappings[0], 1, mode) == 0);
         puts("PASS (mode 0): nothing marked, the unloaded copy is adopted as before");
         return 0;
     }
     assert(ios_jit_mappings[0].unmapped && ios_jit_mappings[1].unmapped);
+    assert(!ios_jit_mappings[0].generation && !ios_jit_mappings[1].generation);
     assert(ios_jit_mappings[0].pe_base && ios_jit_mappings[0].size == 0x136000); /* not tombstoned */
 
     /* the same file again at the same base */

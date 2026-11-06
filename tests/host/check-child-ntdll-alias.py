@@ -80,6 +80,7 @@ static void ios_resolve_fex_exports( void ) { }
 code += between(native, '#define IOS_JIT_MAX_MAPPINGS', '\n};')
 code += 'static struct ios_jit_mapping ios_jit_mappings[IOS_JIT_MAX_MAPPINGS];\n'
 code += 'static int ios_jit_mapping_count = 0;\n'
+code += function(native, 'static unsigned long long ios_jit_new_generation(void)')
 start = native.index('static void (*ios_jit_alias_pushback_cb)')
 end = native.index('\n}', native.index('static void ios_alias_cb_drop( void *peb )', start)) + 2
 code += native[start:end] + '\n'   # the callback, its owner, the per-process callbacks and their lookups
@@ -138,6 +139,7 @@ static void add_child_copy( uint64_t jit, size_t size, void *owner )
     ios_jit_mappings[s].owner_peb = owner;
     ios_jit_mappings[s].map_peb = owner;
     ios_jit_mappings[s].pe_base = (void *)NT_PE;
+    ios_jit_mappings[s].generation = ios_jit_new_generation();
 }
 
 int main( int argc, char **argv )
@@ -150,6 +152,7 @@ int main( int argc, char **argv )
     ios_jit_add_mapping( (void *)NT_PE, (void *)NT_MAIN, NT_SIZE );
     ios_jit_add_mapping( (void *)0x71fe8c0000ull, (void *)0x148518000ull, 0x40f000 );   /* libarm64ecfex */
     assert( ios_jit_mappings[0].map_peb == MAIN_PEB );
+    assert( ios_jit_mappings[0].generation && ios_jit_mappings[1].generation > ios_jit_mappings[0].generation );
     reg.callback = cb_main;
     assert( unixcall_ios_push_jit_aliases( &reg ) == STATUS_SUCCESS );
     assert( ios_jit_alias_pushback_peb == MAIN_PEB );
@@ -254,7 +257,12 @@ int main( int argc, char **argv )
         assert( fex_rev( &fex_svc, 0x1a2000010ull ) == 0x1a2000010ull );
         assert( fex_rev( &fex_main, 0x1a2000010ull ) == 0x7320000010ull );
     }
-    printf( "PASS (%s): child gets its own ntdll copy, main unchanged\n",
+    /* Reusing identical PE/RX addresses still publishes a different identity. */
+    unsigned long long old_generation = ios_jit_mappings[0].generation;
+    cur_peb = MAIN_PEB;
+    ios_jit_add_mapping( (void *)NT_PE, (void *)NT_MAIN, NT_SIZE );
+    assert( ios_jit_mappings[0].generation > old_generation );
+    printf( "PASS (%s): child gets its own ntdll copy, main unchanged; mapping reuse gets a fresh generation\n",
             pp ? "per-process pushes" : "the last registrant gets the pushes" );
     return 0;
 }

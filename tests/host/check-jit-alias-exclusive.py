@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Replay shcore's discarded-load exclusive loop through production recovery.
+"""Replay same-image and cross-module exclusive loops through production recovery.
 
 The old inline handler is compiled as a control and refuses 0xc80afd28 when
 its LDAXR destination is XZR. The new helper, alias/ownership validation and
 shared successful-emulation PC advance are compiled unchanged. Real RX/RW
 file aliases model the live debugger pool; no fixture writes through RX.
+The captured ntdll 0x8809fc08 loop runs against a second FEX PE mapping, with
+the actual production generation-token accessor and executable-code bounds.
+Independent ownership, retired/unmapped slots, executable protections and
+generation changes during host queries are checked before atomic completion.
 Apple ARM64 executes the production exclusive primitive. Other hosts use a
 fresh acquire-load/release-CAS abstraction solely for portable validation;
 the IPA gate supplies the actual ARM64 acquire/exclusive/release coverage.
@@ -22,7 +26,7 @@ virtual = (root / 'build/ntdll-unix/virtual_ios.c').read_text()
 
 def function(text, name):
     import re
-    found = re.search(r'(?m)^(?:static )?(?:int|unsigned|uintptr_t|void \*)\s*' + re.escape(name) + r'\s*\(', text)
+    found = re.search(r'(?m)^(?:static )?(?:int|unsigned(?: long long)?|uintptr_t|void \*)\s*' + re.escape(name) + r'\s*\(', text)
     assert found, name
     return text[found.start():text.index('\n}', found.start()) + 2] + '\n'
 
@@ -72,6 +76,9 @@ static int capture(int fd, const char *fmt, ...) { (void)fd; (void)fmt; return 0
 static unsigned char *rx, *rw;
 static size_t mapped_size;
 static int permit_read = 1, permit_write = 1, permit_code = 1;
+static int code_nx, data_nx;
+static unsigned mutate_generation;
+static void change_generation(void);
 static unsigned fail_read;
 typedef struct { unsigned char padding[0x60]; void *Peb; } TEB;
 static _Thread_local TEB fixture_teb;
@@ -98,11 +105,14 @@ static int mach_vm_region(int task, uintptr_t *address, size_t *length, int flav
                           int *raw, unsigned *count, mach_port_t *object)
 {
     (void)task; (void)count; assert(flavor == VM_REGION_BASIC_INFO_64);
+    if (mutate_generation) change_generation();
     vm_region_basic_info_data_64_t *info = (void *)raw;
     if (inside(*address, 1, rx))
     {
-        *address = (uintptr_t)rx; *length = mapped_size;
-        info->protection = (permit_read ? PROT_READ : 0) | (permit_code ? PROT_EXEC : 0);
+        unsigned data = *address - (uintptr_t)rx >= mapped_size / 2;
+        *address = (uintptr_t)rx + (data ? mapped_size / 2 : 0); *length = mapped_size / 2;
+        info->protection = (permit_read ? PROT_READ : 0) |
+            (permit_code && !(data ? data_nx : code_nx) ? PROT_EXEC : 0);
     }
     else if (inside(*address, 1, rw))
     {
@@ -113,13 +123,25 @@ static int mach_vm_region(int task, uintptr_t *address, size_t *length, int flav
     info->max_protection = info->protection; *object = MACH_PORT_NULL; return 0;
 }
 static int mach_port_deallocate(int task, int object) { (void)task; (void)object; return 0; }
-static struct { void *pe_base, *jit_base, *owner_peb; size_t size; } ios_jit_mappings[4];
-static int ios_jit_mapping_count;
+MAPPINGS
 '''
+
+decl_start = virtual.index('#define IOS_JIT_MAX_MAPPINGS')
+decl_end = virtual.index('static int ios_jit_mapping_count = 0;', decl_start) + len('static int ios_jit_mapping_count = 0;')
+prefix = prefix.replace('MAPPINGS', virtual[decl_start:decl_end])
 
 helpers = ''.join(function(source, name) for name in (
     'ios_write_alias', 'ios_alias_write_is_trapped', 'ios_fault_read_insn'))
-helpers += function(virtual, 'ios_jit_pool_copy_owner')
+helpers += ''.join(function(virtual, name) for name in ('ios_jit_new_generation', 'ios_jit_code_bounds', 'ios_jit_pool_access_token'))
+helpers += r'''
+static void change_generation(void)
+{
+    unsigned index = mutate_generation - 1; mutate_generation = 0;
+    assert(index < (unsigned)ios_jit_mapping_count);
+    ios_jit_mappings[index].generation = ios_jit_new_generation();
+}
+'''
+helpers += function(source, 'ios_exclusive_code_readable')
 helpers += function(source, 'ios_alias_exclusive_span')
 primitive = function(source, 'ios_mach_alias_exclusive_store')
 if platform.machine().lower() in ('aarch64', 'arm64'):
@@ -279,9 +301,137 @@ static void *consume(void *arg)
     }
     return 0;
 }
+static unsigned cross_counter;
+static size_t cross_offset;
+static uint64_t cross_read(unsigned size)
+{ uint64_t value = 0; memcpy(&value, rx + cross_offset, 1u << size); return value; }
+static void *cross_module_counter(void *argument)
+{
+    (void)argument;
+    for (unsigned i = 0; i < ROUNDS; i++)
+    {
+        uint32_t expected;
+        do
+        {
+            expected = 0;
+            if (__atomic_compare_exchange_n((uint32_t *)(rw + cross_offset), &expected, 1,
+                                            0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) break;
+            sched_yield();
+        } while (1);
+        /* The normal lock owner releases its own acquired lock through the
+         * captured ntdll store loop. This is not a forced recovery unlock. */
+        cross_counter++;
+        struct state state; initial(&state, 0); state.__x[0] = (uintptr_t)rx + cross_offset;
+        complete(0x8809fc08u, &state);
+    }
+    return 0;
+}
+static void cross_module_refuse(void *owner)
+{
+    struct state state, before;
+    initial(&state, 0x11223344u); state.__x[0] = (uintptr_t)rx + cross_offset; before = state;
+    uint64_t data = cross_read(3); unsigned calls = primitive_calls;
+    assert(!route(0x8809fc08u, state.__x[0], &state, owner));
+    assert(!memcmp(&state, &before, sizeof state) && cross_read(3) == data && primitive_calls == calls);
+}
+static void cross_module_accept(void *owner)
+{
+    struct state state;
+    do
+    {
+        initial(&state, 0x11223344u); state.__x[0] = (uintptr_t)rx + cross_offset;
+        assert(route(0x8809fc08u, state.__x[0], &state, owner));
+        assert(state.__pc == code_pc() + 4 && state.__x[9] <= 1);
+    } while (state.__x[9]);
+    assert(cross_read(2) == 0x11223344u);
+}
+/* ntdll's 32-bit discard-load loop writes a live critical-section field in
+ * libarm64ecfex. Both images are shared, but their PE identities differ. */
+static void cross_module_captured(void)
+{
+    struct state state, before;
+    ios_jit_mapping_count = 2; cross_offset = mapped_size / 2 + 0x200;
+    ios_jit_mappings[0].pe_base = (void *)0x100000000ull; /* ntdll */
+    ios_jit_mappings[0].jit_base = rx;
+    ios_jit_mappings[0].size = mapped_size / 2;
+    ios_jit_mappings[0].owner_peb = 0;
+    ios_jit_mappings[1].pe_base = (void *)0x200000000ull; /* libarm64ecfex */
+    ios_jit_mappings[1].jit_base = rx + mapped_size / 2;
+    ios_jit_mappings[1].size = mapped_size / 2;
+    ios_jit_mappings[1].owner_peb = 0;
+    ios_jit_mappings[1].generation = ios_jit_new_generation();
+    set_code(0x885ffc1fu, 0x8809fc08u, 0x35ffffc9u);
+    assert(load_insn(2, 1, 0) == 0x885ffc1fu &&
+           store_insn(2, 1, 9, 0, 8) == 0x8809fc08u && retry_insn(9) == 0x35ffffc9u);
+    memset(rw + cross_offset, 0xa5, 16);
+    initial(&state, 1); state.__x[0] = (uintptr_t)rx + cross_offset; before = state;
+    fprintf(stderr, "Replaying captured cross-module ntdll -> FEX STLXR 8809fc08 with shared live owners\n");
+    injected_failure = 1;
+    assert(route(0x8809fc08u, state.__x[0], &state, 0));
+    assert(state.__x[9] == 1 && cross_read(2) == 0xa5a5a5a5u && state.__pc == code_pc() + 4);
+    assert(retry_branch(&state) && state.__pc == code_pc() - 4);
+    for (unsigned attempts = 0;; attempts++)
+    {
+        assert(attempts < 100000); state.__pc = code_pc();
+        assert(route(0x8809fc08u, state.__x[0], &state, 0));
+        assert(state.__pc == code_pc() + 4 && state.__x[9] <= 1);
+        if (!retry_branch(&state)) break;
+        assert(state.__pc == code_pc() - 4);
+    }
+    assert(state.__x[9] == 0 && cross_read(2) == 1 && state.__pc == code_pc() + 8);
+    for (unsigned r = 0; r < 29; r++) if (r != 9) assert(state.__x[r] == before.__x[r]);
+    assert(state.__fp == before.__fp && state.__lr == before.__lr && state.__sp == before.__sp);
+    uint32_t saved_code[4]; memcpy(saved_code, rx + 0x100, sizeof saved_code);
+    memset(rw + cross_offset, 0, 4); pthread_t threads[THREADS];
+    for (unsigned i = 0; i < THREADS; i++) assert(!pthread_create(&threads[i], 0, cross_module_counter, 0));
+    for (unsigned i = 0; i < THREADS; i++) assert(!pthread_join(threads[i], 0));
+    assert(cross_counter == THREADS * ROUNDS && !cross_read(2));
+    assert(!memcmp(saved_code, rx + 0x100, sizeof saved_code));
+    for (unsigned i = 4; i < 16; i++) assert(rx[cross_offset + i] == 0xa5);
+    /* Shared images and images owned by the actual calling process are
+     * independently authorized. Neither can authorize a foreign peer. */
+    ios_jit_mappings[0].owner_peb = (void *)0x1234;
+    cross_module_refuse((void *)0x5678);
+    cross_module_accept((void *)0x1234);
+    ios_jit_mappings[1].owner_peb = (void *)0x1234;
+    cross_module_refuse((void *)0x5678);
+    cross_module_accept((void *)0x1234);
+    ios_jit_mappings[0].owner_peb = 0;
+    cross_module_accept((void *)0x1234);
+    ios_jit_mappings[1].owner_peb = (void *)0x5678;
+    cross_module_refuse((void *)0x1234);
+    ios_jit_mappings[1].owner_peb = 0;
+    /* Retirement tombstones and an instruction sequence straddling an
+     * unregistered code range do not inherit the pool's arithmetic alias. */
+    ios_jit_mappings[0].size = 0; cross_module_refuse(0); ios_jit_mappings[0].size = mapped_size / 2;
+    ios_jit_mappings[1].size = 0; cross_module_refuse(0); ios_jit_mappings[1].size = mapped_size / 2;
+    ios_jit_mappings[0].pe_base = 0; cross_module_refuse(0); ios_jit_mappings[0].pe_base = (void *)0x100000000ull;
+    ios_jit_mappings[1].pe_base = 0; cross_module_refuse(0); ios_jit_mappings[1].pe_base = (void *)0x200000000ull;
+    ios_jit_mappings[0].size = 0x108; cross_module_refuse(0); ios_jit_mappings[0].size = mapped_size / 2;
+    ios_jit_mappings[0].text_size = 8; cross_module_refuse(0); ios_jit_mappings[0].text_size = 0x10;
+    ios_jit_mappings[0].text_size = 0; cross_module_refuse(0); ios_jit_mappings[0].text_size = 0x10;
+    for (unsigned i = 0; i < 2; i++)
+    {
+        ios_jit_mappings[i].generation = 0; cross_module_refuse(0);
+        ios_jit_mappings[i].generation = ios_jit_new_generation();
+        ios_jit_mappings[i].unmapped = 1; cross_module_refuse(0);
+        ios_jit_mappings[i].unmapped = 0;
+        ios_jit_mappings[i].generation = ios_jit_new_generation();
+        /* Replace a slot with the same PE, owner and VA while a Mach query
+         * is in progress. The old token must not authorize the new image
+         * incarnation, even though all pointer arithmetic still agrees. */
+        mutate_generation = i + 1; cross_module_refuse(0);
+        assert(!mutate_generation); cross_module_accept(0);
+    }
+    code_nx = 1; cross_module_refuse(0); code_nx = 0;
+    data_nx = 1; cross_module_refuse(0); data_nx = 0;
+    permit_write = 0; cross_module_refuse(0); permit_write = 1;
+    cross_module_accept(0);
+    printf("PASS captured cross-module ntdll code / FEX data exclusive loop: status/PC/register preservation, %u lock-protected increments without lost updates, shared/private ownership, retirement and generation-race rejection, unchanged adjacent code/data\n", cross_counter);
+}
 int main(void)
 {
-    mapped_size = (size_t)sysconf(_SC_PAGESIZE);
+    mapped_size = 2 * (size_t)sysconf(_SC_PAGESIZE);
     FILE *file = tmpfile(); assert(file && !ftruncate(fileno(file), mapped_size));
     rw = mmap(0, mapped_size, PROT_READ | PROT_WRITE, MAP_SHARED, fileno(file), 0);
     rx = mmap(0, mapped_size, PROT_READ | PROT_EXEC, MAP_SHARED, fileno(file), 0);
@@ -290,6 +440,8 @@ int main(void)
     ios_jit_rx_base_global = rx; ios_jit_rw_base_global = rw; ios_jit_pool_size_global = mapped_size;
     ios_jit_mappings[0].pe_base = (void *)0x100000000ull; ios_jit_mappings[0].jit_base = rx;
     ios_jit_mappings[0].size = mapped_size; ios_jit_mapping_count = 1;
+    ios_jit_mappings[0].generation = ios_jit_new_generation();
+    ios_jit_mappings[0].text_offset = 0x100; ios_jit_mappings[0].text_size = 0x10;
     assert(load_insn(3, 1, 9) == 0xc85ffd3fu && store_insn(3, 1, 10, 9, 8) == 0xc80afd28u && retry_insn(10) == 0x35ffffcau);
     set_code(0xc85ffd3fu, 0xc80afd28u, 0x35ffffcau);
     struct state state, before; initial(&state, 0x1122334455667788ull); before = state;
@@ -378,6 +530,7 @@ int main(void)
     assert(!memcmp(saved_code, rx + 0x100, sizeof saved_code));
     for (unsigned i = 0; i < mapped_size; i++)
         if (!(i >= 0x100 && i < 0x110) && !(i >= 0x200 && i < 0x210)) assert(rx[i] == 0xa5);
+    cross_module_captured();
     printf("PASS production exclusive recovery: exact shcore instruction, widths/orderings, status/retry/PC, invalid owner/mapping/code rejection, %u concurrent completions, no tearing, release/acquire publication; primitive failures=%u\n", completed, primitive_failures);
     munmap(rx, mapped_size); munmap(rw, mapped_size); fclose(file);
 }

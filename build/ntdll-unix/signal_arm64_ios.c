@@ -2217,6 +2217,33 @@ static int ios_alias_exclusive_span( uintptr_t addr, uintptr_t rw, unsigned widt
     return 1;
 }
 
+/* The complete retry sequence must still be executable, including a next
+ * instruction on another host page. Readable bytes alone do not prove that
+ * a pool page retained EXEC. This query changes no mapping or protection. */
+static int ios_exclusive_code_readable( uintptr_t addr, size_t bytes )
+{
+    size_t done = 0;
+    if (!bytes || addr > UINTPTR_MAX - (bytes - 1)) return 0;
+    while (done < bytes)
+    {
+        uintptr_t at = addr + done;
+        mach_vm_address_t region = at;
+        mach_vm_size_t size = 0;
+        vm_region_basic_info_data_64_t info;
+        mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+        mach_port_t object = MACH_PORT_NULL;
+        kern_return_t result = mach_vm_region( mach_task_self(), &region, &size,
+            VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &count, &object );
+        if (object != MACH_PORT_NULL) mach_port_deallocate( mach_task_self(), object );
+        if (result != KERN_SUCCESS || region > at || at - region >= size ||
+            (info.protection & (PROT_READ | PROT_EXEC)) != (PROT_READ | PROT_EXEC) ||
+            (info.protection & PROT_WRITE)) return 0;
+        size -= at - region;
+        done += size < bytes - done ? size : bytes - done;
+    }
+    return 1;
+}
+
 /* A reservation belongs to the executing CPU/thread and cannot be carried
  * across the Mach exception to this server. Establish a NEW acquire/release
  * exclusive attempt on the shared RW backing. The early-clobber status cannot
@@ -2256,32 +2283,34 @@ static unsigned ios_mach_alias_exclusive_store( uintptr_t rw, uint64_t value, un
 static int ios_mach_emulate_exclusive_loop( uint32_t insn, uint64_t pc, uintptr_t fault_addr,
                                            uint64_t gpr[32], void *owner )
 {
-    extern void *ios_jit_pool_copy_owner( const void *, void ** );
+    extern unsigned long long ios_jit_pool_access_token( uintptr_t, size_t, void *, int );
     unsigned size = insn >> 30, width = 1u << size;
     unsigned rs = (insn >> 16) & 31, rn = (insn >> 5) & 31, rt = insn & 31;
     uint32_t load, retry, actual;
     uintptr_t addr = gpr[rn], rw;
-    void *pe = NULL, *candidate = NULL, *image_owner;
-    uintptr_t points[5];
-    unsigned i, status;
+    unsigned long long code_token, data_token;
+    unsigned status;
     if ((insn & 0x3fe07c00u) != 0x08007c00u || rs == 31 || rs == rn || rs == rt ||
         pc < 4 || pc > UINTPTR_MAX - 7 || (pc & 3) || fault_addr != addr ||
         addr > UINTPTR_MAX - (width - 1) || (addr & (width - 1))) return 0;
+    /* Code must form one live executable image; data must form one live
+     * authorized image. A runtime DLL legitimately accesses another module's
+     * critical section, so the two publication tokens need not be equal. */
+    code_token = ios_jit_pool_access_token( pc - 4, 12, owner, 1 );
+    data_token = ios_jit_pool_access_token( addr, width, owner, 0 );
+    if (!code_token || !data_token || !ios_exclusive_code_readable( pc - 4, 12 )) return 0;
     if (!ios_fault_read_insn( pc, &actual ) || actual != insn ||
         !ios_fault_read_insn( pc - 4, &load ) || !ios_fault_read_insn( pc + 4, &retry ) ||
         (load & 0x3fff7c00u) != 0x085f7c00u || (load >> 30) != size ||
         ((load >> 5) & 31) != rn || (load & 31) != 31 ||
         retry != (0x35ffffc0u | rs)) return 0;
-    points[0] = addr; points[1] = addr + width - 1;
-    points[2] = pc - 4; points[3] = pc; points[4] = pc + 7;
-    image_owner = ios_jit_pool_copy_owner( (const void *)addr, &pe );
-    if (!pe || image_owner == (void *)(uintptr_t)-1 || (image_owner && image_owner != owner)) return 0;
-    for (i = 1; i < 5; i++)
-        if (ios_jit_pool_copy_owner( (const void *)points[i], &candidate ) != image_owner || candidate != pe)
-            return 0;
     rw = ios_write_alias( addr );
     if (ios_alias_write_is_trapped( addr ) || ios_alias_write_is_trapped( addr + width - 1 ) ||
         !ios_alias_exclusive_span( addr, rw, width )) return 0;
+    /* A successful Mach protection query is not evidence that the same
+     * mapping generation survived it. Recheck both before any atomic write. */
+    if (ios_jit_pool_access_token( pc - 4, 12, owner, 1 ) != code_token ||
+        ios_jit_pool_access_token( addr, width, owner, 0 ) != data_token) return 0;
     status = ios_mach_alias_exclusive_store( rw, rt == 31 ? 0 : gpr[rt], size );
     gpr[rs] = status; /* Ws zero-extends, including FP/LR; SP cannot be Ws. */
     return 1;
@@ -5683,7 +5712,7 @@ static void *ios_mach_exception_thread( void *arg )
                             state.__fp = gpr[29]; state.__lr = gpr[30];
                             emulated = 1;
                             if (exclusive_loop_logs++ < 16)
-                                dprintf( 2, "[alias-exclusive-loop] insn=%08x pc=%llx addr=%llx status=%u fresh-monitor=1\n",
+                                dprintf( 2, "[alias-exclusive-loop] insn=%08x pc=%llx addr=%llx status=%u fresh-monitor=1 access=independent-images-v1\n",
                                          insn, (unsigned long long)fault_pc, (unsigned long long)fault_addr,
                                          (unsigned)gpr[(insn >> 16) & 31] );
                         }

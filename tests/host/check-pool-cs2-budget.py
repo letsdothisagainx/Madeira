@@ -168,7 +168,7 @@ static uintptr_t ios_jit_low_rx_global, ios_jit_low_rw_global;
 static size_t ios_jit_low_size_global;
 static pthread_mutex_t ios_pool_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct { uintptr_t user_va, user_va_end, jit_rx_alias, jit_rw_alias; } ios_jit_anon_aliases[8];
-static struct { void *pe_base, *jit_base; size_t size; } ios_jit_mappings[8];
+static struct { void *pe_base, *jit_base; size_t size; unsigned long long generation; } ios_jit_mappings[8];
 static int ios_jit_anon_alias_count, ios_jit_mapping_count, ios_jit_copy_refused;
 static void *ios_jit_alias_pushback_peb;
 static void (*ios_jit_alias_pushback_cb)(void);
@@ -484,10 +484,10 @@ static void check_paired_budget(size_t pool_mb, size_t reserve_mb)
      * retires this process's code buffer while leaving Steam's carves live. */
     ios_jit_mappings[0].pe_base = (void *)(uintptr_t)0xfb7640000ULL;
     ios_jit_mappings[0].jit_base = (char *)rx_memory + image_off;
-    ios_jit_mappings[0].size = phonon_size; ios_jit_mapping_count = 1;
+    ios_jit_mappings[0].size = phonon_size; ios_jit_mappings[0].generation = 1; ios_jit_mapping_count = 1;
     ios_jit_mappings[1].pe_base = (void *)(uintptr_t)0x20000000;
     ios_jit_mappings[1].jit_base = (char *)rx_memory + foreign_off;
-    ios_jit_mappings[1].size = 0x4000; ios_jit_mapping_count = 2;
+    ios_jit_mappings[1].size = 0x4000; ios_jit_mappings[1].generation = 2; ios_jit_mapping_count = 2;
     ios_jit_anon_aliases[0].user_va = 0x12340000;
     ios_jit_anon_aliases[0].user_va_end = 0x12344000;
     ios_jit_anon_aliases[0].jit_rx_alias = (uintptr_t)rx_memory + image_off;
@@ -498,9 +498,9 @@ static void check_paired_budget(size_t pool_mb, size_t reserve_mb)
     ios_jit_anon_aliases[1].jit_rw_alias = (uintptr_t)rw_memory + foreign_off;
     ios_jit_anon_alias_count = 2;
     ios_jit_reclaim_process((void *)cs2_owner);
-    CHECK(ios_pool_ledger_count == 1 && !ios_jit_mappings[0].pe_base && !ios_jit_mappings[0].size);
+    CHECK(ios_pool_ledger_count == 1 && !ios_jit_mappings[0].pe_base && !ios_jit_mappings[0].size && !ios_jit_mappings[0].generation);
     CHECK(ios_pool_ledger_holds(foreign_off, 0x4000, (void *)helper_owner));
-    CHECK(ios_jit_mappings[1].pe_base && ios_jit_mappings[1].size == 0x4000);
+    CHECK(ios_jit_mappings[1].pe_base && ios_jit_mappings[1].size == 0x4000 && ios_jit_mappings[1].generation == 2);
     CHECK(!ios_jit_anon_aliases[0].user_va && !ios_jit_anon_aliases[0].user_va_end && aliases_retired == 1);
     CHECK(ios_jit_anon_aliases[1].user_va == 0x23450000 && ios_jit_anon_aliases[1].user_va_end == 0x23454000);
     CHECK(ios_tail_carves[0].free && ios_tail_carves[0].retired && !ios_tail_carves[0].peb);

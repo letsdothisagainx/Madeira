@@ -43,7 +43,7 @@ code = r'''
 #include <string.h>
 #include <pthread.h>
 #define SEC_IMAGE 0x1000000
-struct mapping { void *pe_base, *jit_base; size_t size; void *owner; };
+struct mapping { void *pe_base, *jit_base; size_t size; void *owner; unsigned long long generation; };
 struct file_view { void *base; size_t size; unsigned int protect; };
 static struct mapping ios_jit_mappings[8];
 static int ios_jit_mapping_count;
@@ -67,9 +67,9 @@ int main(int argc, char **argv) {
     static char old_code[64], new_code[64], neighbor[64];
     ios_jit_mapping_count = 3;
     /* One image copied for two pseudo-processes, and the next image up. */
-    ios_jit_mappings[0] = (struct mapping){(void *)base, old_code, 0x90000, (void *)1};
-    ios_jit_mappings[1] = (struct mapping){(void *)base, old_code, 0x90000, (void *)2};
-    ios_jit_mappings[2] = (struct mapping){(void *)(base + 0x90000), neighbor, 0x10000, (void *)3};
+    ios_jit_mappings[0] = (struct mapping){(void *)base, old_code, 0x90000, (void *)1, 1};
+    ios_jit_mappings[1] = (struct mapping){(void *)base, old_code, 0x90000, (void *)2, 2};
+    ios_jit_mappings[2] = (struct mapping){(void *)(base + 0x90000), neighbor, 0x10000, (void *)3, 3};
     assert(lookup(base) == old_code);
 
     /* A data view never retires anything. */
@@ -90,10 +90,11 @@ int main(int argc, char **argv) {
     assert(!lookup(base));
     assert(!ios_jit_mappings[0].pe_base && !ios_jit_mappings[1].pe_base);
     assert(!ios_jit_mappings[0].size && !ios_jit_mappings[1].size);
+    assert(!ios_jit_mappings[0].generation && !ios_jit_mappings[1].generation);
     assert(lookup(base + 0x90000) == neighbor);          /* adjacency is not overlap */
 
     /* The same base and image size now get a fresh executable copy. */
-    ios_jit_mappings[0] = (struct mapping){(void *)base, new_code, 0x90000, (void *)2};
+    ios_jit_mappings[0] = (struct mapping){(void *)base, new_code, 0x90000, (void *)2, 4};
     assert(lookup(base) == new_code);
     ios_jit_retire_image((void *)(base + 0x80000), 0x10000);
     assert(!lookup(base));                               /* partial overlap retires it */
@@ -103,7 +104,7 @@ int main(int argc, char **argv) {
     ios_jit_retire_image((void *)(base + 0x9ffff), 1);   /* last byte of the neighbour */
     assert(!lookup(base + 0x90000));
     /* A range that ends at the top of the address space must not wrap. */
-    ios_jit_mappings[2] = (struct mapping){(void *)0x1000, neighbor, 0x1000, (void *)3};
+    ios_jit_mappings[2] = (struct mapping){(void *)0x1000, neighbor, 0x1000, (void *)3, 5};
     ios_jit_retire_image((void *)(UINTPTR_MAX - 0xfff), 0x1000);
     assert(lookup(0x1000) == neighbor);
     puts("PASS (switch on): image unload/reuse, shared owners, adjacency, partial overlap, zero length");

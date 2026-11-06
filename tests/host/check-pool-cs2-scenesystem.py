@@ -144,6 +144,7 @@ static void ios_jit_add_mapping(void *pe, void *rx, size_t size)
     CHECK(ios_jit_mapping_count < (int)ARRAY_SIZE(ios_jit_mappings));
     ios_jit_mappings[ios_jit_mapping_count].pe_base = pe;
     ios_jit_mappings[ios_jit_mapping_count].jit_base = rx;
+    ios_jit_mappings[ios_jit_mapping_count].generation = ios_jit_mapping_count + 1;
     ios_jit_mappings[ios_jit_mapping_count++].size = size;
 }
 '''
@@ -283,8 +284,8 @@ static void check_lifecycle_capacity(void)
     CHECK(ios_pool_free_count == 1 && ios_pool_freelist[0].off == 16 * MB && ios_pool_freelist[0].size == 128 * MB);
     CHECK(ios_pool_best_fit(ios_pool_freelist, 1, scene_want, fake_now, (size_t)-1, 0) == -1);
     CHECK(aliases_retired == 8 && ios_jit_anon_aliases[0].user_va == 0x10000000);
-    CHECK(ios_jit_mappings[0].pe_base == foreign.bytes && ios_jit_mappings[0].size == foreign.size);
-    for (unsigned i = 1; i < 9; i++) CHECK(!ios_jit_mappings[i].pe_base && !ios_jit_mappings[i].size);
+    CHECK(ios_jit_mappings[0].pe_base == foreign.bytes && ios_jit_mappings[0].size == foreign.size && ios_jit_mappings[0].generation == 1);
+    for (unsigned i = 1; i < 9; i++) CHECK(!ios_jit_mappings[i].pe_base && !ios_jit_mappings[i].size && !ios_jit_mappings[i].generation);
     struct ios_tail_carve live = ios_tail_carves[2]; /* Steam's code is not this helper's. */
     size_t head = jit_pool_offset, tail = ios_jit_tail_reserved, scene_off;
     CHECK(!allocate_pe(scene.bytes, scene.size, scene.alloc, &scene_off) && scene_off == 16 * MB);

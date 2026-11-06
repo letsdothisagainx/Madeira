@@ -150,6 +150,7 @@ WINE_DECLARE_DEBUG_CHANNEL(virtual_ranges);
 #define IOS_JIT_MAX_MAPPINGS 512
 #define IOS_JIT_MAX_CODE_RANGES 96
 struct ios_jit_mapping {
+    unsigned long long generation; /* 0 while unpublished, retired or being replaced */
     void *pe_base;      /* Original PE image base address (unix mapping) */
     void *jit_base;     /* JIT pool RX address */
     size_t size;        /* Size of the mapping */
@@ -188,6 +189,13 @@ struct ios_jit_mapping {
 };
 static struct ios_jit_mapping ios_jit_mappings[IOS_JIT_MAX_MAPPINGS];
 static int ios_jit_mapping_count = 0;
+
+static unsigned long long ios_jit_new_generation(void)
+{
+    static unsigned long long next;
+    unsigned long long value = __atomic_add_fetch( &next, 1, __ATOMIC_RELAXED );
+    return value ? value : __atomic_add_fetch( &next, 1, __ATOMIC_RELAXED );
+}
 
 /* JIT pool head bump allocator. Owned by mprotect_exec's PE-image copy path
  * (was a function-local static there); file-scope so the S1 per-child
@@ -4323,6 +4331,7 @@ void ios_jit_add_mapping(void *pe_base, void *jit_base, size_t size)
                     (void *)eb, (unsigned long)ios_jit_mappings[i].size,
                     ios_jit_mappings[i].jit_base, ios_jit_mappings[i].owner_peb,
                     pe_base, (unsigned long)size);
+            __atomic_exchange_n( &ios_jit_mappings[i].generation, 0, __ATOMIC_ACQ_REL );
             ios_jit_mappings[i].size = 0;
             __sync_synchronize();
             ios_jit_mappings[i].pe_base = NULL;
@@ -4353,6 +4362,7 @@ void ios_jit_add_mapping(void *pe_base, void *jit_base, size_t size)
             }
             slot = ios_jit_mapping_count;
         }
+        __atomic_exchange_n( &ios_jit_mappings[slot].generation, 0, __ATOMIC_ACQ_REL );
         ios_jit_mappings[slot].jit_base = jit_base;
         ios_jit_mappings[slot].size = size;
         ios_jit_mappings[slot].text_offset = 0;
@@ -4374,6 +4384,7 @@ void ios_jit_add_mapping(void *pe_base, void *jit_base, size_t size)
             dprintf( 2, "[jit-pool] FEX module copy pe=%p jit=%p+0x%lx\n", pe_base, jit_base, (unsigned long)size );
         __sync_synchronize();
         ios_jit_mappings[slot].pe_base = pe_base;
+        __atomic_store_n( &ios_jit_mappings[slot].generation, ios_jit_new_generation(), __ATOMIC_RELEASE );
         if (slot == ios_jit_mapping_count) ios_jit_mapping_count++;
     }
 
@@ -5426,9 +5437,12 @@ static int ios_jit_code_bounds( const struct ios_jit_mapping *m, size_t off,
     if (count > IOS_JIT_MAX_CODE_RANGES) return 0;
     for (r = 0; r <= count; r++)
     {
-        size_t start = r < count ? m->code_ranges[r].offset : m->text_offset;
-        size_t size = r < count ? m->code_ranges[r].size : m->text_size;
-        if (start > m->size || !size || size > m->size - start ||
+        size_t start = r < count ? __atomic_load_n( &m->code_ranges[r].offset, __ATOMIC_RELAXED )
+                                : __atomic_load_n( &m->text_offset, __ATOMIC_RELAXED );
+        size_t size = r < count ? __atomic_load_n( &m->code_ranges[r].size, __ATOMIC_RELAXED )
+                               : __atomic_load_n( &m->text_size, __ATOMIC_RELAXED );
+        size_t mapped = __atomic_load_n( &m->size, __ATOMIC_RELAXED );
+        if (start > mapped || !size || size > mapped - start ||
             off < start || off - start >= size) continue;
         *low = start;
         *high = start + size;
@@ -6272,6 +6286,35 @@ void *ios_jit_pool_copy_owner(const void *addr, void **pe_base_out)
     }
     if (pe_base_out) *pe_base_out = NULL;
     return (void *)(uintptr_t)-1;  /* not in any pool mapping */
+}
+
+/* Authorization snapshot for native alias operations, not a lifetime pin.
+ * An active faulting thread prevents its process from quiescent reclamation.
+ * Independent code/data images may be shared (NULL owner) or owned by that
+ * process. Reject unloaded images and unpublished/recycled slot generations.
+ * No Wine/registry/pool lock: the suspended thread may already hold one. */
+unsigned long long ios_jit_pool_access_token( uintptr_t addr, size_t bytes, void *owner, int executable )
+{
+    int i, count = __atomic_load_n( &ios_jit_mapping_count, __ATOMIC_ACQUIRE );
+    if (!bytes || addr > UINTPTR_MAX - (bytes - 1) || count < 0 || count > IOS_JIT_MAX_MAPPINGS) return 0;
+    for (i = 0; i < count; i++)
+    {
+        struct ios_jit_mapping *m = &ios_jit_mappings[i];
+        unsigned long long token = __atomic_load_n( &m->generation, __ATOMIC_ACQUIRE );
+        uintptr_t base = (uintptr_t)__atomic_load_n( &m->jit_base, __ATOMIC_RELAXED );
+        size_t size = __atomic_load_n( &m->size, __ATOMIC_RELAXED ), low, high;
+        void *pe = __atomic_load_n( &m->pe_base, __ATOMIC_RELAXED );
+        void *image_owner = __atomic_load_n( &m->owner_peb, __ATOMIC_RELAXED );
+        if (!token || !pe || !base || __atomic_load_n( &m->unmapped, __ATOMIC_RELAXED ) ||
+            (image_owner && image_owner != owner) || addr < base || addr - base > size ||
+            bytes > size - (addr - base)) continue;
+        if (executable && (!ios_jit_code_bounds( m, addr - base, &low, &high ) ||
+                           bytes > high - (addr - base))) continue;
+        __atomic_thread_fence( __ATOMIC_ACQUIRE );
+        if (__atomic_load_n( &m->generation, __ATOMIC_RELAXED ) != token) continue;
+        return token;
+    }
+    return 0;
 }
 
 /* Reverse-translate a JIT pool address back to the original PE address.
@@ -13307,6 +13350,7 @@ void ios_jit_reclaim_process( void *peb )
             if (!ios_jit_mappings[j].pe_base) continue;
             if (jb >= rx_base + off && jb < rx_base + off + size)
             {
+                __atomic_exchange_n( &ios_jit_mappings[j].generation, 0, __ATOMIC_ACQ_REL );
                 ios_jit_mappings[j].size = 0;
                 __sync_synchronize();
                 ios_jit_mappings[j].pe_base = NULL;
@@ -14730,6 +14774,7 @@ static void ios_jit_retire_image( void *base, size_t size )
         if (!mapped || !length) continue;
         /* Subtraction avoids overflowing either end of an address interval. */
         if (mapped >= start ? mapped - start >= size : start - mapped >= length) continue;
+        __atomic_exchange_n( &ios_jit_mappings[i].generation, 0, __ATOMIC_ACQ_REL );
         ios_jit_mappings[i].size = 0;
         __sync_synchronize();
         ios_jit_mappings[i].pe_base = NULL;
@@ -14805,6 +14850,7 @@ static void ios_jit_note_image_unmapped( void *base, size_t size )
         size_t length = ios_jit_mappings[i].size;
         if (!mapped || !length) continue;
         if (mapped >= start ? mapped - start >= size : start - mapped >= length) continue;
+        __atomic_exchange_n( &ios_jit_mappings[i].generation, 0, __ATOMIC_ACQ_REL );
         ios_jit_mappings[i].unmapped = 1;
     }
     pthread_mutex_unlock( &ios_pool_lock );
@@ -15250,6 +15296,7 @@ static void ios_jit_purge_window( ULONG_PTR base, ULONG_PTR size )
                  (void *)eb, (unsigned long)ios_jit_mappings[i].size,
                  ios_jit_mappings[i].jit_base, ios_jit_mappings[i].owner_peb,
                  (void *)base, (unsigned long long)size );
+        __atomic_exchange_n( &ios_jit_mappings[i].generation, 0, __ATOMIC_ACQ_REL );
         ios_jit_mappings[i].size = 0;
         __sync_synchronize();
         ios_jit_mappings[i].pe_base = NULL;
@@ -20004,6 +20051,7 @@ int ios_jit_copy_module_for_child(void *module_addr, void *child_peb)
         for (si = 0; si < ios_jit_mapping_count; si++)
             if (!ios_jit_mappings[si].pe_base) { slot = si; break; }
         if (slot < 0) slot = ios_jit_mapping_count;
+        __atomic_exchange_n( &ios_jit_mappings[slot].generation, 0, __ATOMIC_ACQ_REL );
         ios_jit_mappings[slot].machine_cached = 0;   /* a reused tombstone keeps no memo */
         ios_jit_mappings[slot].machine_valid = 0;
         ios_jit_mappings[slot].hybrid_cached = 0;
@@ -20024,6 +20072,7 @@ int ios_jit_copy_module_for_child(void *module_addr, void *child_peb)
         ios_jit_mappings[slot].map_peb = child_peb;
         __sync_synchronize();
         ios_jit_mappings[slot].pe_base = m->pe_base;
+        __atomic_store_n( &ios_jit_mappings[slot].generation, ios_jit_new_generation(), __ATOMIC_RELEASE );
         if (slot == ios_jit_mapping_count) ios_jit_mapping_count++;
     }
 
