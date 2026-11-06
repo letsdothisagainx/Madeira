@@ -12,6 +12,7 @@
 #include <winternl.h>
 #include <msi.h>
 #include <msiquery.h>
+#include <oleauto.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <wchar.h>
@@ -44,7 +45,7 @@ static void architecture(void)
 }
 
 struct rollback_observer { const WCHAR *target,*checkpoint; unsigned seen; };
-static UINT CALLBACK observe_install(void *context,UINT message_type,const WCHAR *message)
+static int CALLBACK observe_install(void *context,UINT message_type,const WCHAR *message)
 {
     struct rollback_observer *observer=context;
     if((message_type&0xff000000u)==INSTALLMESSAGE_ACTIONSTART && wcsstr(message,L"FailOwnedFixture")){

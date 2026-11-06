@@ -69,6 +69,11 @@ with tempfile.TemporaryDirectory(prefix='madeira-msi-files-') as directory:
     helper=temporary/'repair'
     command(['cc','-std=c11','-Wall','-Wextra','-Werror','-I'+str(HEADER.parent),helper_source,'-o',helper])
     def client(bits,*args):return command([WINE64 if bits==64 else 'wine',clients[bits],*args])
+    def repair(bundle):
+        # Production invokes migration before Wine starts. End only this owned
+        # fixture's server and wait for every client/service to quiesce first.
+        command(['wineserver','-k']);command(['wineserver','-w'],timeout=30)
+        return command([helper,prefix,bundle])
     try:
         command([WINE64,'wineboot.exe','--init'])
         drive=prefix/'drive_c';system32=drive/'windows/system32';syswow64=drive/'windows/syswow64'
@@ -114,7 +119,7 @@ with tempfile.TemporaryDirectory(prefix='madeira-msi-files-') as directory:
                     assert not target.exists(),'failed owned install replaced the source unexpectedly'
                     target.symlink_to(stale)
                     print('INFO actual MSI rollback removed owned stale leaf; restored same stale fixture for production migration control',flush=True)
-                output=command([helper,prefix,current]);assert 'production-repair count=1' in output
+                output=repair(current);assert 'production-repair count=1' in output
                 assert not target.exists() and not target.is_symlink() and native_source.read_bytes()==native_bytes
             # Actual PE32 SystemFolder redirection is independent of migration:
             # production repairs only Madeira's system32/sysx64 link farms.
@@ -122,7 +127,7 @@ with tempfile.TemporaryDirectory(prefix='madeira-msi-files-') as directory:
             assert target.is_file() and target.stat().st_size==0;target.unlink()
             client(bits,'--install',win(msi),'REINSTALLMODE=amus','0')
             assert target.read_bytes()==payload and not target.is_symlink()
-            assert 'production-repair count=0' in command([helper,prefix,current])
+            assert 'production-repair count=0' in repair(current)
             assert target.read_bytes()==payload and native_source.read_bytes()==native_bytes
             assert not ((syswow64 if bits==64 else system32)/leaf).exists(),'MSI architecture routed to wrong system directory'
             client(bits,'--state',product,'5')
@@ -131,15 +136,18 @@ with tempfile.TemporaryDirectory(prefix='madeira-msi-files-') as directory:
             client(bits,'--uninstall',product);client(bits,'--state',product,'-1')
             assert not target.exists() and native_source.read_bytes()==native_bytes
             # Explicit immediate error follows InstallExecute, after the actual
-            # deferred InstallFiles script. Rollback must restore existing bytes.
+            # deferred InstallFiles script. Actual rollback removes the fresh
+            # owned leaf, while an existing neighboring file remains intact.
             rollback_leaf='madeira-msi-rollback-'+uuid.uuid4().hex[:8]+'.dll';rollback_target=(system32 if bits==64 else syswow64)/rollback_leaf
-            original=b'owned pre-install bytes must survive rollback';rollback_target.write_bytes(original)
+            assert not rollback_target.exists()
+            neighbour=rollback_target.with_suffix('.keep');original=b'owned existing neighbour must survive rollback';neighbour.write_bytes(original)
             rollback_product=guid();rollback_msi,rollback_payload=tables(temporary/('rollback'+str(bits)),rollback_leaf,rollback_product,guid(),guid(),bits==64)
             checkpoint=temporary/('rollback-installed-checkpoint'+str(bits))
             client(bits,'--install',win(rollback_msi),'FAILOWNEDFIXTURE=1 REINSTALLMODE=amus','1603',
                    system_path(rollback_leaf),win(checkpoint))
             assert checkpoint.read_bytes()==rollback_payload,'rollback fixture never actually extracted the cabinet payload'
-            assert rollback_target.read_bytes()==original,'actual MSI rollback did not restore prior bytes'
+            assert not rollback_target.exists(),'actual MSI rollback did not remove the newly extracted owned file'
+            assert neighbour.read_bytes()==original,'rollback changed an unrelated existing file'
             client(bits,'--state',rollback_product,'-1')
             assert all(p.read_bytes()==data for p,data in sentinels.items())
             print('PASS real Wine '+str(bits)+'-bit MSI: '+('stale-link NtCreateFile/CAB1603 -> production quarantine; ' if bits==64 else 'independent absent-leaf WoW64 control; ')+'actual extraction/repair, system-directory routing, sharing protection, product registration/uninstall and observed rollback; source/auth/game fixture bytes preserved',flush=True)
@@ -152,5 +160,6 @@ with tempfile.TemporaryDirectory(prefix='madeira-msi-files-') as directory:
         client(32,'--state',crossproduct,'5');client(32,'--uninstall',crossproduct)
         print('PASS real Wine I386 frontend -> AMD64 MSI component/engine routing; no fabricated installer completion or registry state',flush=True)
     finally:
-        subprocess.run(['wineserver','-k'],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=10)
+        for operation in ('-k','-w'):
+            subprocess.run(['wineserver',operation],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30)
 print('PASS isolated stock-Wine MSI/CAB integration; on-device iOS/FEX and official VC installer completion remain unverified')
