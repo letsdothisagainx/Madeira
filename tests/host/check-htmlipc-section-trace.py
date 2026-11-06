@@ -105,7 +105,8 @@ int main(void){
     before=reads;ios_htmlipc_section_note("open",&snapshot,(NTSTATUS)0xc000000d,(const HANDLE*)1,0,0);assert(reads==before);
     ios_htmlipc_section_note("open",&snapshot,0,NULL,0,0);assert(reads==before);
     ios_htmlipc_section_note("open",&snapshot,0,(const HANDLE*)1,0,0);assert(reads==before+1);
-    assert(strstr(output,"handle=(nil) handle-read=0"));
+    char absent[80];snprintf(absent,sizeof(absent),"handle=%p handle-read=0",(void*)NULL);
+    assert(strstr(output,absent));
     unsigned previous=lines;
     ios_htmlipc_section_capture(&snapshot,NULL,NULL);assert(!snapshot.active);
     ios_htmlipc_section_capture(&snapshot,(const OBJECT_ATTRIBUTES*)1,NULL);assert(!snapshot.active);

@@ -60,6 +60,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Load pinned Wine syscall declarations for native observer portability
+        run: git submodule update --init --depth 1 wine
+      - name: Check actual section observer on Apple ARM64
+        run: python3 tests/host/check-htmlipc-section-trace.py
       - name: Test production service policy and generate actual Swift native-client scripts
         run: |
           python3 tests/host/check-steam-service.py
