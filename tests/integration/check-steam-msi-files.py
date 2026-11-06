@@ -113,14 +113,18 @@ with tempfile.TemporaryDirectory(prefix='madeira-msi-files-') as directory:
             if bits==64:
                 target.symlink_to(stale)
                 client(bits,'--native-create',request,'c000000f')
-                client(bits,'--install',win(msi),'REINSTALLMODE=amus','1603')
+                baseline_output=client(bits,'--install',win(msi),'REINSTALLMODE=amus','1603')
                 # Require the genuine cabinet/create path, not an invented
                 # result or an earlier MSI validation action.
                 raw=(Path(str(msi)+'.log')).read_bytes()
                 codec='utf-16' if raw.startswith((b'\xff\xfe',b'\xfe\xff')) else ('utf-16-le' if raw and raw.count(0)>len(raw)//4 else 'utf-8')
                 log=raw.decode(codec,errors='replace')
-                valid_stage='InstallFiles' in log and ('1603' in log or 'Return value 3' in log)
-                print('[msi-files] baseline-log bytes='+str(len(raw))+' encoding='+codec+' installfiles='+str('InstallFiles' in log)+' failure='+str('1603' in log or 'Return value 3' in log),flush=True)
+                cabinet_failure=any('cabinet_copy_file failed to create' in line and leaf in line and '(error 2)' in line for line in baseline_output.splitlines())
+                valid_stage=('InstallFiles' in log and cabinet_failure and 'FDICopy failed' in baseline_output and
+                    'ACTION_InstallFiles Failed to extract cabinet' in baseline_output and
+                    'action L\"InstallFiles\" returned 1603' in baseline_output and
+                    '[msi-files] genuine-MsiInstallProduct result=1603' in baseline_output)
+                print('[msi-files] baseline-witness cabinet-error=2 fdi-failed='+str('FDICopy failed' in baseline_output)+' installfiles-api=1603 log-bytes='+str(len(raw))+' encoding='+codec,flush=True)
                 if not valid_stage:
                     safe=log.replace(str(temporary),'<fixture>').replace(str(ROOT),'<repo>')
                     print('[msi-files] baseline-log-tail '+repr(safe[-6000:]),flush=True)
@@ -169,6 +173,33 @@ with tempfile.TemporaryDirectory(prefix='madeira-msi-files-') as directory:
         assert (system32/crossleaf).read_bytes()==crossbytes and not (syswow64/crossleaf).exists()
         client(32,'--state',crossproduct,'5');client(32,'--uninstall',crossproduct)
         print('PASS real Wine I386 frontend -> AMD64 MSI component/engine routing; no fabricated installer completion or registry state',flush=True)
+        # Genuine negative/native controls remain independent of MSI success.
+        # None is a candidate for the ownership migration.
+        control_leaf='madeira-msi-control-'+uuid.uuid4().hex[:8]+'.dll'
+        control=system32/control_leaf;control.write_bytes(b'owned writable control')
+        client(64,'--native-create',system_path(control_leaf),'0')
+        assert control.is_file() and control.stat().st_size==0
+        control.write_bytes(b'owned existing writable bytes')
+        assert 'production-repair count=0' in repair(current)
+        assert control.read_bytes()==b'owned existing writable bytes'
+        missing_parent='C:'+chr(92)+'madeira-msi-missing-'+uuid.uuid4().hex+chr(92)+'child'+chr(92)+'file.dll'
+        client(64,'--native-create',missing_parent,'c000003a')
+        live_leaf='madeira-msi-live-'+uuid.uuid4().hex[:8]+'.dll'
+        live_source=current/'x86_64-vcruntime'/live_leaf
+        live_bytes=b'owned live readonly catalog source';live_source.write_bytes(live_bytes);live_source.chmod(0o444)
+        live=system32/live_leaf;live.symlink_to(live_source)
+        foreign_leaf='madeira-msi-foreign-'+uuid.uuid4().hex[:8]+'.dll'
+        (current/'x86_64-vcruntime'/foreign_leaf).write_bytes(b'catalog name alone is insufficient')
+        foreign_target=temporary/'unowned-missing-parent'/foreign_leaf
+        foreign=system32/foreign_leaf;foreign.symlink_to(foreign_target)
+        assert 'production-repair count=0' in repair(current)
+        assert live.is_symlink() and os.readlink(live)==str(live_source)
+        assert foreign.is_symlink() and os.readlink(foreign)==str(foreign_target)
+        client(64,'--native-create',system_path(live_leaf),'c0000022')
+        client(64,'--native-create',system_path(foreign_leaf),'c000000f')
+        assert live.is_symlink() and live_source.read_bytes()==live_bytes and foreign.is_symlink()
+        assert all(p.read_bytes()==data for p,data in sentinels.items())
+        print('PASS actual stock-Wine native controls: invalid-parent PATH_NOT_FOUND, writable overwrite, live readonly-link ACCESS_DENIED, unowned dangling-link NO_SUCH_FILE; migration preserves every noncandidate and sentinel. Existing iOS readonly-replacement semantics are covered separately by production host tests.',flush=True)
     finally:
         for operation in ('-k','-w'):
             subprocess.run(['wineserver',operation],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30)
