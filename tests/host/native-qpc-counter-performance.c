@@ -16,6 +16,7 @@
 #include <sched.h>
 #include <stdarg.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -116,7 +117,7 @@ static void *exception_server(void *unused)
         int valid=!(pc&3) && inside(pc,4,(uintptr_t)RtlQueryPerformanceCounter,4096) &&
                   inside(fault,1,(uintptr_t)active.rx+COUNTER_RVA,sizeof(struct ios_xp_nt));
         if(valid)memcpy(&instruction,(const void *)pc,4);
-        if(!valid || !emulate_qpc_store(instruction,fault,&state)) {
+        if(!valid || !emulate_qpc_store(instruction,pc,fault,&state)) {
             fprintf(stderr,"unexpected QPC exception pc=%#" PRIxPTR " instruction=%08x fault=%#" PRIxPTR "\n",pc,instruction,fault);
             abort();
         }
@@ -209,7 +210,9 @@ static void *run_worker(void *argument)
 static void run_phase(int bound)
 {
     bind_writer();
+    ios_xp_nt_init();
     struct ios_xp_nt *counter=(void *)(active.rw+COUNTER_RVA);
+    assert(counter->magic==UINT64_C(0x31544e5058444d41) && counter->freq);
     /* Seed slots through the actual production QPC path before measuring its
      * steady-state diagnostic stores; first-use memset is not the regression. */
     for(unsigned n=0;n<WORKERS;n++) {

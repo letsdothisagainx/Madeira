@@ -70,7 +70,7 @@ def generate(work: Path) -> None:
                        "                    /* SIMD/FP STR (immediate, post/pre-index, D-reg")
     emulation = helper("ios_alias_write") + helper("ios_alias_store_pair") + helper("ios_alias_store_immediate")
     emulation += r'''
-static int emulate_qpc_store(uint32_t insn, uintptr_t fault_addr, arm_thread_state64_t *input)
+static int emulate_qpc_store(uint32_t insn, uintptr_t fault_pc, uintptr_t fault_addr, arm_thread_state64_t *input)
 {
     arm_thread_state64_t state = *input;
     uintptr_t alias_fault = 0;

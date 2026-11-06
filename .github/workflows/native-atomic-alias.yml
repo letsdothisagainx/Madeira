@@ -62,6 +62,7 @@ jobs:
           set -o pipefail
           python3 tests/host/check-native-data-alias-performance.py --require-arm64-darwin | tee native-data-throughput.txt
           python3 tests/host/check-native-qpc-counter-performance.py --require-arm64-darwin | tee native-qpc-throughput.txt
+          python3 tests/host/check-native-counter-call-performance.py --require-arm64-darwin | tee native-counter-call-throughput.txt
           python3 tests/host/check-native-atomic-alias-performance.py --require-arm64-darwin | tee native-atomic-throughput.txt
       - uses: actions/upload-artifact@v4
         if: always()
@@ -71,6 +72,7 @@ jobs:
             native-atomic-throughput.txt
             native-data-throughput.txt
             native-qpc-throughput.txt
+            native-counter-call-throughput.txt
           if-no-files-found: ignore
           retention-days: 14
 
