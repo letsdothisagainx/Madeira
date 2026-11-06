@@ -7,6 +7,7 @@
 enum { CONDITIONAL_ROUNDS = 400, CONDITIONAL_THREADS = 5 };
 static unsigned force_conflict, conflict_request, conflict_done;
 static unsigned concurrent_ready, concurrent_start;
+static unsigned round_arrivals, round_generation;
 static uint64_t *conditional_counter;
 struct snapshot { uint64_t x8, x9, x10, x11, x12, x15, nzcv; };
 #define TOTAL(name) __atomic_load_n(&(name), __ATOMIC_RELAXED)
@@ -82,6 +83,20 @@ static void apply_maximum(uint64_t desired, struct snapshot *out)
     assert(out->x8 == (uintptr_t)base && out->x9 == desired);
 }
 
+/* A fast direct writer must not finish every maximum before the RX workers
+ * start. Every round contains four genuine native contenders and a lower
+ * direct RW value; the highest native value necessarily attempts recovery. */
+static void round_barrier(void)
+{
+    unsigned generation = __atomic_load_n(&round_generation, __ATOMIC_ACQUIRE);
+    if (__atomic_fetch_add(&round_arrivals, 1, __ATOMIC_ACQ_REL) == CONDITIONAL_THREADS - 1) {
+        __atomic_store_n(&round_arrivals, 0, __ATOMIC_RELAXED);
+        __atomic_add_fetch(&round_generation, 1, __ATOMIC_RELEASE);
+    } else {
+        while (__atomic_load_n(&round_generation, __ATOMIC_ACQUIRE) == generation) sched_yield();
+    }
+}
+
 static void *concurrent_maximum(void *argument)
 {
     unsigned index = (unsigned)(uintptr_t)argument;
@@ -89,7 +104,9 @@ static void *concurrent_maximum(void *argument)
     __atomic_add_fetch(&concurrent_ready, 1, __ATOMIC_RELEASE);
     while (!__atomic_load_n(&concurrent_start, __ATOMIC_ACQUIRE)) sched_yield();
     for (unsigned iteration = 0; iteration < CONDITIONAL_ROUNDS; ++iteration) {
-        uint64_t desired = iteration * CONDITIONAL_THREADS + index + 1;
+        round_barrier();
+        uint64_t desired = iteration * CONDITIONAL_THREADS +
+            (index == CONDITIONAL_THREADS - 1 ? 1 : index + 2);
         if (index == CONDITIONAL_THREADS - 1) {
             uint64_t observed = __atomic_load_n(conditional_counter, __ATOMIC_RELAXED);
             while (observed < desired && !__atomic_compare_exchange_n(conditional_counter,
@@ -98,6 +115,7 @@ static void *concurrent_maximum(void *argument)
             struct snapshot out;
             apply_maximum(desired, &out);
         }
+        round_barrier();
     }
     return NULL;
 }
@@ -134,6 +152,7 @@ int main(void)
            out.x12 == 30 && out.x15 == 1 && out.nzcv == 0x80000000u);
 
     __atomic_store_n(conditional_counter, 0, __ATOMIC_SEQ_CST);
+    uint64_t success_before = TOTAL(conditional_successes), faults_before = TOTAL(fault_count);
     uint64_t wall_start = clock_ns(CLOCK_MONOTONIC), cpu_start = server_cpu_ns();
     pthread_t workers[CONDITIONAL_THREADS];
     for (unsigned index = 0; index < CONDITIONAL_THREADS; ++index)
@@ -143,6 +162,8 @@ int main(void)
     for (unsigned index = 0; index < CONDITIONAL_THREADS; ++index) assert(!pthread_join(workers[index], NULL));
     uint64_t wall = clock_ns(CLOCK_MONOTONIC) - wall_start, handler_cpu = server_cpu_ns() - cpu_start;
     assert(*conditional_counter == CONDITIONAL_ROUNDS * CONDITIONAL_THREADS && !TOTAL(phase_failures));
+    assert(TOTAL(fault_count) - faults_before >= CONDITIONAL_ROUNDS);
+    assert(TOTAL(conditional_successes) - success_before >= CONDITIONAL_ROUNDS);
     assert(!memcmp(original_code, active.rx, sizeof(original_code)));
     for (unsigned byte = 0; byte < 8; ++byte) {
         assert(active.rx[active.page + 0x200 - 8 + byte] == 0xa5);
