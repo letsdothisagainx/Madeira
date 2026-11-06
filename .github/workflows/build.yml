@@ -470,8 +470,11 @@ jobs:
           path: previous-ipa
       - name: Symbolicate the allocation stack from the exact packaged CPU image
         run: |
-          unzip -q previous-ipa/Madeira.ipa 'Payload/Madeira.app/aarch64-windows/xtajit.dll' -d previous-ipa
-          python3 tools/build/inspect-fex-image.py previous-ipa/Payload/Madeira.app/aarch64-windows/xtajit.dll --assert-known-fault
+          unzip -q previous-ipa/Madeira.ipa 'Payload/Madeira.app/aarch64-windows/xtajit.dll' 'Payload/Madeira.app/arm64ec-windows/xtajit64.dll' -d previous-ipa
+          python3 -m venv "$RUNNER_TEMP/hot-store-tools"
+          "$RUNNER_TEMP/hot-store-tools/bin/pip" install capstone==5.0.6
+          "$RUNNER_TEMP/hot-store-tools/bin/python" tools/build/inspect-fex-image.py previous-ipa/Payload/Madeira.app/arm64ec-windows/xtajit64.dll --code-rva 0xfb3b8 --code-rva 0xffb1c --data-rva 0x3ced20 --context 96
+          "$RUNNER_TEMP/hot-store-tools/bin/python" tools/build/inspect-fex-image.py previous-ipa/Payload/Madeira.app/aarch64-windows/xtajit.dll --code-rva 0xeed8c --code-rva 0xf3348 --data-rva 0x389cd8 --context 96
 
   inspect-steam:
     if: inputs.inspect_steam_run_id != ''
