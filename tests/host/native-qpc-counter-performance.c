@@ -245,6 +245,34 @@ static void run_phase(int bound)
            bound?"production-bound-writer":"production-rx-fallback",WORKERS,WORKERS*ROUNDS,faults,
            indexed_faults-indexed_before,pair_faults-pair_before,wall,worker_cpu_ns,handler);
 }
+static void *run_source_writer_sync(void *unused)
+{
+    (void)unused;
+    const uintptr_t source_values[2]={0,UINT64_C(0xfeedface)};
+    for(unsigned n=0;n<1000;n++)
+        assert(ios_native_counter_alias_copy(active.rw,IMAGE_BYTES,(uintptr_t)active.rx,
+            alias_distance,CONTRACT_RVA+MADEIRA_NATIVE_COUNTER_WRITER_OFFSET,
+            &source_values[n&1],sizeof(uintptr_t)));
+    return NULL;
+}
+static void check_concurrent_source_sync(void)
+{
+    struct ios_xp_nt *counter=(void *)(active.rw+COUNTER_RVA);
+    uint64_t before=__atomic_load_n(&fault_count,__ATOMIC_RELAXED);
+    pthread_t updater,workers[WORKERS];
+    assert(!pthread_create(&updater,NULL,run_source_writer_sync,NULL));
+    for(unsigned n=0;n<WORKERS;n++)assert(!pthread_create(&workers[n],NULL,run_worker,(void *)(uintptr_t)n));
+    for(unsigned n=0;n<WORKERS;n++)assert(!pthread_join(workers[n],NULL));
+    assert(!pthread_join(updater,NULL));
+    for(unsigned n=0;n<WORKERS;n++){
+        struct ios_xp_nt_qpc *slot=&counter->qpc[n+1];ULONGLONG sum=0;
+        for(unsigned bucket=0;bucket<5;bucket++)sum+=slot->hist[bucket];
+        assert(slot->calls==2*ROUNDS && sum==2*ROUNDS);
+    }
+    assert(fixture_contract_rx->writer==active.rw+COUNTER_RVA);
+    assert(__atomic_load_n(&fault_count,__ATOMIC_RELAXED)==before);
+    puts("PASS concurrent source sync: NULL/foreign source slot never replaces owned writer; QPC counters remain exact with zero faults");
+}
 int main(void)
 {
     /* The binder shares the native-image parser header; its separate FEX
@@ -255,7 +283,7 @@ int main(void)
     assert(mach_port_insert_right(mach_task_self(),exception_port,exception_port,MACH_MSG_TYPE_MAKE_SEND)==KERN_SUCCESS);
     pthread_t server;assert(!pthread_create(&server,NULL,exception_server,NULL));
     while(!__atomic_load_n(&server_thread_port,__ATOMIC_ACQUIRE))sched_yield();
-    publish_active(map_image());run_phase(0);run_phase(1);
+    publish_active(map_image());run_phase(0);run_phase(1);check_concurrent_source_sync();
     /* A new private image may contain a parent's writer pointer. Binding must
      * replace it without touching the previous generation or its counters. */
     struct image old=active;unsigned char old_bytes[IMAGE_BYTES];memcpy(old_bytes,old.rx,IMAGE_BYTES);

@@ -75,6 +75,85 @@ static void positive(unsigned machine,uintptr_t base,intptr_t difference)
     assert(!memcmp(before,p,IMAGE)); /* repeated unpublished binding is idempotent */
     cases++;free(p);
 }
+static unsigned copy_cases;
+static void copy_case(size_t offset,size_t bytes)
+{
+    unsigned char *image=fixture(0xaa64),*source=fixture(0xaa64),*expected=malloc(IMAGE);
+    const size_t slot=CONTRACT+MADEIRA_NATIVE_COUNTER_WRITER_OFFSET;
+    const uintptr_t expected_writer=rx+(uintptr_t)delta+COUNTER;
+    assert(expected&&ios_native_counter_alias_bind(image,IMAGE,rx,delta,1));
+    for(size_t i=0;i<MADEIRA_NATIVE_COUNTER_BYTES;i++)source[COUNTER+i]^=0x5a;
+    /* The original source PE keeps NULL, unlike its published private copy. */
+    w64(source,slot,0);
+    memcpy(expected,image,IMAGE);
+    memcpy(expected+offset,source+offset,bytes);
+    w64(expected,slot,expected_writer);
+    assert(ios_native_counter_alias_copy(image,IMAGE,rx,delta,offset,source+offset,bytes));
+    assert(!memcmp(image,expected,IMAGE));
+    assert(r64(image,slot)==expected_writer);
+    free(expected);free(source);free(image);copy_cases++;
+}
+static void copy_tests(void)
+{
+    const size_t slot=CONTRACT+MADEIRA_NATIVE_COUNTER_WRITER_OFFSET;
+    const uintptr_t expected_writer=rx+(uintptr_t)delta+COUNTER;
+    unsigned char *image=fixture(0xaa64),*source=fixture(0xaa64),*expected=malloc(IMAGE);
+    assert(expected&&ios_native_counter_alias_bind(image,IMAGE,rx,delta,1));
+    w64(source,slot,0);
+    memcpy(expected,image,IMAGE);
+    /* Failing-before production operation: ordinary IAT/data synchronization
+     * resets the owned private alias to the source file's NULL. */
+    memcpy(expected+0x4000,source+0x4000,0x7000);
+    assert(r64(expected,slot)==0&&r64(image,slot)==expected_writer);
+    assert(ios_native_counter_alias_copy(image,IMAGE,rx,delta,0x4000,source+0x4000,0x7000));
+    assert(r64(image,slot)==expected_writer);
+    w64(expected,slot,expected_writer);
+    assert(!memcmp(image,expected,IMAGE));copy_cases++;
+    free(expected);free(source);free(image);
+
+    /* Full image, full data region, ordinary counter-only sync and every
+     * partial/split boundary through the eight-byte private slot. */
+    copy_case(0,IMAGE);copy_case(0x4000,0x7000);
+    copy_case(COUNTER,MADEIRA_NATIVE_COUNTER_BYTES);
+    for(size_t off=slot-16;off<slot+16;off++)
+        for(size_t bytes=0;bytes<=32;bytes++)copy_case(off,bytes);
+
+    image=fixture(0xaa64);source=fixture(0xaa64);expected=malloc(IMAGE);
+    assert(expected&&ios_native_counter_alias_bind(image,IMAGE,rx,delta,1));
+    w64(source,slot,UINT64_C(0xfffffffffffffff8)); /* never follow/adopt it */
+    memcpy(expected,image,IMAGE);
+    /* Separate calls cannot write even a temporary half-NULL or half-parent
+     * pointer visible to concurrently running acquire-load getters. */
+    assert(ios_native_counter_alias_copy(image,IMAGE,rx,delta,slot-4,source+slot-4,8));
+    assert(r64(image,slot)==expected_writer);
+    assert(ios_native_counter_alias_copy(image,IMAGE,rx,delta,slot+4,source+slot+4,8));
+    assert(r64(image,slot)==expected_writer);
+    memcpy(expected+slot-4,source+slot-4,4);
+    memcpy(expected+slot+8,source+slot+8,4);
+    assert(!memcmp(image,expected,IMAGE));copy_cases++;
+    /* All invalid copy spans fail without touching a single byte. */
+    memcpy(expected,image,IMAGE);
+    assert(!ios_native_counter_alias_copy(image,IMAGE,rx,delta,IMAGE-1,source,2));
+    assert(!ios_native_counter_alias_copy(image,IMAGE,rx,delta,SIZE_MAX,source,1));
+    assert(!ios_native_counter_alias_copy(image,IMAGE,rx,delta,0,NULL,1));
+    assert(!ios_native_counter_alias_copy(NULL,IMAGE,rx,delta,0,source,1));
+    assert(!ios_native_counter_alias_copy(image,SIZE_MAX,rx,delta,0,source,1));
+    assert(!memcmp(image,expected,IMAGE));copy_cases+=5;
+    /* Old/unbound images and unrelated DLLs retain their exact original
+     * memcpy behavior; they are never silently rebound by a published sync. */
+    w64(image,slot,0);w64(source,slot,0);
+    assert(ios_native_counter_alias_copy(image,IMAGE,rx,delta,0,source,IMAGE));
+    assert(!memcmp(image,source,IMAGE));copy_cases++;
+    w64(image,slot,UINT64_C(0x1234));
+    assert(ios_native_counter_alias_copy(image,IMAGE,rx,delta,0,source,IMAGE));
+    assert(!memcmp(image,source,IMAGE));copy_cases++;
+    image[0]='X';source[0]='Y';
+    assert(ios_native_counter_alias_copy(image,IMAGE,rx,delta,0,source,IMAGE));
+    assert(!memcmp(image,source,IMAGE));copy_cases++;
+    free(expected);free(source);free(image);
+    printf("PASS production native counter source sync: %u copies; old memcpy NULL-reset reproduced, owned slot preserved across full/partial/split ranges, every other byte copied, unbound/unknown behavior and invalid-span rejection retained\n",copy_cases);
+}
+
 int main(void)
 {
     _Static_assert(sizeof(uintptr_t)==8,"native counter writer requires64bit");
@@ -172,6 +251,7 @@ int main(void)
     rejects(fixture(0xaa64),IMAGE,UINT64_C(0x8000000000000000),INTPTR_MAX&~(intptr_t)0xfff,1,"alias extent overflow");
     rejects(fixture(0xaa64),SIZE_MAX,rx,delta,1,"size/address overflow");
     assert(!ios_native_counter_alias_bind(NULL,IMAGE,rx,delta,1));cases++;
+    copy_tests();
     printf("PASS production native counter binder: %u contracts; exact24712B counters preserved, writer-only private clone binding, malformed PE/exports/protections/publication rejected\n",cases);
     return 0;
 }
