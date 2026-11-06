@@ -1,4 +1,7 @@
 /* SPDX-License-Identifier: MIT. Exact owned-helper file policy and real I/O. */
+#ifdef __APPLE__
+#define _DARWIN_C_SOURCE 1
+#endif
 #define _POSIX_C_SOURCE 200809L
 #include <assert.h>
 #include <stdio.h>
