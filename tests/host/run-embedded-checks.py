@@ -6,6 +6,7 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[2]
 commands = [
+    ['python3', 'tests/host/check-steam-browser-transfer.py', '--require-swift'],
     ['python3', 'tests/host/check-fault-site-counters.py'],
     ['python3', 'tests/host/check-native-data-alias.py'],
     ['python3', 'tests/host/check-native-data-alias-performance.py', '--require-arm64-darwin'],

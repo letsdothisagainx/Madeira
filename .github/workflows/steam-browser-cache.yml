@@ -5,6 +5,10 @@ on:
   push:
     branches: [main, 'codex/pr-build-*']
     paths:
+      - tests/host/check-steam-browser-transfer.py
+      - tests/integration/check-official-steam-browser-upgrade.py
+      - tests/host/build-native-log-file-fixture.py
+      - tests/host/htmlipc/test_native_log_file.c
       - app/Madeira/SteamBrowserRuntime.swift
       - app/Madeira/SteamRuntime.swift
       - app/Madeira/SteamNativeBrowserLaunch.swift
@@ -26,6 +30,10 @@ on:
       - .github/workflows/steam-browser-cache.yml
   pull_request:
     paths:
+      - tests/host/check-steam-browser-transfer.py
+      - tests/integration/check-official-steam-browser-upgrade.py
+      - tests/host/build-native-log-file-fixture.py
+      - tests/host/htmlipc/test_native_log_file.c
       - app/Madeira/SteamBrowserRuntime.swift
       - app/Madeira/SteamRuntime.swift
       - app/Madeira/SteamNativeBrowserLaunch.swift
@@ -93,6 +101,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Test production transfer progress, privacy and response/body failures
+        run: python3 tests/host/check-steam-browser-transfer.py --require-swift
       - name: Test real Swift cache transactions and mixed architecture validation
         run: python3 tests/host/check-steam-browser-cache.py --require-swift
       - uses: actions/cache@v4
@@ -101,3 +111,7 @@ jobs:
           key: official-browser-v2-fee14790-1ab3b383-8b712b2a
       - name: Verify complete official archives, downloader, commit and reuse
         run: python3 tests/integration/check-official-steam-browser-cache.py --download-official
+      - name: Load pinned Wine file syscalls for upgrade routing control
+        run: git submodule update --init --depth 1 wine
+      - name: Verify upgrade recovery, routed logging and zero-download subsequent reuse
+        run: python3 tests/integration/check-official-steam-browser-upgrade.py --download-official

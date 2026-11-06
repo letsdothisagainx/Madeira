@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Real native log policy and production Swift immutable-cache regression."""
 from pathlib import Path
-import argparse,os,shutil,subprocess,tempfile,hashlib
+import argparse,os,shutil,subprocess,tempfile,hashlib,importlib.util
 root=Path(__file__).resolve().parents[2]
 p=argparse.ArgumentParser();p.add_argument('--require-swift',action='store_true');args=p.parse_args()
 with tempfile.TemporaryDirectory(prefix='madeira-logs-') as folder:
@@ -9,6 +9,11 @@ with tempfile.TemporaryDirectory(prefix='madeira-logs-') as folder:
     subprocess.run([os.environ.get('CC','cc'),'-std=c11','-Wall','-Wextra','-Werror','-fsanitize=address,undefined',
         '-Wno-misleading-indentation','-I'+str(root/'build/ntdll-unix'),str(root/'tests/host/htmlipc/test_log_file.c'),'-o',str(binary)],check=True)
     subprocess.run([str(binary)],check=True)
+    spec=importlib.util.spec_from_file_location('native_log_fixture',root/'tests/host/build-native-log-file-fixture.py')
+    native_fixture=importlib.util.module_from_spec(spec);spec.loader.exec_module(native_fixture)
+    native=native_fixture.build(d/'native-log-file')
+    subprocess.run([str(native)],check=True)
+
     original=root/'wine/dlls/ntdll/unix/file.c';before=hashlib.sha256(original.read_bytes()).hexdigest()
     staged=d/'file.c';staged.write_bytes(original.read_bytes())
     subprocess.run(['python3',str(root/'tools/build/stage-htmlipc-log-file.py'),str(staged)],check=True)
@@ -77,9 +82,9 @@ assert(!F.prepareMutableLogs(drive:drive,idle:{false},report:{reports.append($0)
 assert(try Data(contentsOf:keep)==Data("unowned remains".utf8))
 assert(try Data(contentsOf:auth)==Data("private fixture remains".utf8))
 for line in reports{assert(!line.contains(base.path) && !line.contains("\n"))}
-print("PASS production Swift logging separation: old default contamination reproduced, routed real writes preserve strict cache reuse; changed DLL rejected, unowned/active logs soft-fail and authentication untouched")
+print("PASS production Swift logging separation: old default contamination reproduced, actual staged NtCreateFile writes preserve strict cache reuse (POSIX backend adapters); changed DLL rejected, unowned/active logs soft-fail and authentication untouched")
 '''
     main=main.replace('assert(try ','assert(try! ')
     (d/'main.swift').write_text(main)
     command=['swiftc','-swift-version','5',*[str(d/name) for name in ['Files.swift','Browser.swift','Native.swift','Update.swift','main.swift']],'-o',str(d/'swift')]
-    subprocess.run(command,check=True);subprocess.run([str(d/'swift'),str(binary)],check=True,timeout=60)
+    subprocess.run(command,check=True);subprocess.run([str(d/'swift'),str(native)],check=True,timeout=60)

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Verified official browser cache, prepared before Wine starts.
 import Foundation
+import Dispatch
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
@@ -121,6 +122,36 @@ enum SteamBrowserRuntimeFiles {
                 }.joined(separator: "/")
             }
             return "[steam-browser-cache-v4] phase=\(phase) reason=\(reason.rawValue) recipe=\(recipe.id) expected=\(expected) observed=\(observed) records-expected=\(recipe.expectedFiles + 1) records-observed=\(records) relative=\(relative)"
+        }
+    }
+    // Numeric transfer state only. No response URL, header, filesystem path
+    // or arbitrary NSError text enters the preparation progress callback.
+    struct DownloadEvent: Sendable, Equatable {
+        enum Phase: String, Sendable { case waiting, response, receiving, completed, failed, cancelled }
+        let phase: Phase
+        let received: Int, expected: Int, elapsedMS: Int
+        let code: Int, retryable: Bool
+        init(_ phase: Phase, received: Int, expected: Int, elapsedMS: Int,
+             code: Int = 0, retryable: Bool = false) {
+            self.phase = phase; self.received = received; self.expected = expected
+            self.elapsedMS = elapsedMS; self.code = code; self.retryable = retryable
+        }
+        func diagnostic(package: Int, count: Int) -> String {
+            "[steam-browser-transfer-v1] package=\(package)/\(count) phase=\(phase.rawValue) received=\(received) expected=\(expected) elapsed-ms=\(elapsedMS) code=\(code) retryable=\(retryable ? 1 : 0)"
+        }
+    }
+    // Rate limiting is independent of networking, with a hard update budget.
+    // Critical start/response/completion/failure events are reported separately.
+    struct DownloadProgress: Sendable {
+        private(set) var updates = 0
+        private var lastMS = 0, lastBucket = 0
+        mutating func shouldReport(received: Int, expected: Int, elapsedMS: Int) -> Bool {
+            guard updates < 64, received >= 0, expected > 0, expected <= Int.max / 20,
+                  received <= expected, elapsedMS >= lastMS else { return false }
+            let bucket = Int((Int64(received) * 20) / Int64(expected))
+            guard elapsedMS - lastMS >= 15_000 || (bucket > lastBucket && elapsedMS - lastMS >= 1_000) else { return false }
+            updates += 1; lastMS = elapsedMS; lastBucket = bucket
+            return true
         }
     }
     struct FileRecord: Codable, Equatable, Sendable {
@@ -500,7 +531,8 @@ enum SteamBrowserRuntimeFiles {
     }
     static func prepare(cacheBase: URL, steamRoot: URL, chromeHTML: URL,
                         idle: () -> Bool,
-                        progress: (String) -> Void = { _ in }) async throws -> SteamBrowserRuntimeFiles.Prepared {
+                        progress: @escaping (String) -> Void = { _ in },
+                        download: ((SteamBrowserRuntimeFiles.Package) async throws -> URL)? = nil) async throws -> SteamBrowserRuntimeFiles.Prepared {
         typealias Files = SteamBrowserRuntimeFiles
         guard !busy, idle() else { throw Files.Failure.active }
         busy = true; defer { busy = false }
@@ -532,12 +564,37 @@ enum SteamBrowserRuntimeFiles {
                 progress("Preparing Steam browser (\(index + 1) of \(recipe.packages.count))…")
                 phase = "download-\(index + 1)"
                 do {
-                    let temporary = try await SteamBrowserDownload.download(package)
+                    progress("[steam-browser-cache-v5] phase=download package=\(index + 1)/\(recipe.packages.count) action=start expected=\(package.bytes) attempt=1 automatic-retry=none")
+                    let temporary: URL
+                    if let download {
+                        // Transport injection supplies bytes only. All production
+                        // size/hash/archive/core/ownership checks below still run.
+                        temporary = try await download(package)
+                    } else {
+                        let events = AsyncStream<Files.DownloadEvent>.makeStream()
+                        let observer = Task { @MainActor in
+                            for await event in events.stream {
+                                progress(event.diagnostic(package: index + 1, count: recipe.packages.count))
+                            }
+                        }
+                        do {
+                            temporary = try await SteamBrowserDownload.download(package) { event in
+                                events.continuation.yield(event)
+                            }
+                            events.continuation.finish(); await observer.value
+                        } catch {
+                            events.continuation.finish(); await observer.value
+                            throw error
+                        }
+                    }
                     defer { try? fm.removeItem(at: temporary) }
                     guard idle() else { throw Files.Failure.active }
                     phase = "sha256-\(index + 1)"
+                    progress("[steam-browser-cache-v5] phase=sha256 package=\(index + 1) action=begin expected=\(package.bytes)")
                     guard try hash(temporary) == package.sha256 else { throw Files.ValidationIssue(.archiveHash, package.file) }
+                    progress("[steam-browser-cache-v5] phase=sha256 package=\(index + 1) action=verified")
                     phase = "extract-\(index + 1)"
+                    progress("[steam-browser-cache-v5] phase=extract package=\(index + 1) action=begin")
                     let archive = try Data(contentsOf: temporary, options: .mappedIfSafe)
                     try Files.appendArchive(archive, package: package, recipe: recipe, stage: stage,
                                             records: &records, digest: hashData, idle: idle)
@@ -552,6 +609,7 @@ enum SteamBrowserRuntimeFiles {
             }
             try Task.checkCancellation()
             phase = "commit"
+            progress("[steam-browser-cache-v5] phase=commit action=begin records=\(records.count)")
             let prepared = try Files.commit(stage: stage, destination: final, recipe: recipe, records: records,
                                     digest: hash, idle: idle, report: progress) {
                 try Files.core(chromeHTML, steamRoot: steamRoot, recipe: recipe, digest: hash)
@@ -570,7 +628,7 @@ enum SteamBrowserRuntimeFiles {
                 case .invalid: issue = Files.ValidationIssue(.recordInvalid)
                 }
             } else { issue = Files.ValidationIssue(.filesystem) }
-            progress(issue.diagnostic(phase: phase, recipe: recipe) + " action=failed code=\((error as NSError).code)")
+            progress(issue.diagnostic(phase: phase, recipe: recipe) + " action=failed code=\((error as NSError).code) retry=next-play previous-cache=retained")
             // Preserve our actionable public failures, but never let a raw
             // filesystem/network NSError leak private paths through the caller.
             if let failure = error as? Files.Failure { throw failure }
@@ -594,16 +652,23 @@ private final class SteamBrowserDownload: NSObject, URLSessionDataDelegate, @unc
     private var session: URLSession?
     private var accepted = false, received = 0
     private var failure: Error?
-    private init(_ package: SteamBrowserRuntimeFiles.Package) throws {
-        self.package = package
+    private let report: @Sendable (SteamBrowserRuntimeFiles.DownloadEvent) -> Void
+    private let started = ProcessInfo.processInfo.systemUptime
+    private var progress = SteamBrowserRuntimeFiles.DownloadProgress()
+    private var timer: DispatchSourceTimer?
+    private var finished = false
+    private init(_ package: SteamBrowserRuntimeFiles.Package,
+                 report: @escaping @Sendable (SteamBrowserRuntimeFiles.DownloadEvent) -> Void) throws {
+        self.package = package; self.report = report
         url = URL(string: SteamBrowserRuntimeFiles.origin + package.file)!
         temporary = FileManager.default.temporaryDirectory.appendingPathComponent("madeira-browser-" + UUID().uuidString + ".zip")
         try Data().write(to: temporary, options: .withoutOverwriting)
         do { handle = try FileHandle(forWritingTo: temporary) }
         catch { try? FileManager.default.removeItem(at: temporary); throw error }
     }
-    static func download(_ package: SteamBrowserRuntimeFiles.Package) async throws -> URL {
-        let transfer = try SteamBrowserDownload(package)
+    static func download(_ package: SteamBrowserRuntimeFiles.Package,
+                         progress: @escaping @Sendable (SteamBrowserRuntimeFiles.DownloadEvent) -> Void = { _ in }) async throws -> URL {
+        let transfer = try SteamBrowserDownload(package, report: progress)
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in transfer.start(continuation) }
         } onCancel: { transfer.cancel() }
@@ -619,7 +684,25 @@ private final class SteamBrowserDownload: NSObject, URLSessionDataDelegate, @unc
         let task = session.dataTask(with: request)
         lock.lock(); self.continuation = next; self.session = session; self.task = task
         let wasCancelled = cancelled; lock.unlock()
+        report(event(.waiting))
+        let heartbeat = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+        heartbeat.schedule(deadline: .now() + 15, repeating: 15)
+        heartbeat.setEventHandler { [weak self, weak queue] in
+            guard let self, let queue else { return }
+            queue.addOperation { [weak self] in self?.reportProgress() }
+        }
+        timer = heartbeat; heartbeat.resume()
         task.resume(); if wasCancelled { task.cancel() }
+    }
+    private func event(_ phase: SteamBrowserRuntimeFiles.DownloadEvent.Phase, code: Int = 0,
+                       retryable: Bool = false) -> SteamBrowserRuntimeFiles.DownloadEvent {
+        let elapsed = max(0, min(900_000_000, (ProcessInfo.processInfo.systemUptime - started) * 1000))
+        return .init(phase, received: received, expected: package.bytes, elapsedMS: Int(elapsed), code: code, retryable: retryable)
+    }
+    private func reportProgress() {
+        guard !finished else { return }
+        let value = event(accepted ? .receiving : .waiting)
+        if progress.shouldReport(received: received, expected: package.bytes, elapsedMS: value.elapsedMS) { report(value) }
     }
     private func cancel() { lock.lock(); cancelled = true; let current = task; lock.unlock(); current?.cancel() }
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
@@ -643,25 +726,32 @@ private final class SteamBrowserDownload: NSObject, URLSessionDataDelegate, @unc
         guard http.value(forHTTPHeaderField: "Content-Encoding").map({ $0.lowercased() == "identity" }) ?? true else {
             failure = Files.ValidationIssue(.responseEncoding, package.file); completionHandler(.cancel); return
         }
-        accepted = true; completionHandler(.allow)
+        accepted = true; report(event(.response, code: http.statusCode)); completionHandler(.allow)
     }
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         guard accepted, data.count <= package.bytes - received else {
             failure = SteamBrowserRuntimeFiles.ValidationIssue(.bodyLength, package.file, expected: package.bytes, observed: received + data.count)
             dataTask.cancel(); return
         }
-        do { try handle.write(contentsOf: data); received += data.count }
+        do { try handle.write(contentsOf: data); received += data.count; reportProgress() }
         catch { failure = error; dataTask.cancel() }
     }
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        finished = true; timer?.cancel(); timer = nil
         do { try handle.close() } catch { failure = error }
         lock.lock(); let next = continuation; continuation = nil; let wasCancelled = cancelled; lock.unlock()
         let issue: Error? = wasCancelled ? CancellationError() : (failure ?? error)
-        if let issue { try? FileManager.default.removeItem(at: temporary); next?.resume(throwing: issue) }
+        if let issue {
+            let native = issue as NSError
+            let retryable = native.domain == NSURLErrorDomain && [NSURLErrorTimedOut, NSURLErrorNetworkConnectionLost, NSURLErrorNotConnectedToInternet, NSURLErrorCannotConnectToHost].contains(native.code)
+            report(event(wasCancelled ? .cancelled : .failed, code: native.code, retryable: retryable))
+            try? FileManager.default.removeItem(at: temporary); next?.resume(throwing: issue)
+        }
         else if !accepted || received != package.bytes {
             try? FileManager.default.removeItem(at: temporary)
+            report(event(.failed))
             next?.resume(throwing: SteamBrowserRuntimeFiles.ValidationIssue(.bodyLength, package.file, expected: package.bytes, observed: received))
-        } else { next?.resume(returning: temporary) }
+        } else { report(event(.completed)); next?.resume(returning: temporary) }
         session.finishTasksAndInvalidate(); self.session = nil
     }
 }
