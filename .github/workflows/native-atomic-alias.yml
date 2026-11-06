@@ -5,19 +5,25 @@ on:
     branches: [main, 'codex/pr-build-*']
     paths:
       - build/ntdll-unix/native_atomic*.h
+      - build/ntdll-unix/native_data_alias.h
       - build/ntdll-unix/signal_arm64_ios.c
       - build/ntdll-unix/jit_store_census.h
       - tests/host/check-native-atomic*.py
+      - tests/host/check-native-data*.py
       - tests/host/native*atomic*.c
+      - tests/host/native*data*alias*.c
       - tests/host/check-jit-store-census.py
       - .github/workflows/native-atomic-alias.yml
   pull_request:
     paths:
       - build/ntdll-unix/native_atomic*.h
+      - build/ntdll-unix/native_data_alias.h
       - build/ntdll-unix/signal_arm64_ios.c
       - build/ntdll-unix/jit_store_census.h
       - tests/host/check-native-atomic*.py
+      - tests/host/check-native-data*.py
       - tests/host/native*atomic*.c
+      - tests/host/native*data*alias*.c
       - tests/host/check-jit-store-census.py
       - .github/workflows/native-atomic-alias.yml
 permissions:
@@ -32,17 +38,21 @@ jobs:
           persist-credentials: false
       - name: Prove native address lowering and exact packaged image invariants
         run: |
+          python3 tests/host/check-native-data-alias.py
           python3 tests/host/check-native-atomic-alias.py
           python3 tests/host/check-native-atomic-image.py
           python3 tests/host/check-jit-store-census.py
       - name: Measure real Mach faults, native throughput and atomic contention
         run: |
           set -o pipefail
+          python3 tests/host/check-native-data-alias-performance.py --require-arm64-darwin | tee native-data-throughput.txt
           python3 tests/host/check-native-atomic-alias-performance.py --require-arm64-darwin | tee native-atomic-throughput.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: native-atomic-throughput
-          path: native-atomic-throughput.txt
+          path: |
+            native-atomic-throughput.txt
+            native-data-throughput.txt
           if-no-files-found: ignore
           retention-days: 14

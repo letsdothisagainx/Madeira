@@ -13,10 +13,13 @@ on:
       - tests/host/check-steam-service.py
       - tests/host/check-native-steam-play.py
       - tests/integration/check-steam-service-startup.py
+      - tests/integration/check-official-steam-service-startup.py
+      - tests/integration/check-official-steam-browser-bootstrap.py
       - tests/integration/steam-service/**
       - tests/integration/check-htmlipc-bootstrap.py
       - tests/integration/htmlipc/**
       - tests/host/check-htmlipc-section-trace.py
+      - tests/host/check-htmlipc-wow64-section-trace.py
       - build/ntdll-unix/htmlipc_section_trace.h
       - tools/build/stage-htmlipc-section-trace.py
       - .github/workflows/steam-service-startup.yml
@@ -31,10 +34,13 @@ on:
       - tests/host/check-steam-service.py
       - tests/host/check-native-steam-play.py
       - tests/integration/check-steam-service-startup.py
+      - tests/integration/check-official-steam-service-startup.py
+      - tests/integration/check-official-steam-browser-bootstrap.py
       - tests/integration/steam-service/**
       - tests/integration/check-htmlipc-bootstrap.py
       - tests/integration/htmlipc/**
       - tests/host/check-htmlipc-section-trace.py
+      - tests/host/check-htmlipc-wow64-section-trace.py
       - build/ntdll-unix/htmlipc_section_trace.h
       - tools/build/stage-htmlipc-section-trace.py
       - .github/workflows/steam-service-startup.yml
@@ -52,7 +58,9 @@ jobs:
       - name: Reproduce dropped RPC completion and verify actual staged queue/wait delivery
         run: python3 tests/host/check-service-async-apc.py
       - name: Verify the actual common-architecture section observer and bounds
-        run: python3 tests/host/check-htmlipc-section-trace.py
+        run: |
+          python3 tests/host/check-htmlipc-section-trace.py
+          python3 tests/host/check-htmlipc-wow64-section-trace.py
   scripts:
     runs-on: xcode-27
     timeout-minutes: 5
@@ -63,7 +71,9 @@ jobs:
       - name: Load pinned Wine syscall declarations for native observer portability
         run: git submodule update --init --depth 1 wine
       - name: Check actual section observer on Apple ARM64
-        run: python3 tests/host/check-htmlipc-section-trace.py
+        run: |
+          python3 tests/host/check-htmlipc-section-trace.py
+          python3 tests/host/check-htmlipc-wow64-section-trace.py
       - name: Test production service policy and generate actual Swift native-client scripts
         run: |
           python3 tests/host/check-steam-service.py
@@ -97,3 +107,8 @@ jobs:
 
       - name: Exercise genuine Wine I386 creator and AMD64 opener bootstrap and section lifetime
         run: xvfb-run -a python3 tests/integration/check-htmlipc-bootstrap.py --download-official
+      - name: Run authentic hash-pinned Valve service through real install and SCM registration
+        run: xvfb-run -a python3 tests/integration/check-official-steam-service-startup.py --download-official
+      - name: Observe authentic hash-pinned browser bootstrap and master-section ownership
+        if: ${{ !cancelled() }}
+        run: xvfb-run -a python3 tests/integration/check-official-steam-browser-bootstrap.py --download-official

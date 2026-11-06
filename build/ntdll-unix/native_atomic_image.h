@@ -8,8 +8,9 @@
 #include <stddef.h>
 #include <string.h>
 #include "native_atomic_alias.h"
+#include "native_data_alias.h"
 
-struct ios_native_atomic_image_stats { size_t planned, lse, exclusive, ranges; };
+struct ios_native_atomic_image_stats { size_t planned, lse, exclusive, ranges, data; };
 static uint16_t ios_native_u16(const unsigned char *p) { uint16_t n; memcpy(&n,p,2); return n; }
 static uint32_t ios_native_u32(const unsigned char *p) { uint32_t n; memcpy(&n,p,4); return n; }
 static uint64_t ios_native_u64(const unsigned char *p) { uint64_t n; memcpy(&n,p,8); return n; }
@@ -69,7 +70,21 @@ static void ios_native_atomic_range(unsigned char *image, size_t image_size,
         struct madeira_native_atomic_alias_plan plan;
         if ((words[i]&0x9f000000u)!=0x90000000u) continue;
         if (!madeira_native_atomic_alias_plan(words,count,rx+start,delta,i,
-                                              ios_native_atomic_data_allowed,&bounds,&plan)) continue;
+                                              ios_native_atomic_data_allowed,&bounds,&plan))
+        {
+            struct madeira_native_data_alias_plan data;
+            /* Native allocator globals outlive a single atomic expression.
+             * Prove every reachable address use, including ordinary writes,
+             * release stores and stable exclusive retry cycles. No guest
+             * code or address that escapes as a value is eligible. */
+            if (!madeira_native_data_alias_plan(words,count,rx+start,delta,i,
+                                                ios_native_atomic_data_allowed,&bounds,&data) ||
+                data.producer_index!=i || data.original!=words[i]) continue;
+            words[i]=data.replacement;
+            stats->planned++;
+            stats->data++;
+            continue;
+        }
         /* The planner returns exactly one immutable producer rewrite. None of
          * the original memory instructions or their retry branches change. */
         if (plan.producer_index!=i || plan.original!=words[i] ||

@@ -1,35 +1,41 @@
 #!/usr/bin/env python3
-"""Observe actual shared-section results for both Windows guest architectures."""
+"""Wrap unchanged native section implementations; observe every returned status."""
 from pathlib import Path
 import sys
 
+def function_end(source,begin):
+    cursor=source.index('{',begin)+1;depth=1
+    while depth:
+        depth+=(source[cursor]=='{')-(source[cursor]=='}');cursor+=1
+    return cursor
+
 def stage(source,header):
-    start='NTSTATUS WINAPI NtCreateSection( HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr,'
-    assert source.count(start)==1,'native section creator boundary changed'
-    source=source.replace(start,'#include "'+str(header)+'"\n\n'+start,1)
-    begin=source.index(start);end=source.index('NTSTATUS WINAPI NtCreateSectionEx(',begin)
-    section=source[begin:end]
-    declaration='    struct object_attributes *objattr;'
-    assert section.count(declaration)==1
-    section=section.replace(declaration,declaration+'\n    struct ios_htmlipc_section_snapshot ios_trace;',1)
-    capture='    if ((ret = alloc_object_attributes( attr, &objattr, &len ))) return ret;'
-    assert section.count(capture)==1
-    section=section.replace(capture,capture+'\n    ios_htmlipc_section_capture(&ios_trace,attr,size);',1)
-    needle='    free( objattr );\n    return ret;'
-    assert section.count(needle)==1,'native section creator completion changed'
-    section=section.replace(needle,'    free( objattr );\n    ios_htmlipc_section_note("create",&ios_trace,ret,handle,protect,sec_flags);\n    return ret;',1)
-    source=source[:begin]+section+source[end:]
-    begin=source.index('NTSTATUS WINAPI NtOpenSection(');end=source.index('NTSTATUS WINAPI NtCreatePort(',begin)
-    section=source[begin:end];declaration='    unsigned int ret;'
-    assert section.count(declaration)==1
-    section=section.replace(declaration,declaration+'\n    struct ios_htmlipc_section_snapshot ios_trace;',1)
-    capture='    if ((ret = validate_open_object_attributes( attr ))) return ret;'
-    assert section.count(capture)==1
-    section=section.replace(capture,capture+'\n    ios_htmlipc_section_capture(&ios_trace,attr,NULL);',1)
-    needle='    SERVER_END_REQ;\n    return ret;'
-    assert section.count(needle)==1,'native section opener completion changed'
-    section=section.replace(needle,'    SERVER_END_REQ;\n    ios_htmlipc_section_note("open",&ios_trace,ret,handle,0,0);\n    return ret;',1)
-    return source[:begin]+section+source[end:]
+    wrappers=[
+        ('NtCreateSection',
+         'NTSTATUS WINAPI NtCreateSection( HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr,\n'
+         '                                 const LARGE_INTEGER *size, ULONG protect,\n'
+         '                                 ULONG sec_flags, HANDLE file )',
+         'size','handle,access,attr,size,protect,sec_flags','protect,sec_flags','create'),
+        ('NtOpenSection',
+         'NTSTATUS WINAPI NtOpenSection( HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr )',
+         'NULL','handle,access,attr','0,0','open')]
+    for name,signature,size,arguments,protection,operation in wrappers:
+        assert source.count(signature)==1,'native section boundary changed: '+name
+        begin=source.index(signature);end=function_end(source,begin)
+        original=source[begin:end]
+        implementation=original.replace('NTSTATUS WINAPI '+name+'(', 'static NTSTATUS WINAPI ios_htmlipc_impl_'+name+'(',1)
+        call_arguments=arguments+(',file' if name=='NtCreateSection' else '')
+        wrapper=signature+'\n{\n'+(
+            '    struct ios_htmlipc_section_snapshot ios_trace;\n'
+            '    NTSTATUS status;\n'
+            '    ios_htmlipc_section_capture(&ios_trace,attr,'+size+');\n'
+            '    status=ios_htmlipc_impl_'+name+'('+call_arguments+');\n'
+            '    ios_htmlipc_section_note("'+operation+'",&ios_trace,status,handle,'+protection+');\n'
+            '    return status;\n}\n')
+        source=source[:begin]+implementation+'\n\n'+wrapper+source[end:]
+    include='#include "'+str(header)+'"\n\n'
+    position=source.index('static NTSTATUS WINAPI ios_htmlipc_impl_NtCreateSection(')
+    return source[:position]+include+source[position:]
 
 if __name__=='__main__':
     path=Path(sys.argv[1]);header=Path(__file__).resolve().parents[2]/'build/ntdll-unix/htmlipc_section_trace.h'
