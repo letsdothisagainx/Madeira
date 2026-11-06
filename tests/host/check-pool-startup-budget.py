@@ -36,12 +36,15 @@ assert 'if (kept_large_carve && !reuse_all_carves)' in ec
 assert 'reuse_all_carves = 1;\n                low_fits = 0;' in ec
 assert ec.count('(low_ok || !ios_tail_carve_in_low( ios_tail_carves[') == 2
 helpers = ''.join(function(native, signature) for signature in (
+    'static size_t ios_pool_hole_tail_start(',
     'static size_t ios_pool_hole_between(',
     'static size_t ios_pool_code_cap(',
+    'static size_t ios_pool_holes_tail_start(',
     'int ios_jit_low_contains(',
     'static int ios_pool_low_take(',
     'static int ios_tail_carve_in_low(',
     'static int ios_pool_preserve_code_carve(',
+    'static int ios_pool_fresh_tail_fits(',
     'static int ios_tail_carve_ready(',
 ))
 carve_start = native.index('#define IOS_TAIL_CARVE_MAX ')

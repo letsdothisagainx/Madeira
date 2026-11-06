@@ -1,0 +1,614 @@
+{
+  "capture": "madeira-log(200111), source 81f0428681d8012bdf3b746554df53a70af172cc",
+  "description": "Complete main-tail EC_CODE allocation/reuse, successful release and verified quiescent process-retirement order through the server.dll failure. Addresses identify captured handles only; replay frees returned handles after counterfactual placement. Seconds preserve integer wall-clock seconds from the most recent bounded xp timestamp (matching production time(NULL), including its epoch offset from the relative runtime). Synthetic final image extents reproduce only recorded count/bytes/maximum, not original locations. The concurrent 9019 reuse decision precedes 9001 fresh selection: the only free retired 16MiB carve is already claimed before the other thread selects fresh16KiB; completion logging follows the much slower NOP-prefill. This partial order is verified against old production return addresses, not inferred from completion-line order.",
+  "pool": "0x48000000",
+  "final_head": "0x244dc000",
+  "observed_tail": "0x22018000",
+  "server": "0x2580000",
+  "events": [
+    {
+      "line": 1061,
+      "seconds": 0,
+      "op": "allocate",
+      "handle": 0,
+      "owner": "0x102a5c000",
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x347ffc000",
+      "head": "0x1f3c000",
+      "rotation": false
+    },
+    {
+      "line": 1155,
+      "seconds": 0,
+      "op": "allocate",
+      "handle": 1,
+      "owner": "0x102a5c000",
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x346ffc000",
+      "head": "0x1f40000",
+      "rotation": false
+    },
+    {
+      "line": 2413,
+      "seconds": 0,
+      "op": "allocate",
+      "handle": 2,
+      "owner": "0x400310000",
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x346ff8000",
+      "head": "0x3634000",
+      "rotation": false
+    },
+    {
+      "line": 2506,
+      "seconds": 1,
+      "op": "allocate",
+      "handle": 3,
+      "owner": "0x400310000",
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x345ff8000",
+      "head": "0x3634000",
+      "rotation": false
+    },
+    {
+      "line": 3484,
+      "seconds": 2,
+      "op": "release",
+      "handle": 0,
+      "owner": "0x102a5c000"
+    },
+    {
+      "line": 3516,
+      "seconds": 2,
+      "op": "retire",
+      "owner": "0x102a5c000"
+    },
+    {
+      "line": 3900,
+      "seconds": 3,
+      "op": "allocate",
+      "handle": 4,
+      "owner": "0x102ce0000",
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x347ffc000",
+      "head": "0x47b0000",
+      "rotation": false
+    },
+    {
+      "line": 4004,
+      "seconds": 3,
+      "op": "allocate",
+      "handle": 5,
+      "owner": "0x102ce0000",
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x344ff8000",
+      "head": "0x47c8000",
+      "rotation": false
+    },
+    {
+      "line": 9019,
+      "seconds": 67,
+      "op": "allocate",
+      "handle": 7,
+      "owner": "0x500310000",
+      "requested": "0x4000",
+      "observed": "0x1000000",
+      "observed_rx": "0x346ffc000",
+      "head": "0xc76c000",
+      "rotation": false
+    },
+    {
+      "line": 9001,
+      "seconds": 67,
+      "op": "allocate",
+      "handle": 6,
+      "owner": "0x102c28000",
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x344ff4000",
+      "head": "0xc76c000",
+      "rotation": false
+    },
+    {
+      "line": 9373,
+      "seconds": 68,
+      "op": "allocate",
+      "handle": 8,
+      "owner": "0x102c28000",
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x343ff4000",
+      "head": "0xc854000",
+      "rotation": false
+    },
+    {
+      "line": 9493,
+      "seconds": 68,
+      "op": "allocate",
+      "handle": 9,
+      "owner": "0x500310000",
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x342ff4000",
+      "head": "0xcf38000",
+      "rotation": false
+    },
+    {
+      "line": 10710,
+      "seconds": 69,
+      "op": "release",
+      "handle": 6,
+      "owner": "0x102c28000"
+    },
+    {
+      "line": 10752,
+      "seconds": 69,
+      "op": "retire",
+      "owner": "0x102c28000"
+    },
+    {
+      "line": 15326,
+      "seconds": 76,
+      "op": "allocate",
+      "handle": 10,
+      "owner": "0x10309c000",
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x344ff4000",
+      "head": "0xfda4000",
+      "rotation": false
+    },
+    {
+      "line": 15364,
+      "seconds": 76,
+      "op": "allocate",
+      "handle": 11,
+      "owner": "0x600310000",
+      "requested": "0x4000",
+      "observed": "0x1000000",
+      "observed_rx": "0x343ff4000",
+      "head": "0xfe38000",
+      "rotation": false
+    },
+    {
+      "line": 15681,
+      "seconds": 76,
+      "op": "allocate",
+      "handle": 12,
+      "owner": "0x1030a4000",
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x342ff0000",
+      "head": "0x11cd4000",
+      "rotation": false
+    },
+    {
+      "line": 15761,
+      "seconds": 76,
+      "op": "allocate",
+      "handle": 13,
+      "owner": "0x700310000",
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x342fec000",
+      "head": "0x11d48000",
+      "rotation": false
+    },
+    {
+      "line": 16593,
+      "seconds": 80,
+      "op": "allocate",
+      "handle": 14,
+      "owner": "0x1030a4000",
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x341fec000",
+      "head": "0x11e1f000",
+      "rotation": false
+    },
+    {
+      "line": 16608,
+      "seconds": 80,
+      "op": "allocate",
+      "handle": 15,
+      "owner": "0x10309c000",
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x340fec000",
+      "head": "0x11e1f000",
+      "rotation": false
+    },
+    {
+      "line": 16675,
+      "seconds": 80,
+      "op": "allocate",
+      "handle": 16,
+      "owner": "0x600310000",
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x33ffec000",
+      "head": "0x11e1f000",
+      "rotation": false
+    },
+    {
+      "line": 16713,
+      "seconds": 80,
+      "op": "allocate",
+      "handle": 17,
+      "owner": "0x700310000",
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x33efec000",
+      "head": "0x11f50000",
+      "rotation": false
+    },
+    {
+      "line": 16961,
+      "seconds": 81,
+      "op": "release",
+      "handle": 12,
+      "owner": "0x1030a4000"
+    },
+    {
+      "line": 16993,
+      "seconds": 81,
+      "op": "retire",
+      "owner": "0x1030a4000"
+    },
+    {
+      "line": 17079,
+      "seconds": 81,
+      "op": "allocate",
+      "handle": 18,
+      "owner": "0x102ce0000",
+      "requested": "0x8000000",
+      "observed": "0x8000000",
+      "observed_rx": "0x336fec000",
+      "head": "0x13194000",
+      "rotation": false
+    },
+    {
+      "line": 17111,
+      "seconds": 81,
+      "op": "release",
+      "handle": 5,
+      "owner": "0x102ce0000"
+    },
+    {
+      "line": 17191,
+      "seconds": 81,
+      "op": "retire",
+      "owner": "0x600310000"
+    },
+    {
+      "line": 17515,
+      "seconds": 82,
+      "op": "retire",
+      "owner": "0x700310000"
+    },
+    {
+      "line": 17643,
+      "seconds": 82,
+      "op": "release",
+      "handle": 10,
+      "owner": "0x10309c000"
+    },
+    {
+      "line": 17656,
+      "seconds": 82,
+      "op": "retire",
+      "owner": "0x10309c000"
+    },
+    {
+      "line": 18166,
+      "seconds": 84,
+      "op": "allocate",
+      "handle": 19,
+      "owner": "0x500310000",
+      "requested": "0x8000000",
+      "observed": "0x8000000",
+      "observed_rx": "0x32efec000",
+      "head": "0x14500000",
+      "rotation": false
+    },
+    {
+      "line": 19919,
+      "seconds": 98,
+      "op": "release",
+      "handle": 9,
+      "owner": "0x500310000"
+    },
+    {
+      "line": 23874,
+      "seconds": 148,
+      "op": "allocate",
+      "handle": 20,
+      "owner": "0x500310000",
+      "requested": "0x8000000",
+      "observed": "0x8000000",
+      "observed_rx": "0x326fec000",
+      "head": "0x14500000",
+      "rotation": false
+    },
+    {
+      "line": 30173,
+      "seconds": 268,
+      "op": "allocate",
+      "handle": 21,
+      "owner": "0x600310000",
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x344ff4000",
+      "head": "0x14918000",
+      "rotation": false
+    },
+    {
+      "line": 30547,
+      "seconds": 273,
+      "op": "allocate",
+      "handle": 22,
+      "owner": "0x600310000",
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x344ff8000",
+      "head": "0x14918000",
+      "rotation": false
+    },
+    {
+      "line": 31422,
+      "seconds": 276,
+      "op": "allocate",
+      "handle": 23,
+      "owner": "0x700310000",
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x342ff0000",
+      "head": "0x16828000",
+      "rotation": false
+    },
+    {
+      "line": 31960,
+      "seconds": 279,
+      "op": "allocate",
+      "handle": 24,
+      "owner": "0x700310000",
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x343ff4000",
+      "head": "0x16828000",
+      "rotation": false
+    },
+    {
+      "line": 32820,
+      "seconds": 281,
+      "op": "allocate",
+      "handle": 25,
+      "owner": "0x800310000",
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x342fec000",
+      "head": "0x17c8c000",
+      "rotation": false
+    },
+    {
+      "line": 33375,
+      "seconds": 284,
+      "op": "allocate",
+      "handle": 26,
+      "owner": "0x800310000",
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x342ff4000",
+      "head": "0x17c8c000",
+      "rotation": false
+    },
+    {
+      "line": 33928,
+      "seconds": 285,
+      "op": "allocate",
+      "handle": 27,
+      "owner": "0x900310000",
+      "requested": "0x4000",
+      "observed": "0x1000000",
+      "observed_rx": "0x341fec000",
+      "head": "0x18644000",
+      "rotation": false
+    },
+    {
+      "line": 34579,
+      "seconds": 289,
+      "op": "allocate",
+      "handle": 28,
+      "owner": "0x900310000",
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x340fec000",
+      "head": "0x18644000",
+      "rotation": false
+    },
+    {
+      "line": 35309,
+      "seconds": 294,
+      "op": "allocate",
+      "handle": 29,
+      "owner": "0xa00310000",
+      "requested": "0x4000",
+      "observed": "0x1000000",
+      "observed_rx": "0x33ffec000",
+      "head": "0x18644000",
+      "rotation": false
+    },
+    {
+      "line": 35451,
+      "seconds": 298,
+      "op": "allocate",
+      "handle": 30,
+      "owner": "0xa00310000",
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x33efec000",
+      "head": "0x18644000",
+      "rotation": false
+    },
+    {
+      "line": 36708,
+      "seconds": 307,
+      "op": "allocate",
+      "handle": 31,
+      "owner": "0xe00310000",
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x326fe8000",
+      "head": "0x18f88000",
+      "rotation": false
+    },
+    {
+      "line": 36900,
+      "seconds": 312,
+      "op": "allocate",
+      "handle": 32,
+      "owner": "0xe00310000",
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x325fe8000",
+      "head": "0x18f88000",
+      "rotation": false
+    },
+    {
+      "line": 39722,
+      "seconds": 338,
+      "op": "retire",
+      "owner": "0xe00310000"
+    },
+    {
+      "line": 39765,
+      "seconds": 338,
+      "op": "retire",
+      "owner": "0xa00310000"
+    },
+    {
+      "line": 39861,
+      "seconds": 338,
+      "op": "retire",
+      "owner": "0x900310000"
+    },
+    {
+      "line": 39882,
+      "seconds": 338,
+      "op": "retire",
+      "owner": "0x800310000"
+    },
+    {
+      "line": 39929,
+      "seconds": 338,
+      "op": "retire",
+      "owner": "0x700310000"
+    },
+    {
+      "line": 40224,
+      "seconds": 342,
+      "op": "allocate",
+      "handle": 33,
+      "owner": "0x700310000",
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x342ff0000",
+      "head": "0x19940000",
+      "rotation": false
+    },
+    {
+      "line": 40562,
+      "seconds": 349,
+      "op": "allocate",
+      "handle": 34,
+      "owner": "0x700310000",
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x343ff4000",
+      "head": "0x19940000",
+      "rotation": false
+    },
+    {
+      "line": 46805,
+      "seconds": 485,
+      "op": "retire",
+      "owner": "0x700310000"
+    },
+    {
+      "line": 46877,
+      "seconds": 485,
+      "op": "retire",
+      "owner": "0x600310000"
+    },
+    {
+      "line": 47406,
+      "seconds": 488,
+      "op": "allocate",
+      "handle": 35,
+      "owner": "0x10fd94000",
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x344ff4000",
+      "head": "0x1a1a8000",
+      "rotation": false
+    },
+    {
+      "line": 47571,
+      "seconds": 492,
+      "op": "allocate",
+      "handle": 36,
+      "owner": "0x10fd94000",
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x344ff8000",
+      "head": "0x1a1a8000",
+      "rotation": false
+    },
+    {
+      "line": 73903,
+      "seconds": 1534,
+      "op": "allocate",
+      "handle": 37,
+      "owner": "0x10fd94000",
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x343ff4000",
+      "head": "0x20cf7000",
+      "rotation": true
+    },
+    {
+      "line": 73910,
+      "seconds": 1534,
+      "op": "release",
+      "handle": 36,
+      "owner": "0x10fd94000"
+    },
+    {
+      "line": 74400,
+      "seconds": 1540,
+      "op": "allocate",
+      "handle": 38,
+      "owner": "0x10fd94000",
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x344ff8000",
+      "head": "0x244de000",
+      "rotation": true
+    },
+    {
+      "line": 74407,
+      "seconds": 1540,
+      "op": "release",
+      "handle": 37,
+      "owner": "0x10fd94000"
+    }
+  ],
+  "log_sha256": "38e8d2ac3b26c6c100287323d48d16cc3553e2d70a65d5126f52e67cde72e65f",
+  "head_note": "Intermediate head values conservatively retain the largest recorded image endpoint or explicit bump/fresh-tail snapshot so far; the final head is the exact failure census, not the sometimes eight-KiB-higher reused-image endpoint. All old-production returned carve sizes and offsets are checked against capture."
+}

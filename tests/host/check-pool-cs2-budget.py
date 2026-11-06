@@ -13,12 +13,13 @@ by the harness. Real shared file mappings check the RX/RW alias relationship.
 No Wine/game execution or assertion of a successful device launch is implied.
 """
 from pathlib import Path
+import json
 import os
 import subprocess
 import tempfile
 
 root = Path(__file__).resolve().parents[2]
-native = (root / 'build/ntdll-unix/virtual_ios.c').read_text()
+native = Path(os.environ.get('MADEIRA_POOL_SOURCE', root / 'build/ntdll-unix/virtual_ios.c')).read_text()
 allocator = (root / 'app/Madeira/JITAllocator.c').read_text()
 content = (root / 'app/Madeira/ContentView.swift').read_text()
 swift = (root / 'app/Madeira/StikJITHelper.swift').read_text()
@@ -55,7 +56,7 @@ assert image_chain.count('ios_pool_recycle_code_range(') == 1
 assert 'ios_jit_copy_refused = 1;' in failure and 'return -1;' in failure
 assert 'status = STATUS_NO_MEMORY;' in loader_failure and 'goto done;' in loader_failure
 
-helpers = ''.join(function(native, signature) for signature in (
+helper_signatures = (
     'static size_t ios_pool_hole_head_place(',
     'static size_t ios_pool_hole_tail_start(',
     'static size_t ios_pool_hole_between(',
@@ -84,6 +85,7 @@ helpers = ''.join(function(native, signature) for signature in (
     'static size_t ios_pool_take_freed_for_tail(',
     'static int ios_tail_carve_in_low(',
     'static int ios_pool_preserve_code_carve(',
+    'static int ios_pool_fresh_tail_fits(',
     'static int ios_tail_carve_scan(',
     'static int ios_tail_carve_occupied(',
     'static int ios_tail_carve_ready(',
@@ -94,7 +96,29 @@ helpers = ''.join(function(native, signature) for signature in (
     'static int ios_pool_recycle_code_range(',
     'static int ios_pool_ledger_holds(',
     'void ios_jit_reclaim_process(',
-))
+)
+# The source override permits the same regression to compile the previous
+# production implementation and demonstrate its recorded capacity failure.
+helpers = ''.join(function(native, signature) for signature in helper_signatures if signature in native)
+
+tail_trace = json.loads((root / 'tests/host/fixtures/pool-cs2-200111-tail.json').read_text())
+tail_rows = []
+for event in tail_trace['events']:
+    op = {'allocate': 0, 'release': 1, 'retire': 2}[event['op']]
+    tail_rows.append('    {%d, %d, %d, %d, %sULL, %s, %s, %s, %s, %d},' % (
+        event['line'], event['seconds'], op, event.get('handle', 0), event['owner'],
+        event.get('requested', '0'), event.get('observed', '0'), event.get('head', '0'),
+        hex(int(event['observed_rx'], 16) - 0x300000000) if 'observed_rx' in event else '0',
+        event.get('rotation', False)))
+tail_replay = '''
+struct captured_tail_event {
+    unsigned line, seconds, op, handle;
+    uintptr_t owner;
+    size_t ask, observed, head, observed_off;
+    int rotation;
+};
+static const struct captured_tail_event captured_tail_events[] = {
+''' + '\n'.join(tail_rows) + '\n};\n' + '#define REPLAY_NEW_POLICY %d\n' % ('static int ios_pool_fresh_tail_fits(' in native)
 
 # Swift's launch plumbing is platform-owned; the decision and arithmetic run
 # below as production C. Keep the selected game and the pre-Wine failure path
@@ -134,7 +158,10 @@ fixture = r'''
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <signal.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 #define MB ((size_t)1 << 20)
@@ -191,8 +218,8 @@ typedef int (*ios_pool_region_fn)(uint64_t *, uint64_t *, unsigned *);
 static unsigned ios_tail_carve_n;
 static pthread_mutex_t ios_tail_carve_lock = PTHREAD_MUTEX_INITIALIZER;
 
-/* Darwin answers are supplied, while the production walkers and all allocator
- * decisions run unchanged. No buffer is actually executed on the host. */
+/* Darwin answers are supplied; allocator/retirement decisions run unchanged.
+ * The final image test executes only a tiny harness-owned host ISA stub. */
 typedef unsigned mach_port_t, mach_msg_type_number_t, thread_act_t;
 typedef thread_act_t *thread_act_array_t;
 typedef uintptr_t mach_vm_address_t;
@@ -254,6 +281,39 @@ static int mach_vm_region(mach_port_t task, mach_vm_address_t *address, mach_vm_
     }
     return KERN_SUCCESS;
 }
+/* Deterministic schedules pause only at real production mutex operations.
+ * They neither alter cursors nor fabricate allocation results. */
+static pthread_mutex_t schedule_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t schedule_cond = PTHREAD_COND_INITIALIZER;
+static int schedule_mode, tiny_has_pool, other_waiting, release_tiny;
+static __thread unsigned schedule_role, carve_lock_depth;
+static int scheduled_mutex_lock(pthread_mutex_t *lock)
+{
+    if (schedule_mode && ((schedule_role == 2 && lock == &ios_pool_lock) ||
+                          (schedule_role == 3 && lock == &ios_tail_carve_lock)))
+    {
+        pthread_mutex_lock(&schedule_lock);
+        other_waiting = 1; pthread_cond_broadcast(&schedule_cond);
+        pthread_mutex_unlock(&schedule_lock);
+    }
+    int result = pthread_mutex_lock(lock);
+    if (!result && lock == &ios_tail_carve_lock) ++carve_lock_depth;
+    if (!result && schedule_mode && schedule_role == 1 && lock == &ios_pool_lock && carve_lock_depth)
+    {
+        pthread_mutex_lock(&schedule_lock);
+        tiny_has_pool = 1; pthread_cond_broadcast(&schedule_cond);
+        while (!release_tiny) pthread_cond_wait(&schedule_cond, &schedule_lock);
+        pthread_mutex_unlock(&schedule_lock);
+    }
+    return result;
+}
+static int scheduled_mutex_unlock(pthread_mutex_t *lock)
+{
+    if (lock == &ios_tail_carve_lock) { CHECK(carve_lock_depth); --carve_lock_depth; }
+    return pthread_mutex_unlock(lock);
+}
+#define pthread_mutex_lock scheduled_mutex_lock
+#define pthread_mutex_unlock scheduled_mutex_unlock
 ''' + budget_helpers + helpers + r'''
 
 static void initialize_head_reserve(void)
@@ -527,6 +587,241 @@ static void check_paired_budget(size_t pool_mb, size_t reserve_mb)
     puts("PASS: paired budget reserves phonon.dll plus 48 MiB of later images; real reclaim preserves foreign owners, aliases and retirement grace");
 }
 
+''' + tail_replay + r'''
+
+static void final_image_extents(void)
+{
+    static const size_t sizes[] = {0x38000, 0x28000, 0x20000, 0x18000, 0x10000};
+    size_t cursor = MB, sum = 0;
+    ios_pool_free_count = 0;
+    for (unsigned i = 0; i < ARRAY_SIZE(sizes); ++i)
+    {
+        ios_pool_freelist[i] = (struct ios_pool_free){cursor, sizes[i], 0, 1, 0};
+        cursor += sizes[i] + 0x4000; sum += sizes[i];
+        ++ios_pool_free_count;
+    }
+    CHECK(sum == 0xa8000 && ios_pool_free_count == 5);
+}
+
+static void check_captured_server_failure(void)
+{
+    reset(1152 * MB, 176 * MB);
+    jit_pool_offset = 0x244dc000; ios_jit_tail_reserved = 0x22018000;
+    final_image_extents();
+    CHECK(ios_jit_pool_size_global - jit_pool_offset - ios_jit_tail_reserved == 0x1b0c000);
+    expect_failed_image(0x2580000);
+    puts("PASS: exact server.dll census reproduces 37.5 MiB failure with 27.046875 MiB virgin space and five fragmented image extents");
+}
+
+static void check_owned_executable_image(size_t off, size_t size)
+{
+    CHECK(off && size >= 16 && off + size < mapped_size);
+    unsigned char *rw = (unsigned char *)rw_memory + off;
+    const unsigned char *rx = (const unsigned char *)rx_memory + off;
+    rw[-1] = 0xa5; rw[size] = 0x5a;
+#if defined(__x86_64__)
+    const unsigned char stub[] = {0xb8, 42, 0, 0, 0, 0xc3}; /* mov eax,42; ret */
+#elif defined(__aarch64__) || defined(__arm64__)
+    const uint32_t stub[] = {0x52800540, 0xd65f03c0}; /* mov w0,42; ret */
+#else
+#error This executable-capacity regression requires an x86-64 or ARM64 host.
+#endif
+    memcpy(rw, stub, sizeof stub);
+    *(uint64_t *)(rw + size - 8) = 0xdecafbad12345678ULL;
+    CHECK(!memcmp(rx, stub, sizeof stub));
+    CHECK(*(const uint64_t *)(rx + size - 8) == 0xdecafbad12345678ULL);
+    CHECK(rx[-1] == 0xa5 && rx[size] == 0x5a);
+    __builtin___clear_cache((char *)rx, (char *)rx + sizeof stub);
+    int (*run)(void) = (int (*)(void))(uintptr_t)rx;
+    CHECK(run() == 42);
+    pid_t child = fork(); CHECK(child >= 0);
+    if (!child)
+    {
+        const struct rlimit no_core = {0, 0};
+        setrlimit(RLIMIT_CORE, &no_core);
+        signal(SIGSEGV, SIG_DFL); signal(SIGBUS, SIG_DFL);
+        *(volatile unsigned char *)(uintptr_t)rx = 0;
+        _exit(91);
+    }
+    int status = 0; CHECK(waitpid(child, &status, 0) == child);
+    CHECK(WIFSIGNALED(status) && (WTERMSIG(status) == SIGSEGV || WTERMSIG(status) == SIGBUS));
+    CHECK(run() == 42 && !memcmp(rx, stub, sizeof stub));
+}
+
+static void check_captured_tail_history(void)
+{
+    void *handles[64] = {0};
+    struct ios_tail_carve pinned[3];
+    unsigned pinned_n = 0, oversize_tiny = 0;
+    reset(1152 * MB, 176 * MB);
+    jit_pool_offset = ios_jit_tail_reserved = 0;
+    ios_pool_free_count = ios_pool_ledger_count = ios_tail_carve_n = 0;
+    memset(ios_tail_carves, 0, sizeof ios_tail_carves);
+    for (unsigned i = 0; i < ARRAY_SIZE(captured_tail_events); ++i)
+    {
+        const struct captured_tail_event *e = &captured_tail_events[i];
+        owner = e->owner; fake_now = 1000 + e->seconds;
+        if (e->op == 2) { ios_tail_carves_owner_died((void *)owner); continue; }
+        if (e->op == 1)
+        {
+            void *released = NULL; size_t size = 0;
+            CHECK(handles[e->handle]);
+            CHECK(release_code(handles[e->handle], MEM_RELEASE, &released, &size) == STATUS_SUCCESS);
+            CHECK(released == handles[e->handle]);
+            continue;
+        }
+        CHECK(e->handle < ARRAY_SIZE(handles));
+        jit_pool_offset = e->head;
+        size_t got = e->ask;
+        if (e->rotation) got = rotate(&handles[e->handle]);
+        else CHECK(allocate_code(&got, &handles[e->handle]) == STATUS_SUCCESS);
+        CHECK(handles[e->handle] && got >= e->ask);
+        if (!REPLAY_NEW_POLICY && (got != e->observed ||
+            (uintptr_t)handles[e->handle] - (uintptr_t)rx_memory != e->observed_off))
+        {
+            fprintf(stderr, "baseline replay differs at captured line %u: got=0x%zx observed=0x%zx off=0x%zx expected-off=0x%zx\n",
+                    e->line, got, e->observed, (uintptr_t)handles[e->handle] - (uintptr_t)rx_memory, e->observed_off);
+            exit(2);
+        }
+        if (e->ask == 0x4000 && got >= 16 * MB) ++oversize_tiny;
+        CHECK(*(const uint32_t *)handles[e->handle] == 0xd503201f);
+        if (e->ask == 128 * MB)
+        {
+            CHECK(got == e->ask && pinned_n < ARRAY_SIZE(pinned));
+            size_t off = (uintptr_t)handles[e->handle] - (uintptr_t)rx_memory;
+            unsigned j;
+            for (j = 0; j < ios_tail_carve_n; ++j) if (ios_tail_carves[j].off == off) break;
+            CHECK(j < ios_tail_carve_n);
+            pinned[pinned_n] = ios_tail_carves[j];
+            *(uint64_t *)((char *)rw_memory + off) = 0x1234000000000000ULL + pinned_n;
+            *(uint64_t *)((char *)rw_memory + off + got - 8) = 0x5678000000000000ULL + pinned_n;
+            ++pinned_n;
+        }
+    }
+    CHECK(pinned_n == 3);
+    jit_pool_offset = 0x244dc000;
+    printf("captured-tail replay: tiny-oversized=%u tail=0x%zx saved=0x%zx carves=%u virgin=0x%zx\n",
+           oversize_tiny, (size_t)ios_jit_tail_reserved, (size_t)(0x22018000 - ios_jit_tail_reserved),
+           ios_tail_carve_n, ios_jit_pool_size_global - jit_pool_offset - ios_jit_tail_reserved);
+    fflush(stdout);
+    CHECK(!oversize_tiny && ios_jit_tail_reserved == 0x1f024000);
+    for (unsigned i = 0; i < pinned_n; ++i)
+    {
+        unsigned j;
+        for (j = 0; j < ios_tail_carve_n; ++j) if (ios_tail_carves[j].off == pinned[i].off) break;
+        CHECK(j < ios_tail_carve_n && !memcmp(&ios_tail_carves[j], &pinned[i], sizeof pinned[i]));
+        CHECK(*(const uint64_t *)((char *)rx_memory + pinned[i].off) == 0x1234000000000000ULL + i);
+        CHECK(*(const uint64_t *)((char *)rx_memory + pinned[i].off + pinned[i].size - 8) == 0x5678000000000000ULL + i);
+    }
+    /* A subsequent genuine FEX 128 MiB rotation request still follows the
+     * unchanged 176 MiB image-headroom policy. It must halve to a verified
+     * released 16 MiB carve instead of consuming this recovered headroom. */
+    size_t before_rotation = ios_jit_tail_reserved;
+    unsigned before_carves = ios_tail_carve_n;
+    void *late_code = NULL;
+    CHECK(rotate(&late_code) == 16 * MB);
+    CHECK(late_code && ios_jit_tail_reserved == before_rotation && ios_tail_carve_n == before_carves);
+    CHECK(*(const uint32_t *)late_code == 0xd503201f);
+    final_image_extents();
+    size_t server = (size_t)-1;
+    CHECK(!allocate_image(0x2580000, &server) && server == 0x244dc000);
+    CHECK(ios_pool_ledger_holds(server, 0x2580000, (void *)owner));
+    check_owned_executable_image(server, 0x2580000);
+    size_t later;
+    CHECK(!allocate_image(0x94000, &later)); /* observed later schannel image + trampoline */
+    CHECK(!allocate_image(0xc4000, &later)); /* observed later rsaenh image + trampoline */
+    CHECK(!allocate_image(8 * MB, &later)); /* documented synthetic additional image stress */
+    CHECK(!allocate_image(12 * MB, &later));
+    CHECK(!allocate_image(12 * MB, &later));
+    check_owned_executable_image(later, 12 * MB);
+    CHECK(ios_jit_pool_size_global - jit_pool_offset - ios_jit_tail_reserved == 0x428000);
+    expect_failed_image(8 * MB);
+    printf("PASS: complete captured lifetime replay loads server.dll and observed crash-path TLS image sizes plus three synthetic images totaling 32 MiB; remaining=0x%zx; three live 128 MiB generations retained; true 8 MiB exhaustion rejected\n",
+           ios_jit_pool_size_global - jit_pool_offset - ios_jit_tail_reserved);
+}
+
+struct scheduled_request { unsigned role; size_t size, limit, off; void *ret; int status; };
+static void *scheduled_allocate(void *opaque)
+{
+    struct scheduled_request *request = opaque;
+    schedule_role = request->role;
+    if (request->role == 2)
+        request->off = ios_pool_alloc_range_tagged(request->size, request->limit, 0);
+    else request->status = allocate_code(&request->size, &request->ret);
+    CHECK(!carve_lock_depth);
+    return NULL;
+}
+
+static void start_schedule(void)
+{
+    schedule_mode = 1; tiny_has_pool = other_waiting = release_tiny = 0;
+}
+static void wait_schedule(int *predicate)
+{
+    pthread_mutex_lock(&schedule_lock);
+    while (!*predicate) pthread_cond_wait(&schedule_cond, &schedule_lock);
+    pthread_mutex_unlock(&schedule_lock);
+}
+static void finish_schedule(void)
+{
+    pthread_mutex_lock(&schedule_lock);
+    release_tiny = 1; pthread_cond_broadcast(&schedule_cond);
+    pthread_mutex_unlock(&schedule_lock);
+}
+
+static void check_head_tail_and_last_slot_schedules(void)
+{
+    if (!REPLAY_NEW_POLICY) return; /* old source already fails the captured replay */
+    reset(1152 * MB, 176 * MB); ios_pool_free_count = 0;
+    size_t old_limit = ios_jit_pool_size_global - ios_jit_tail_reserved;
+    jit_pool_offset = old_limit - 0x8000;
+    struct scheduled_request tiny = {.role=1, .size=0x4000};
+    struct scheduled_request image = {.role=2, .size=0x8000, .limit=old_limit, .off=(size_t)-1};
+    pthread_t first, second;
+    start_schedule();
+    CHECK(!pthread_create(&first, NULL, scheduled_allocate, &tiny));
+    wait_schedule(&tiny_has_pool);
+    CHECK(!pthread_create(&second, NULL, scheduled_allocate, &image));
+    wait_schedule(&other_waiting); finish_schedule();
+    CHECK(!pthread_join(first, NULL) && !pthread_join(second, NULL)); schedule_mode = 0;
+    CHECK(tiny.status == STATUS_SUCCESS && tiny.size == 0x4000 && image.off == (size_t)-1);
+    CHECK(jit_pool_offset == old_limit - 0x8000 && ios_jit_tail_reserved == tail_before + 0x4000);
+    CHECK(ios_tail_carves[0].free && ios_tail_carve_n == 5);
+
+    /* Opposite order: the real image consumes the gap first, so the tiny
+     * allocation must use the original whole retired carve, with no growth. */
+    reset(1152 * MB, 176 * MB); ios_pool_free_count = 0;
+    old_limit = ios_jit_pool_size_global - ios_jit_tail_reserved;
+    jit_pool_offset = old_limit - 0x8000;
+    CHECK(ios_pool_alloc_range_tagged(0x8000, old_limit, 0) == old_limit - 0x8000);
+    size_t ask = 0x4000; void *ret = NULL;
+    CHECK(allocate_code(&ask, &ret) == STATUS_SUCCESS && ask == 16 * MB);
+    CHECK(ios_jit_tail_reserved == tail_before && ios_tail_carve_n == 4);
+
+    /* Two concurrent tiny requests compete for one tracking-table slot.
+     * Only one can reserve fresh; the other must safely reuse the big carve. */
+    reset(1152 * MB, 176 * MB); ios_pool_free_count = 0;
+    memset(ios_tail_carves, 0, sizeof ios_tail_carves);
+    ios_tail_carve_n = IOS_TAIL_CARVE_MAX - 1;
+    for (unsigned i = 0; i < ios_tail_carve_n; ++i)
+        ios_tail_carves[i] = (struct ios_tail_carve){.off=ios_jit_pool_size_global-tail_before+i*0x4000,
+                                                  .size=0x4000, .peb=(void *)steam_owner};
+    ios_tail_carves[0] = (struct ios_tail_carve){.off=ios_jit_pool_size_global-16*MB, .size=16*MB, .free=1};
+    tiny = (struct scheduled_request){.role=1, .size=0x4000};
+    struct scheduled_request other = {.role=3, .size=0x4000};
+    start_schedule();
+    CHECK(!pthread_create(&first, NULL, scheduled_allocate, &tiny)); wait_schedule(&tiny_has_pool);
+    CHECK(!pthread_create(&second, NULL, scheduled_allocate, &other)); wait_schedule(&other_waiting);
+    finish_schedule();
+    CHECK(!pthread_join(first, NULL) && !pthread_join(second, NULL)); schedule_mode = 0;
+    CHECK(tiny.status == STATUS_SUCCESS && other.status == STATUS_SUCCESS);
+    CHECK(tiny.size == 0x4000 && other.size == 16 * MB && tiny.ret != other.ret);
+    CHECK(ios_tail_carve_n == IOS_TAIL_CARVE_MAX && ios_jit_tail_reserved == tail_before + 0x4000);
+    CHECK(!ios_tail_carves[0].free && ios_tail_carves[0].peb == (void *)owner);
+    CHECK(ios_tail_carves[IOS_TAIL_CARVE_MAX-1].size == 0x4000);
+    puts("PASS: actual concurrent tiny/head allocations reject a stale image ceiling; image-first fallback and two contenders for the last tracking slot preserve ownership and nonoverlap");
+}
+
 static void check_capacity_failure(void)
 {
     reset(1152 * MB, 176 * MB);
@@ -550,11 +845,14 @@ int main(void)
     mapped_size = selected * MB;
     FILE *backing = tmpfile(); CHECK(backing && !ftruncate(fileno(backing), (off_t)mapped_size));
     rw_memory = mmap(NULL, mapped_size, PROT_READ | PROT_WRITE, MAP_SHARED, fileno(backing), 0);
-    rx_memory = mmap(NULL, mapped_size, PROT_READ, MAP_SHARED, fileno(backing), 0);
+    rx_memory = mmap(NULL, mapped_size, PROT_READ | PROT_EXEC, MAP_SHARED, fileno(backing), 0);
     CHECK(rw_memory != MAP_FAILED && rx_memory != MAP_FAILED && rw_memory != rx_memory);
     check_original_and_growth_only();
     check_paired_budget(selected, reserve);
     check_capacity_failure();
+    check_captured_server_failure();
+    check_captured_tail_history();
+    check_head_tail_and_last_slot_schedules();
     CHECK(!munmap(rx_memory, mapped_size) && !munmap(rw_memory, mapped_size));
     CHECK(!fclose(backing));
     return 0;
@@ -570,7 +868,7 @@ if __name__ == '__main__':
                         '-Wall', '-Wextra', '-Werror', '-fsanitize=address,undefined',
                         '-fno-sanitize-recover=all', '-fno-omit-frame-pointer', '-pthread',
                         str(unit), '-o', str(binary)], check=True)
-        result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=30)
+        result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=90)
         print(result.stdout, end='')
         if result.returncode:
             print(result.stderr, end='')
