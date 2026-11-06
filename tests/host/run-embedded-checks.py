@@ -6,6 +6,7 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[2]
 commands = [
+    ['python3', 'tests/host/check-jit-alias-exclusive-add.py'],
     ['python3', 'tests/host/check-jit-alias-str-immediate.py'],
     ['python3', 'tests/host/check-jit-alias-exclusive.py'],
     ['python3', 'tests/host/check-fex-arena-steam-pressure.py'],

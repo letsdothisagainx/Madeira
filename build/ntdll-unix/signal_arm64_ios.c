@@ -2316,6 +2316,63 @@ static int ios_mach_emulate_exclusive_loop( uint32_t insn, uint64_t pc, uintptr_
     return 1;
 }
 
+/* Retained load followed by a reversible, unshifted ADD/SUB register:
+ *   LD{A}XR Rt,[Rn]; ADD/SUB Rt,Rt,Rm; ST{L}XR Ws,Rt,[Rn]; CBNZ Ws,load
+ * The source operand Rm is unchanged across this adjacent sequence. Recover
+ * the loaded value modulo the access width, then make one real conditional
+ * atomic update. Never turn a stale desired value into an unconditional
+ * store or assume the interrupted exclusive monitor survived. On CAS failure
+ * Ws=1 makes the original loop load and recompute against the new value. */
+static int ios_mach_emulate_exclusive_add_loop( uint32_t insn, uint64_t pc, uintptr_t fault_addr,
+                                               uint64_t gpr[32], void *owner )
+{
+    extern unsigned long long ios_jit_pool_access_token( uintptr_t, size_t, void *, int );
+    unsigned size = insn >> 30, width = 1u << size;
+    unsigned rs = (insn >> 16) & 31, rn = (insn >> 5) & 31, rt = insn & 31, rm;
+    uint32_t load, arithmetic, actual, retry;
+    uintptr_t addr = gpr[rn], rw;
+    unsigned long long code_token, data_token;
+    uint64_t mask, desired, delta, expected;
+    int ok;
+    if ((insn & 0x3fe07c00u) != 0x08007c00u || size < 2 ||
+        rs == 31 || rt == 31 || rs == rn || rs == rt || rn == rt ||
+        pc < 8 || pc > UINTPTR_MAX - 7 || (pc & 3) || fault_addr != addr ||
+        addr > UINTPTR_MAX - (width - 1) || (addr & (width - 1))) return 0;
+    code_token = ios_jit_pool_access_token( pc - 8, 16, owner, 1 );
+    data_token = ios_jit_pool_access_token( addr, width, owner, 0 );
+    if (!code_token || !data_token || !ios_exclusive_code_readable( pc - 8, 16 )) return 0;
+    if (!ios_fault_read_insn( pc, &actual ) || actual != insn ||
+        !ios_fault_read_insn( pc - 8, &load ) || !ios_fault_read_insn( pc - 4, &arithmetic ) ||
+        !ios_fault_read_insn( pc + 4, &retry ) ||
+        (load & 0x3fff7c00u) != 0x085f7c00u || (load >> 30) != size ||
+        ((load >> 5) & 31) != rn || (load & 31) != rt ||
+        (arithmetic & 0x3fe0fc00u) != 0x0b000000u ||
+        (arithmetic >> 31) != (size == 3) || (arithmetic & 31) != rt ||
+        ((arithmetic >> 5) & 31) != rt || retry != (0x35ffffa0u | rs)) return 0;
+    rm = (arithmetic >> 16) & 31;
+    if (rm == rt || rm == rs) return 0; /* no retained independent delta */
+    rw = ios_write_alias( addr );
+    if (ios_alias_write_is_trapped( addr ) || ios_alias_write_is_trapped( addr + width - 1 ) ||
+        !ios_alias_exclusive_span( addr, rw, width )) return 0;
+    if (ios_jit_pool_access_token( pc - 8, 16, owner, 1 ) != code_token ||
+        ios_jit_pool_access_token( addr, width, owner, 0 ) != data_token) return 0;
+    mask = size == 3 ? UINT64_MAX : UINT32_MAX;
+    desired = gpr[rt] & mask;
+    delta = rm == 31 ? 0 : gpr[rm] & mask;
+    expected = (arithmetic & 0x40000000u ? desired + delta : desired - delta) & mask;
+    if (size == 3)
+        ok = __atomic_compare_exchange_n( (uint64_t *)rw, &expected, desired, 0,
+                                           __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST );
+    else
+    {
+        uint32_t expected32 = (uint32_t)expected;
+        ok = __atomic_compare_exchange_n( (uint32_t *)rw, &expected32, (uint32_t)desired, 0,
+                                           __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST );
+    }
+    gpr[rs] = ok ? 0 : 1;
+    return 1;
+}
+
 #include "x18_scalar_load.h"
 #include "stik_breakpoint.h"
 
@@ -5559,6 +5616,7 @@ static void *ios_mach_exception_thread( void *arg )
                                     (long long)delta, clobbered ? " (overwritten)" : "",
                                     emulated ? (rs != 31 && state.__x[rs] ? "emulated: value changed, retry" : "emulated")
                                              : ld_rt == 31 ? "defer: discard-load loop"
+                                             : clobbered ? "defer: overwritten load"
                                                            : "REFUSED: no matching LDXR/LDAXR");
                         }
                     }
@@ -5700,18 +5758,28 @@ static void *ios_mach_exception_thread( void *arg )
                         uint64_t gpr[32];
                         void *owner = NULL;
                         mach_vm_size_t got = 0;
+                        int add_loop = 0;
                         memcpy( gpr, state.__x, sizeof(state.__x) );
                         gpr[29] = state.__fp; gpr[30] = state.__lr; gpr[31] = state.__sp;
                         if (thread_teb && mach_vm_read_overwrite( mach_task_self(),
                             thread_teb + offsetof(TEB, Peb), sizeof(owner), (mach_vm_address_t)&owner,
                             &got ) == KERN_SUCCESS && got == sizeof(owner) && owner &&
-                            ios_mach_emulate_exclusive_loop( insn, fault_pc, fault_addr, gpr, owner ))
+                            (ios_mach_emulate_exclusive_loop( insn, fault_pc, fault_addr, gpr, owner ) ||
+                             (add_loop = ios_mach_emulate_exclusive_add_loop( insn, fault_pc, fault_addr, gpr, owner ))))
                         {
                             static unsigned exclusive_loop_logs;
                             memcpy( state.__x, gpr, sizeof(state.__x) );
                             state.__fp = gpr[29]; state.__lr = gpr[30];
                             emulated = 1;
-                            if (exclusive_loop_logs++ < 16)
+                            if (add_loop)
+                            {
+                                static unsigned exclusive_add_logs;
+                                if (exclusive_add_logs++ < 16)
+                                    dprintf( 2, "[alias-exclusive-add] insn=%08x pc=%llx addr=%llx status=%u method=compare-exchange\n",
+                                             insn, (unsigned long long)fault_pc, (unsigned long long)fault_addr,
+                                             (unsigned)gpr[(insn >> 16) & 31] );
+                            }
+                            else if (exclusive_loop_logs++ < 16)
                                 dprintf( 2, "[alias-exclusive-loop] insn=%08x pc=%llx addr=%llx status=%u fresh-monitor=1 access=independent-images-v1\n",
                                          insn, (unsigned long long)fault_pc, (unsigned long long)fault_addr,
                                          (unsigned)gpr[(insn >> 16) & 31] );

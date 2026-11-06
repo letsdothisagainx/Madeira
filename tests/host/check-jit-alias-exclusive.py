@@ -174,7 +174,7 @@ static unsigned ios_mach_alias_exclusive_store(uintptr_t address, uint64_t value
     if (status) __atomic_add_fetch(&primitive_failures, 1, __ATOMIC_RELAXED);
     return status;
 }
-''' + function(source, 'ios_mach_emulate_exclusive_loop') + r'''
+''' + function(source, 'ios_mach_emulate_exclusive_loop') + function(source, 'ios_mach_emulate_exclusive_add_loop') + r'''
 struct state { uint64_t __x[29], __fp, __lr, __sp, __pc; };
 static pthread_mutex_t route_lock = PTHREAD_MUTEX_INITIALIZER;
 #define IOS_STORE_SRC(r) ((r) == 31 ? 0ull : state.__x[r])
@@ -536,12 +536,17 @@ int main(void)
 }
 '''
 
-with tempfile.TemporaryDirectory(prefix='madeira-alias-exclusive-') as temp:
-    file = Path(temp) / 'check.c'
-    binary = Path(temp) / 'check'
-    file.write_text(code)
-    subprocess.run([os.environ.get('CC', 'cc'), '-std=gnu11', '-O1', '-Wall', '-Wextra', '-Werror',
-                    '-fsanitize=address,undefined', '-fno-sanitize-recover=all', '-pthread', str(file), '-o', str(binary)], check=True)
-    subprocess.run([str(binary)], check=True)
-print('ARM64 production exclusive primitive' if platform.machine().lower() in ('arm64', 'aarch64') else
-      'Portable primitive abstraction; actual ARM64 instructions run in the IPA regression gate')
+def main():
+    with tempfile.TemporaryDirectory(prefix='madeira-alias-exclusive-') as temp:
+        file = Path(temp) / 'check.c'
+        binary = Path(temp) / 'check'
+        file.write_text(code)
+        subprocess.run([os.environ.get('CC', 'cc'), '-std=gnu11', '-O1', '-Wall', '-Wextra', '-Werror',
+                        '-fsanitize=address,undefined', '-fno-sanitize-recover=all', '-pthread', str(file), '-o', str(binary)], check=True)
+        subprocess.run([str(binary)], check=True)
+    print('ARM64 production exclusive primitive' if platform.machine().lower() in ('arm64', 'aarch64') else
+          'Portable primitive abstraction; actual ARM64 instructions run in the IPA regression gate')
+
+
+if __name__ == '__main__':
+    main()
