@@ -470,8 +470,15 @@ jobs:
           path: previous-ipa
       - name: Symbolicate the allocation stack from the exact packaged CPU image
         run: |
-          unzip -q previous-ipa/Madeira.ipa 'Payload/Madeira.app/aarch64-windows/xtajit.dll' -d previous-ipa
-          python3 tools/build/inspect-fex-image.py previous-ipa/Payload/Madeira.app/aarch64-windows/xtajit.dll --assert-known-fault
+          unzip -q previous-ipa/Madeira.ipa 'Payload/Madeira.app/aarch64-windows/xtajit.dll' 'Payload/Madeira.app/arm64ec-windows/xtajit64.dll' 'Payload/Madeira.app/arm64ec-windows/ntdll.dll' 'Payload/Madeira.app/aarch64-windows/ntdll.dll' 'Payload/Madeira.app/i386-windows/ntdll.dll' 'Payload/Madeira.app/i386-windows/kernelbase.dll' -d previous-ipa
+          python3 -m venv "$RUNNER_TEMP/hot-pe-tools"
+          "$RUNNER_TEMP/hot-pe-tools/bin/pip" install capstone==5.0.6
+          "$RUNNER_TEMP/hot-pe-tools/bin/python" tools/build/inspect-hot-pe.py previous-ipa/Payload/Madeira.app/arm64ec-windows/ntdll.dll --arm64 --rva 0x73818 --rva 0x69c28 --rva 0x6a410 --rva 0x6a4c0 --context 160
+          "$RUNNER_TEMP/hot-pe-tools/bin/python" tools/build/inspect-hot-pe.py previous-ipa/Payload/Madeira.app/aarch64-windows/ntdll.dll --arm64 --rva 0x76120 --context 160
+          "$RUNNER_TEMP/hot-pe-tools/bin/python" tools/build/inspect-hot-pe.py previous-ipa/Payload/Madeira.app/aarch64-windows/xtajit.dll --arm64 --rva 0x17fbc --rva 0xf3348 --rva 0x13b38 --data-rva 0x389f00 --data-rva 0x389cd8 --data-rva 0x385d20 --context 192
+          "$RUNNER_TEMP/hot-pe-tools/bin/python" tools/build/inspect-hot-pe.py previous-ipa/Payload/Madeira.app/arm64ec-windows/xtajit64.dll --arm64 --rva 0x14440 --rva 0x117130 --data-rva 0x3b9260 --data-rva 0x3c0000 --context 128
+          "$RUNNER_TEMP/hot-pe-tools/bin/python" tools/build/inspect-hot-pe.py previous-ipa/Payload/Madeira.app/i386-windows/ntdll.dll --rva 0x5e650 --context 96
+          "$RUNNER_TEMP/hot-pe-tools/bin/python" tools/build/inspect-hot-pe.py previous-ipa/Payload/Madeira.app/i386-windows/kernelbase.dll --rva 0x58a71 --rva 0x68e90 --context 128
 
   inspect-steam:
     if: inputs.inspect_steam_run_id != ''
