@@ -205,7 +205,7 @@ extension SteamBrowserDownload {
             try fixture { transfer, session, task, spy in
                 let error = NSError(domain: NSURLErrorDomain, code: code, userInfo: [
                     NSLocalizedDescriptionKey: "password=DO-NOT-PRINT token=SECRET-TEST",
-                    NSURLErrorFailingURLStringErrorKey: "https://private-user:private-password@example.invalid/?credential=SECRET-TEST"])
+                    NSURLErrorFailingURLErrorKey: URL(string: "https://private-user:private-password@example.invalid/?credential=SECRET-TEST")!])
                 transfer.urlSession(session, task: task, didCompleteWithError: error)
                 finished(transfer, spy, phase: .failed)
                 assert(spy.events.last?.code == code)
