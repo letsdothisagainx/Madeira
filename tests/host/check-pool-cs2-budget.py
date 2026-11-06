@@ -719,6 +719,7 @@ static void check_captured_tail_history(void)
     size_t before_rotation = ios_jit_tail_reserved;
     unsigned before_carves = ios_tail_carve_n;
     void *late_code = NULL;
+    owner = cs2_owner;
     CHECK(rotate(&late_code) == 16 * MB);
     CHECK(late_code && ios_jit_tail_reserved == before_rotation && ios_tail_carve_n == before_carves);
     CHECK(*(const uint32_t *)late_code == 0xd503201f);

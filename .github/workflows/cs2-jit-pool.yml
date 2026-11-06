@@ -44,8 +44,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Load pinned Wine PE declarations
-        run: git submodule update --init --depth 1 wine
+      - name: Load pinned Wine and FEX declarations
+        run: git submodule update --init --depth 1 wine FEX
       - name: Replay real head/tail allocations and measured startup policy
         run: |
           python3 tests/host/check-pool-cs2-budget.py
