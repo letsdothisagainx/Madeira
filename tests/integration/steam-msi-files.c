@@ -27,7 +27,8 @@ static NTSTATUS native_create(const WCHAR *path,HANDLE *result,IO_STATUS_BLOCK *
     WCHAR name[32768];
     REQUIRE(swprintf(name,COUNT(name),L"\\??\\%ls",path)>0);
     UNICODE_STRING string={(USHORT)(wcslen(name)*sizeof(WCHAR)),(USHORT)((wcslen(name)+1)*sizeof(WCHAR)),name};
-    OBJECT_ATTRIBUTES attributes={sizeof(attributes),NULL,&string,0x40,NULL,NULL};
+    OBJECT_ATTRIBUTES attributes={0};
+    attributes.Length=sizeof(attributes);attributes.ObjectName=&string;attributes.Attributes=0x40;
     create_file_fn create=(create_file_fn)(void *)GetProcAddress(GetModuleHandleW(L"ntdll.dll"),"NtCreateFile");
     REQUIRE(create!=NULL);
     *result=NULL;ZeroMemory(io,sizeof(*io));
