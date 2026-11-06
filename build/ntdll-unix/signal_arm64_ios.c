@@ -2536,6 +2536,87 @@ static int ios_mach_emulate_exclusive_conditional_loop( uint32_t insn, uint64_t 
     return 1;
 }
 
+/* A strong compare-exchange whose loaded register becomes the store address:
+ *   ADD A,B,#off; load: LD{A}XR L,[A]; CMP L,E; B.NE mismatch;
+ *   ADD L,B,#off; ST{L}XR S,D,[L]; CBNZ S,load
+ *   ... success ...; continuation: ...
+ *   mismatch: CLREX; B continuation
+ * E survives unchanged. Equal CMP flags prove the original load equalled E
+ * before ADD overwrote L; reading L as the expected value would be wrong.
+ * Validate the separate cleanup/continuation blocks in the SAME executable
+ * generation. A conflicting real CAS sets Ws=1: the original native retry
+ * reloads and either retries the store or takes its own mismatch cleanup.
+ * This proof transfers no exclusive reservation across a Mach exception. */
+static int ios_mach_emulate_exclusive_compare_loop( uint32_t insn, uint64_t pc, uintptr_t fault_addr,
+                                                   uint64_t gpr[32], uint32_t nzcv, void *owner )
+{
+    extern unsigned long long ios_jit_pool_access_token( uintptr_t, size_t, void *, int );
+    unsigned address = (insn >> 5) & 31, desired = insn & 31, status = (insn >> 16) & 31;
+    unsigned base, load_address, retained, registers[6], i, j;
+    uint32_t words[7], cleanup[2];
+    uintptr_t start, addr = gpr[address], rw, offset, mismatch, continuation;
+    unsigned long long code_token, data_token;
+    int64_t branch;
+    uint64_t expected;
+    int ok;
+    if ((insn & 0x3fe07c00u) != 0x08007c00u || (insn >> 30) != 3 ||
+        pc < 20 || pc > UINTPTR_MAX - 11 || (pc & 3) || fault_addr != addr ||
+        addr > UINTPTR_MAX - 7 || (addr & 7) || (nzcv & 0xf0000000u) != 0x60000000u) return 0;
+    start = pc - 20;
+    code_token = ios_jit_pool_access_token( start, sizeof(words), owner, 1 );
+    data_token = ios_jit_pool_access_token( addr, 8, owner, 0 );
+    if (!code_token || !data_token || !ios_exclusive_code_readable( start, sizeof(words) )) return 0;
+    for (i = 0; i < sizeof(words) / sizeof(words[0]); ++i)
+        if (!ios_fault_read_insn( start + i * 4, &words[i] )) return 0;
+    if (words[5] != insn || (words[0] & 0xffc00000u) != 0x91000000u ||
+        (words[1] & 0x3fff7c00u) != 0x085f7c00u || (words[1] >> 30) != 3 ||
+        (words[3] & 0xff00001fu) != 0x54000001u) return 0;
+    base = (words[0] >> 5) & 31;
+    load_address = words[0] & 31;
+    retained = (words[2] >> 16) & 31;
+    registers[0] = base; registers[1] = load_address; registers[2] = address;
+    registers[3] = retained; registers[4] = desired; registers[5] = status;
+    for (i = 0; i < sizeof(registers) / sizeof(registers[0]); ++i)
+    {
+        if (registers[i] == 31) return 0;
+        for (j = 0; j < i; ++j) if (registers[i] == registers[j]) return 0;
+    }
+    if (((words[1] >> 5) & 31) != load_address || (words[1] & 31) != address ||
+        words[2] != (0xeb00001fu | retained << 16 | address << 5) ||
+        words[4] != ((words[0] & ~31u) | address) || words[6] != (0x35ffff60u | status)) return 0;
+    offset = (words[0] >> 10) & 0xfff;
+    if (gpr[base] > UINTPTR_MAX - offset || gpr[base] + offset != addr ||
+        gpr[load_address] != addr) return 0;
+    /* Decode actual branch destinations, rather than a particular module RVA
+     * or compiler's distance between its main block and cleanup thunk. */
+    branch = (int64_t)(int32_t)(words[3] << 8) >> 11;
+    if (branch <= 0 || (uint64_t)branch > UINTPTR_MAX - 7 - (pc - 8)) return 0;
+    mismatch = pc - 8 + branch;
+    if (mismatch < pc + 8 || ios_jit_pool_access_token( mismatch, sizeof(cleanup), owner, 1 ) != code_token ||
+        !ios_exclusive_code_readable( mismatch, sizeof(cleanup) ) ||
+        !ios_fault_read_insn( mismatch, &cleanup[0] ) ||
+        !ios_fault_read_insn( mismatch + 4, &cleanup[1] ) ||
+        cleanup[0] != 0xd5033f5fu || (cleanup[1] & 0xfc000000u) != 0x14000000u) return 0;
+    branch = (int64_t)(int32_t)(cleanup[1] << 6) >> 4;
+    if (branch >= 0 || (uint64_t)-branch > mismatch + 4) return 0;
+    continuation = mismatch + 4 - (uint64_t)-branch;
+    if (continuation < pc + 8 || continuation >= mismatch ||
+        ios_jit_pool_access_token( continuation, 4, owner, 1 ) != code_token ||
+        !ios_exclusive_code_readable( continuation, 4 )) return 0;
+    rw = ios_write_alias( addr );
+    if (ios_alias_write_is_trapped( addr ) || ios_alias_write_is_trapped( addr + 7 ) ||
+        !ios_alias_exclusive_span( addr, rw, 8 )) return 0;
+    if (ios_jit_pool_access_token( start, sizeof(words), owner, 1 ) != code_token ||
+        ios_jit_pool_access_token( mismatch, sizeof(cleanup), owner, 1 ) != code_token ||
+        ios_jit_pool_access_token( continuation, 4, owner, 1 ) != code_token ||
+        ios_jit_pool_access_token( addr, 8, owner, 0 ) != data_token) return 0;
+    expected = gpr[retained];
+    ok = __atomic_compare_exchange_n( (uint64_t *)rw, &expected, gpr[desired], 0,
+                                      __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST );
+    gpr[status] = ok ? 0 : 1;
+    return 1;
+}
+
 #include "x18_scalar_load.h"
 #include "stik_breakpoint.h"
 
@@ -5931,7 +6012,7 @@ static void *ios_mach_exception_thread( void *arg )
                         uint64_t gpr[32];
                         void *owner = NULL;
                         mach_vm_size_t got = 0;
-                        int add_loop = 0, conditional_loop = 0;
+                        int add_loop = 0, conditional_loop = 0, compare_loop = 0;
                         memcpy( gpr, state.__x, sizeof(state.__x) );
                         gpr[29] = state.__fp; gpr[30] = state.__lr; gpr[31] = state.__sp;
                         if (thread_teb && mach_vm_read_overwrite( mach_task_self(),
@@ -5940,13 +6021,23 @@ static void *ios_mach_exception_thread( void *arg )
                             (ios_mach_emulate_exclusive_loop( insn, fault_pc, fault_addr, gpr, owner ) ||
                              (add_loop = ios_mach_emulate_exclusive_add_loop( insn, fault_pc, fault_addr, gpr, owner )) ||
                              (conditional_loop = ios_mach_emulate_exclusive_conditional_loop(
+                                 insn, fault_pc, fault_addr, gpr, state.__cpsr, owner )) ||
+                             (compare_loop = ios_mach_emulate_exclusive_compare_loop(
                                  insn, fault_pc, fault_addr, gpr, state.__cpsr, owner ))))
                         {
                             static unsigned exclusive_loop_logs;
                             memcpy( state.__x, gpr, sizeof(state.__x) );
                             state.__fp = gpr[29]; state.__lr = gpr[30];
                             emulated = 1;
-                            if (conditional_loop)
+                            if (compare_loop)
+                            {
+                                static unsigned compare_logs;
+                                if (compare_logs++ < 16)
+                                    dprintf( 2, "[alias-exclusive-compare] insn=%08x pc=%llx addr=%llx status=%u method=compare-exchange sequence=retained-expected-v1\n",
+                                             insn, (unsigned long long)fault_pc, (unsigned long long)fault_addr,
+                                             (unsigned)gpr[(insn >> 16) & 31] );
+                            }
+                            else if (conditional_loop)
                             {
                                 static unsigned conditional_logs;
                                 if (conditional_logs++ < 16)

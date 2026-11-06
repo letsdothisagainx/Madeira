@@ -174,7 +174,7 @@ static unsigned ios_mach_alias_exclusive_store(uintptr_t address, uint64_t value
     if (status) __atomic_add_fetch(&primitive_failures, 1, __ATOMIC_RELAXED);
     return status;
 }
-''' + function(source, 'ios_mach_emulate_exclusive_loop') + function(source, 'ios_mach_emulate_exclusive_add_loop') + function(source, 'ios_mach_emulate_exclusive_conditional_loop') + r'''
+''' + function(source, 'ios_mach_emulate_exclusive_loop') + function(source, 'ios_mach_emulate_exclusive_add_loop') + function(source, 'ios_mach_emulate_exclusive_conditional_loop') + function(source, 'ios_mach_emulate_exclusive_compare_loop') + r'''
 struct state { uint64_t __x[29], __fp, __lr, __sp, __pc; uint32_t __cpsr; };
 static pthread_mutex_t route_lock = PTHREAD_MUTEX_INITIALIZER;
 #define IOS_STORE_SRC(r) ((r) == 31 ? 0ull : state.__x[r])

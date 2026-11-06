@@ -63,3 +63,58 @@ it does not contain a completed device-creation HRESULT, swapchain creation
 or first game Present. A new iPhone run must confirm those operations, absence
 of the rejected STXR and progress toward the actual menu. CI cannot establish
 that CS2 is playable or that this is its final startup blocker.
+
+## Next capture: retained-expected strong compare-exchange
+
+`madeira-log(20261106-085457).txt` verifies installed source `85e64ac` and
+two successful recoveries of the original peak-max operation. Its next fatal
+fault is the same packaged d3d11.dll at RVA `0xff3bc`, `c80c7d69`
+(`STXR W12,X9,[X11]`). RX `0x31e700c38` and RW `0x366700c38` are valid;
+mapping 219 is live. Wine delivers `0x80000002` and CS2 terminates. No pool
+or FEX initialization exhaustion is established in this capture.
+
+The exact image disassembly identifies BufferAllocation's
+`g_mem_census.report_hwm.compare_exchange_strong(hwm,total,relaxed)` at offset
+`0x118`. This separate report threshold follows the already-working requested,
+live and peak counters. The complete atomic core is:
+
+```text
+ff3a8 9104632a ADD X10,X25,#0x118
+ff3ac c85f7d4b LDXR X11,[X10]
+ff3b0 eb08017f CMP X11,X8
+ff3b4 54000dc1 B.NE ff56c
+ff3b8 9104632b ADD X11,X25,#0x118
+ff3bc c80c7d69 STXR W12,X9,[X11]
+ff3c0 35ffff6c CBNZ W12,ff3ac
+```
+
+The success path executes its original ADRP/ADD/BL to `mem_census_report`;
+the mismatch block is `ff56c CLREX; ff570 B ff3d0`. X8 is unchanged throughout
+the core. Saved NZCV `0x60000000` proves the load equalled X8 before X11 became
+an address. The previous 18-word helper requires an independently retained
+loaded register, a forward failure branch and its maximum-update tail; this
+strong-CAS retry/cleanup shape correctly fails that separate proof.
+
+The added structural recognizer accepts six distinct register roles and
+unshifted address offsets, rather than one opcode, RVA or threshold. It proves
+the seven-word core plus decoded CLREX/branch cleanup and continuation in one
+executable mapping generation. The load address and recomputed store address
+must agree. A real CAS compares the writable alias against the retained
+expected register; only the status register changes. On conflict, the original
+CBNZ reloads and performs its own comparison/mismatch cleanup. No maximum-order
+test is imposed on a general strong compare-exchange. The prior peak-max
+recognizer, mapping permissions, graphics code and capabilities are unchanged.
+
+Seven report-watermark sites in the shipped image use this compiler family,
+at RVAs `0x678cc`, `0xff3bc`, `0x100f1c`, `0x101220`, `0x102e6c`,
+`0x1197a8` and `0x11ba04`. Source-level tests must retain the prior peak cases
+and exercise register reuse, native retry, mismatch cleanup and a real competing
+writer. The new capture still has no completed D3D creation HRESULT, swapchain
+or first-frame witness. Those remain device acceptance requirements.
+
+Apple ARM64 validation 42220368533 passes both captured families. The new
+production-handler regression checks 75 contracts against all seven shipped
+loops, including old-handler rejection. Actual Mach execution records 1,604
+new-sequence faults, 479 successful CAS attempts and 1,125 conflicts; original
+retry/CLREX, retained registers/flags and RX nonwritability are verified.
+These fixture results do not establish an iPhone graphics or performance result.
