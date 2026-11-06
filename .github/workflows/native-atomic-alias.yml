@@ -70,6 +70,10 @@ jobs:
           set -o pipefail
           python3 tests/host/check-native-data-alias-performance.py --require-arm64-darwin | tee native-data-throughput.txt
           python3 tests/host/check-native-atomic-alias-performance.py --require-arm64-darwin | tee native-atomic-throughput.txt
+      - name: Execute captured DXMT conditional exclusive sequence through Mach faults
+        run: |
+          set -o pipefail
+          python3 tests/host/check-jit-alias-exclusive-conditional-hardware.py --require-arm64-darwin | tee conditional-exclusive-hardware.txt
       - name: Measure production QPC counter writer with real Mach faults
         if: always()
         run: |
@@ -89,5 +93,6 @@ jobs:
             native-data-throughput.txt
             native-qpc-throughput.txt
             native-counter-call-throughput.txt
+            conditional-exclusive-hardware.txt
           if-no-files-found: ignore
           retention-days: 14
