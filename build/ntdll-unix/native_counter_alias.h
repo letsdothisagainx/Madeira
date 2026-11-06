@@ -25,15 +25,23 @@ static int ios_native_counter_data(const unsigned char *image, size_t size,
     return 0;
 }
 
-static int ios_native_counter_alias_bind(unsigned char *image, size_t size,
-                                        uintptr_t rx, intptr_t delta, int unpublished)
+struct ios_native_counter_alias_layout
+{
+    size_t writer_offset;
+    uintptr_t writer_value;
+};
+
+/* Read-only descriptor validation is shared by unpublished binding and later
+ * source-PE synchronization. It never follows the current or source writer. */
+static int ios_native_counter_alias_layout_read(const unsigned char *image, size_t size,
+                                                uintptr_t rx, intptr_t delta,
+                                                struct ios_native_counter_alias_layout *layout)
 {
     size_t pe,opt,sections,export_rva,export_bytes,functions,names,ordinals;
     size_t counter=SIZE_MAX,contract=SIZE_MAX,i;
     unsigned count,opt_bytes,machine;
     uint32_t function_count,name_count;
-    uintptr_t writer;
-    if (!unpublished || !image || sizeof(uintptr_t)!=8 || !rx || (rx&0xfff) ||
+    if (!image || !layout || sizeof(uintptr_t)!=8 || !rx || (rx&0xfff) ||
         delta<=0 || ((uintptr_t)delta&0xfff) || size<0x40 ||
         rx>UINTPTR_MAX-size || (uintptr_t)delta>UINTPTR_MAX-rx-size ||
         image[0]!='M' || image[1]!='Z') return 0;
@@ -104,10 +112,65 @@ static int ios_native_counter_alias_bind(unsigned char *image, size_t size,
         ios_native_u64(image+contract)!=MADEIRA_NATIVE_COUNTER_ABI_V1 ||
         ios_native_u32(image+contract+8)!=MADEIRA_NATIVE_COUNTER_BYTES ||
         ios_native_u32(image+contract+12)) return 0;
-    writer=rx+counter+(uintptr_t)delta;
+    layout->writer_offset=contract+MADEIRA_NATIVE_COUNTER_WRITER_OFFSET;
+    layout->writer_value=rx+counter+(uintptr_t)delta;
+    return 1;
+}
+
+static int ios_native_counter_alias_bind(unsigned char *image, size_t size,
+                                        uintptr_t rx, intptr_t delta, int unpublished)
+{
+    struct ios_native_counter_alias_layout layout;
+    if (!unpublished || !ios_native_counter_alias_layout_read(image,size,rx,delta,&layout)) return 0;
     /* Never dereference or adopt a copied parent's pointer. A fresh child or
      * unloaded-image rebuild binds its own retained alias before publication. */
-    memcpy(image+contract+MADEIRA_NATIVE_COUNTER_WRITER_OFFSET,&writer,sizeof(writer));
+    memcpy(image+layout.writer_offset,&layout.writer_value,sizeof(layout.writer_value));
+    return 1;
+}
+
+/* The caller proves this live native ntdll copy's process/lease and alias
+ * ownership before entering. Normal source-PE data synchronization must copy
+ * every byte except an already bound, exact owned writer slot. In particular,
+ * do not rebind a published image or transiently copy NULL/parent pointer bytes
+ * and restore afterward: concurrently executing getters could observe them. */
+static inline int ios_native_counter_alias_copy(unsigned char *image, size_t size,
+                                                uintptr_t rx, intptr_t delta,
+                                                size_t offset, const void *source, size_t bytes)
+{
+    struct ios_native_counter_alias_layout layout;
+    size_t end,slot,after;
+    uintptr_t current;
+    const unsigned char *src=source;
+    if (!image || !ios_native_span(offset,bytes,size) || (bytes && !source) ||
+        (uintptr_t)image>UINTPTR_MAX-size) return 0;
+    if (!bytes) return 1;
+    if (!ios_native_counter_alias_layout_read(image,size,rx,delta,&layout))
+    {
+        memcpy(image+offset,src,bytes);
+        return 1;
+    }
+    memcpy(&current,image+layout.writer_offset,sizeof(current));
+    if (current!=layout.writer_value)
+    {
+        /* Unknown/unbound layouts retain the existing data-copy behavior;
+         * this function never repairs/adopts a pointer from either image. */
+        memcpy(image+offset,src,bytes);
+        return 1;
+    }
+    end=offset+bytes;
+    slot=layout.writer_offset;
+    after=slot+sizeof(current);
+    if (end<=slot || offset>=after)
+    {
+        memcpy(image+offset,src,bytes);
+        return 1;
+    }
+    if (offset<slot) memcpy(image+offset,src,slot-offset);
+    if (end>after)
+    {
+        size_t start=offset>after?offset:after;
+        memcpy(image+start,src+(start-offset),end-start);
+    }
     return 1;
 }
 #endif

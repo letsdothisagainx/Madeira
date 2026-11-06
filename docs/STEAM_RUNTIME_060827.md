@@ -39,6 +39,9 @@ introduces an explicit private writer contract, and routes the existing accesses
 through its getter. Only an unpublished owned image binds the contract to the
 same bytes through its retained RW alias. Child copies and unloaded-image rebuilds
 bind independently after relocations; a parent's pointer is never adopted.
+Later PE data synchronization preserves only this already-validated eight-byte
+host-private slot instead of transiently copying its NULL file initializer.
+All other bytes retain ordinary data-sync behavior, with no live rebinding.
 No new allocation, Windows API result or mapping permission is introduced.
 
 Exact WoW64 FEX SHA6a6e905dbd3adb251e9f8bdae44b21d52829226f2b6949aa1b0bde6545ebc20d
@@ -72,7 +75,8 @@ that retains the verified callee prologue; its atomic/retry/branch bytes are int
 Clock agreement, exact QPC histograms/calls, unchanged counter values, original
 exclusive retry, RX nonwritability, RW nonexecutability and independent successor
 binding pass. A second private QPC image also has zero faults without changing
-its predecessor. Portable production tests cover72 binder,44 staging/PE and27
+its predecessor. Portable production tests cover1,069 full/partial/split source copies,72 binder,
+44 staging/PE and27
 direct-callee contracts. Actual A64/EC native producer compilation and packaged
 contract/NULL-slot/no-DIR64 gates pass in42176177864. The old production X8 guard
 rejects the captured FEX producer; the corrected guard accepts it and rejects

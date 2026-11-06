@@ -8,6 +8,7 @@ def function(signature):
     a=s.index(signature)
     return s[a:s.index('\n}',a)+2]
 backend=function('void ios_jit_sync_write(void *addr, size_t size)')
+copy_helper=function('static void ios_jit_copy_native_image_data(')
 call=function('NTSTATUS unixcall_ios_sync_pe_write(void *args)')
 code=r'''
 #define _POSIX_C_SOURCE 200809L
@@ -15,6 +16,8 @@ code=r'''
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
+#include "native_counter_alias.h"
 #include <sys/mman.h>
 #include <unistd.h>
 typedef uint32_t ULONG,NTSTATUS;
@@ -27,14 +30,17 @@ static struct { void *pe_base,*owner_peb,*jit_base; size_t size; } ios_jit_mappi
 static int ios_jit_mapping_count=2, absent, wrong_copy;
 static void *owner=(void*)2,*ios_jit_rx_base_global,*ios_jit_rw_base_global;
 static void *ios_jit_current_peb(void) { return owner; }
+static const char *ios_pe_module_name(const void *p,size_t n) { (void)p;(void)n;return "SCM fixture"; }
 static void *ios_jit_translate_addr(void *p) {
  if(absent) return p;
  int n=(owner && !wrong_copy)?1:0;
  return (char*)ios_jit_mappings[n].jit_base+((char*)p-(char*)ios_jit_mappings[n].pe_base);
 }
+COPY_HELPER
 BACKEND
 CALL
 int main(void) {
+ (void)ios_native_atomic_image_lower; (void)ios_native_counter_alias_bind;
  long page=sysconf(_SC_PAGESIZE); assert(page>0);
  FILE *f=tmpfile();assert(f);int fd=fileno(f);assert(!ftruncate(fd,2*page));
  unsigned char *rw=mmap(NULL,2*page,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);
@@ -68,10 +74,11 @@ int main(void) {
  assert(!munmap(rw,2*page));assert(!munmap(rx,2*page));fclose(f);
  puts("PASS SCM pointer sync: real read-only view, writable alias, all 8 bytes, owner isolation, canaries and failure reporting");
 }
-'''.replace('BACKEND',backend).replace('CALL',call)
+'''.replace('COPY_HELPER',copy_helper).replace('BACKEND',backend).replace('CALL',call)
 with tempfile.TemporaryDirectory() as d:
     c,exe=Path(d)/'sync.c',Path(d)/'sync';c.write_text(code)
-    subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-fsanitize=address,undefined',str(c),'-o',str(exe)],check=True)
+    subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-fsanitize=address,undefined',
+                    '-I'+str(root/'build/ntdll-unix'),str(c),'-o',str(exe)],check=True)
     subprocess.run([str(exe)],check=True)
 patch=(root/'build/scm-rpc/loader.patch').read_text()
 assert 'WINE_UNIX_CALL( unix_ios_sync_pe_write, &params )' in patch

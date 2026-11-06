@@ -4321,6 +4321,19 @@ static void ios_jit_bind_native_counter_writer(void *source, void *rw, void *rx,
                 bound?"ready":"contract-unavailable");
 }
 
+/* The source PE retains its NULL file initializer. Preserve only our tagged,
+ * already-bound host-private writer during subsequent data syncs. In
+ * particular, never copy a parent pointer into a live child's contract.
+ * All other bytes retain the existing PE-data synchronization semantics. */
+static void ios_jit_copy_native_image_data(void *image, void *rw, void *rx, size_t image_size,
+                                         size_t offset, const void *source, size_t size)
+{
+    if (!strcasecmp(ios_pe_module_name(image,image_size),"ntdll.dll") &&
+        ios_native_counter_alias_copy(rw,image_size,(uintptr_t)rx,
+            (intptr_t)((uintptr_t)rw-(uintptr_t)rx),offset,source,size)) return;
+    memcpy((char *)rw+offset,source,size);
+}
+
 /* Only Madeira's native CPU modules, in a newly allocated private image copy.
  * Never run this on Valve/guest code, anonymous guest SMC, a published mapping,
  * or another process's image. Retirement/reuse continues to use the existing
@@ -6605,8 +6618,9 @@ void ios_jit_sync_write(void *addr, size_t size)
          * The pool_offset = jit_base - jit_rx_base_global */
         uintptr_t pool_offset = (uintptr_t)ios_jit_mappings[fallback].jit_base
                               - (uintptr_t)ios_jit_rx_base_global;
-        char *jit_rw_dest = (char *)ios_jit_rw_base_global + pool_offset + off;
-        memcpy(jit_rw_dest, addr, size);
+        char *jit_rw_image = (char *)ios_jit_rw_base_global + pool_offset;
+        ios_jit_copy_native_image_data(ios_jit_mappings[fallback].pe_base,jit_rw_image,
+            ios_jit_mappings[fallback].jit_base,ios_jit_mappings[fallback].size,off,addr,size);
     }
 }
 
@@ -34193,7 +34207,9 @@ NTSTATUS WINAPI NtProtectVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T 
                     if (text_sz == 0 || text_abs_end <= rgn_start || text_abs_start >= rgn_end)
                     {
                         /* No overlap with .text — safe to copy whole region */
-                        memcpy(jit_rw_dest, base, size);
+                        ios_jit_copy_native_image_data(ios_jit_mappings[idx].pe_base,
+                            (char *)ios_jit_rw_base_global+pool_offset,ios_jit_mappings[idx].jit_base,
+                            ios_jit_mappings[idx].size,off,base,size);
                         ERR("iOS JIT IAT sync: full copy %p+0x%lx → JIT (no text overlap)\n",
                             base, (unsigned long)size);
                     }
@@ -34204,9 +34220,14 @@ NTSTATUS WINAPI NtProtectVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T 
                         size_t overlap_end   = text_abs_end   < rgn_end   ? text_abs_end   - rgn_start : size;
 
                         if (overlap_start > 0)
-                            memcpy(jit_rw_dest, (char *)base, overlap_start);
+                            ios_jit_copy_native_image_data(ios_jit_mappings[idx].pe_base,
+                                (char *)ios_jit_rw_base_global+pool_offset,ios_jit_mappings[idx].jit_base,
+                                ios_jit_mappings[idx].size,off,base,overlap_start);
                         if (overlap_end < size)
-                            memcpy(jit_rw_dest + overlap_end, (char *)base + overlap_end, size - overlap_end);
+                            ios_jit_copy_native_image_data(ios_jit_mappings[idx].pe_base,
+                                (char *)ios_jit_rw_base_global+pool_offset,ios_jit_mappings[idx].jit_base,
+                                ios_jit_mappings[idx].size,off+overlap_end,
+                                (char *)base+overlap_end,size-overlap_end);
 
                         ERR("iOS JIT IAT sync: partial copy %p+0x%lx → JIT (skipping text [0x%lx-0x%lx])\n",
                             base, (unsigned long)size,
