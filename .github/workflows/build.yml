@@ -474,7 +474,7 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/d3d-hot-tools"
           "$RUNNER_TEMP/d3d-hot-tools/bin/pip" install capstone==5.0.6
           "$RUNNER_TEMP/d3d-hot-tools/bin/python" tools/build/inspect-hot-pe.py previous-ipa/Payload/Madeira.app/arm64ec-windows/d3d11.dll --arm64 --rva 0x102ddc --data-rva 0x3f9bc0 --context 512
-          "$RUNNER_TEMP/d3d-hot-tools/bin/python" tools/build/inspect-hot-pe.py previous-ipa/Payload/Madeira.app/aarch64-windows/d3d11.dll --arm64 --rva 0x102ddc --context 256
+          "$RUNNER_TEMP/d3d-hot-tools/bin/python" tools/build/inspect-hot-pe.py previous-ipa/Payload/Madeira.app/aarch64-windows/d3d11.dll --arm64 --symbol ArgumentEncodingContextC --context 512
           "$RUNNER_TEMP/d3d-hot-tools/bin/python" tools/build/inspect-hot-pe.py previous-ipa/Payload/Madeira.app/arm64ec-windows/dxgi.dll --arm64 --rva 0x1000 --context 16
           "$RUNNER_TEMP/d3d-hot-tools/bin/python" tools/build/inspect-hot-pe.py previous-ipa/Payload/Madeira.app/aarch64-windows/dxgi.dll --arm64 --rva 0x1000 --context 16
 

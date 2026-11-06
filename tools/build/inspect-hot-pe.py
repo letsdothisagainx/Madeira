@@ -3,7 +3,7 @@
 from pathlib import Path
 import argparse,hashlib,struct,subprocess,shutil
 import capstone
-p=argparse.ArgumentParser();p.add_argument('image',type=Path);p.add_argument('--rva',action='append',type=lambda x:int(x,0),default=[]);p.add_argument('--data-rva',action='append',type=lambda x:int(x,0),default=[]);p.add_argument('--arm64',action='store_true');p.add_argument('--context',type=int,default=128);a=p.parse_args();d=a.image.read_bytes()
+p=argparse.ArgumentParser();p.add_argument('image',type=Path);p.add_argument('--rva',action='append',type=lambda x:int(x,0),default=[]);p.add_argument('--data-rva',action='append',type=lambda x:int(x,0),default=[]);p.add_argument('--symbol',action='append',default=[]);p.add_argument('--arm64',action='store_true');p.add_argument('--context',type=int,default=128);a=p.parse_args();d=a.image.read_bytes()
 def read(fmt,o):
  assert 0<=o<=len(d)-struct.calcsize(fmt)
  return struct.unpack_from(fmt,d,o)
@@ -47,6 +47,7 @@ if a.arm64 and machine in (0x8664,0xa641):
    table=dict(read('<II',offset(red+i*8,8)) for i in range(count))
    redirected=[(table.get(fr,fr),name,sec,kind) for fr,name,sec,kind in exports]
 rows.sort();functions.sort();exports.sort();redirected.sort()
+a.rva=list(dict.fromkeys(a.rva+[rva for rva,name,_,_ in functions if any(pattern in name for pattern in a.symbol)]))
 print(f'IMAGE {a.image.name} sha256={hashlib.sha256(d).hexdigest()} bytes={len(d):#x} machine={machine:04x} image-size={size:#x} timestamp={stamp:08x} coff-symbols={nsym} named-exports={len(exports)}')
 cs=capstone.Cs(capstone.CS_ARCH_ARM64,capstone.CS_MODE_LITTLE_ENDIAN) if a.arm64 else capstone.Cs(capstone.CS_ARCH_X86,capstone.CS_MODE_32 if machine==0x14c else capstone.CS_MODE_64);cs.skipdata=True
 for target in a.rva:
@@ -55,8 +56,11 @@ for target in a.rva:
   before=[x for x in choices if x[0]<=target]
   if before:
    start,name,_,_=before[-1];following=next((x[0] for x in choices if x[0]>start),None);print(f'  {label}={name} start={start:#x} offset={target-start:#x} next={hex(following) if following else "unknown"}')
- begin=max(0,target-a.context);begin=begin&~3 if a.arm64 else begin
- for x in cs.disasm(raw(begin,a.context*2),begin):print(f'  {"=>" if x.address==target else "  "} {x.address:#x} {x.bytes.hex()} {x.mnemonic} {x.op_str}')
+ section=next((s for s in sections if s[1]<=target<s[1]+s[4]),None)
+ if section is None:print('  requested RVA is not file backed');continue
+ begin=max(section[1],target-a.context);begin=begin&~3 if a.arm64 else begin
+ end=min(section[1]+section[4],target+a.context)
+ for x in cs.disasm(raw(begin,end-begin),begin):print(f'  {"=>" if x.address==target else "  "} {x.address:#x} {x.bytes.hex()} {x.mnemonic} {x.op_str}')
 for target in a.data_rva:
  print(f'DATA RVA {target:#x}')
  choices=[x for x in rows if x[0]<=target and not x[1].startswith('.') and not sections[x[2]-1][5]&0x20000000 and sections[x[2]-1][1]<=target<sections[x[2]-1][1]+sections[x[2]-1][2]]
