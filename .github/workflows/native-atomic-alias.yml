@@ -6,6 +6,11 @@ on:
     paths:
       - build/ntdll-unix/native_atomic*.h
       - build/ntdll-unix/native_data_alias.h
+      - build/ntdll-unix/native_counter*.h
+      - build/wine-pe/build-ntdll.sh
+      - tools/build/stage-native-counter-writes.py
+      - tests/host/*native*counter*
+      - tests/host/*native*direct*call*
       - build/ntdll-unix/signal_arm64_ios.c
       - build/ntdll-unix/jit_store_census.h
       - tests/host/check-native-atomic*.py
@@ -18,6 +23,11 @@ on:
     paths:
       - build/ntdll-unix/native_atomic*.h
       - build/ntdll-unix/native_data_alias.h
+      - build/ntdll-unix/native_counter*.h
+      - build/wine-pe/build-ntdll.sh
+      - tools/build/stage-native-counter-writes.py
+      - tests/host/*native*counter*
+      - tests/host/*native*direct*call*
       - build/ntdll-unix/signal_arm64_ios.c
       - build/ntdll-unix/jit_store_census.h
       - tests/host/check-native-atomic*.py
@@ -31,14 +41,19 @@ permissions:
 jobs:
   apple-arm64-execution:
     runs-on: xcode-27
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Load pinned Wine counter producer source
+        run: git submodule update --init --depth 1 wine
       - name: Prove native address lowering and exact packaged image invariants
         run: |
           python3 tests/host/check-native-data-alias.py
+          python3 tests/host/check-native-data-direct-call.py
+          python3 tests/host/check-native-counter-alias.py
+          python3 tests/host/check-native-counter-stage.py
           python3 tests/host/check-native-atomic-alias.py
           python3 tests/host/check-native-atomic-image.py
           python3 tests/host/check-jit-store-census.py
@@ -54,5 +69,41 @@ jobs:
           path: |
             native-atomic-throughput.txt
             native-data-throughput.txt
+            native-qpc-throughput.txt
           if-no-files-found: ignore
           retention-days: 14
+
+  counter-producer-compile:
+    runs-on: xcode-27
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Load pinned native producer source
+        run: git submodule update --init --depth 1 wine
+      - name: Load compiler dependencies
+        run: brew install bison meson ninja autoconf automake libtool pkg-config || true
+      - id: sdk
+        run: bash tools/build/ci-input-key.sh
+      - id: pins
+        run: echo "wine=$(git rev-parse HEAD:wine)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        with:
+          key: mingw-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/build/setup-llvm-mingw.sh') }}
+          path: toolchains/llvm-mingw-*
+      - uses: actions/cache/restore@v4
+        with:
+          key: plan19-${{ steps.sdk.outputs.key }}-wine-host-${{ steps.pins.outputs.wine }}-${{ hashFiles('tools/build/build-wine.sh', 'tools/build/setup-llvm-mingw.sh') }}
+          path: |
+            wine/build-macos
+            wine/build-arm64ec
+      - name: Compile actual native ntdll producers and inspect packaged contracts
+        run: |
+          export PATH="$(brew --prefix bison)/bin:$PATH"
+          tools/build/setup-llvm-mingw.sh
+          counter_io_state=$(mktemp -d)
+          python3 tools/build/stage-io-status-abi.py apply "$counter_io_state"
+          trap 'python3 tools/build/stage-io-status-abi.py restore "$counter_io_state"' EXIT
+          tools/build/build-wine.sh
+          tools/build/build-scm-rpc.sh

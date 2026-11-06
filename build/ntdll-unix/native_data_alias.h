@@ -100,6 +100,27 @@ static inline int madeira_nd_memory(uint32_t op,struct madeira_nd_memory *m)
     return 0;
 }
 
+/* X8 can carry a native implicit result pointer, so a call is not generally a
+ * pointer kill. A direct target inside this already validated native code
+ * range is different when its straight-line prologue fully replaces X8 before
+ * reading it. Reject every unknown/control instruction and every earlier X8
+ * use, including spills, address reads and read-modify-write instructions.
+ * No imported/indirect target, recursive call proof or ABI guess is accepted.
+ */
+static inline int madeira_nd_direct_callee_kills_x8(const uint32_t *code,size_t count,size_t at)
+{
+    size_t target;unsigned steps;
+    if(at>=count||(code[at]&0xfc000000u)!=0x94000000u||
+       !madeira_na_relative(at,code[at]&0x03ffffffu,26,count,&target))return 0;
+    for(steps=0;steps<32&&target<count;steps++,target++){
+        uint32_t reads,writes,op=code[target];
+        if(!madeira_nd_known_encoding(op)||!madeira_na_operands(op,&reads,&writes)||
+           (reads&madeira_na_bit(8)))return 0;
+        if(writes&madeira_na_bit(8))return 1;
+    }
+    return 0;
+}
+
 static inline int madeira_native_data_alias_plan(const uint32_t *code,size_t count,uintptr_t rx_va,
     intptr_t rw_delta,size_t producer_index,madeira_native_data_alias_range check,void *context,
     struct madeira_native_data_alias_plan *out)
@@ -132,8 +153,9 @@ static inline int madeira_native_data_alias_plan(const uint32_t *code,size_t cou
             continue; /* x8..17 are not native return-value registers */
         }
         if((op&0xfc000000)==0x94000000||(op&0xfffffc1f)==0xd63f0000){
-            if(base==8||((op&0xfffffc1f)==0xd63f0000&&((op>>5)&31)==base))return 0;
-            continue; /* ABI kills x9..17; x8 can be an implicit sret argument */
+            if((base==8&&!madeira_nd_direct_callee_kills_x8(code,count,at))||
+               ((op&0xfffffc1f)==0xd63f0000&&((op>>5)&31)==base))return 0;
+            continue; /* ABI kills x9..17; X8 needs the direct-target proof. */
         }
         if((op&0xff800000)==0x91000000||(op&0xff800000)==0xd1000000){
             unsigned rd=op&31,rn=(op>>5)&31;
