@@ -56,6 +56,7 @@ def inspect(path, verify=False, code_targets=None, data_targets=(), context=16):
                 rows.append(row)
         i+=aux+1
     rows.sort()
+    data_targets=tuple(data_targets)+tuple(r[0] for r in all_rows if r[1] in ('fex_ios_rpm_owner','fex_ios_rpm_depth','fex_ios_rpm_enabled'))
     assert rows,'no function symbols in executable sections'
     def code(rva,nbytes):
         for _,base,_,raw,rawsize,_ in sections:
