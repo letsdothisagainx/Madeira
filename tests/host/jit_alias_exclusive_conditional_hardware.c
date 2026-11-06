@@ -104,6 +104,7 @@ static void *concurrent_maximum(void *argument)
 
 int main(void)
 {
+    (void)quiet_dprintf; /* This helper intentionally emits no per-fault logs. */
     assert(mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &exception_port) == KERN_SUCCESS);
     assert(mach_port_insert_right(mach_task_self(), exception_port, exception_port,
                                  MACH_MSG_TYPE_MAKE_SEND) == KERN_SUCCESS);
