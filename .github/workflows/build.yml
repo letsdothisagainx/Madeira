@@ -475,6 +475,7 @@ jobs:
           "$RUNNER_TEMP/hot-pe-tools/bin/pip" install capstone==5.0.6
           "$RUNNER_TEMP/hot-pe-tools/bin/python" tools/build/inspect-hot-pe.py previous-ipa/Payload/Madeira.app/arm64ec-windows/ntdll.dll --arm64 --rva 0x73818 --rva 0x69c28 --rva 0x6a410 --rva 0x6a4c0 --context 160
           "$RUNNER_TEMP/hot-pe-tools/bin/python" tools/build/inspect-hot-pe.py previous-ipa/Payload/Madeira.app/aarch64-windows/ntdll.dll --arm64 --rva 0x76120 --context 160
+          "$RUNNER_TEMP/hot-pe-tools/bin/python" tools/build/inspect-hot-pe.py previous-ipa/Payload/Madeira.app/aarch64-windows/xtajit.dll --arm64 --rva 0x18080 --context 256
           "$RUNNER_TEMP/hot-pe-tools/bin/python" tools/build/inspect-hot-pe.py previous-ipa/Payload/Madeira.app/aarch64-windows/xtajit.dll --arm64 --rva 0x1a7bac --rva 0x18140 --context 192
           "$RUNNER_TEMP/hot-pe-tools/bin/python" tools/build/inspect-hot-pe.py previous-ipa/Payload/Madeira.app/aarch64-windows/xtajit.dll --arm64 --rva 0x17fbc --rva 0xf3348 --rva 0x13b38 --data-rva 0x389f00 --data-rva 0x389cd8 --data-rva 0x385d20 --context 192
           "$RUNNER_TEMP/hot-pe-tools/bin/python" tools/build/inspect-hot-pe.py previous-ipa/Payload/Madeira.app/arm64ec-windows/xtajit64.dll --arm64 --rva 0x14440 --rva 0x117130 --data-rva 0x3b9260 --data-rva 0x3c0000 --context 128
