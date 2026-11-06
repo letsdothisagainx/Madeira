@@ -128,6 +128,43 @@ with tempfile.TemporaryDirectory(prefix='madeira-service-scm-') as directory:
         assert states.read_text().splitlines() == ['2', '4', '3', '1']
         print('PASS real dispatcher/control-pipe connection and SCM pending->running->stop-pending->stopped transitions despite diagnostic enumeration outcome', flush=True)
         states.unlink()
+        # A live process is not a running service. Reproduce the captured
+        # pre-dispatch state without waiting for a real 30-second timeout:
+        # block the I386 service before StartServiceCtrlDispatcherW, inspect
+        # actual SCM status while production StartServiceW is outstanding,
+        # then release it and require the real control-pipe handshake.
+        wine(control, '--setup', 'gate-dispatcher')
+        before_dispatcher = fixture / 'before-dispatcher.fixture'
+        assert not before_dispatcher.exists()
+        waiting_helper = subprocess.Popen([WINE64, str(installed_helper), r'C:\Program Files (x86)\Steam'],
+                                          env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        try:
+            deadline = time.monotonic() + 12
+            while not before_dispatcher.exists():
+                assert waiting_helper.poll() is None, 'helper returned before genuine dispatcher registration'
+                assert time.monotonic() < deadline, 'service did not reach the pre-dispatch boundary'
+                time.sleep(.05)
+            _, status = wine(control, '--query', expected=21)
+            assert 'query-state=2' in status, 'live pre-dispatch process must remain SCM start-pending'
+            assert not states.exists(), 'service reported a status before registering its real dispatcher'
+            assert waiting_helper.poll() is None, 'live process was incorrectly accepted as SERVICE_RUNNING'
+            wine(control, '--release-dispatcher')
+            pending_output = waiting_helper.communicate(timeout=25)[0]
+            assert len(pending_output) <= MAX_OUTPUT, 'pending fixture output exceeded diagnostic bound'
+            assert waiting_helper.returncode == 0
+            assert b'[steam-service] result=0' in pending_output
+            _, status = wine(control, '--query'); assert 'query-state=4' in status
+            wine(control, '--stop')
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                if states.exists() and states.read_text().splitlines() == ['2', '4', '3', '1']: break
+                time.sleep(.05)
+            assert states.read_text().splitlines() == ['2', '4', '3', '1']
+        finally:
+            if waiting_helper.poll() is None:
+                waiting_helper.kill(); waiting_helper.communicate(timeout=5)
+        print('PASS live I386 pre-dispatch process remains pending; release permits genuine SCM control-pipe connection and running/stop transitions', flush=True)
+        states.unlink()
         wine(control, '--setup', 'handoff')
         _, output = wine(installed_helper, r'C:\Program Files (x86)\Steam')
         assert '[steam-service] update-parent-exit=0' in output

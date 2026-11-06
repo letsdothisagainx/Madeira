@@ -69,6 +69,7 @@
  * Scope is much wider than one crash: any zero-store into an alias-backed page
  * was corrupting memory this way. */
 #define IOS_STORE_SRC(r) ((r) == 31 ? 0ULL : state.__x[r])
+#include "jit_store_census.h"
 
 #include <mach/mach_vm.h>
 #include <mach/thread_act.h>
@@ -345,6 +346,7 @@ volatile unsigned long long ios_store_fault_t0 = 0;
 volatile unsigned long long ios_store_fault_ticks = 0;
 volatile unsigned long long ios_store_fault_n = 0;
 volatile unsigned long long ios_store_fault_dropped = 0;   /* ml685 */
+static unsigned long long ios_store_family_counts[MADEIRA_STORE_FAMILIES];
 /* ml690: which thread is currently faulting. Set once per received exception on
  * the single handler thread, so no locking is needed. Attribution answers the
  * question the aggregate cannot: is the 34k faults/sec stalling the MAIN thread
@@ -3186,6 +3188,16 @@ static void *ios_mach_exception_thread( void *arg )
                     "[fault-cost] ml685 emulated-store faults=%llu total=%llu ms avg=%llu ns "
                     "dropped=%llu (one handler thread serves all threads)\n",
                     n, ns / 1000000ull, ns / n, ios_store_fault_dropped);
+                unsigned long long families[MADEIRA_STORE_FAMILIES], classified = 0;
+                unsigned family;
+                for (family = 0; family < MADEIRA_STORE_FAMILIES; ++family)
+                    classified += families[family] = __atomic_load_n(&ios_store_family_counts[family], __ATOMIC_RELAXED);
+                dprintf(STDERR_FILENO,
+                    "[fault-family-v1] classified=%llu lse-rmw=%llu exclusive=%llu swap=%llu "
+                    "release=%llu gpr=%llu simd-pair=%llu other=%llu\n",
+                    classified, families[MADEIRA_STORE_LSE], families[MADEIRA_STORE_EXCLUSIVE],
+                    families[MADEIRA_STORE_SWAP], families[MADEIRA_STORE_RELEASE],
+                    families[MADEIRA_STORE_GPR], families[MADEIRA_STORE_SIMD_PAIR], families[MADEIRA_STORE_OTHER]);
             }
         }
         if (madeira_diag_enabled && (ios_exc_msg_count & 0xFFF) == 0)
@@ -5982,6 +5994,7 @@ wx_done: ;
                         handled = 1;
                         static volatile int emul_count = 0;
                         int ec = __sync_add_and_fetch(&emul_count, 1);
+                        __atomic_fetch_add(&ios_store_family_counts[madeira_jit_store_family(insn)], 1, __ATOMIC_RELAXED);
 
                         /* ============ ml680 WHAT DOES A FAULT ACTUALLY COST? ==
                          *

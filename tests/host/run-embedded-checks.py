@@ -6,6 +6,11 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[2]
 commands = [
+    ['python3', 'tests/host/check-native-atomic-alias.py'],
+    ['python3', 'tests/host/check-native-atomic-image.py'],
+    ['python3', 'tests/host/check-native-atomic-alias-performance.py', '--require-arm64-darwin'],
+    ['python3', 'tests/host/check-jit-store-census.py'],
+    ['python3', 'tests/host/check-htmlipc-section-trace.py'],
     ['python3', 'tests/host/check-jit-alias-exclusive-add.py'],
     ['python3', 'tests/host/check-jit-alias-str-immediate.py'],
     ['python3', 'tests/host/check-jit-alias-exclusive.py'],

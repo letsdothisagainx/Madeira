@@ -4298,6 +4298,30 @@ static unsigned char ios_image_is_fex( const void *pe_base, size_t size )
     return !strcasecmp( name, "libarm64ecfex.dll" ) || !strcasecmp( name, "xtajit64.dll" );
 }
 
+#include "native_atomic_image.h"
+
+/* Only Madeira's native CPU modules, in a newly allocated private image copy.
+ * Never run this on Valve/guest code, anonymous guest SMC, a published mapping,
+ * or another process's image. Retirement/reuse continues to use the existing
+ * ledger and publication generation: no new allocation or owner is created. */
+static void ios_jit_lower_native_atomics(void *source, void *rw, void *rx, size_t size)
+{
+    const char *name = ios_pe_module_name(source, size);
+    struct ios_native_atomic_image_stats stats;
+    if (strcasecmp(name, "libarm64ecfex.dll") && strcasecmp(name, "xtajit64.dll") &&
+        strcasecmp(name, "libwow64fex.dll") && strcasecmp(name, "xtajit.dll")) return;
+    stats = ios_native_atomic_image_lower(rw, size, (uintptr_t)rx, (uintptr_t)source,
+                                          (intptr_t)((uintptr_t)rw - (uintptr_t)rx));
+    if (stats.planned)
+    {
+        __asm__ __volatile__("dsb sy" ::: "memory");
+        sys_icache_invalidate(rx, size);
+    }
+    dprintf(2, "[native-atomic-alias-v1] module=%s lse=%lu exclusive=%lu ranges=%lu "
+               "phase=private-copy rx-protection=unchanged\n", name,
+            (unsigned long)stats.lse, (unsigned long)stats.exclusive, (unsigned long)stats.ranges);
+}
+
 void ios_jit_add_mapping(void *pe_base, void *jit_base, size_t size)
 {
     ios_alias_cb_t own_cb;
@@ -19262,6 +19286,12 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
                                  image_size, ios_pe_module_name( image_base, image_size ),
                                  offset, ios_pool_last_alloc_reused );
 
+            /* Lower only transient native data operands before any execution
+             * or publication of this copy. Instructions keep their real atomics. */
+            if (!reload_jit)
+                ios_jit_lower_native_atomics(image_base, (char *)jit_rw_base + offset,
+                                             (char *)jit_rx_base + offset, image_size);
+
             /* Record mapping for the entire image */
             ios_jit_add_mapping(image_base, (char *)jit_rx_base + offset, image_size);
 
@@ -19951,6 +19981,8 @@ int ios_jit_copy_module_for_child(void *module_addr, void *child_peb)
     ios_jit_verify_copy( src, rx_dest, m->size,
                          ios_pe_module_name( src, m->size ),
                          offset, ios_pool_last_alloc_reused );
+
+    ios_jit_lower_native_atomics(src, rw_dest, rx_dest, m->size);
 
     pe_off = *(unsigned int *)(rw_dest + 0x3C);
     pe_image_base = m->pe_image_base ? m->pe_image_base

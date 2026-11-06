@@ -14,6 +14,11 @@ on:
       - tests/host/check-native-steam-play.py
       - tests/integration/check-steam-service-startup.py
       - tests/integration/steam-service/**
+      - tests/integration/check-htmlipc-bootstrap.py
+      - tests/integration/htmlipc/**
+      - tests/host/check-htmlipc-section-trace.py
+      - build/ntdll-unix/htmlipc_section_trace.h
+      - tools/build/stage-htmlipc-section-trace.py
       - .github/workflows/steam-service-startup.yml
   pull_request:
     paths:
@@ -27,6 +32,11 @@ on:
       - tests/host/check-native-steam-play.py
       - tests/integration/check-steam-service-startup.py
       - tests/integration/steam-service/**
+      - tests/integration/check-htmlipc-bootstrap.py
+      - tests/integration/htmlipc/**
+      - tests/host/check-htmlipc-section-trace.py
+      - build/ntdll-unix/htmlipc_section_trace.h
+      - tools/build/stage-htmlipc-section-trace.py
       - .github/workflows/steam-service-startup.yml
 permissions:
   contents: read
@@ -41,6 +51,8 @@ jobs:
           submodules: recursive
       - name: Reproduce dropped RPC completion and verify actual staged queue/wait delivery
         run: python3 tests/host/check-service-async-apc.py
+      - name: Verify the actual common-architecture section observer and bounds
+        run: python3 tests/host/check-htmlipc-section-trace.py
   scripts:
     runs-on: xcode-27
     timeout-minutes: 5
@@ -78,3 +90,6 @@ jobs:
           path: .service-scripts
       - name: Exercise actual SCM early exit, dispatcher, status, updater witness and client continuation
         run: xvfb-run -a python3 tests/integration/check-steam-service-startup.py --script-dir .service-scripts
+
+      - name: Exercise genuine Wine I386 creator and AMD64 opener bootstrap and section lifetime
+        run: xvfb-run -a python3 tests/integration/check-htmlipc-bootstrap.py --download-official

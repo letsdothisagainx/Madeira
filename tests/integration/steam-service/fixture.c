@@ -10,6 +10,7 @@ static const wchar_t service_name[] = L"Steam Client Service";
 static const wchar_t service_image[] = L"C:\\Fixture\\Common Files\\Steam\\SteamService.exe";
 static const wchar_t updater_image[] = L"C:\\Fixture\\Common Files\\Steam\\SteamServiceTmp.exe";
 static const wchar_t marker[] = L"C:\\Fixture\\updated.fixture";
+static const wchar_t dispatcher_gate[] = L"Local\\MadeiraServiceIntegrationDispatcherGate";
 static SERVICE_STATUS_HANDLE status_handle;
 static HANDLE stop_event;
 static SERVICE_STATUS status;
@@ -98,6 +99,12 @@ int wmain(int argc,wchar_t **argv) {
         if(!anchor)fail("anchor-open");
         if(!SetEvent(anchor)){fail("anchor-stop");}CloseHandle(anchor);return 0;
     }
+    if(argc==2&&!wcscmp(argv[1],L"--release-dispatcher")) {
+        HANDLE gate=OpenEventW(EVENT_MODIFY_STATE,FALSE,dispatcher_gate);
+        if(!gate)fail("dispatcher-gate-open");
+        if(!SetEvent(gate))fail("dispatcher-gate-release");
+        CloseHandle(gate);return 0;
+    }
     if(argc>=3&&!wcscmp(argv[1],L"--setup"))return setup(argv[2]);
     if(argc==2&&!wcscmp(argv[1],L"--query"))return query();
     if(argc==2&&!wcscmp(argv[1],L"--stop"))return stop();
@@ -108,6 +115,16 @@ int wmain(int argc,wchar_t **argv) {
     if(argc==2&&!wcscmp(argv[1],L"--update-child")) {Sleep(1200);mark(marker);return 0;}
     if(argc>=3&&!wcscmp(argv[1],L"/RunAsService")) {
         if(!wcscmp(argv[2],L"early-exit")) {puts("[service-fixture] exit-before-dispatcher=0");return 0;}
+        if(!wcscmp(argv[2],L"gate-dispatcher")) {
+            /* The captured Valve process stays alive before the SCM control
+             * pipe connects. Hold that genuine protocol boundary explicitly:
+             * no status or dispatcher result is fabricated by the fixture. */
+            HANDLE gate=CreateEventW(NULL,TRUE,FALSE,dispatcher_gate);
+            if(!gate)fail("dispatcher-gate-create");
+            mark(L"C:\\Fixture\\before-dispatcher.fixture");
+            if(WaitForSingleObject(gate,20000)!=WAIT_OBJECT_0)fail("dispatcher-gate-wait");
+            CloseHandle(gate);
+        }
         if(!wcscmp(argv[2],L"handoff")&&GetFileAttributesW(marker)==INVALID_FILE_ATTRIBUTES) {
             Sleep(700);wchar_t command[1024];swprintf(command,1024,L"\"%ls\" --update-child",updater_image);
             STARTUPINFOW si={0};PROCESS_INFORMATION pi={0};si.cb=sizeof(si);
