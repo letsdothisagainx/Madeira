@@ -14,6 +14,8 @@ on:
       - tests/host/check-pool-*.py
       - tests/host/fixtures/pool-cs2-*.json
       - tests/host/check-jit-pool-meter.py
+      - tests/host/check-loader-import-failure-retention.py
+      - tests/host/fixtures/loader-import-failure-*.c
       - .github/workflows/cs2-jit-pool.yml
   pull_request:
     paths:
@@ -27,6 +29,8 @@ on:
       - tests/host/check-pool-*.py
       - tests/host/fixtures/pool-cs2-*.json
       - tests/host/check-jit-pool-meter.py
+      - tests/host/check-loader-import-failure-retention.py
+      - tests/host/fixtures/loader-import-failure-*.c
       - .github/workflows/cs2-jit-pool.yml
 permissions:
   contents: read
@@ -52,6 +56,7 @@ jobs:
         run: |
           python3 tests/host/check-pool-cs2-budget.py
           python3 tests/host/check-pool-retired-main.py
+          python3 tests/host/check-loader-import-failure-retention.py
           python3 tests/host/check-pool-cs2-scenesystem.py
           python3 tests/host/check-pool-rx-demotion.py
           python3 tests/host/check-jit-alias-atomics.py

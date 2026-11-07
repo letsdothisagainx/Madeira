@@ -228,6 +228,108 @@ static void check_renewed_identity(void)
     puts("PASS: production code reuse refreshes allocation identity and clears retirement proof; late old-owner reclaim cannot restore it");
 }
 
+/* Both candidates occupy real shared aliases. Keep the head/tail collision
+ * boundary exhausted so these checks exercise production reuse, never fresh
+ * space. The order varies independently of the candidates' addresses. */
+static void code_pair(int retired_first, size_t retired_bytes, size_t ordinary_bytes)
+{
+    main_setup(0); owner = code_owner;
+    struct ios_tail_carve retired = ios_tail_carves[0];
+    retired.size = retired_bytes;
+    struct ios_tail_carve ordinary = {.off=192*MB, .size=ordinary_bytes, .free=1,
+                                     .freed_at=90, .allocation_lease=24};
+    ios_tail_carve_n = 2;
+    ios_tail_carves[!retired_first] = retired;
+    ios_tail_carves[retired_first] = ordinary;
+    memset((char *)rw_memory + ordinary.off, 0x6b, ordinary.size);
+}
+
+static void code_choice(size_t expected_off, size_t expected_size)
+{
+    unsigned selected = find_carve(expected_off), other = !selected;
+    struct ios_tail_carve untouched = ios_tail_carves[other];
+    unsigned char first = *((unsigned char *)rx_memory + untouched.off);
+    unsigned char last = *((unsigned char *)rx_memory + untouched.off + untouched.size - 1);
+    size_t head = jit_pool_offset, tail = ios_jit_tail_reserved, low = ios_jit_low_reserved;
+    size_t ask = 16*MB; void *rx = NULL;
+    CHECK(allocate_code(&ask, &rx) == STATUS_SUCCESS && ask == expected_size);
+    CHECK((uintptr_t)rx == (uintptr_t)rx_memory + expected_off);
+    CHECK(*(const uint32_t *)rx == 0xd503201f);
+    struct ios_tail_carve *got = &ios_tail_carves[selected];
+    CHECK(!got->free && !got->retired && got->peb == (void *)code_owner);
+    CHECK(got->allocation_lease == 61 && !got->retired_lease);
+    CHECK(ios_tail_carve_n == 2 && !memcmp(&ios_tail_carves[other], &untouched, sizeof untouched));
+    CHECK(*((unsigned char *)rx_memory + untouched.off) == first);
+    CHECK(*((unsigned char *)rx_memory + untouched.off + untouched.size - 1) == last);
+    CHECK(jit_pool_offset == head && ios_jit_tail_reserved == tail && ios_jit_low_reserved == low);
+}
+
+static void check_code_placement(void)
+{
+    for (int retired_first = 0; retired_first < 2; ++retired_first)
+    {
+        code_pair(retired_first, 16*MB, 32*MB);
+        code_choice(main_off, 16*MB); /* Best-fit precedes retirement preference. */
+        code_pair(retired_first, 32*MB, 16*MB);
+        code_choice(192*MB, 16*MB);
+        code_pair(retired_first, 16*MB, 16*MB);
+        code_choice(192*MB, 16*MB); /* Preserve the certified image capacity. */
+
+        /* A retired carve without a matching receipt retains the legacy
+         * first-entry tie; its ordinary code-reuse eligibility is unchanged. */
+        for (unsigned invalid = 0; invalid < 3; ++invalid)
+        {
+            code_pair(retired_first, 16*MB, 16*MB);
+            struct ios_tail_carve *retired = &ios_tail_carves[!retired_first];
+            if (!invalid) retired->allocation_lease = 0;
+            else retired->retired_lease = invalid == 1 ? 0 : 42;
+            code_choice(ios_tail_carves[0].off, 16*MB);
+        }
+        for (int both_retired = 0; both_retired < 2; ++both_retired)
+        {
+            code_pair(retired_first, 16*MB, 16*MB);
+            if (both_retired)
+            {
+                ios_tail_carves[retired_first].retired = 1;
+                ios_tail_carves[retired_first].allocation_lease = 41;
+                ios_tail_carves[retired_first].retired_lease = 41;
+            }
+            else ios_tail_carves[!retired_first].retired = 0;
+            code_choice(ios_tail_carves[0].off, 16*MB);
+        }
+
+        /* Classify the existing backed pages as synthetic C. Equal C/C and
+         * C/MAIN candidates preserve their original table-order behavior. */
+        for (int both_low = 0; both_low < 2; ++both_low)
+        {
+            code_pair(retired_first, 16*MB, 16*MB);
+            ios_jit_low_rx_global = (uintptr_t)rx_memory + main_off;
+            ios_jit_low_rw_global = (uintptr_t)rw_memory + main_off;
+            ios_jit_low_size_global = (both_low ? 96 : 16)*MB;
+            ios_jit_low_reserved = ios_jit_low_size_global;
+            code_choice(ios_tail_carves[0].off, 16*MB);
+        }
+    }
+    puts("PASS: production code allocation keeps size best-fit first, uses ordinary MAIN releases on qualified ties in both orders, and retains uncertified/same-class/C tie behavior without touching the other carve");
+
+    code_pair(1, 16*MB, 16*MB);
+    ios_tail_carves[1].free = 0;
+    code_choice(main_off, 16*MB); /* A live ordinary carve is never a candidate. */
+    code_pair(1, 16*MB, 16*MB);
+    ios_tail_carves[0].freed_at = fake_now - 2;
+    code_choice(192*MB, 16*MB); /* Retirement grace still excludes the first. */
+    code_pair(1, 16*MB, 16*MB);
+    ios_tail_carves[1].free = 0;
+    scanned_pc = (uintptr_t)rx_memory + main_off;
+    size_t ask = 16*MB; void *rx = NULL;
+    CHECK(allocate_code(&ask, &rx) == STATUS_NO_MEMORY && !rx);
+    CHECK(ios_tail_carves[0].free && ios_tail_carves[0].retired);
+    CHECK(ios_tail_carves[0].freed_at == fake_now && !ios_tail_carves[1].free);
+    CHECK(jit_pool_offset == 128*MB && ios_jit_tail_reserved == 128*MB);
+    CHECK(*(unsigned char *)((char *)rx_memory + main_off) == 0xa5);
+    puts("PASS: placement preference retains live-carve exclusion, retirement grace and strict thread-scan refusal");
+}
+
 struct main_request { unsigned role; uintptr_t peb; int status; size_t size, off; void *rx; };
 static void *main_compete(void *opaque)
 {
@@ -319,7 +421,7 @@ int main(void)
     rw_memory = main_map(backing, PROT_READ | PROT_WRITE);
     rx_memory = main_map(backing, PROT_READ | PROT_EXEC);
     CHECK(rw_memory != rx_memory);
-    check_main_transfer(); check_main_guards(); check_renewed_identity(); check_main_concurrency();
+    check_main_transfer(); check_main_guards(); check_renewed_identity(); check_code_placement(); check_main_concurrency();
     CHECK(!munmap(rx_memory, mapped_size) && !munmap(rw_memory, mapped_size) && !fclose(backing));
     return 0;
 }

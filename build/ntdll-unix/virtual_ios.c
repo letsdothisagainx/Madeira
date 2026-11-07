@@ -3756,6 +3756,19 @@ static int ios_tail_carve_in_low( size_t off )
     return ios_jit_low_contains( (uintptr_t)ios_jit_rx_base_global + off );
 }
 
+/* Equal-sized ordinary FEX releases can serve code without consuming a
+ * certified retirement receipt that images may need later. This is only a
+ * placement preference among already-eligible main-pool carves; keep region
+ * C's existing first-entry tie and every reuse check unchanged. */
+static int ios_pool_code_carve_better( const struct ios_tail_carve *candidate,
+                                       const struct ios_tail_carve *current )
+{
+    if (candidate->size != current->size) return candidate->size < current->size;
+    if (ios_tail_carve_in_low( candidate->off ) || ios_tail_carve_in_low( current->off )) return 0;
+    return !candidate->retired && current->retired && current->allocation_lease &&
+           current->allocation_lease == current->retired_lease;
+}
+
 /* A tiny dispatcher allocation must not consume a whole retired code buffer
  * while fresh executable storage can serve the tiny request. This includes
  * the main tail when region C is disabled: handing a 16MB retired generation
@@ -32653,7 +32666,7 @@ retry_code_carve_reuse:
             for (i = 0; i < ios_tail_carve_n; i++)
                 if (ios_tail_carve_ready( &ios_tail_carves[i], now ) && ios_tail_carves[i].size >= alloc_size &&
                     (low_ok || !ios_tail_carve_in_low( ios_tail_carves[i].off )) &&   /* madeira-bcd pool-low */
-                    (best == ~0u || ios_tail_carves[i].size < ios_tail_carves[best].size))
+                    (best == ~0u || ios_pool_code_carve_better( &ios_tail_carves[i], &ios_tail_carves[best] )))
                     best = i;
             if (best != ~0u && !reuse_all_carves &&
                 ios_pool_preserve_code_carve( ios_tail_carves[best].size, alloc_size, fresh_fits ))

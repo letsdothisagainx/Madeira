@@ -253,3 +253,96 @@ unfixed; this allocator patch does not manufacture installer success.
 The next phone run must confirm client.dll's executable copy, subsequent real
 modules and an actual presented CS2 frame while Steam, JIT and memory remain
 stable. CI and a successful bounded replay do not prove a rendered menu.
+
+
+## November 7 evening embree3.dll dependency budget
+
+The `f4403001` phone capture confirms the certified main-pool transfer works:
+48 MiB at offset `0x40fe4000` is transferred, and client.dll receives its
+`0x29a8000` executable copy. The first failure moves to client.dll's real
+embree3.dll dependency, which needs `0x1524000` (21.140625 MiB).
+
+At that instant, image head is `0x269c8000` (617.78125 MiB), reserved tail is
+`0x2101c000` (528.109375 MiB), and virgin space is `0x61c000` (6.109375 MiB).
+The image freelist has three entries totaling `0x678000` (6.46875 MiB); the
+largest is `0x658000` (6.34375 MiB). No range fits embree. Remaining certified
+retired code storage is one 16 MiB range plus two 16 KiB ranges. Active
+dispatcher pages separate it from an ordinary released generation, so those
+ranges cannot be joined. The zero page/PC/conflict counters do not prove an
+eligible transfer: the size test rejects these small candidates first.
+
+The 32 MiB generation at RX `0x326fe4000` is still live during both the embree
+failure and client retry. Its FREE event occurs afterward. That future release
+is never included in the failing request's available capacity, and this patch
+adds no authorization to transfer an ordinary release into image storage.
+
+The avoidable earlier reservation occurs when head is `0x1a7e8000` and tail
+is `0x1f01c000`. The 176 MiB soft headroom policy permits a fresh 32 MiB FEX
+generation despite available reusable 16 MiB generations. Raising automatic
+CS2 headroom to **208 MiB** makes the existing honest allocation-failure/halving
+ladder reach 16 MiB reuse instead. The three earlier 128 MiB generations still
+fit their original decisions. The pool remains **1152 MiB**; alias addresses,
+physical-budget guards, guard pages and minimum code-buffer sizes are unchanged.
+This is a code-growth policy adjustment, not a hard image partition.
+
+Code best-fit reuse now also preserves the more valuable image retirement
+receipts: among equally sized eligible main-pool buffers, it prefers an ordinary
+FEX release to a certified process-retired buffer. Smaller-fit selection,
+existing eligibility checks, retirement grace, strict retired-buffer PC checks,
+and region-C ties remain unchanged. A normal release remains usable only as
+code under the existing contract; it does not become certified image storage.
+The change applies throughout the counterfactual session, not just at one
+hardcoded DLL or instruction address.
+
+With both changes, the replay avoids 32 MiB of fresh tail growth. Earlier tie
+choices also change ownership of later-retired buffers: the client transfer
+now uses six certified carves at offset `0x41fe4000`, totaling `0x300c000`
+(48.046875 MiB). The same protected transfer mechanism remains in use; no live
+buffer is moved. Embree then fits in the 38.109375 MiB virgin range. After embree, projected head is `0x27eec000`
+(638.921875 MiB), tail is `0x1f01c000` (496.109375 MiB), and virgin space is
+`0x10f8000` (16.96875 MiB). Image-free extents plus preserved certified code
+provide further separate capacity. The replay records image-free bytes
+`0x684000` and a still-certified 16 MiB range at offset `0x40fe4000` (lease 10),
+for `0x277c000` (39.484375 MiB) aggregate eligible space, with a largest range
+of 16.96875 MiB. Their sum is not a promise of one contiguous allocation.
+Two synthetic generation rotations preserve the certified buffer; 32 MiB of
+additional synthetic images fit, leaving 7.484375 MiB aggregate before a real
+8 MiB request fails. The headroom-only control reaches embree but supports only
+16 MiB of this later stress. Subsequent real imports and asset residency remain
+device tests.
+A 16 MiB generation may rotate sooner than the captured 32 MiB generation;
+additional reuse/rotation tests check safety, not a claim of improved FPS.
+
+### Failed import and retry ownership
+
+Wine deliberately retains the first client.dll image after dependency failure.
+Its production `build_module()` removes public loader discovery metadata but
+keeps the mapped image because dependencies may retain references, then sets
+`module` to NULL. `load_native_dll()` consequently skips the unmap. The VAD,
+JIT generation and allocating owner's ledger remain live. A later retry maps
+at a different PE base, so neither same-base reload nor freed-layout-tag reuse
+can adopt the retained copy. This is live-owned failure residue, not an unowned
+allocation leak. No native rollback or premature reclamation is added.
+
+`check-loader-import-failure-retention.py` executes the real Wine loader
+functions with controlled boundary APIs and real list removal, then the native
+reload/ledger/reclaim functions. It verifies retention and status, distinct
+retry, ordinary error cleanup, owner retirement, sibling isolation, alias
+invalidation, layout tags and reuse grace. It does not fabricate a dependency
+success or execute Valve code on a host fixture.
+
+The new `pool-cs2-200636-tail.json` records the complete observed code/image
+sequence through embree and the failed parent retry. The baseline is replayed
+with its captured 176 MiB setting and original ranking. The corrected replay
+uses the actual 208 MiB plan and production comparator, follows returned handles
+when earlier placements change, preserves five tiny-carve decisions and all
+three live 128 MiB generations, and tests additional generation rotations and
+synthetic image pressure. Later error-path actxprxy failures are not described
+as normal post-embree game imports; none are demonstrated by this capture.
+
+No pool growth or physical-memory exemption is used. Approximately 4.4 GiB of
+observed footprint below the effective 6 GiB cap does not make all remaining
+RAM available to JIT: later assets still need it. The DirectX fixed-address
+installer failure and high emulated-write-fault cost remain separate issues.
+Device acceptance requires a real embree executable copy and resolved client
+imports, subsequent real modules, and an actual presented game frame/menu.

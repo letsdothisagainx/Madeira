@@ -72,6 +72,7 @@ commands = [
     ['python3', 'tests/host/check-srv-eco-follow.py'],
     ['python3', 'tests/host/check-alias-protection.py'],
     ['python3', 'tests/host/check-image-alias-lifetime.py'],
+    ['python3', 'tests/host/check-loader-import-failure-retention.py'],
     ['python3', 'tests/host/check-cef-image-lifecycle.py'],
     ['python3', 'tests/host/check-steam-swap-context.py'],
     ['python3', 'tests/host/check-fex-thread-retirement.py'],
