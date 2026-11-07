@@ -460,9 +460,12 @@ bool jit_memory_snapshot(uint64_t *available_bytes, uint64_t *footprint_bytes) {
 /* CS2's measured 1024MB run had 476.8MB of image head and 512.1MB of
  * retained code buffers when phonon.dll needed a contiguous 51.1MB. Merely
  * adding 128MB lets the next FEX generation consume that whole increase.
- * Pair 1152MB with 176MB of image reserve: 1152-176 == 1024-48, so the
- * existing code-buffer budget is unchanged and the extra pages serve images.
- * These are startup choices, never a request to resize a live pool.
+ * Pair 1152MB with 208MB of image reserve. The November 7 embree3.dll run
+ * still spent 32MB on a fresh code generation with reusable 16MB generations
+ * available. Keeping that extra 32MB of headroom makes FEX's existing halving
+ * ladder reach those releases, leaving virgin space for embree3.dll while
+ * retaining the three earlier 128MB generations. These are startup choices,
+ * never a request to resize a live pool.
  *
  * All bytes are charged once physically, even though RX/RW need two virtual
  * ranges. No no-footprint exemption is assumed. The observed 3818MB peak,
@@ -491,7 +494,7 @@ bool jit_cs2_pool_plan(uint64_t requested_pool_mb, uint64_t available_bytes,
         map_min >= map_max || map_max > INT64_MAX || map_max - map_min < selected * 2)
         return false;
     *pool_mb = selected / mb;
-    *head_reserve_mb = 176;
+    *head_reserve_mb = 208;
     return true;
 }
 

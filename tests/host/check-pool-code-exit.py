@@ -40,6 +40,7 @@ helpers = ''.join(function(signature) for signature in (
     'int ios_jit_low_contains(',
     'static int ios_pool_low_take(',
     'static int ios_tail_carve_in_low(',
+    'static int ios_pool_code_carve_better(',
     'static int ios_pool_preserve_code_carve(',
     'static int ios_pool_fresh_tail_fits(',
     'static int ios_tail_carve_ready(',
