@@ -677,6 +677,20 @@ static void check_captured_server_failure(void)
     puts("PASS: exact server.dll census reproduces 37.5 MiB failure with 27.046875 MiB virgin space and five fragmented image extents");
 }
 
+static uintptr_t rx_write_expected_address;
+_Static_assert(__atomic_always_lock_free(sizeof(uintptr_t), 0), "RX fault address reads must be lock-free");
+static void rx_write_fault(int signal_number, siginfo_t *info, void *context)
+{
+    (void)context;
+    /* Require a kernel-generated fault at the exact attempted store. Exit
+     * directly so a Linux piped core collector cannot delay waitpid while
+     * dumping the large shared mappings and the sanitizer address space. */
+    int expected = (signal_number == SIGSEGV || signal_number == SIGBUS) && info &&
+                   info->si_signo == signal_number && info->si_code > 0 &&
+                   (uintptr_t)info->si_addr == __atomic_load_n(&rx_write_expected_address, __ATOMIC_RELAXED);
+    _exit(expected ? 77 : 92);
+}
+
 static void check_owned_executable_image(size_t off, size_t size)
 {
     CHECK(off && size >= 16 && off + size < mapped_size);
@@ -701,14 +715,18 @@ static void check_owned_executable_image(size_t off, size_t size)
     pid_t child = fork(); CHECK(child >= 0);
     if (!child)
     {
-        const struct rlimit no_core = {0, 0};
-        setrlimit(RLIMIT_CORE, &no_core);
-        signal(SIGSEGV, SIG_DFL); signal(SIGBUS, SIG_DFL);
+        __atomic_store_n(&rx_write_expected_address, (uintptr_t)rx, __ATOMIC_RELAXED);
+        struct sigaction action;
+        memset(&action, 0, sizeof action);
+        action.sa_sigaction = rx_write_fault;
+        action.sa_flags = SA_SIGINFO;
+        if (sigemptyset(&action.sa_mask) || sigaction(SIGSEGV, &action, NULL) ||
+            sigaction(SIGBUS, &action, NULL)) _exit(93);
         *(volatile unsigned char *)(uintptr_t)rx = 0;
         _exit(91);
     }
     int status = 0; CHECK(waitpid(child, &status, 0) == child);
-    CHECK(WIFSIGNALED(status) && (WTERMSIG(status) == SIGSEGV || WTERMSIG(status) == SIGBUS));
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 77);
     CHECK(run() == 42 && !memcmp(rx, stub, sizeof stub));
 }
 
@@ -1252,6 +1270,7 @@ static void *map_pool_alias(FILE *backing, int protection)
 
 int main(void)
 {
+    CHECK(!setvbuf(stdout, NULL, _IOLBF, 0));
     unsetenv("MADEIRA_POOL_LOW_IMAGES"); unsetenv("MADEIRA_POOL_RECYCLE_IMAGES");
     unsetenv("MADEIRA_POOL_CODE_EXIT_RECLAIM"); unsetenv("MADEIRA_POOL_QUARANTINE");
     uint64_t selected, reserve;
@@ -1285,7 +1304,14 @@ if __name__ == '__main__':
                         '-Wall', '-Wextra', '-Werror', '-fsanitize=address,undefined',
                         '-fno-sanitize-recover=all', '-fno-omit-frame-pointer', '-pthread',
                         str(unit), '-o', str(binary)], check=True)
-        result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=90)
+        try:
+            result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=90)
+        except subprocess.TimeoutExpired as error:
+            for output in (error.stdout, error.stderr):
+                if output:
+                    print(output.decode(errors='replace') if isinstance(output, bytes) else output,
+                          end='', flush=True)
+            raise
         print(result.stdout, end='')
         if result.returncode:
             print(result.stderr, end='')
