@@ -159,3 +159,97 @@ Device acceptance now extends beyond phonon and scenesystem: server.dll must
 receive a valid executable copy, subsequent real modules must load, and Metal
 must present an actual game frame toward the menu while memory remains safe.
 Passing this bounded replay or the IPA build does not prove that acceptance.
+
+
+## November 7 client.dll capture and retired main-code capacity
+
+The `3c06c5c` phone capture confirms server.dll now loads, as do phonon,
+steamaudio and scenesystem. Steam service, authentication, Chromium IPC and
+D3D11 atomic recovery survive. DXMT reaches `nextDrawable #1`; that still does
+not establish an actual presented frame or the game menu.
+
+The next image, client.dll, requires `0x29a8000` (41.65625 MiB). At failure the
+same 1152 MiB pool has head `0x269d4000` (617.828125 MiB), tail `0x2101c000`
+(528.109375 MiB), and virgin gap `0x610000` (6.0625 MiB). Two small image
+free extents total only `0x20000`; none is poisoned. The original production
+image path genuinely returns STATUS_NO_MEMORY.
+
+A 32 MiB FEX generation at RX `0x326fe4000` is released just before the
+failure. Its generation sweep finishes all 21 migrations, but ordinary FREE
+metadata does not carry an owner-quiescence receipt, and the three-second
+image-reuse grace has not elapsed. A PC snapshot alone cannot exclude dormant
+returns or later entry through linked code. This correction **does not shrink
+the tail cursor or transfer that buffer**. Even returning all 32 MiB would
+leave only 38.0625 MiB contiguous, 3.59375 MiB short of client.dll. The next
+carve is a live 128 MiB generation, not reclaimable frontier space.
+
+The missed capacity is instead three adjacent 16 MiB code buffers from
+terminated hardware-query helpers:
+
+| RX range start | Original owner | Allocation lease | Retirement evidence |
+| --- | --- | ---: | --- |
+| `0x340fe4000` | `0x1043fc000` | 11 | zero native threads, retired |
+| `0x341fe4000` | `0x600310000` | 13 | zero native threads, retired |
+| `0x342fe4000` | `0x700310000` | 14 | zero native threads, retired |
+
+Together they provide 48 MiB. A separate 16 MiB buffer at `0x345ff8000`,
+reused by owner `0x700310000` under lease 22 and subsequently retired, provides
+later image capacity. These retired ranges have been idle well beyond the
+reuse grace. Ordinary released buffers from still-running owners are excluded.
+The old image recycler only handled the separate opt-in region C, so these
+main-pool code reservations were invisible to the image allocator.
+
+The production correction records the process lease at every code-buffer
+handout and clears any previous retirement receipt on reuse. Retirement
+certifies a buffer only when its recorded allocation lease matches the
+runtime's quiescent lease. Native thread retirement completes owner-dependent
+FEX callbacks before decrementing the group count; the remaining noreturn
+native tail cannot reenter generated code. An exiting group cannot add new
+Wine threads. Unknown or mismatched identities never produce a receipt.
+
+Only after ordinary image allocation fails, the main recycler can transfer an
+exactly adjacent run of whole certified buffers, bounded to 64 MiB. It requires
+elapsed grace, full RX read/execute and RW read/write coverage, no writable RX
+or executable RW pages, a successful empty strict thread-PC scan, and no
+conflicting code carve, image mapping, live ledger entry or image freelist
+entry. It removes the selected code records and publishes the image extent
+atomically under the existing carve-then-pool lock order. The normal image
+allocator retains alias invalidation, owner publication and capacity checks.
+No live buffer moves, shrinks or loses protection. The existing explicit
+recycling override still disables transfer; region C remains opt-in.
+
+The pool stays **1152 MiB**, and the paired **176 MiB** code-growth headroom
+is unchanged. Head and tail cursors remain unchanged when ownership transfers:
+the tail watermark includes already-reserved bytes now owned by executable
+images. It is not a new reservation or a claim that all those bytes remain
+live FEX code. This avoids both unsafe frontier reclamation and pool growth.
+Growing the pool without the paired policy would let FEX take another large
+generation and consume the intended image gain.
+
+The new `pool-cs2-083837-tail.json` fixture records 31 observed code allocation
+results, five tiny-carve preservations, generation releases, process leases,
+retirement and image-head checkpoints through client.dll. The production
+regression checks the baseline allocation addresses/sizes and exact failing
+geometry, then exercises the corrected transfer, client image ownership,
+executable alias visibility and additional 8+8+4+4 MiB synthetic image loads.
+Those later loads are capacity stress, not fabricated evidence of actual
+post-client game modules. A further request must still fail when no eligible
+contiguous capacity remains. Busy, recent, unproved, foreign-generation,
+nonexecutable, improperly aliased and conflicting ranges remain unavailable.
+
+The capture's approximately 4366 MiB peak leaves 1778 MiB below the measured
+6144 MiB effective cap. The older startup planner's historical 3946 MiB estimate
+therefore does not establish its nominal 2048 MiB of later asset headroom.
+This patch adds no reservation or budget: both aliases continue sharing one
+charged backing. Later assets, FEX arena pressure and jetsam remain device
+acceptance concerns, not reasons to falsify an allocation or discard live code.
+
+DirectX also fails in this current capture: relocation-stripped x64 infinst.exe
+requires `0x100000000`, below task floor `0x104044000`, and has no relocation
+table. Its moved load at `0x13e6d0000` fails STATUS_CONFLICTING_ADDRESSES.
+Steam nevertheless starts CS2. That separate compatibility issue remains
+unfixed; this allocator patch does not manufacture installer success.
+
+The next phone run must confirm client.dll's executable copy, subsequent real
+modules and an actual presented CS2 frame while Steam, JIT and memory remain
+stable. CI and a successful bounded replay do not prove a rendered menu.

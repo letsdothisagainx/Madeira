@@ -93,6 +93,8 @@ helper_signatures = (
     'static int ios_tail_carve_foreign_release(',
     'static void ios_tail_carves_owner_died(',
     'static int ios_pool_recycle_range_ready(',
+    'static int ios_pool_recycle_main_range_ready(',
+    'static int ios_pool_recycle_main_code_range(',
     'static int ios_pool_recycle_code_range(',
     'static int ios_pool_ledger_holds(',
     'void ios_jit_reclaim_process(',
@@ -102,23 +104,33 @@ helper_signatures = (
 helpers = ''.join(function(native, signature) for signature in helper_signatures if signature in native)
 
 tail_trace = json.loads((root / 'tests/host/fixtures/pool-cs2-200111-tail.json').read_text())
-tail_rows = []
-for event in tail_trace['events']:
-    op = {'allocate': 0, 'release': 1, 'retire': 2}[event['op']]
-    tail_rows.append('    {%d, %d, %d, %d, %sULL, %s, %s, %s, %s, %d},' % (
-        event['line'], event['seconds'], op, event.get('handle', 0), event['owner'],
-        event.get('requested', '0'), event.get('observed', '0'), event.get('head', '0'),
-        hex(int(event['observed_rx'], 16) - 0x300000000) if 'observed_rx' in event else '0',
-        event.get('rotation', False)))
+nov7_trace = json.loads((root / 'tests/host/fixtures/pool-cs2-083837-tail.json').read_text())
+
+
+def captured_rows(trace):
+    rows = []
+    for event in trace['events']:
+        op = {'allocate': 0, 'release': 1, 'retire': 2}[event['op']]
+        rows.append('    {%d, %d, %d, %d, %sULL, %s, %s, %s, %s, %d, %d},' % (
+            event['line'], event['seconds'], op, event.get('handle', 0), event['owner'],
+            event.get('requested', '0'), event.get('observed', '0'), event.get('head', '0'),
+            hex(int(event['observed_rx'], 16) - 0x300000000) if 'observed_rx' in event else '0',
+            event.get('rotation', False), event.get('lease', 0)))
+    return '\n'.join(rows)
+
+
 tail_replay = '''
 struct captured_tail_event {
     unsigned line, seconds, op, handle;
     uintptr_t owner;
     size_t ask, observed, head, observed_off;
     int rotation;
+    unsigned lease;
 };
 static const struct captured_tail_event captured_tail_events[] = {
-''' + '\n'.join(tail_rows) + '\n};\n' + '#define REPLAY_NEW_POLICY %d\n' % ('static int ios_pool_fresh_tail_fits(' in native)
+''' + captured_rows(tail_trace) + '\n};\n' + '#define REPLAY_NEW_POLICY %d\n' % ('static int ios_pool_fresh_tail_fits(' in native)
+tail_replay += 'static const struct captured_tail_event captured_nov7_tail_events[] = {\n' + captured_rows(nov7_trace) + '\n};\n'
+tail_replay += '#define REPLAY_MAIN_TRANSFER %d\n' % ('static int ios_pool_recycle_main_code_range(' in native)
 
 # Swift's launch plumbing is platform-owned; the decision and arithmetic run
 # below as production C. Keep the selected game and the pre-Wine failure path
@@ -201,6 +213,32 @@ static void *ios_jit_alias_pushback_peb;
 static void (*ios_jit_alias_pushback_cb)(void);
 static void *arm64ec_view;
 static uintptr_t owner;
+static __thread unsigned schedule_role, carve_lock_depth, pool_lock_depth;
+static struct { void *owner; unsigned long long lease; int quiescent; } test_leases[64];
+static unsigned test_lease_count;
+static void set_process_lease(void *peb, unsigned long long lease, int quiescent)
+{
+    unsigned i;
+    for (i = 0; i < test_lease_count; ++i) if (test_leases[i].owner == peb) break;
+    CHECK(i < ARRAY_SIZE(test_leases));
+    if (i == test_lease_count) ++test_lease_count;
+    test_leases[i].owner = peb; test_leases[i].lease = lease; test_leases[i].quiescent = quiescent;
+}
+unsigned long long ios_thread_process_lease(void *peb, int create)
+{
+    (void)create;
+    CHECK(!carve_lock_depth && !pool_lock_depth);
+    for (unsigned i = 0; i < test_lease_count; ++i)
+        if (test_leases[i].owner == peb) return test_leases[i].lease;
+    return 0;
+}
+unsigned long long ios_thread_process_quiescent_lease(void *peb)
+{
+    CHECK(!carve_lock_depth && !pool_lock_depth);
+    for (unsigned i = 0; i < test_lease_count; ++i)
+        if (test_leases[i].owner == peb && test_leases[i].quiescent) return test_leases[i].lease;
+    return 0;
+}
 static time_t fake_now = 100;
 static time_t fake_time(time_t *t) { if (t) *t = fake_now; return fake_now; }
 #define time fake_time
@@ -227,7 +265,7 @@ typedef size_t mach_vm_size_t;
 typedef int kern_return_t;
 typedef void *thread_state_t, *vm_region_info_t;
 typedef struct { uintptr_t pc; } arm_thread_state64_t;
-typedef struct { unsigned protection, max_protection; } vm_region_basic_info_data_64_t;
+typedef struct { int protection, max_protection; } vm_region_basic_info_data_64_t;
 typedef struct { unsigned user_tag, share_mode; } vm_region_extended_info_data_t;
 #define ARM_THREAD_STATE64 1
 #define ARM_THREAD_STATE64_COUNT 1
@@ -238,15 +276,20 @@ typedef struct { unsigned user_tag, share_mode; } vm_region_extended_info_data_t
 #define VM_REGION_EXTENDED_INFO_COUNT 2
 #define VM_REGION_EXTENDED_INFO 2
 #define VM_PROT_READ 1
+#define VM_PROT_WRITE 2
 #define VM_PROT_EXECUTE 4
 #define arm_thread_state64_get_pc(st) ((st).pc)
 static uintptr_t scanned_pc;
-static int state_query_fail;
+static int state_query_fail, thread_list_fail, region_query_fail;
+static int region_bad_alias;
+static size_t region_bad_off, region_bad_size;
+static unsigned region_bad_prot, region_bad_max;
 static mach_port_t mach_task_self(void) { return 0; }
 static mach_port_t mach_thread_self(void) { return 1; }
 static int task_threads(mach_port_t task, thread_act_array_t *out, mach_msg_type_number_t *count)
 {
     (void)task;
+    if (thread_list_fail) return -1;
     *out = malloc(2 * sizeof **out); CHECK(*out);
     (*out)[0] = 1; (*out)[1] = 2; *count = 2;
     return KERN_SUCCESS;
@@ -266,13 +309,27 @@ static int mach_vm_region(mach_port_t task, mach_vm_address_t *address, mach_vm_
                           int flavor, vm_region_info_t raw, mach_msg_type_number_t *count, mach_port_t *object)
 {
     (void)task; (void)count;
-    uintptr_t base = (uintptr_t)ios_jit_rx_base_global;
-    CHECK(*address >= base && *address < base + ios_jit_pool_size_global);
+    if (region_query_fail) return -1;
+    uintptr_t rx = (uintptr_t)ios_jit_rx_base_global, rw = (uintptr_t)ios_jit_rw_base_global;
+    int alias = *address >= rx && *address < rx + ios_jit_pool_size_global ? 1 : 2;
+    uintptr_t base = alias == 1 ? rx : rw, query = *address;
+    CHECK(query >= base && query < base + ios_jit_pool_size_global);
     *address = base; *size = ios_jit_pool_size_global; *object = MACH_PORT_NULL;
     if (flavor == VM_REGION_BASIC_INFO_64)
     {
         vm_region_basic_info_data_64_t *info = raw;
-        info->protection = 5; info->max_protection = 7;
+        info->protection = alias == 1 ? 5 : 3; info->max_protection = 7;
+        if (region_bad_alias == alias && region_bad_size)
+        {
+            uintptr_t bad = base + region_bad_off, end = bad + region_bad_size;
+            if (query < bad) *size = bad - base;
+            else if (query < end)
+            {
+                *address = bad; *size = region_bad_size;
+                info->protection = region_bad_prot; info->max_protection = region_bad_max;
+            }
+            else { *address = end; *size = base + ios_jit_pool_size_global - end; }
+        }
     }
     else
     {
@@ -286,7 +343,6 @@ static int mach_vm_region(mach_port_t task, mach_vm_address_t *address, mach_vm_
 static pthread_mutex_t schedule_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t schedule_cond = PTHREAD_COND_INITIALIZER;
 static int schedule_mode, tiny_has_pool, other_waiting, release_tiny;
-static __thread unsigned schedule_role, carve_lock_depth;
 static int scheduled_mutex_lock(pthread_mutex_t *lock)
 {
     if (schedule_mode && ((schedule_role == 2 && lock == &ios_pool_lock) ||
@@ -298,6 +354,7 @@ static int scheduled_mutex_lock(pthread_mutex_t *lock)
     }
     int result = pthread_mutex_lock(lock);
     if (!result && lock == &ios_tail_carve_lock) ++carve_lock_depth;
+    if (!result && lock == &ios_pool_lock) ++pool_lock_depth;
     if (!result && schedule_mode && schedule_role == 1 && lock == &ios_pool_lock && carve_lock_depth)
     {
         pthread_mutex_lock(&schedule_lock);
@@ -310,6 +367,7 @@ static int scheduled_mutex_lock(pthread_mutex_t *lock)
 static int scheduled_mutex_unlock(pthread_mutex_t *lock)
 {
     if (lock == &ios_tail_carve_lock) { CHECK(carve_lock_depth); --carve_lock_depth; }
+    if (lock == &ios_pool_lock) { CHECK(pool_lock_depth); --pool_lock_depth; }
     return pthread_mutex_unlock(lock);
 }
 #define pthread_mutex_lock scheduled_mutex_lock
@@ -435,7 +493,9 @@ static void reset(size_t total, size_t reserve)
     ios_jit_hole2_off = ios_jit_hole2_end = ios_pool_big_size = 0;
     ios_jit_low_size_global = ios_jit_low_reserved = ios_jit_low_full_logged = 0;
     ios_pool_free_count = ios_pool_ledger_count = ios_jit_anon_alias_count = ios_jit_mapping_count = 0;
-    ios_jit_copy_refused = aliases_retired = state_query_fail = 0; scanned_pc = 0;
+    ios_jit_copy_refused = aliases_retired = state_query_fail = thread_list_fail = region_query_fail = 0;
+    region_bad_alias = 0; region_bad_off = region_bad_size = 0; scanned_pc = 0;
+    test_lease_count = 0;
     memset(ios_tail_carves, 0, sizeof ios_tail_carves);
     /* The log's final rotation reused a free 16 MB buffer. Three live 128 MB
      * generations belong to Steam and its webhelper; none may be reclaimed. */
@@ -618,7 +678,7 @@ static void check_owned_executable_image(size_t off, size_t size)
     CHECK(off && size >= 16 && off + size < mapped_size);
     unsigned char *rw = (unsigned char *)rw_memory + off;
     const unsigned char *rx = (const unsigned char *)rx_memory + off;
-    rw[-1] = 0xa5; rw[size] = 0x5a;
+    const unsigned char before = rx[-1], after = rx[size];
 #if defined(__x86_64__)
     const unsigned char stub[] = {0xb8, 42, 0, 0, 0, 0xc3}; /* mov eax,42; ret */
 #elif defined(__aarch64__) || defined(__arm64__)
@@ -630,7 +690,7 @@ static void check_owned_executable_image(size_t off, size_t size)
     *(uint64_t *)(rw + size - 8) = 0xdecafbad12345678ULL;
     CHECK(!memcmp(rx, stub, sizeof stub));
     CHECK(*(const uint64_t *)(rx + size - 8) == 0xdecafbad12345678ULL);
-    CHECK(rx[-1] == 0xa5 && rx[size] == 0x5a);
+    CHECK(rx[-1] == before && rx[size] == after);
     __builtin___clear_cache((char *)rx, (char *)rx + sizeof stub);
     int (*run)(void) = (int (*)(void))(uintptr_t)rx;
     CHECK(run() == 42);
@@ -741,6 +801,127 @@ static void check_captured_tail_history(void)
            ios_jit_pool_size_global - jit_pool_offset - ios_jit_tail_reserved);
 }
 
+static unsigned find_carve(size_t off)
+{
+    for (unsigned i = 0; i < ios_tail_carve_n; ++i) if (ios_tail_carves[i].off == off) return i;
+    CHECK(0); return 0;
+}
+
+static void nov7_image_extents(void)
+{
+    /* The capture records these aggregates, not the two original addresses. */
+    ios_pool_freelist[0] = (struct ios_pool_free){MB, 0x14000, 0, 1, 0};
+    ios_pool_freelist[1] = (struct ios_pool_free){2 * MB, 0xc000, 0, 1, 0};
+    ios_pool_free_count = 2;
+}
+
+static void check_captured_nov7_tail_history(void)
+{
+    void *handles[64] = {0};
+    struct ios_tail_carve pinned[3], frontier;
+    unsigned pinned_n = 0, preserved_tiny = 0;
+    reset(1152 * MB, 176 * MB);
+    jit_pool_offset = ios_jit_tail_reserved = 0;
+    ios_pool_free_count = ios_pool_ledger_count = ios_tail_carve_n = 0;
+    memset(ios_tail_carves, 0, sizeof ios_tail_carves);
+    for (unsigned i = 0; i < ARRAY_SIZE(captured_nov7_tail_events); ++i)
+    {
+        const struct captured_tail_event *e = &captured_nov7_tail_events[i];
+        owner = e->owner; fake_now = 1000 + e->seconds;
+        set_process_lease((void *)owner, e->lease, e->op == 2);
+        if (e->op == 2) { ios_tail_carves_owner_died((void *)owner); continue; }
+        if (e->op == 1)
+        {
+            void *released = NULL; size_t size = 0;
+            CHECK(handles[e->handle]);
+            CHECK(release_code(handles[e->handle], MEM_RELEASE, &released, &size) == STATUS_SUCCESS);
+            CHECK(released == handles[e->handle] && size == e->observed);
+            continue;
+        }
+        CHECK(e->handle < ARRAY_SIZE(handles));
+        jit_pool_offset = e->head;
+        size_t got = e->ask;
+        if (e->rotation) got = rotate(&handles[e->handle]);
+        else CHECK(allocate_code(&got, &handles[e->handle]) == STATUS_SUCCESS);
+        if (got != e->observed || (uintptr_t)handles[e->handle] - (uintptr_t)rx_memory != e->observed_off)
+        {
+            fprintf(stderr, "November 7 baseline geometry differs at log line %u: got=0x%zx off=0x%zx, expected=0x%zx off=0x%zx\n",
+                    e->line, got, (uintptr_t)handles[e->handle] - (uintptr_t)rx_memory, e->observed, e->observed_off);
+            exit(2);
+        }
+        CHECK(*(const uint32_t *)handles[e->handle] == 0xd503201f);
+        if (e->line == 9271 || e->line == 16039 || e->line == 16191 || e->line == 16388 || e->line == 16466)
+        { CHECK(got == 0x4000); ++preserved_tiny; }
+        if (e->ask == 128 * MB)
+        {
+            CHECK(pinned_n < ARRAY_SIZE(pinned));
+            pinned[pinned_n] = ios_tail_carves[find_carve(e->observed_off)];
+            *(uint64_t *)((char *)rw_memory + e->observed_off) = 0x1234000000000000ULL + pinned_n;
+            *(uint64_t *)((char *)rw_memory + e->observed_off + got - 8) = 0x5678000000000000ULL + pinned_n;
+            ++pinned_n;
+        }
+        if (e->line == 45921)
+        {
+            CHECK(got == 32 * MB && ios_jit_tail_reserved == 0x2101c000);
+            *(uint64_t *)((char *)rw_memory + e->observed_off) = 0xfeed328000000001ULL;
+            *(uint64_t *)((char *)rw_memory + e->observed_off + got - 8) = 0xfeed328000000002ULL;
+        }
+    }
+    CHECK(pinned_n == 3 && preserved_tiny == 5 && ios_tail_carve_n == 18);
+    CHECK(ios_jit_tail_reserved == 0x2101c000);
+    frontier = ios_tail_carves[find_carve(0x26fe4000)];
+    CHECK(frontier.free && !frontier.retired && frontier.size == 32 * MB);
+#if REPLAY_MAIN_TRANSFER
+    CHECK(frontier.allocation_lease == 24 && !frontier.retired_lease);
+#endif
+    nov7_image_extents();
+    owner = 0x110fcc000;
+    jit_pool_offset = 0x24454000;
+    size_t server = (size_t)-1;
+    CHECK(!allocate_image(0x2580000, &server) && server == 0x24454000);
+    CHECK(jit_pool_offset == 0x269d4000);
+    CHECK(ios_pool_ledger_holds(server, 0x2580000, (void *)owner));
+    check_owned_executable_image(server, 0x2580000);
+    CHECK(ios_jit_pool_size_global - jit_pool_offset - ios_jit_tail_reserved == 0x610000);
+    CHECK(0x610000 + 32 * MB + 0x398000 == 0x29a8000);
+#if !REPLAY_MAIN_TRANSFER
+    expect_failed_image(0x29a8000);
+    puts("PASS: November 7 baseline reproduces client.dll refusal at exact head/tail; recovering only the fresh 32 MiB would remain 3.59375 MiB short");
+    return;
+#else
+    size_t client = (size_t)-1;
+    unsigned before_carves = ios_tail_carve_n;
+    CHECK(!allocate_image(0x29a8000, &client) && client == 0x40fe4000);
+    CHECK(ios_tail_carve_n == before_carves - 3);
+    CHECK(ios_pool_ledger_holds(client, 0x29a8000, (void *)owner));
+    CHECK(ios_pool_ledger_holds(server, 0x2580000, (void *)owner));
+    CHECK(jit_pool_offset == 0x269d4000 && ios_jit_tail_reserved == 0x2101c000);
+    check_owned_executable_image(client, 0x29a8000);
+    /* Synthetic subsequent image pressure, not a claim about post-failure DLLs. */
+    static const size_t later_sizes[] = {8 * MB, 8 * MB, 4 * MB, 4 * MB};
+    size_t later;
+    for (unsigned i = 0; i < ARRAY_SIZE(later_sizes); ++i)
+    {
+        CHECK(!allocate_image(later_sizes[i], &later));
+        CHECK(ios_pool_ledger_holds(later, later_sizes[i], (void *)owner));
+        check_owned_executable_image(later, later_sizes[i]);
+    }
+    CHECK(ios_tail_carve_n == before_carves - 4);
+    for (unsigned i = 0; i < pinned_n; ++i)
+    {
+        CHECK(!memcmp(&ios_tail_carves[find_carve(pinned[i].off)], &pinned[i], sizeof pinned[i]));
+        CHECK(*(const uint64_t *)((char *)rx_memory + pinned[i].off) == 0x1234000000000000ULL + i);
+        CHECK(*(const uint64_t *)((char *)rx_memory + pinned[i].off + pinned[i].size - 8) == 0x5678000000000000ULL + i);
+    }
+    CHECK(!memcmp(&ios_tail_carves[find_carve(frontier.off)], &frontier, sizeof frontier));
+    CHECK(*(const uint64_t *)((char *)rx_memory + frontier.off) == 0xfeed328000000001ULL);
+    CHECK(*(const uint64_t *)((char *)rx_memory + frontier.off + frontier.size - 8) == 0xfeed328000000002ULL);
+    CHECK(ios_jit_tail_reserved == 0x2101c000);
+    expect_failed_image(8 * MB);
+    puts("PASS: all 31 November 7 allocations retain captured grants/addresses and five tiny preserves; default retired-helper transfer loads server.dll, client.dll and 24 MiB synthetic later images with RX execution/W^X; three live 128 MiB generations and ordinary FREE 32 MiB remain untouched; final 8 MiB exhaustion fails safely");
+#endif
+}
+
 struct scheduled_request { unsigned role; size_t size, limit, off; void *ret; int status; };
 static void *scheduled_allocate(void *opaque)
 {
@@ -837,6 +1018,23 @@ static void check_capacity_failure(void)
     puts("PASS: true image/code capacity failure stays STATUS_NO_MEMORY and rolls back rather than returning unusable non-executable storage");
 }
 
+/* iOS aliases are 16KiB aligned. Reserve before remapping so Linux's 4KiB
+ * page placement cannot accidentally make this production prerequisite flaky. */
+static void *map_pool_alias(FILE *backing, int protection)
+{
+    size_t reserved = mapped_size + 0x4000;
+    void *raw = mmap(NULL, reserved, PROT_NONE, MAP_SHARED, fileno(backing), 0);
+    CHECK(raw != MAP_FAILED);
+    uintptr_t aligned = ((uintptr_t)raw + 0x3fff) & ~(uintptr_t)0x3fff;
+    size_t prefix = aligned - (uintptr_t)raw, suffix = reserved - prefix - mapped_size;
+    if (prefix) CHECK(!munmap(raw, prefix));
+    if (suffix) CHECK(!munmap((void *)(aligned + mapped_size), suffix));
+    void *result = mmap((void *)aligned, mapped_size, protection,
+                        MAP_SHARED | MAP_FIXED, fileno(backing), 0);
+    CHECK(result == (void *)aligned);
+    return result;
+}
+
 int main(void)
 {
     unsetenv("MADEIRA_POOL_LOW_IMAGES"); unsetenv("MADEIRA_POOL_RECYCLE_IMAGES");
@@ -844,15 +1042,16 @@ int main(void)
     uint64_t selected, reserve;
     check_budget_plan(&selected, &reserve);
     mapped_size = selected * MB;
-    FILE *backing = tmpfile(); CHECK(backing && !ftruncate(fileno(backing), (off_t)mapped_size));
-    rw_memory = mmap(NULL, mapped_size, PROT_READ | PROT_WRITE, MAP_SHARED, fileno(backing), 0);
-    rx_memory = mmap(NULL, mapped_size, PROT_READ | PROT_EXEC, MAP_SHARED, fileno(backing), 0);
+    FILE *backing = tmpfile(); CHECK(backing && !ftruncate(fileno(backing), (off_t)(mapped_size + 0x4000)));
+    rw_memory = map_pool_alias(backing, PROT_READ | PROT_WRITE);
+    rx_memory = map_pool_alias(backing, PROT_READ | PROT_EXEC);
     CHECK(rw_memory != MAP_FAILED && rx_memory != MAP_FAILED && rw_memory != rx_memory);
     check_original_and_growth_only();
     check_paired_budget(selected, reserve);
     check_capacity_failure();
     check_captured_server_failure();
     check_captured_tail_history();
+    check_captured_nov7_tail_history();
     check_head_tail_and_last_slot_schedules();
     CHECK(!munmap(rx_memory, mapped_size) && !munmap(rw_memory, mapped_size));
     CHECK(!fclose(backing));

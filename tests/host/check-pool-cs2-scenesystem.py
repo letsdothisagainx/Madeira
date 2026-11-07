@@ -126,7 +126,7 @@ pe_helpers = r'''
 #undef STATUS_NO_MEMORY
 #define STATUS_NO_MEMORY ((int)0xc0000017u)
 typedef unsigned natural_t;
-typedef struct { unsigned protection, max_protection; } vm_region_submap_short_info_data_64_t;
+typedef struct { int protection, max_protection; } vm_region_submap_short_info_data_64_t;
 typedef void *vm_region_recurse_info_t;
 #define VM_REGION_SUBMAP_SHORT_INFO_COUNT_64 1
 static int mach_vm_region_recurse(mach_port_t task, mach_vm_address_t *address, mach_vm_size_t *size,

@@ -36,6 +36,8 @@ helpers = ''.join(function(signature) for signature in (
     'static int ios_tail_carve_scan(',
     'static int ios_tail_carve_occupied(',
     'static int ios_pool_recycle_range_ready(',
+    'static int ios_pool_recycle_main_range_ready(',
+    'static int ios_pool_recycle_main_code_range(',
     'static int ios_pool_recycle_code_range(',
     'static size_t ios_pool_take_freed_for_tail(',
 ))
@@ -90,6 +92,8 @@ static size_t ios_jit_low_size_global, ios_jit_tail_reserved;
 static volatile size_t ios_jit_low_reserved;
 static struct { uintptr_t user_va, user_va_end, jit_rw_alias; } ios_jit_anon_aliases[16];
 static int ios_jit_anon_alias_count;
+static struct { void *pe_base, *jit_base; size_t size; } ios_jit_mappings[16];
+static int ios_jit_mapping_count;
 static _Thread_local uintptr_t owner = 1;
 static void *ios_jit_current_peb(void) { return (void *)owner; }
 static uintptr_t ios_wow_base(void) { return wow; }
@@ -126,7 +130,7 @@ typedef int kern_return_t;
 typedef void *thread_state_t;
 typedef void *vm_region_info_t;
 typedef struct { uintptr_t pc; } arm_thread_state64_t;
-typedef struct { unsigned protection, max_protection; } vm_region_basic_info_data_64_t;
+typedef struct { int protection, max_protection; } vm_region_basic_info_data_64_t;
 #define ARM_THREAD_STATE64 1
 #define ARM_THREAD_STATE64_COUNT 1
 #define KERN_SUCCESS 0
@@ -134,6 +138,7 @@ typedef struct { unsigned protection, max_protection; } vm_region_basic_info_dat
 #define VM_REGION_BASIC_INFO_COUNT_64 2
 #define VM_REGION_BASIC_INFO_64 1
 #define VM_PROT_READ 1
+#define VM_PROT_WRITE 2
 #define VM_PROT_EXECUTE 4
 #define arm_thread_state64_get_pc(st) ((st).pc)
 static int task_query_fail, state_query_fail;
@@ -187,9 +192,10 @@ static void reset(void)
     jit_pool_offset = ios_jit_pool_size_global;
     ios_jit_low_size_global = 348 * MB;
     ios_jit_low_reserved = 336 * MB + 0x18000;
-    ios_pool_free_count = ios_pool_ledger_count = ios_jit_anon_alias_count = 0;
+    ios_pool_free_count = ios_pool_ledger_count = ios_jit_anon_alias_count = ios_jit_mapping_count = 0;
     ios_pool_big_size = ios_jit_hole_off_eff = ios_jit_hole_end_eff = ios_jit_tail_reserved = 0;
     wow = poisoned = 0;
+    memset(ios_tail_carves, 0, sizeof ios_tail_carves);
     ios_tail_carve_n = 0;
     task_query_fail = state_query_fail = 0; scanned_pc = 0;
     region_query_fail = region_gap = region_empty = region_nonexec = 0;
@@ -207,6 +213,8 @@ static void no_allocation(size_t request)
 
 static void retired(size_t low_offset, size_t size, int age)
 {
+    /* An ordinary aged FEX FREE has no process-retirement receipt. These C
+     * cases must still need their opt-in when MAIN transfer is enabled. */
     unsigned i = ios_tail_carve_n++;
     CHECK(i < IOS_TAIL_CARVE_MAX);
     ios_tail_carves[i].off = ios_jit_low_rx_global + low_offset - (uintptr_t)ios_jit_rx_base_global;

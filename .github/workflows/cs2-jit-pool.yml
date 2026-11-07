@@ -51,6 +51,7 @@ jobs:
       - name: Replay real head/tail allocations and measured startup policy
         run: |
           python3 tests/host/check-pool-cs2-budget.py
+          python3 tests/host/check-pool-retired-main.py
           python3 tests/host/check-pool-cs2-scenesystem.py
           python3 tests/host/check-pool-rx-demotion.py
           python3 tests/host/check-jit-alias-atomics.py
