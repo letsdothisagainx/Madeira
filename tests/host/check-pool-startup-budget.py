@@ -77,6 +77,8 @@ static pthread_mutex_t ios_tail_carve_lock = PTHREAD_MUTEX_INITIALIZER;
 ''' + carve_table + r'''
 static uintptr_t ios_wow_base(void) { return wow; }
 static void *ios_jit_current_peb(void) { return (void *)(uintptr_t)1; }
+unsigned long long ios_thread_process_lease(void *peb, int create)
+{ (void)create; return (uintptr_t)peb; }
 static int ios_tail_carve_scan(const void *base, size_t size, int strict)
 { (void)base; (void)size; (void)strict; return 0; }
 ''' + helpers + r'''

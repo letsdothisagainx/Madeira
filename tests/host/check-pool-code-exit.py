@@ -64,6 +64,9 @@ assert source.count('.retired = 1;') == 1, 'only an exit retires a carve'
 assert source.count('ios_tail_carves[ios_tail_carve_n].retired = 0;') == 4, 'every new carve starts unretired'
 assert source.count('ios_tail_carves[ios_tail_carve_n].peb = carve_peb;') == 3, 'region C, ml1039 and tail carves'
 assert source.count('ios_tail_carves[ios_tail_carve_n].peb = NULL;') == 1, 'a skipped piece has no owner'
+assert source.count('ios_tail_carves[ios_tail_carve_n].allocation_lease = carve_lease;') == 3, 'each handout records its process identity'
+assert source.count('ios_tail_carves[ios_tail_carve_n].allocation_lease = 0;') == 1, 'a skipped piece has no process identity'
+assert source.count('ios_tail_carves[ios_tail_carve_n].retired_lease = 0;') == 4, 'new carves have no retirement receipt'
 assert 'ios_tail_carves[best].peb = carve_peb;' in ec and 'ios_tail_carves[best].retired = 0;' in ec
 assert ec.count('ios_tail_carve_ready( &ios_tail_carves[') == 2, 'the cap lift and the reuse share one rule'
 assert ('ios_tail_carve_scan( (char *)ios_jit_rx_base_global + ios_tail_carves[best].off,\n'
@@ -103,6 +106,10 @@ static pthread_mutex_t ios_tail_carve_lock = PTHREAD_MUTEX_INITIALIZER;
 static uintptr_t owner;
 static int scan_busy, scans, occupied;
 static void *ios_jit_current_peb(void) { return (void *)owner; }
+unsigned long long ios_thread_process_lease(void *peb, int create)
+{ (void)create; return (uintptr_t)peb; }
+unsigned long long ios_thread_process_quiescent_lease(void *peb)
+{ return (uintptr_t)peb; }
 static uintptr_t ios_wow_base(void) { return 0; }
 static int ios_tail_carve_scan(const void *base, size_t size, int strict)
 { (void)base; (void)size; CHECK(strict == 1); CHECK(++scans < 64); return scan_busy; }   /* < 64: no retry loop */
@@ -136,7 +143,7 @@ static int tail_carve(size_t *size_ptr, void **ret)
     ios_jit_tail_reserved = start + size;
     CHECK(ios_tail_carve_n + 1 + n <= IOS_TAIL_CARVE_MAX);
     ios_tail_carves[ios_tail_carve_n++] = (struct ios_tail_carve){ .off = total - start - size, .size = size,
-                                                                   .peb = (void *)owner };
+                                                                   .peb = (void *)owner, .allocation_lease = owner };
     for (k = 0; k < n; k++)
         if (ps[k] >= MB)
             ios_tail_carves[ios_tail_carve_n++] = (struct ios_tail_carve){ .off = po[k], .size = ps[k], .free = 1 };
@@ -305,16 +312,20 @@ static void unit(void)
     CHECK(!ios_tail_carve_ready(&c, 102) && ios_tail_carve_ready(&c, 103));
     CHECK(!ios_tail_carve_ready(&c, 99));                         /* a clock step back keeps it waiting */
 
-    ios_tail_carves[0] = (struct ios_tail_carve){ .off = 0x1000000, .size = 16 * MB, .peb = (void *)7 };
+    ios_tail_carves[0] = (struct ios_tail_carve){ .off = 0x1000000, .size = 16 * MB, .peb = (void *)7,
+                                               .allocation_lease = 70 };
     ios_tail_carves[1] = (struct ios_tail_carve){ .off = 0x2000000, .size = 32 * MB, .free = 1, .peb = (void *)7 };
     ios_tail_carves[2] = (struct ios_tail_carve){ .off = 0x4000000, .size = 64 * MB, .peb = (void *)8 };
     ios_tail_carves[3] = (struct ios_tail_carve){ .off = 0x8000000, .size = 0x4000 };
-    ios_tail_carves[4] = (struct ios_tail_carve){ .off = 0x8004000, .size = 0x4000, .peb = (void *)7 };
+    ios_tail_carves[4] = (struct ios_tail_carve){ .off = 0x8004000, .size = 0x4000, .peb = (void *)7,
+                                               .allocation_lease = 71 };
     ios_tail_carve_n = 5;
-    CHECK(ios_tail_carves_retire_owner(ios_tail_carves, 5, NULL, 50, &bytes) == 0 && !bytes);
-    CHECK(ios_tail_carves_retire_owner(ios_tail_carves, 5, (void *)7, 50, &bytes) == 2 && bytes == 16 * MB + 0x4000);
+    CHECK(ios_tail_carves_retire_owner(ios_tail_carves, 5, NULL, 50, &bytes, 70) == 0 && !bytes);
+    CHECK(ios_tail_carves_retire_owner(ios_tail_carves, 5, (void *)7, 50, &bytes, 70) == 2 && bytes == 16 * MB + 0x4000);
     CHECK(ios_tail_carves[0].free && ios_tail_carves[0].retired && ios_tail_carves[0].freed_at == 50 && !ios_tail_carves[0].peb);
+    CHECK(ios_tail_carves[0].retired_lease == 70 && !ios_tail_carves[4].retired_lease);
     CHECK(ios_tail_carves[1].free && !ios_tail_carves[1].retired && ios_tail_carves[1].peb == (void *)7);
+    CHECK(!ios_tail_carves[1].retired_lease); /* An ordinary FEX release gains no retirement receipt. */
     CHECK(!ios_tail_carves[2].free && !ios_tail_carves[3].free && ios_tail_carves[4].retired);
     puts("PASS: an exit retires only its own live buffers; a retired one waits out the 3 s grace, FEX's own releases do not");
 
@@ -329,15 +340,22 @@ static void unit(void)
     fake_now = 60;
     ios_tail_carves_owner_died((void *)8);
     CHECK(ios_tail_carves[2].free && ios_tail_carves[2].retired && ios_tail_carves[2].freed_at == 60);
+    CHECK(!ios_tail_carves[2].retired_lease); /* An allocation without an identity stays unproved. */
+    ios_tail_carves[3].peb = (void *)7;
+    ios_tail_carves[3].allocation_lease = 70;
+    CHECK(ios_tail_carves_retire_owner(ios_tail_carves, 5, (void *)7, 60, &bytes, 0) == 1 && bytes == 0x4000);
+    CHECK(ios_tail_carves[3].retired && !ios_tail_carves[3].retired_lease);
     unsetenv("MADEIRA_POOL_CODE_EXIT_RECLAIM");
     puts("PASS: MADEIRA_POOL_CODE_EXIT_RECLAIM=0 keeps them live; 1 and unset retire them");
+    puts("PASS: only a matching nonzero allocation/quiescence identity certifies retirement; ordinary releases stay unproved");
 
     /* A retired 64 MB buffer, a small budget (the tail and head leave 16 MB). */
     reset();
     ios_jit_low_reserved = ios_jit_low_size_global;               /* region C full */
     ios_jit_tail_reserved = 0x18f38000;
     jit_pool_offset = 0x1b240000;
-    ios_tail_carves[0] = (struct ios_tail_carve){ .off = 0x8000000, .size = 64 * MB, .free = 1, .retired = 1, .freed_at = 200 };
+    ios_tail_carves[0] = (struct ios_tail_carve){ .off = 0x8000000, .size = 64 * MB, .free = 1, .retired = 1, .freed_at = 200,
+                                               .allocation_lease = 8, .retired_lease = 8 };
     ios_tail_carve_n = 1;
     owner = 9;
     fake_now = 202;
@@ -355,6 +373,7 @@ static void unit(void)
     size = 32 * MB;
     CHECK(allocate(&size, &rx) == STATUS_SUCCESS && scans == 2 && size == 64 * MB && off_of(rx) == 0x8000000);
     CHECK(!ios_tail_carves[0].free && !ios_tail_carves[0].retired && ios_tail_carves[0].peb == (void *)9);
+    CHECK(ios_tail_carves[0].allocation_lease == 9 && !ios_tail_carves[0].retired_lease);
     CHECK(((volatile uint32_t *)rx)[0] == 0xd503201fu && ((volatile uint32_t *)rx)[16 * MB - 1] == 0xd503201fu);
     puts("PASS: a busy dead buffer restarts its grace and the budget applies; a clean one is NOP-filled and handed on");
 
