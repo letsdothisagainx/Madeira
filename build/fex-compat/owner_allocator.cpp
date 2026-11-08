@@ -31,7 +31,7 @@ struct Guard {
 rpmalloc_heap_t* Heap;
 bool Acquiring;
 unsigned Reports;
-MadeiraFEXOwnerAllocatorStats Stats {1, 0, 0, 0, 0, 0, 0, 0};
+MadeiraFEXOwnerAllocatorStats Stats {1, 0, 0, 0, 0};
 constexpr size_t VallocAlignment = 64 * 1024;
 
 void Append(char* buffer, size_t& used, const char* text) {
