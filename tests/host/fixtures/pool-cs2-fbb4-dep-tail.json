@@ -1,0 +1,1045 @@
+{
+  "capture": "November 8 fbb4 device capture supplied with the repeated095621 request; log header16:49:30.946",
+  "installed_commit": "fbb4a56f4e6959aef2f71651f281d844a451614f",
+  "log_sha256": "bb8e30fa82eb3b55cb961d1411ca5496b9ee3e68743743d6d7ce906c19135c7a",
+  "description": "Both client.dll and embree3.dll now load. The next first pool failure is an old kernelbase copy during a whole-session force-exec sweep after libmpg123, not embree. Code-tail240/512 policy works; no fresh32MiB generation is granted.",
+  "pool": "0x48000000",
+  "rx_base": "0x300000000",
+  "head_reserve": "0xf000000",
+  "large_code_tail_budget": "0x20000000",
+  "clock_note": "Integer lower bound from latest xp relative Wine start; not invented exact event times.",
+  "owner_processes": [
+    {
+      "line": 824,
+      "backend": "libarm64ecfex.dll",
+      "module": "0xfbe300000",
+      "owner": "0x102ef8000",
+      "lease": 2
+    },
+    {
+      "line": 2279,
+      "backend": "libwow64fex.dll",
+      "module": "0x3ffab0000",
+      "owner": "0x400310000",
+      "lease": 4
+    },
+    {
+      "line": 3686,
+      "backend": "libarm64ecfex.dll",
+      "module": "0x3ff120000",
+      "owner": "0x1030cc000",
+      "lease": 5
+    },
+    {
+      "line": 8511,
+      "backend": "libarm64ecfex.dll",
+      "module": "0x3f7a90000",
+      "owner": "0x1031d4000",
+      "lease": 6
+    },
+    {
+      "line": 8784,
+      "backend": "libwow64fex.dll",
+      "module": "0x3f7060000",
+      "owner": "0x500310000",
+      "lease": 7
+    },
+    {
+      "line": 14700,
+      "backend": "libarm64ecfex.dll",
+      "module": "0x3f15b0000",
+      "owner": "0x1031cc000",
+      "lease": 10
+    },
+    {
+      "line": 14799,
+      "backend": "libarm64ecfex.dll",
+      "module": "0x3f0f30000",
+      "owner": "0x1031d8000",
+      "lease": 11
+    },
+    {
+      "line": 15063,
+      "backend": "libwow64fex.dll",
+      "module": "0x3f0150000",
+      "owner": "0x600310000",
+      "lease": 12
+    },
+    {
+      "line": 15279,
+      "backend": "libwow64fex.dll",
+      "module": "0x3ef8d0000",
+      "owner": "0x700310000",
+      "lease": 13
+    },
+    {
+      "line": 28068,
+      "backend": "libwow64fex.dll",
+      "module": "0x3eaa20000",
+      "owner": "0x600310000",
+      "lease": 18
+    },
+    {
+      "line": 29384,
+      "backend": "libwow64fex.dll",
+      "module": "0x3e8ef0000",
+      "owner": "0x700310000",
+      "lease": 21
+    },
+    {
+      "line": 40663,
+      "backend": "libarm64ecfex.dll",
+      "module": "0x3e83b0000",
+      "owner": "0x108118000",
+      "lease": 23
+    }
+  ],
+  "events": [
+    {
+      "line": 1062,
+      "seconds": 0,
+      "op": "allocate",
+      "handle": 0,
+      "owner": "0x102ef8000",
+      "lease": 2,
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x347ffc000",
+      "head": "0x1f40000",
+      "rotation": false,
+      "observed_tail": "0x4000"
+    },
+    {
+      "line": 1155,
+      "seconds": 0,
+      "op": "allocate",
+      "handle": 1,
+      "owner": "0x102ef8000",
+      "lease": 2,
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x346ffc000",
+      "head": "0x1f44000",
+      "rotation": false,
+      "observed_tail": "0x1004000"
+    },
+    {
+      "line": 2379,
+      "seconds": 0,
+      "op": "allocate",
+      "handle": 2,
+      "owner": "0x400310000",
+      "lease": 4,
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x346ff8000",
+      "head": "0x363c000",
+      "rotation": false,
+      "observed_tail": "0x1008000"
+    },
+    {
+      "line": 2444,
+      "seconds": 0,
+      "op": "allocate",
+      "handle": 3,
+      "owner": "0x400310000",
+      "lease": 4,
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x345ff8000",
+      "head": "0x363c000",
+      "rotation": false,
+      "observed_tail": "0x2008000"
+    },
+    {
+      "line": 3428,
+      "seconds": 2,
+      "op": "release",
+      "handle": 0,
+      "owner": "0x102ef8000",
+      "lease": 2,
+      "observed_rx": "0x347ffc000",
+      "observed": "0x4000"
+    },
+    {
+      "line": 3469,
+      "seconds": 2,
+      "op": "retire",
+      "owner": "0x102ef8000",
+      "lease": 2
+    },
+    {
+      "line": 3901,
+      "seconds": 2,
+      "op": "allocate",
+      "handle": 4,
+      "owner": "0x1030cc000",
+      "lease": 5,
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x347ffc000",
+      "head": "0x47bc000",
+      "rotation": false
+    },
+    {
+      "line": 4081,
+      "seconds": 2,
+      "op": "allocate",
+      "handle": 5,
+      "owner": "0x1030cc000",
+      "lease": 5,
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x344ff8000",
+      "head": "0x47d4000",
+      "rotation": false,
+      "observed_tail": "0x3008000"
+    },
+    {
+      "line": 9017,
+      "seconds": 65,
+      "op": "allocate",
+      "handle": 6,
+      "owner": "0x1031d4000",
+      "lease": 6,
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x344ff4000",
+      "head": "0xc790000",
+      "rotation": false,
+      "observed_tail": "0x300c000"
+    },
+    {
+      "line": 9183,
+      "seconds": 65,
+      "op": "allocate",
+      "handle": 7,
+      "owner": "0x500310000",
+      "lease": 7,
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x344ff0000",
+      "head": "0xc790000",
+      "rotation": false,
+      "observed_tail": "0x3010000"
+    },
+    {
+      "line": 9491,
+      "seconds": 66,
+      "op": "allocate",
+      "handle": 8,
+      "owner": "0x1031d4000",
+      "lease": 6,
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x346ffc000",
+      "head": "0xc874000",
+      "rotation": false
+    },
+    {
+      "line": 9611,
+      "seconds": 66,
+      "op": "allocate",
+      "handle": 9,
+      "owner": "0x500310000",
+      "lease": 7,
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x343ff0000",
+      "head": "0xcf58000",
+      "rotation": false,
+      "observed_tail": "0x4010000"
+    },
+    {
+      "line": 10723,
+      "seconds": 67,
+      "op": "release",
+      "handle": 6,
+      "owner": "0x1031d4000",
+      "lease": 6,
+      "observed_rx": "0x344ff4000",
+      "observed": "0x4000"
+    },
+    {
+      "line": 10767,
+      "seconds": 67,
+      "op": "retire",
+      "owner": "0x1031d4000",
+      "lease": 6
+    },
+    {
+      "line": 15134,
+      "seconds": 74,
+      "op": "allocate",
+      "handle": 10,
+      "owner": "0x1031cc000",
+      "lease": 10,
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x344ff4000",
+      "head": "0xfdc0000",
+      "rotation": false
+    },
+    {
+      "line": 15473,
+      "seconds": 75,
+      "op": "allocate",
+      "handle": 11,
+      "owner": "0x1031d8000",
+      "lease": 11,
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x343fec000",
+      "head": "0x11cf4000",
+      "rotation": false,
+      "observed_tail": "0x4014000"
+    },
+    {
+      "line": 15499,
+      "seconds": 75,
+      "op": "allocate",
+      "handle": 12,
+      "owner": "0x700310000",
+      "lease": 13,
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x343fe8000",
+      "head": "0x11cf4000",
+      "rotation": false,
+      "observed_tail": "0x4018000"
+    },
+    {
+      "line": 15567,
+      "seconds": 75,
+      "op": "allocate",
+      "handle": 13,
+      "owner": "0x600310000",
+      "lease": 12,
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x343fe4000",
+      "head": "0x11d68000",
+      "rotation": false,
+      "observed_tail": "0x401c000"
+    },
+    {
+      "line": 16360,
+      "seconds": 79,
+      "op": "allocate",
+      "handle": 14,
+      "owner": "0x1031d8000",
+      "lease": 11,
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x346ffc000",
+      "head": "0x11e3c000",
+      "rotation": false
+    },
+    {
+      "line": 16384,
+      "seconds": 79,
+      "op": "allocate",
+      "handle": 15,
+      "owner": "0x600310000",
+      "lease": 12,
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x342fe4000",
+      "head": "0x11e3c000",
+      "rotation": false,
+      "observed_tail": "0x501c000"
+    },
+    {
+      "line": 16455,
+      "seconds": 79,
+      "op": "allocate",
+      "handle": 16,
+      "owner": "0x1031cc000",
+      "lease": 10,
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x341fe4000",
+      "head": "0x11e3c000",
+      "rotation": false,
+      "observed_tail": "0x601c000"
+    },
+    {
+      "line": 16555,
+      "seconds": 79,
+      "op": "allocate",
+      "handle": 17,
+      "owner": "0x700310000",
+      "lease": 13,
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x340fe4000",
+      "head": "0x12290000",
+      "rotation": false,
+      "observed_tail": "0x701c000"
+    },
+    {
+      "line": 16728,
+      "seconds": 79,
+      "op": "release",
+      "handle": 11,
+      "owner": "0x1031d8000",
+      "lease": 11,
+      "observed_rx": "0x343fec000",
+      "observed": "0x4000"
+    },
+    {
+      "line": 16759,
+      "seconds": 79,
+      "op": "retire",
+      "owner": "0x1031d8000",
+      "lease": 11
+    },
+    {
+      "line": 16832,
+      "seconds": 79,
+      "op": "allocate",
+      "handle": 18,
+      "owner": "0x1030cc000",
+      "lease": 5,
+      "requested": "0x8000000",
+      "observed": "0x8000000",
+      "observed_rx": "0x338fe4000",
+      "head": "0x1307c000",
+      "rotation": false,
+      "observed_tail": "0xf01c000"
+    },
+    {
+      "line": 16856,
+      "seconds": 79,
+      "op": "release",
+      "handle": 5,
+      "owner": "0x1030cc000",
+      "lease": 5,
+      "observed_rx": "0x344ff8000",
+      "observed": "0x1000000"
+    },
+    {
+      "line": 17138,
+      "seconds": 80,
+      "op": "retire",
+      "owner": "0x700310000",
+      "lease": 13
+    },
+    {
+      "line": 17302,
+      "seconds": 80,
+      "op": "retire",
+      "owner": "0x600310000",
+      "lease": 12
+    },
+    {
+      "line": 17439,
+      "seconds": 80,
+      "op": "release",
+      "handle": 10,
+      "owner": "0x1031cc000",
+      "lease": 10,
+      "observed_rx": "0x344ff4000",
+      "observed": "0x4000"
+    },
+    {
+      "line": 17458,
+      "seconds": 80,
+      "op": "retire",
+      "owner": "0x1031cc000",
+      "lease": 10
+    },
+    {
+      "line": 17953,
+      "seconds": 82,
+      "op": "allocate",
+      "handle": 19,
+      "owner": "0x500310000",
+      "lease": 7,
+      "requested": "0x8000000",
+      "observed": "0x8000000",
+      "observed_rx": "0x330fe4000",
+      "head": "0x14520000",
+      "rotation": false,
+      "observed_tail": "0x1701c000"
+    },
+    {
+      "line": 18844,
+      "seconds": 89,
+      "op": "release",
+      "handle": 9,
+      "owner": "0x500310000",
+      "lease": 7,
+      "observed_rx": "0x343ff0000",
+      "observed": "0x1000000"
+    },
+    {
+      "line": 23711,
+      "seconds": 148,
+      "op": "allocate",
+      "handle": 20,
+      "owner": "0x500310000",
+      "lease": 7,
+      "requested": "0x8000000",
+      "observed": "0x8000000",
+      "observed_rx": "0x328fe4000",
+      "head": "0x14520000",
+      "rotation": false,
+      "observed_tail": "0x1f01c000"
+    },
+    {
+      "line": 28242,
+      "seconds": 213,
+      "op": "allocate",
+      "handle": 21,
+      "owner": "0x600310000",
+      "lease": 18,
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x344ff4000",
+      "head": "0x148a4000",
+      "rotation": false
+    },
+    {
+      "line": 28646,
+      "seconds": 217,
+      "op": "allocate",
+      "handle": 22,
+      "owner": "0x600310000",
+      "lease": 18,
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x344ff8000",
+      "head": "0x148a4000",
+      "rotation": false
+    },
+    {
+      "line": 29497,
+      "seconds": 219,
+      "op": "allocate",
+      "handle": 23,
+      "owner": "0x700310000",
+      "lease": 21,
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x343fec000",
+      "head": "0x15d0c000",
+      "rotation": false
+    },
+    {
+      "line": 30338,
+      "seconds": 223,
+      "op": "allocate",
+      "handle": 24,
+      "owner": "0x700310000",
+      "lease": 21,
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x343ff0000",
+      "head": "0x15d0c000",
+      "rotation": false
+    },
+    {
+      "line": 40307,
+      "seconds": 385,
+      "op": "retire",
+      "owner": "0x700310000",
+      "lease": 21
+    },
+    {
+      "line": 40387,
+      "seconds": 385,
+      "op": "retire",
+      "owner": "0x600310000",
+      "lease": 18
+    },
+    {
+      "line": 40786,
+      "seconds": 388,
+      "op": "allocate",
+      "handle": 25,
+      "owner": "0x108118000",
+      "lease": 23,
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x344ff4000",
+      "head": "0x15d0c000",
+      "rotation": false
+    },
+    {
+      "line": 40897,
+      "seconds": 392,
+      "op": "allocate",
+      "handle": 26,
+      "owner": "0x108118000",
+      "lease": 23,
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x346ffc000",
+      "head": "0x15d0c000",
+      "rotation": false
+    },
+    {
+      "line": 44519,
+      "seconds": 412,
+      "op": "allocate",
+      "handle": 27,
+      "owner": "0x108118000",
+      "lease": 23,
+      "requested": "0x8000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x344ff8000",
+      "head": "0x1a7a0000",
+      "rotation": true
+    },
+    {
+      "line": 44526,
+      "seconds": 412,
+      "op": "release",
+      "handle": 26,
+      "owner": "0x108118000",
+      "lease": 23,
+      "observed_rx": "0x346ffc000",
+      "observed": "0x1000000"
+    },
+    {
+      "line": 45174,
+      "seconds": 418,
+      "op": "allocate",
+      "handle": 28,
+      "owner": "0x108118000",
+      "lease": 23,
+      "requested": "0x8000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x346ffc000",
+      "head": "0x244a8000",
+      "rotation": true
+    },
+    {
+      "line": 45182,
+      "seconds": 418,
+      "op": "release",
+      "handle": 27,
+      "owner": "0x108118000",
+      "lease": 23,
+      "observed_rx": "0x344ff8000",
+      "observed": "0x1000000"
+    },
+    {
+      "line": 45737,
+      "seconds": 425,
+      "op": "allocate",
+      "handle": 29,
+      "owner": "0x108118000",
+      "lease": 23,
+      "requested": "0x8000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x344ff8000",
+      "head": "0x26a28000",
+      "rotation": true
+    },
+    {
+      "line": 45744,
+      "seconds": 425,
+      "op": "release",
+      "handle": 28,
+      "owner": "0x108118000",
+      "lease": 23,
+      "observed_rx": "0x346ffc000",
+      "observed": "0x1000000"
+    }
+  ],
+  "server": {
+    "line": 45604,
+    "allocation_off": "0x244a8000",
+    "requested": "0x2580000",
+    "head_after": "0x26a28000"
+  },
+  "client": {
+    "line": 45792,
+    "allocation_off": "0x41fe4000",
+    "requested": "0x29a8000",
+    "transfer_line": 45789,
+    "transferred": "0x300c000",
+    "receipts": 6
+  },
+  "embree": {
+    "line": 45799,
+    "allocation_off": "0x26a28000",
+    "requested": "0x1524000",
+    "head_after": "0x27f4c000"
+  },
+  "post_chain": {
+    "tail": "0x1f01c000",
+    "head": "0x27f4c000",
+    "main_virgin": "0x1098000",
+    "note": "MSVCP140,VCRUNTIME140,VCRUNTIME140_1 and libmpg123 subsequently use freed extents; they do not advance the head. This remaining16.59375MiB is not a menu/playability guarantee."
+  },
+  "foreign_dep_sweep": {
+    "first_force_exec_line": 45976,
+    "caller_pid": "0x030c",
+    "caller_tid": "0x0310",
+    "caller_owner": "0x108118000",
+    "session_wow_peb": "0x700311000",
+    "copies": [
+      {
+        "line": 45982,
+        "image": "?",
+        "pe": "0x120610000",
+        "requested": "0x40000",
+        "observed_rx": "0x344a89000",
+        "earlier_copy_line": 753
+      },
+      {
+        "line": 45984,
+        "image": "?",
+        "pe": "0x12a170000",
+        "requested": "0x84000",
+        "observed_rx": "0x344ac8000",
+        "earlier_copy_line": 17008
+      },
+      {
+        "line": 45988,
+        "image": "?",
+        "pe": "0x12bc80000",
+        "requested": "0x10000",
+        "observed_rx": "0x30e0e0000",
+        "earlier_copy_line": 40121
+      },
+      {
+        "line": 45990,
+        "image": "steamsysinfo.exe",
+        "pe": "0x135600000",
+        "requested": "0x2e0000",
+        "observed_rx": "0x344b4c000",
+        "earlier_copy_line": 8444
+      },
+      {
+        "line": 45992,
+        "image": "?",
+        "pe": "0x1372e0000",
+        "requested": "0x84000",
+        "observed_rx": "0x344e2c000",
+        "earlier_copy_line": 8742
+      },
+      {
+        "line": 45997,
+        "image": "opengl-program.exe",
+        "pe": "0x15b510000",
+        "requested": "0xf8000",
+        "observed_rx": "0x344eb2000",
+        "earlier_copy_line": 14574
+      },
+      {
+        "line": 46000,
+        "image": "?",
+        "pe": "0x15ce60000",
+        "requested": "0x3c000",
+        "observed_rx": "0x344fa9000",
+        "earlier_copy_line": 14715
+      },
+      {
+        "line": 46001,
+        "image": "?",
+        "pe": "0x15fcd0000",
+        "requested": "0x84000",
+        "observed_rx": "0x327f4c000",
+        "earlier_copy_line": 15235
+      },
+      {
+        "line": 46004,
+        "image": "?",
+        "pe": "0x160920000",
+        "requested": "0x84000",
+        "observed_rx": "0x327fd0000",
+        "earlier_copy_line": 15318
+      },
+      {
+        "line": 46007,
+        "image": "?",
+        "pe": "0x171490000",
+        "requested": "0x84000",
+        "observed_rx": "0x328054000",
+        "earlier_copy_line": 28129
+      },
+      {
+        "line": 46010,
+        "image": "?",
+        "pe": "0x39fe20000",
+        "requested": "0x84000",
+        "observed_rx": "0x3280d8000",
+        "earlier_copy_line": 29037
+      },
+      {
+        "line": 46015,
+        "image": "ntdll.dll",
+        "pe": "0x3e8980000",
+        "requested": "0x138000",
+        "observed_rx": "0x32815c000",
+        "earlier_copy_line": 40135
+      },
+      {
+        "line": 46018,
+        "image": "win32u.dll",
+        "pe": "0x3e8ab0000",
+        "requested": "0x94000",
+        "observed_rx": "0x328294000",
+        "earlier_copy_line": 29432
+      },
+      {
+        "line": 46020,
+        "image": "wow64win.dll",
+        "pe": "0x3e8b40000",
+        "requested": "0x84000",
+        "observed_rx": "0x328328000",
+        "earlier_copy_line": 29429
+      },
+      {
+        "line": 46023,
+        "image": "kernelbase.dll",
+        "pe": "0x3e8bc0000",
+        "requested": "0x180000",
+        "observed_rx": "0x3283ac000",
+        "earlier_copy_line": 29399
+      },
+      {
+        "line": 46026,
+        "image": "KERNEL32.dll",
+        "pe": "0x3e8d30000",
+        "requested": "0xa8000",
+        "observed_rx": "0x32852c000",
+        "earlier_copy_line": 29395
+      },
+      {
+        "line": 46029,
+        "image": "ucrtbase.dll",
+        "pe": "0x3e8dd0000",
+        "requested": "0x124000",
+        "observed_rx": "0x3285d4000",
+        "earlier_copy_line": 29392
+      },
+      {
+        "line": 46034,
+        "image": "libwow64fex.dll",
+        "pe": "0x3e8ef0000",
+        "requested": "0x3cc000",
+        "observed_rx": "0x3286fb000",
+        "earlier_copy_line": 29387
+      },
+      {
+        "line": 46037,
+        "image": "wow64.dll",
+        "pe": "0x3e92c0000",
+        "requested": "0x74000",
+        "observed_rx": "0x328ac4000",
+        "earlier_copy_line": 29377
+      },
+      {
+        "line": 46042,
+        "image": "ntdll.dll",
+        "pe": "0x3e9330000",
+        "requested": "0x118000",
+        "observed_rx": "0x328b38000",
+        "earlier_copy_line": 29351
+      },
+      {
+        "line": 46045,
+        "image": "imm32.dll",
+        "pe": "0x3e9440000",
+        "requested": "0x74000",
+        "observed_rx": "0x328c50000",
+        "earlier_copy_line": 29125
+      },
+      {
+        "line": 46048,
+        "image": "win32u.dll",
+        "pe": "0x3e94b0000",
+        "requested": "0x94000",
+        "observed_rx": "0x328cc4000",
+        "earlier_copy_line": 29110
+      },
+      {
+        "line": 46050,
+        "image": "msvcrt.dll",
+        "pe": "0x3e9540000",
+        "requested": "0xf4000",
+        "observed_rx": "0x328d58000",
+        "earlier_copy_line": 29105
+      },
+      {
+        "line": 46055,
+        "image": "ucrtbase.dll",
+        "pe": "0x3e9630000",
+        "requested": "0x124000",
+        "observed_rx": "0x328e4c000",
+        "earlier_copy_line": 29101
+      },
+      {
+        "line": 46058,
+        "image": "sechost.dll",
+        "pe": "0x3e9750000",
+        "requested": "0x64000",
+        "observed_rx": "0x328f70000",
+        "earlier_copy_line": 29097
+      },
+      {
+        "line": 46063,
+        "image": "advapi32.dll",
+        "pe": "0x3e97b0000",
+        "requested": "0x94000",
+        "observed_rx": "0x340fe4000",
+        "earlier_copy_line": 29093
+      },
+      {
+        "line": 46067,
+        "image": "gdi32.dll",
+        "pe": "0x3e9840000",
+        "requested": "0xd8000",
+        "observed_rx": "0x341078000",
+        "earlier_copy_line": 29089
+      },
+      {
+        "line": 46072,
+        "image": "user32.dll",
+        "pe": "0x3e9910000",
+        "requested": "0x1f8000",
+        "observed_rx": "0x341150000",
+        "earlier_copy_line": 29085
+      },
+      {
+        "line": 46076,
+        "image": "kernelbase.dll",
+        "pe": "0x3e9b00000",
+        "requested": "0x180000",
+        "observed_rx": "0x341348000",
+        "earlier_copy_line": 29077
+      },
+      {
+        "line": 46080,
+        "image": "KERNEL32.dll",
+        "pe": "0x3e9c70000",
+        "requested": "0xa8000",
+        "observed_rx": "0x3414c8000",
+        "earlier_copy_line": 29072
+      },
+      {
+        "line": 46084,
+        "image": "imm32.dll",
+        "pe": "0x3e9d10000",
+        "requested": "0x74000",
+        "observed_rx": "0x341570000",
+        "earlier_copy_line": 28221
+      },
+      {
+        "line": 46088,
+        "image": "win32u.dll",
+        "pe": "0x3e9d80000",
+        "requested": "0x94000",
+        "observed_rx": "0x3415e4000",
+        "earlier_copy_line": 28212
+      },
+      {
+        "line": 46091,
+        "image": "msvcrt.dll",
+        "pe": "0x3e9e10000",
+        "requested": "0xf4000",
+        "observed_rx": "0x341678000",
+        "earlier_copy_line": 28208
+      },
+      {
+        "line": 46095,
+        "image": "ucrtbase.dll",
+        "pe": "0x3e9f00000",
+        "requested": "0x124000",
+        "observed_rx": "0x34176c000",
+        "earlier_copy_line": 28204
+      },
+      {
+        "line": 46099,
+        "image": "sechost.dll",
+        "pe": "0x3ea020000",
+        "requested": "0x64000",
+        "observed_rx": "0x341890000",
+        "earlier_copy_line": 28200
+      },
+      {
+        "line": 46103,
+        "image": "advapi32.dll",
+        "pe": "0x3ea080000",
+        "requested": "0x94000",
+        "observed_rx": "0x3418f4000",
+        "earlier_copy_line": 28195
+      },
+      {
+        "line": 46107,
+        "image": "gdi32.dll",
+        "pe": "0x3ea110000",
+        "requested": "0xd8000",
+        "observed_rx": "0x341988000",
+        "earlier_copy_line": 28191
+      },
+      {
+        "line": 46111,
+        "image": "user32.dll",
+        "pe": "0x3ea1e0000",
+        "requested": "0x1f8000",
+        "observed_rx": "0x341a60000",
+        "earlier_copy_line": 28187
+      },
+      {
+        "line": 46115,
+        "image": "kernelbase.dll",
+        "pe": "0x3ea3d0000",
+        "requested": "0x180000",
+        "observed_rx": "0x341c58000",
+        "earlier_copy_line": 28179
+      },
+      {
+        "line": 46119,
+        "image": "KERNEL32.dll",
+        "pe": "0x3ea540000",
+        "requested": "0xa8000",
+        "observed_rx": "0x341dd8000",
+        "earlier_copy_line": 28172
+      },
+      {
+        "line": 46123,
+        "image": "win32u.dll",
+        "pe": "0x3ea5e0000",
+        "requested": "0x94000",
+        "observed_rx": "0x341e80000",
+        "earlier_copy_line": 28168
+      },
+      {
+        "line": 46126,
+        "image": "wow64win.dll",
+        "pe": "0x3ea670000",
+        "requested": "0x84000",
+        "observed_rx": "0x341f14000",
+        "earlier_copy_line": 28164
+      }
+    ],
+    "copy_count": 42,
+    "bytes": "0x25a8000",
+    "extra_retired_transfer": {
+      "line": 46061,
+      "off": "0x40fe4000",
+      "bytes": "0x1000000",
+      "receipts": 1
+    },
+    "first_failure": {
+      "line": 46131,
+      "image": "kernelbase.dll",
+      "pe": "0x3ea6f0000",
+      "earlier_copy_line": 28086,
+      "requested": "0x180000",
+      "head": "0x28fd4000",
+      "tail": "0x1f01c000",
+      "main_virgin": "0x10000",
+      "free_entries": 7,
+      "free_bytes": "0x88000",
+      "largest_free": "0x4c000"
+    }
+  },
+  "limits": "Original image-free offsets and arbitrary intermediate live references are not fully logged. Aggregate separated image-free extents in the host harness are explicitly synthetic; actual tail grants, releases, leases and fresh head snapshots are recorded. No ordinary active-owner generation FREE becomes image certification."
+}

@@ -9,6 +9,8 @@ on:
       - app/Madeira/StikJITHelper.swift
       - app/Madeira/ContentView.swift
       - build/ntdll-unix/virtual_ios.c
+      - build/ntdll-unix/process_ios.c
+      - tests/host/check-dep-process-isolation.py
       - build/ntdll-unix/signal_arm64_ios.c
       - tests/host/check-jit-alias-*.py
       - tests/host/check-pool-*.py
@@ -36,6 +38,8 @@ on:
       - app/Madeira/StikJITHelper.swift
       - app/Madeira/ContentView.swift
       - build/ntdll-unix/virtual_ios.c
+      - build/ntdll-unix/process_ios.c
+      - tests/host/check-dep-process-isolation.py
       - build/ntdll-unix/signal_arm64_ios.c
       - tests/host/check-jit-alias-*.py
       - tests/host/check-pool-*.py
@@ -85,6 +89,7 @@ jobs:
           python3 tests/host/check-rpmalloc-thread-reuse.py
       - name: Replay real head/tail allocations and measured startup policy
         run: |
+          python3 tests/host/check-dep-process-isolation.py
           python3 tests/host/check-pool-cs2-budget.py
           python3 tests/host/check-pool-code-growth-budget.py
           python3 tests/host/check-pool-retired-main.py

@@ -28914,6 +28914,12 @@ void virtual_set_force_exec( BOOL enable )
      * (ios_wow_mutex is taken before virtual_mutex, never inside it.) */
     int changed = ios_wow_force_exec_set_current( enable, &wbase );
 
+    /* No owned window is not permission to modify every pseudo-process.
+     * Native64 DEP changes are rejected at the syscall boundary; keep this
+     * lower-level entry safe too, including bootstrap/retirement callers.
+     * The session-wide path is only the explicit legacy opt-out. */
+    if (changed < 0 && ios_dep_per_process()) return;
+
     server_enter_uninterrupted_section( &virtual_mutex, &sigset );
     if (changed >= 0)
     {

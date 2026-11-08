@@ -91,6 +91,18 @@ WINE_DEFAULT_DEBUG_CHANNEL(process);
 
 static ULONG execute_flags = MEM_EXECUTE_OPTION_DISABLE;
 
+/* DEP belongs to the calling Windows process.  is_wow64() can fall back to
+ * session-global wow_peb here: an unrelated I386 browser makes it true on an
+ * AMD64 game thread too.  That must not let a non-NX DLL disable DEP for the
+ * whole session.  A real WoW caller has both a companion TEB and its own live
+ * guest window, as used by ProcessWow64Information below. */
+static BOOL ios_process_dep_is_wow64(void)
+{
+    TEB *teb = NtCurrentTeb();
+
+    return teb && get_wow_teb( teb ) && ios_wow_base_for_peb( teb->Peb );
+}
+
 static UINT process_error_mode;
 ULONG process_cookie = 0xdeadbeef;
 
@@ -4194,7 +4206,7 @@ NTSTATUS WINAPI NtQueryInformationProcess( HANDLE handle, PROCESSINFOCLASS class
         len = sizeof(ULONG);
         if (size != len)
             ret = STATUS_INFO_LENGTH_MISMATCH;
-        else if (is_win64 && !is_wow64())
+        else if (is_win64 && !ios_process_dep_is_wow64())
             *(ULONG *)info = MEM_EXECUTE_OPTION_DISABLE |
                              MEM_EXECUTE_OPTION_DISABLE_THUNK_EMULATION |
                              MEM_EXECUTE_OPTION_PERMANENT;
@@ -4502,7 +4514,8 @@ NTSTATUS WINAPI NtSetInformationProcess( HANDLE handle, PROCESSINFOCLASS class, 
         break;
 
     case ProcessExecuteFlags:
-        if ((is_win64 && !is_wow64()) || size != sizeof(ULONG)) return STATUS_INVALID_PARAMETER;
+        if ((is_win64 && !ios_process_dep_is_wow64()) || size != sizeof(ULONG))
+            return STATUS_INVALID_PARAMETER;
         {
             /* ml1354: DEP is per process. The flags were one session-wide value, so a
              * 32-bit browser making DEP permanent for itself also locked every later
