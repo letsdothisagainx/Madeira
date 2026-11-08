@@ -83,6 +83,10 @@ bool jit_cs2_pool_plan(uint64_t requested_pool_mb, uint64_t available_bytes,
                        uint64_t map_min, uint64_t map_max,
                        uint64_t *pool_mb, uint64_t *head_reserve_mb);
 
+// Fresh large-code growth budget for the verified CS2 startup pool.
+// Does not change backing size or restrict reuse of existing code buffers.
+uint64_t jit_cs2_code_tail_limit_mb(void);
+
 // Validate the actual single-region mapping before accepting its aliases.
 // Includes address bounds, arithmetic, alignment and executable-window guards.
 bool jit_pool_alias_layout_valid(uint64_t rx, uint64_t rw, uint64_t size,

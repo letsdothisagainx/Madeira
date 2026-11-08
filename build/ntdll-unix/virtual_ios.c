@@ -261,6 +261,9 @@ static int ios_pool_big_taken;
 static time_t ios_pool_big_freed_at;
 #define IOS_POOL_BIG_MIN (64u * 1024 * 1024)
 static size_t ios_pool_head_reserve = 48u * 1024 * 1024;
+/* Startup-pool policy: 0 preserves normal growth. Existing code carves and
+ * region C are not charged again; required <=16MB units retain their fallback. */
+static size_t ios_pool_code_tail_limit;
 
 /* A slot may sit on either side of the native hole. The default is still above
  * it; MADEIRA_POOL_BIG_SLOT_BELOW=1 opts into the lower side, leaving the upper
@@ -300,6 +303,17 @@ static size_t ios_pool_parse_head_reserve( const char *value )
     if (!value || *value < '0' || *value > '9') return 48u * 1024 * 1024;
     mb = strtoul( value, &end, 10 );
     if (*end || mb < 48 || mb > 256) return 48u * 1024 * 1024;
+    return (size_t)mb << 20;
+}
+
+static size_t ios_pool_parse_code_tail_limit( const char *value, size_t total )
+{
+    char *end;
+    unsigned long mb;
+
+    if (!value || *value < '0' || *value > '9') return 0;
+    mb = strtoul( value, &end, 10 );
+    if (*end || mb < 16 || mb > (total >> 20)) return 0;
     return (size_t)mb << 20;
 }
 
@@ -3781,6 +3795,52 @@ static int ios_pool_preserve_code_carve( size_t available, size_t want, int fres
     return fresh_fits && want <= 0x10000 && available >= 0x100000 && available / 4 >= want;
 }
 
+/* A current-gap headroom target alone can admit the same oversized generation
+ * earlier in DLL loading. Bound additional large MAIN-tail growth using its
+ * retained reservations, independently of the head cursor. Preserve the
+ * existing 16MB minimum: this policy must not invent successful allocations or
+ * prevent FEX from trying its normal smaller-buffer/reuse path. */
+static size_t ios_pool_code_growth_cap( size_t tail, size_t limit )
+{
+    size_t cap = 0x1000000, room;
+
+    if (!limit) return IOS_POOL_LOW_CARVE_MAX;
+    room = tail < limit ? limit - tail : 0;
+    while (cap < IOS_POOL_LOW_CARVE_MAX && cap <= room / 2) cap *= 2;
+    return cap;
+}
+
+static int ios_pool_code_growth_fits( size_t tail, size_t want, size_t limit )
+{
+    if (!want) return 0;
+    if (!limit || want <= 0x1000000) return 1;
+    return tail <= limit && want <= limit - tail;
+}
+
+/* Enforce the growth budget against the exact successful cursor, not an
+ * earlier snapshot. Refused/racing requests consume no address space. Hole
+ * skips count as retained tail capacity just as they do in the real cursor. */
+static int ios_pool_reserve_code_tail( volatile size_t *reserved, size_t total, size_t want,
+                                      size_t limit, size_t h1_off, size_t h1_end,
+                                      size_t h2_off, size_t h2_end, size_t *offset,
+                                      size_t *added, size_t *previous )
+{
+    size_t cur, start;
+
+    if (!want) return 0;
+    do
+    {
+        cur = __atomic_load_n( reserved, __ATOMIC_ACQUIRE );
+        start = ios_pool_holes_tail_start( total, cur, want, h1_off, h1_end, h2_off, h2_end );
+        if (start > SIZE_MAX - want || start < cur ||
+            !ios_pool_code_growth_fits( start, want, limit )) return 0;
+    } while (!__sync_bool_compare_and_swap( reserved, cur, start + want ));
+    *offset = start;
+    *added = start + want - cur;
+    *previous = cur;
+    return 1;
+}
+
 /* Does the normal main-tail placement fit this snapshot? Use the exact hole
  * placement and collision bounds of the real reservation below, with staged
  * subtraction so a malformed/transient cursor cannot manufacture room. */
@@ -3791,6 +3851,7 @@ static int ios_pool_fresh_tail_fits( size_t total, size_t head, size_t tail, siz
 
     if (!want || head > total || tail > total || want > total - tail) return 0;
     start = ios_pool_holes_tail_start( total, tail, want, h1_off, h1_end, h2_off, h2_end );
+    if (!ios_pool_code_growth_fits( start, want, ios_pool_code_tail_limit )) return 0;
     if (start > total || want > total - start || start + want > (total / 4) * 3) return 0;
     return total - start - want >= head;
 }
@@ -18656,8 +18717,14 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
                     size_t launch_reserve = ios_pool_parse_head_reserve( getenv( "WINE_IOS_JIT_HEAD_RESERVE_MB" ) );
                     if (launch_reserve > ios_pool_head_reserve) ios_pool_head_reserve = launch_reserve;
                 }
+                ios_pool_code_tail_limit = ios_pool_parse_code_tail_limit(
+                    getenv( "WINE_IOS_JIT_CODE_TAIL_LIMIT_MB" ), jit_pool_size );
                 dprintf( 2, "[pool-head] code-buffer budget targets %lu MB of image headroom (region C and recycled buffers unchanged)\n",
                          (unsigned long)(ios_pool_head_reserve >> 20) );
+                if (ios_pool_code_tail_limit)
+                    dprintf( 2, "[pool-head] fresh MAIN code growth budget=%lu MB; existing buffers, "
+                             "region C and <=16MB fallback unchanged\n",
+                             (unsigned long)(ios_pool_code_tail_limit >> 20) );
                 /* madeira-bcd pool-low: region C (see ios_jit_low_rx_global). Taken only
                  * when its RX side is mapped executable, its RW side read-write, and a
                  * word written through the RW side reads back through the RX side --
@@ -32618,6 +32685,8 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
                                             ios_pool_head_reserve +
                                             ios_pool_hole_between( ios_jit_pool_size_global, head_now, tail_now,
                                                                    ios_jit_hole2_off, ios_jit_hole2_end ) );
+            size_t growth_cap = ios_pool_code_growth_cap( tail_now, ios_pool_code_tail_limit );
+            if (growth_cap < cap) cap = growth_cap;
             /* A retired generation of this size already sitting on the carve
              * free-list costs the pool nothing new: never refuse that. */
             budget_cap = cap;
@@ -32833,35 +32902,39 @@ retry_code_carve_reuse:
             }
             pthread_mutex_lock( &ios_pool_lock );
         }
-        if (ios_jit_hole_end > ios_jit_hole_off)
         {
-            /* madeira-bcd split pool: a carve that would overlap a hole goes
-             * directly below it; the span it skips above the hole becomes a free
-             * carve once this one is granted (pool-mid: up to two such spans,
-             * the hole 2 one and the one between the holes). */
-            size_t cur, start;
-            do
+            size_t cur;
+            if (!ios_pool_reserve_code_tail( &ios_jit_tail_reserved, ios_jit_pool_size_global, alloc_size,
+                    ios_pool_code_tail_limit, ios_jit_hole_off_eff, ios_jit_hole_end_eff,
+                    ios_jit_hole2_off, ios_jit_hole2_end, &reserve_offset, &tail_added, &cur ))
             {
-                cur = ios_jit_tail_reserved;
-            start = ios_pool_holes_tail_start( ios_jit_pool_size_global, cur, alloc_size,
-                                                   ios_jit_hole_off_eff, ios_jit_hole_end_eff,
-                                                   ios_jit_hole2_off, ios_jit_hole2_end );
-            } while (!__sync_bool_compare_and_swap( &ios_jit_tail_reserved, cur, start + alloc_size ));
-            reserve_offset = start;
-            tail_added = start + alloc_size - cur;
-            if (start != cur && start <= ios_jit_pool_size_global && cur <= start)
-            {
-                int k;
-                skip_n = ios_pool_skip_pieces( ios_jit_pool_size_global - start, ios_jit_pool_size_global - cur,
-                                               ios_jit_hole_off_eff, ios_jit_hole_end_eff,
-                                               ios_jit_hole2_off, ios_jit_hole2_end, skip_off, skip_size );
-                for (k = 0; k < skip_n; k++) tail_skipped += skip_size[k];
+                static unsigned growth_n;
+                if (preserved_carve_locked)
+                {
+                    pthread_mutex_unlock( &ios_pool_lock );
+                    pthread_mutex_unlock( &ios_tail_carve_lock );
+                }
+                if (__sync_add_and_fetch( &growth_n, 1 ) <= 16)
+                    dprintf(2, "[pool-code-growth] want=0x%lx tail=0x%lx limit=0x%lx "
+                               "result=refused-before-reservation action=normal-FEX-fallback\n",
+                            (unsigned long)alloc_size, (unsigned long)ios_jit_tail_reserved,
+                            (unsigned long)ios_pool_code_tail_limit);
+                return STATUS_NO_MEMORY;
             }
-        }
-        else
-        {
-            reserve_offset = __sync_fetch_and_add(&ios_jit_tail_reserved, alloc_size);
-            tail_added = alloc_size;
+            if (ios_jit_hole_end > ios_jit_hole_off)
+            {
+                /* A carve overlapping a hole goes directly below it. Spans
+                 * skipped above native holes remain reusable code carves. */
+                size_t start = reserve_offset;
+                if (start != cur && start <= ios_jit_pool_size_global && cur <= start)
+                {
+                    int k;
+                    skip_n = ios_pool_skip_pieces( ios_jit_pool_size_global - start, ios_jit_pool_size_global - cur,
+                                                   ios_jit_hole_off_eff, ios_jit_hole_end_eff,
+                                                   ios_jit_hole2_off, ios_jit_hole2_end, skip_off, skip_size );
+                    for (k = 0; k < skip_n; k++) tail_skipped += skip_size[k];
+                }
+            }
         }
         size_t pool_tail_off = ios_jit_pool_size_global - reserve_offset - alloc_size;
         /* ml1052: was "tail may never exceed half the pool", a rule from a

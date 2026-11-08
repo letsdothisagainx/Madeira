@@ -2820,6 +2820,7 @@ struct ContentView: View {
             // Private startup policy belongs to this launch only. The generated
             // Steam command keeps the original game's profile in `profile`.
             unsetenv("WINE_IOS_JIT_HEAD_RESERVE_MB")
+            unsetenv("WINE_IOS_JIT_CODE_TAIL_LIMIT_MB")
             // A library entry's launch profile (executable, arguments, x87
             // precision, frame limit).
             if let profile {
@@ -2999,7 +3000,10 @@ struct ContentView: View {
                     poolSizeMB = Int(selectedMB)
                     minimumPoolSize = poolSizeMB * 1024 * 1024
                     setenv("WINE_IOS_JIT_HEAD_RESERVE_MB", String(imageReserveMB), 1)
+                    let codeTailLimitMB = jit_cs2_code_tail_limit_mb()
+                    setenv("WINE_IOS_JIT_CODE_TAIL_LIMIT_MB", String(codeTailLimitMB), 1)
                     logStore.log("[cs2-pool] automatic pool=\(poolSizeMB)MB image-reserve=\(imageReserveMB)MB; "
+                        + "fresh large-code tail budget=\(codeTailLimitMB)MB; "
                         + "the full pool is charged once for both aliases, with 2048MB of additional session reserve")
                 } else {
                     cs2PoolPreflightFailure = StikJITHelper.poolTaken
@@ -3416,6 +3420,7 @@ struct ContentView: View {
                 // The reason allocatePool recorded (no debugger, placement, alias);
                 // the lines above this one in the log carry the detail.
                 unsetenv("WINE_IOS_JIT_HEAD_RESERVE_MB")
+                unsetenv("WINE_IOS_JIT_CODE_TAIL_LIMIT_MB")
                 let reason = cs2PoolPreflightFailure ?? StikJITHelper.poolFailure
                 logStore.log("  " + (reason ?? "No reason was recorded; see the pool lines above."), level: .info)
                 logStore.uiPaused = false

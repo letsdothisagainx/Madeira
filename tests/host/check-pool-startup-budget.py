@@ -45,6 +45,8 @@ helpers = ''.join(function(native, signature) for signature in (
     'static int ios_tail_carve_in_low(',
     'static int ios_pool_code_carve_better(',
     'static int ios_pool_preserve_code_carve(',
+    'static size_t ios_pool_code_growth_cap(',
+    'static int ios_pool_code_growth_fits(',
     'static int ios_pool_fresh_tail_fits(',
     'static int ios_tail_carve_ready(',
 ))
@@ -69,7 +71,7 @@ static void *ios_jit_rx_base_global, *ios_jit_rw_base_global;
 static uintptr_t ios_jit_low_rx_global, ios_jit_low_rw_global;
 static size_t ios_jit_low_size_global, ios_jit_pool_size_global;
 static volatile size_t ios_jit_low_reserved;
-static size_t jit_pool_offset, ios_jit_tail_reserved, ios_pool_head_reserve;
+static size_t jit_pool_offset, ios_jit_tail_reserved, ios_pool_head_reserve, ios_pool_code_tail_limit;
 static size_t ios_jit_hole_off_eff, ios_jit_hole_end_eff;
 static size_t ios_jit_hole2_off, ios_jit_hole2_end;
 static int ios_jit_low_full_logged, wow, lose_race;
@@ -109,6 +111,7 @@ static void reset(void *memory)
     ios_jit_tail_reserved = ios_jit_hole_off_eff = ios_jit_hole_end_eff = 0;
     ios_jit_hole2_off = ios_jit_hole2_end = 0;
     ios_pool_head_reserve = 128 * MB;
+    ios_pool_code_tail_limit = 0;
     ios_jit_low_full_logged = wow = lose_race = 0;
     ios_tail_carve_n = 1;
     ios_tail_carves[0].off = (size_t)(ios_jit_low_rx_global + 2 * MB - (uintptr_t)ios_jit_rx_base_global);

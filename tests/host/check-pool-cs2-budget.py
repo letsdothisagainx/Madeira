@@ -50,6 +50,8 @@ loader_failure = native[loader_start:native.index('\n#endif', loader_start)]
 reserve_start = native.index('                ios_pool_head_reserve = ios_pool_parse_head_reserve( getenv( "MADEIRA_POOL_HEAD_RESERVE_MB" ) );')
 reserve_init = native[reserve_start:native.index('                dprintf(', reserve_start)]
 budget_helpers = function(allocator, 'bool jit_cs2_pool_plan(') + function(allocator, 'bool jit_pool_alias_layout_valid(')
+if 'uint64_t jit_cs2_code_tail_limit_mb(' in allocator:
+    budget_helpers += function(allocator, 'uint64_t jit_cs2_code_tail_limit_mb(')
 assert 'return STATUS_NO_MEMORY;' in ec and 'ios_pool_tail_unreserve(' in ec
 assert image_chain.count('ios_pool_low_image_range(') == 1
 assert image_chain.count('ios_pool_recycle_code_range(') == 1
@@ -61,10 +63,14 @@ helper_signatures = (
     'static size_t ios_pool_hole_tail_start(',
     'static size_t ios_pool_hole_between(',
     'static size_t ios_pool_code_cap(',
+    'static size_t ios_pool_code_growth_cap(',
+    'static int ios_pool_code_growth_fits(',
+    'static size_t ios_pool_parse_code_tail_limit(',
     'static size_t ios_pool_parse_head_reserve(',
     'static size_t ios_pool_holes_head_place(',
     'static size_t ios_pool_holes_tail_start(',
     'static size_t ios_pool_holes_between(',
+    'static int ios_pool_reserve_code_tail(',
     'static int ios_pool_skip_pieces(',
     'static void ios_pool_tail_unreserve(',
     'int ios_jit_low_contains(',
@@ -107,6 +113,7 @@ helpers = ''.join(function(native, signature) for signature in helper_signatures
 tail_trace = json.loads((root / 'tests/host/fixtures/pool-cs2-200111-tail.json').read_text())
 nov7_trace = json.loads((root / 'tests/host/fixtures/pool-cs2-083837-tail.json').read_text())
 embree_trace = json.loads((root / 'tests/host/fixtures/pool-cs2-200636-tail.json').read_text())
+november8_trace = json.loads((root / 'tests/host/fixtures/pool-cs2-095621-tail.json').read_text())
 
 
 def captured_rows(trace):
@@ -134,7 +141,10 @@ static const struct captured_tail_event captured_tail_events[] = {
 tail_replay += 'static const struct captured_tail_event captured_nov7_tail_events[] = {\n' + captured_rows(nov7_trace) + '\n};\n'
 tail_replay += '#define REPLAY_MAIN_TRANSFER %d\n' % ('static int ios_pool_recycle_main_code_range(' in native)
 tail_replay += '#define REPLAY_CODE_TIE %d\n' % ('static int ios_pool_code_carve_better(' in native)
+tail_replay += '#define REPLAY_LEGACY_ONLY %d\n' % (os.environ.get('MADEIRA_POOL_LEGACY_REPLAY_ONLY') == '1')
 tail_replay += 'static const struct captured_tail_event captured_embree_tail_events[] = {\n' + captured_rows(embree_trace) + '\n};\n'
+
+tail_replay += 'static const struct captured_tail_event captured_november8_tail_events[] = {\n' + captured_rows(november8_trace) + '\n};\n'
 
 # Swift's launch plumbing is platform-owned; the decision and arithmetic run
 # below as production C. Keep the selected game and the pre-Wine failure path
@@ -143,11 +153,15 @@ scope_start = content.index('if profile?.steamAppID == 730 {')
 scope = content[scope_start:content.index('// ml694:', scope_start)]
 assert '!StikJITHelper.poolTaken && measured && jit_cs2_pool_plan(' in scope
 assert 'setenv("WINE_IOS_JIT_HEAD_RESERVE_MB", String(imageReserveMB), 1)' in scope
+assert 'let codeTailLimitMB = jit_cs2_code_tail_limit_mb()' in scope
+assert 'setenv("WINE_IOS_JIT_CODE_TAIL_LIMIT_MB", String(codeTailLimitMB), 1)' in scope
 assert 'minimumPoolSize = poolSizeMB * 1024 * 1024' in scope
 assert content.index('unsetenv("WINE_IOS_JIT_HEAD_RESERVE_MB")') < scope_start
+assert content.index('unsetenv("WINE_IOS_JIT_CODE_TAIL_LIMIT_MB")') < scope_start
 assert 'StikJITHelper.allocatePool(poolSize: poolSizeMB * 1024 * 1024, minimumPoolSize: minimumPoolSize)' in content
 abort = content[content.index('logStore.log("JIT pool allocation FAILED'):content.index('// Step 1b (ml524')]
 assert 'unsetenv("WINE_IOS_JIT_HEAD_RESERVE_MB")' in abort and '\n                return\n' in abort
+assert 'unsetenv("WINE_IOS_JIT_CODE_TAIL_LIMIT_MB")' in abort
 floor = swift[swift.index('if poolSize < minimumPoolSize {'):]
 assert floor.index('return nil') < floor.index('jit26_prepare_region(')
 remap_failure = swift[swift.index('guard kr1 == KERN_SUCCESS else {'):swift.index('// Validate the real aliases')]
@@ -200,7 +214,7 @@ static struct ios_pool_alloc ios_pool_ledger[IOS_POOL_LEDGER_MAX];
 static int ios_pool_free_count, ios_pool_ledger_count, ios_pool_last_alloc_reused;
 static __thread int ios_pool_last_same_image;
 static void *ios_jit_rx_base_global, *ios_jit_rw_base_global;
-static size_t ios_jit_pool_size_global, jit_pool_offset, ios_pool_head_reserve;
+static size_t ios_jit_pool_size_global, jit_pool_offset, ios_pool_head_reserve, ios_pool_code_tail_limit;
 static volatile size_t ios_jit_tail_reserved, ios_jit_low_reserved;
 static size_t ios_jit_hole_off, ios_jit_hole_end, ios_jit_hole_off_eff, ios_jit_hole_end_eff;
 static size_t ios_jit_hole2_off, ios_jit_hole2_end;
@@ -380,6 +394,7 @@ static int scheduled_mutex_unlock(pthread_mutex_t *lock)
 
 static void initialize_head_reserve(void)
 {
+    size_t jit_pool_size = ios_jit_pool_size_global; (void)jit_pool_size;
 ''' + reserve_init + r'''
 }
 
@@ -428,7 +443,8 @@ static void check_budget_plan(uint64_t *selected, uint64_t *reserve)
 {
     const uint64_t physical = 8192 * MB, lo = 0x100000000, hi = 0xfc0000000;
     CHECK(jit_cs2_pool_plan(1024, 5120 * MB, 1024 * MB, physical, lo, hi, selected, reserve));
-    CHECK(*selected == 1152 && *reserve == 208);
+    CHECK(*selected == 1152 && *reserve == 240);
+    CHECK(jit_cs2_code_tail_limit_mb() == 512);
     for (uint64_t requested = 256; requested <= 1152; requested += 16)
     {
         uint64_t pool = 0, image_reserve = 0;
@@ -473,17 +489,23 @@ static void check_budget_plan(uint64_t *selected, uint64_t *reserve)
     CHECK(!jit_pool_alias_layout_valid(0x6fff000000, rw, size, lo, 0x8000000000, 0, 0));
     CHECK(!jit_pool_alias_layout_valid(rx, rw, size, lo, UINT64_MAX, 0, 0));
 
+    ios_jit_pool_size_global = *selected * MB;
+    unsetenv("WINE_IOS_JIT_CODE_TAIL_LIMIT_MB");
     unsetenv("MADEIRA_POOL_HEAD_RESERVE_MB"); unsetenv("WINE_IOS_JIT_HEAD_RESERVE_MB");
     initialize_head_reserve(); CHECK(ios_pool_head_reserve == 48 * MB);
-    setenv("WINE_IOS_JIT_HEAD_RESERVE_MB", "208", 1);
+    setenv("WINE_IOS_JIT_HEAD_RESERVE_MB", "240", 1);
+    setenv("WINE_IOS_JIT_CODE_TAIL_LIMIT_MB", "512", 1);
     setenv("MADEIRA_POOL_HEAD_RESERVE_MB", "48", 1);
     initialize_head_reserve(); CHECK(ios_pool_head_reserve == *reserve * MB);
+    CHECK(ios_pool_code_tail_limit == 512 * MB);
     setenv("MADEIRA_POOL_HEAD_RESERVE_MB", "256", 1);
     initialize_head_reserve(); CHECK(ios_pool_head_reserve == 256 * MB);
     setenv("MADEIRA_POOL_HEAD_RESERVE_MB", "48", 1);
     unsetenv("WINE_IOS_JIT_HEAD_RESERVE_MB");
     initialize_head_reserve(); CHECK(ios_pool_head_reserve == 48 * MB);
     unsetenv("MADEIRA_POOL_HEAD_RESERVE_MB");
+    unsetenv("WINE_IOS_JIT_CODE_TAIL_LIMIT_MB");
+    initialize_head_reserve(); CHECK(!ios_pool_code_tail_limit);
     puts("PASS: production CS2 plan gates measured RAM/address budgets; layout bounds and private reserve cannot weaken existing checks");
 }
 
@@ -491,7 +513,7 @@ static void reset(size_t total, size_t reserve)
 {
     CHECK(total <= mapped_size);
     ios_jit_rx_base_global = rx_memory; ios_jit_rw_base_global = rw_memory;
-    ios_jit_pool_size_global = total; ios_pool_head_reserve = reserve;
+    ios_jit_pool_size_global = total; ios_pool_head_reserve = reserve; ios_pool_code_tail_limit = 0;
     jit_pool_offset = rotation_head; ios_jit_tail_reserved = tail_before;
     ios_jit_hole_off = ios_jit_hole_end = ios_jit_hole_off_eff = ios_jit_hole_end_eff = 0;
     ios_jit_hole2_off = ios_jit_hole2_end = ios_pool_big_size = 0;
@@ -677,17 +699,17 @@ static void check_captured_server_failure(void)
     puts("PASS: exact server.dll census reproduces 37.5 MiB failure with 27.046875 MiB virgin space and five fragmented image extents");
 }
 
-static uintptr_t rx_write_expected_address;
+static uintptr_t alias_expected_fault_address;
 _Static_assert(__atomic_always_lock_free(sizeof(uintptr_t), 0), "RX fault address reads must be lock-free");
-static void rx_write_fault(int signal_number, siginfo_t *info, void *context)
+static void alias_permission_fault(int signal_number, siginfo_t *info, void *context)
 {
     (void)context;
-    /* Require a kernel-generated fault at the exact attempted store. Exit
+    /* Require a kernel-generated permission fault at the exact access. Exit
      * directly so a Linux piped core collector cannot delay waitpid while
      * dumping the large shared mappings and the sanitizer address space. */
     int expected = (signal_number == SIGSEGV || signal_number == SIGBUS) && info &&
                    info->si_signo == signal_number && info->si_code > 0 &&
-                   (uintptr_t)info->si_addr == __atomic_load_n(&rx_write_expected_address, __ATOMIC_RELAXED);
+                   (uintptr_t)info->si_addr == __atomic_load_n(&alias_expected_fault_address, __ATOMIC_RELAXED);
     _exit(expected ? 77 : 92);
 }
 
@@ -715,10 +737,10 @@ static void check_owned_executable_image(size_t off, size_t size)
     pid_t child = fork(); CHECK(child >= 0);
     if (!child)
     {
-        __atomic_store_n(&rx_write_expected_address, (uintptr_t)rx, __ATOMIC_RELAXED);
+        __atomic_store_n(&alias_expected_fault_address, (uintptr_t)rx, __ATOMIC_RELAXED);
         struct sigaction action;
         memset(&action, 0, sizeof action);
-        action.sa_sigaction = rx_write_fault;
+        action.sa_sigaction = alias_permission_fault;
         action.sa_flags = SA_SIGINFO;
         if (sigemptyset(&action.sa_mask) || sigaction(SIGSEGV, &action, NULL) ||
             sigaction(SIGBUS, &action, NULL)) _exit(93);
@@ -728,14 +750,30 @@ static void check_owned_executable_image(size_t off, size_t size)
     int status = 0; CHECK(waitpid(child, &status, 0) == child);
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 77);
     CHECK(run() == 42 && !memcmp(rx, stub, sizeof stub));
+    child = fork(); CHECK(child >= 0);
+    if (!child)
+    {
+        __atomic_store_n(&alias_expected_fault_address, (uintptr_t)rw, __ATOMIC_RELAXED);
+        struct sigaction action;
+        memset(&action, 0, sizeof action); action.sa_sigaction = alias_permission_fault;
+        action.sa_flags = SA_SIGINFO;
+        if (sigemptyset(&action.sa_mask) || sigaction(SIGSEGV, &action, NULL) ||
+            sigaction(SIGBUS, &action, NULL)) _exit(93);
+        int (*forbidden)(void) = (int (*)(void))(uintptr_t)rw;
+        (void)forbidden(); _exit(91);
+    }
+    CHECK(waitpid(child, &status, 0) == child);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 77);
+    CHECK(run() == 42 && !memcmp(rx, stub, sizeof stub));
 }
 
-static void check_captured_tail_history(void)
+static void check_captured_tail_history(size_t reserve, size_t code_limit)
 {
     void *handles[64] = {0};
     struct ios_tail_carve pinned[3];
     unsigned pinned_n = 0, oversize_tiny = 0;
-    reset(1152 * MB, 176 * MB);
+    reset(1152 * MB, reserve);
+    ios_pool_code_tail_limit = code_limit;
     jit_pool_offset = ios_jit_tail_reserved = 0;
     ios_pool_free_count = ios_pool_ledger_count = ios_tail_carve_n = 0;
     memset(ios_tail_carves, 0, sizeof ios_tail_carves);
@@ -785,6 +823,7 @@ static void check_captured_tail_history(void)
     printf("captured-tail replay: tiny-oversized=%u tail=0x%zx saved=0x%zx carves=%u virgin=0x%zx\n",
            oversize_tiny, (size_t)ios_jit_tail_reserved, (size_t)(0x22018000 - ios_jit_tail_reserved),
            ios_tail_carve_n, ios_jit_pool_size_global - jit_pool_offset - ios_jit_tail_reserved);
+    printf("November6 selected reserve=%zuMiB code-limit=%zuMiB\n",reserve/MB,code_limit/MB);
     fflush(stdout);
     CHECK(!oversize_tiny && ios_jit_tail_reserved == 0x1f024000);
     for (unsigned i = 0; i < pinned_n; ++i)
@@ -837,12 +876,14 @@ static void nov7_image_extents(void)
     ios_pool_free_count = 2;
 }
 
-static void check_captured_nov7_tail_history(void)
+static void check_captured_nov7_tail_history(size_t reserve, size_t code_limit)
 {
     void *handles[64] = {0};
+    size_t handle_sizes[64] = {0};
     struct ios_tail_carve pinned[3], frontier;
     unsigned pinned_n = 0, preserved_tiny = 0;
-    reset(1152 * MB, 176 * MB);
+    reset(1152 * MB, reserve);
+    ios_pool_code_tail_limit = code_limit;
     jit_pool_offset = ios_jit_tail_reserved = 0;
     ios_pool_free_count = ios_pool_ledger_count = ios_tail_carve_n = 0;
     memset(ios_tail_carves, 0, sizeof ios_tail_carves);
@@ -857,7 +898,7 @@ static void check_captured_nov7_tail_history(void)
             void *released = NULL; size_t size = 0;
             CHECK(handles[e->handle]);
             CHECK(release_code(handles[e->handle], MEM_RELEASE, &released, &size) == STATUS_SUCCESS);
-            CHECK(released == handles[e->handle] && size == e->observed);
+            CHECK(released == handles[e->handle] && size == handle_sizes[e->handle]);
             continue;
         }
         CHECK(e->handle < ARRAY_SIZE(handles));
@@ -865,7 +906,8 @@ static void check_captured_nov7_tail_history(void)
         size_t got = e->ask;
         if (e->rotation) got = rotate(&handles[e->handle]);
         else CHECK(allocate_code(&got, &handles[e->handle]) == STATUS_SUCCESS);
-        if (got != e->observed || (!REPLAY_CODE_TIE &&
+        handle_sizes[e->handle] = got;
+        if (got != (code_limit && e->line==45921 ? 16*MB : e->observed) || (!REPLAY_CODE_TIE &&
             (uintptr_t)handles[e->handle] - (uintptr_t)rx_memory != e->observed_off))
         {
             fprintf(stderr, "November 7 baseline geometry differs at log line %u: got=0x%zx off=0x%zx, expected=0x%zx off=0x%zx\n",
@@ -885,12 +927,58 @@ static void check_captured_nov7_tail_history(void)
         }
         if (e->line == 45921)
         {
-            CHECK(got == 32 * MB && ios_jit_tail_reserved == 0x2101c000);
-            *(uint64_t *)((char *)rw_memory + e->observed_off) = 0xfeed328000000001ULL;
-            *(uint64_t *)((char *)rw_memory + e->observed_off + got - 8) = 0xfeed328000000002ULL;
+            CHECK(got == (code_limit ? 16*MB:32*MB));
+            CHECK(ios_jit_tail_reserved == (code_limit ? 0x1f01c000:0x2101c000));
+            size_t generation_off=(uintptr_t)handles[e->handle]-(uintptr_t)rx_memory;
+            *(uint64_t *)((char *)rw_memory + generation_off) = 0xfeed328000000001ULL;
+            *(uint64_t *)((char *)rw_memory + generation_off + got - 8) = 0xfeed328000000002ULL;
         }
     }
-    CHECK(pinned_n == 3 && preserved_tiny == 5 && ios_tail_carve_n == 18);
+    CHECK(pinned_n == 3 && preserved_tiny == 5);
+    if (code_limit)
+    {
+        CHECK(ios_jit_tail_reserved==0x1f01c000 && ios_tail_carve_n==17);
+        struct ios_tail_carve retired_generation=ios_tail_carves[find_carve(
+            (uintptr_t)handles[29]-(uintptr_t)rx_memory)];
+        CHECK(retired_generation.free&&!retired_generation.retired&&retired_generation.size==16*MB);
+        CHECK(retired_generation.allocation_lease==24&&!retired_generation.retired_lease);
+        nov7_image_extents();owner=0x110fcc000;jit_pool_offset=0x24454000;
+        size_t server,client,embree;
+        CHECK(!allocate_image(0x2580000,&server)&&server==0x24454000);
+        CHECK(!allocate_image(0x29a8000,&client));
+        CHECK(!allocate_image(0x1524000,&embree));
+        CHECK(ios_pool_ledger_holds(server,0x2580000,(void *)owner));
+        CHECK(ios_pool_ledger_holds(client,0x29a8000,(void *)owner));
+        CHECK(ios_pool_ledger_holds(embree,0x1524000,(void *)owner));
+        check_owned_executable_image(server,0x2580000);
+        check_owned_executable_image(client,0x29a8000);
+        check_owned_executable_image(embree,0x1524000);
+        CHECK(!memcmp(&ios_tail_carves[find_carve(retired_generation.off)],&retired_generation,sizeof retired_generation));
+        void *active=handles[30];size_t tail=ios_jit_tail_reserved;
+        for(unsigned i=0;i<4;++i)
+        {
+            void *next=NULL,*released=NULL;size_t size=0;
+            CHECK(rotate(&next)==16*MB&&next!=active&&ios_jit_tail_reserved==tail);
+            CHECK(release_code(active,MEM_RELEASE,&released,&size)==STATUS_SUCCESS&&size==16*MB);
+            active=next;
+        }
+        for(unsigned i=0;i<4;++i)
+        {
+            size_t more;CHECK(!allocate_image(8*MB,&more));
+            CHECK(ios_pool_ledger_holds(more,8*MB,(void *)owner));
+            check_owned_executable_image(more,8*MB);
+        }
+        expect_failed_image(128*MB);
+        for(unsigned i=0;i<pinned_n;++i)
+        {
+            CHECK(!memcmp(&ios_tail_carves[find_carve(pinned[i].off)],&pinned[i],sizeof pinned[i]));
+            CHECK(*(const uint64_t *)((char *)rx_memory+pinned[i].off)==0x1234000000000000ULL+i);
+            CHECK(*(const uint64_t *)((char *)rx_memory+pinned[i].off+pinned[i].size-8)==0x5678000000000000ULL+i);
+        }
+        printf("PASS November7-083837 selected%zu/%zuMiB:31capturedgrants,5tiny,3live128;client/embree executable,4later16MiBrotations and32MiBsyntheticimages,trueOOM\n",reserve/MB,code_limit/MB);
+        return;
+    }
+    CHECK(ios_tail_carve_n == 18);
     CHECK(ios_jit_tail_reserved == 0x2101c000);
     frontier = ios_tail_carves[find_carve(0x26fe4000)];
     CHECK(frontier.free && !frontier.retired && frontier.size == 32 * MB);
@@ -956,7 +1044,7 @@ static void check_captured_nov7_tail_history(void)
 #endif
 }
 
-static void check_captured_embree_tail_history(size_t reserve)
+static void check_captured_embree_tail_history(size_t reserve, size_t code_limit)
 {
     void *handles[64] = {0};
     struct ios_tail_carve pinned[3], dispatchers[2];
@@ -965,6 +1053,7 @@ static void check_captured_embree_tail_history(size_t reserve)
     size_t server = (size_t)-1, client = (size_t)-1, embree = (size_t)-1;
     int images_checked = 0, exact_baseline = !REPLAY_CODE_TIE && reserve == 176 * MB;
     reset(1152 * MB, reserve);
+    ios_pool_code_tail_limit = code_limit;
     jit_pool_offset = ios_jit_tail_reserved = 0;
     ios_pool_free_count = ios_pool_ledger_count = ios_tail_carve_n = 0;
     memset(ios_tail_carves, 0, sizeof ios_tail_carves);
@@ -1067,7 +1156,7 @@ static void check_captured_embree_tail_history(size_t reserve)
             CHECK(handles[e->handle]);
             CHECK(release_code(handles[e->handle], MEM_RELEASE, &released, &size) == STATUS_SUCCESS);
             CHECK(released == handles[e->handle]);
-            CHECK(size == (e->line == 46682 && reserve == 208 * MB ? 16 * MB : e->observed));
+            CHECK(size == (e->line == 46682 && reserve >= 208 * MB ? 16 * MB : e->observed));
             continue;
         }
         CHECK(e->handle < ARRAY_SIZE(handles));
@@ -1075,7 +1164,7 @@ static void check_captured_embree_tail_history(size_t reserve)
         size_t got = e->ask;
         if (e->rotation) got = rotate(&handles[e->handle]);
         else CHECK(allocate_code(&got, &handles[e->handle]) == STATUS_SUCCESS);
-        CHECK(got == (e->line == 45431 && reserve == 208 * MB ? 16 * MB : e->observed));
+        CHECK(got == (e->line == 45431 && reserve >= 208 * MB ? 16 * MB : e->observed));
         size_t off = (uintptr_t)handles[e->handle] - (uintptr_t)rx_memory;
         ++grants; changed_sizes += got != e->observed; changed_addresses += off != e->observed_off;
         if (exact_baseline) CHECK(off == e->observed_off);
@@ -1092,7 +1181,7 @@ static void check_captured_embree_tail_history(size_t reserve)
         }
     }
     CHECK(images_checked && pinned_n == 3 && preserved_tiny == 5);
-    if (reserve == 208 * MB)
+    if (reserve >= 208 * MB)
     {
         size_t tail = ios_jit_tail_reserved;
         unsigned count = ios_tail_carve_n;
@@ -1128,7 +1217,7 @@ static void check_captured_embree_tail_history(size_t reserve)
                 check_owned_executable_image(later, 8 * MB);
             }
             CHECK(ios_tail_carve_n == count - 1 && ios_jit_tail_reserved == tail);
-            puts("PASS: 208 MiB headroom plus ordinary-release tie preference loads captured server/client/embree sizes, preserves the certified 16 MiB through two later code rotations, and serves 32 MiB of explicitly synthetic image stress");
+            printf("PASS November7-200636 reserve=%zuMiB code-limit=%zuMiB:server/client/embree,capturedlifecycle,3live128,2laterrotations,32MiBsyntheticimages\n",reserve/MB,code_limit/MB);
         }
         else
         {
@@ -1149,10 +1238,237 @@ static void check_captured_embree_tail_history(size_t reserve)
     for (unsigned i = 0; i < ARRAY_SIZE(dispatchers); ++i)
         CHECK(!memcmp(&ios_tail_carves[find_carve(dispatchers[i].off)], &dispatchers[i], sizeof dispatchers[i]));
     CHECK(grants == 29);
-    CHECK(changed_sizes == (reserve == 208 * MB ? 1u : 0u));
+    CHECK(changed_sizes == (reserve >= 208 * MB ? 1u : 0u));
     CHECK(changed_addresses == (reserve == 176 * MB ? 0u : REPLAY_CODE_TIE ? 4u : 1u));
     printf("embree captured grants: reserve=%zu MiB tie=%d total=%u altered-sizes=%u altered-addresses=%u; all returned handles, leases, five tiny grants and three live 128 MiB carves verified\n",
            reserve / MB, REPLAY_CODE_TIE, grants, changed_sizes, changed_addresses);
+}
+
+/* November8's order, including the ordinary generation FREE before embree.
+ * Only aggregate older image extents use synthetic separated offsets. */
+static void november8_image_extents(void)
+{
+    static const size_t sizes[] = {0x14000, 0x10000, 0x8000};
+    ios_pool_free_count = 0;
+    for (unsigned i = 0; i < ARRAY_SIZE(sizes); ++i)
+        ios_pool_freelist[i] = (struct ios_pool_free){(i+1)*MB, sizes[i], 0, 1, 0};
+    ios_pool_free_count = ARRAY_SIZE(sizes);
+}
+
+static void check_code_image_nonoverlap(void)
+{
+    for (unsigned i = 0; i < ios_tail_carve_n; ++i)
+    {
+        const struct ios_tail_carve *c = &ios_tail_carves[i];
+        if (c->free) continue;
+        for (int j = 0; j < ios_pool_ledger_count; ++j)
+            CHECK(c->off >= ios_pool_ledger[j].off + ios_pool_ledger[j].size ||
+                  ios_pool_ledger[j].off >= c->off + c->size);
+    }
+}
+
+static void check_captured_november8_tail_history(size_t reserve, size_t code_limit, int early_rotation)
+{
+    void *handles[64] = {0};
+    struct ios_tail_carve pinned[3];
+    unsigned pinned_n = 0, tiny = 0, grants = 0, resized = 0;
+    size_t sizes[64] = {0};
+    size_t server = (size_t)-1, client = (size_t)-1, embree = (size_t)-1;
+    int server_checked = 0;
+    reset(1152*MB, reserve);
+    ios_pool_code_tail_limit = code_limit;
+    jit_pool_offset = ios_jit_tail_reserved = 0;
+    ios_pool_free_count = ios_pool_ledger_count = ios_tail_carve_n = 0;
+    memset(ios_tail_carves, 0, sizeof ios_tail_carves);
+    for (unsigned i = 0; i < ARRAY_SIZE(captured_november8_tail_events); ++i)
+    {
+        const struct captured_tail_event *e = &captured_november8_tail_events[i];
+        owner = e->owner; fake_now = 1000 + e->seconds;
+        set_process_lease((void *)owner, e->lease, e->op == 2);
+        if (e->line == 46265)
+        {
+            CHECK(!server_checked && pinned_n == 3 && tiny == 5);
+            november8_image_extents();
+            jit_pool_offset = 0x24464000;
+            CHECK(!allocate_image(0x2580000, &server));
+            CHECK(server == (early_rotation && !code_limit ? 0x41fe4000 : 0x24464000));
+            CHECK(jit_pool_offset == (early_rotation && !code_limit ? 0x24464000 : 0x269e4000));
+            CHECK(ios_pool_ledger_holds(server, 0x2580000, (void *)owner));
+            check_owned_executable_image(server, 0x2580000);
+            server_checked = 1;
+        }
+        if (e->op == 2) { ios_tail_carves_owner_died((void *)owner); continue; }
+        if (e->op == 1)
+        {
+            void *released = NULL; size_t bytes = 0;
+            CHECK(handles[e->handle]);
+            CHECK(release_code(handles[e->handle], MEM_RELEASE, &released, &bytes) == STATUS_SUCCESS);
+            CHECK(released == handles[e->handle] && bytes == sizes[e->handle]);
+            continue;
+        }
+        CHECK(e->handle < ARRAY_SIZE(handles));
+        if (!server_checked && e->head > jit_pool_offset) jit_pool_offset = e->head;
+        if (early_rotation && e->line == 45201)
+        {
+            /* This adversary orders the real rotation before the image head
+             * has grown. A relative headroom target alone allows larger code.
+             * The fixed growth budget must still bound the same fresh tail. */
+            jit_pool_offset = 0x15cdc000;
+        }
+        size_t got = e->ask;
+        if (e->rotation || e->ask == 128*MB) got = rotate(&handles[e->handle]);
+        else CHECK(allocate_code(&got, &handles[e->handle]) == STATUS_SUCCESS);
+        CHECK(got && handles[e->handle]);
+        sizes[e->handle] = got;
+        size_t off = (uintptr_t)handles[e->handle] - (uintptr_t)rx_memory;
+        ++grants; resized += got != e->observed;
+        CHECK(*(const uint32_t *)handles[e->handle] == 0xd503201f);
+        if (reserve == 208*MB && !code_limit && !early_rotation)
+        {
+            if (got != e->observed || off != e->observed_off)
+                fprintf(stderr,"November8 baseline mismatch line%u size=%zx/%zx off=%zx/%zx\n",e->line,got,e->observed,off,e->observed_off);
+            CHECK(got == e->observed && off == e->observed_off);
+        }
+        if (e->line == 8900 || e->line == 8926 || e->line == 15464 || e->line == 15593 || e->line == 15626)
+        { CHECK(got == 0x4000); ++tiny; }
+        if (e->ask == 128*MB)
+        {
+            CHECK(pinned_n < ARRAY_SIZE(pinned));
+            pinned[pinned_n] = ios_tail_carves[find_carve(off)];
+            CHECK(got >= 16*MB);
+            *(uint64_t *)((char *)rw_memory+off) = 0xabc0000000000000ULL+pinned_n;
+            *(uint64_t *)((char *)rw_memory+off+got-8) = 0xdef0000000000000ULL+pinned_n;
+            ++pinned_n;
+        }
+    }
+    CHECK(server_checked && tiny == 5 && grants == 29 && pinned_n == 3);
+    owner = 0x115afc000; fake_now = 1423;
+    CHECK(jit_pool_offset == (early_rotation && !code_limit ? 0x24464000 : 0x269e4000));
+    struct ios_tail_carve ordinary = ios_tail_carves[find_carve(
+        (uintptr_t)handles[27] - (uintptr_t)rx_memory)];
+    CHECK(ordinary.free && !ordinary.retired && ordinary.peb == (void *)owner);
+    CHECK(ordinary.allocation_lease == 23 && !ordinary.retired_lease);
+    unsigned before = ios_tail_carve_n;
+    if (!(early_rotation && !code_limit) && !(code_limit && code_limit <= 448*MB))
+    {
+        /* Fork isolates the deliberately hostile thread-state answer. The
+         * unmodified production recycler must refuse an executing receipt;
+         * parent metadata is not reset or fabricated to make reuse succeed. */
+        pid_t child=fork(); CHECK(child>=0);
+        if (!child)
+        {
+            scanned_pc=(uintptr_t)rx_memory+0x41fe4000;
+            expect_failed_image(0x29a8000);
+            _exit(0);
+        }
+        int status=0; CHECK(waitpid(child,&status,0)==child);
+        CHECK(WIFEXITED(status)&&WEXITSTATUS(status)==0);
+    }
+    if (early_rotation && !code_limit)
+    {
+        CHECK(ios_jit_tail_reserved == 0x2301c000 && sizes[27] == 64*MB);
+        expect_failed_image(0x29a8000);
+        CHECK(ios_pool_ledger_holds(server,0x2580000,(void *)owner));
+        puts("PASS earlier-order control:240MiB soft reserve admits64MiB generation; server consumes the certified client range and client then genuinely fails");
+        return;
+    }
+    CHECK(!allocate_image(0x29a8000, &client));
+    CHECK(ios_pool_ledger_holds(client, 0x29a8000, (void *)owner));
+    CHECK(ios_pool_ledger_holds(server, 0x2580000, (void *)owner));
+    check_owned_executable_image(client, 0x29a8000);
+    CHECK(jit_pool_offset == (code_limit && code_limit <= 448*MB ? 0x2938c000 : 0x269e4000));
+    CHECK(!memcmp(&ios_tail_carves[find_carve(ordinary.off)], &ordinary, sizeof ordinary));
+    if (reserve == 208*MB && !code_limit)
+    {
+        CHECK(client == 0x41fe4000 && ios_tail_carve_n == before-6);
+        CHECK(ios_jit_tail_reserved == 0x2101c000);
+        CHECK(ios_jit_pool_size_global-jit_pool_offset-ios_jit_tail_reserved == 0x600000);
+        size_t bytes = 0, largest = 0;
+        for (int j = 0; j < ios_pool_free_count; ++j)
+        { bytes += ios_pool_freelist[j].size; if (ios_pool_freelist[j].size > largest) largest=ios_pool_freelist[j].size; }
+        CHECK(ios_pool_free_count == 4 && bytes == 0x690000 && largest == 0x664000);
+        unsigned qualified=0,missing=0;size_t qualified_bytes=0,largest_qualified=0;
+        for(unsigned j=0;j<ios_tail_carve_n;++j)
+        {
+            const struct ios_tail_carve *c=&ios_tail_carves[j];
+            if(!c->free)continue;
+            if(!c->retired||!c->allocation_lease||c->allocation_lease!=c->retired_lease)
+            {++missing;continue;}
+            CHECK(ios_tail_carve_ready(c,fake_now));
+            CHECK(ios_pool_recycle_main_range_ready(c->off,c->size));
+            ++qualified;qualified_bytes+=c->size;
+            if(c->size>largest_qualified)largest_qualified=c->size;
+        }
+        CHECK(qualified==2&&qualified_bytes==32*MB&&largest_qualified==16*MB&&missing==1);
+        struct ios_tail_carve snapshot[IOS_TAIL_CARVE_MAX]; memcpy(snapshot,ios_tail_carves,sizeof snapshot);
+        expect_failed_image(0x1524000); expect_failed_image(0x1524000);
+        expect_failed_image(0x29a8000); expect_failed_image(0x29a8000);
+        CHECK(ios_pool_ledger_holds(client, 0x29a8000, (void *)owner));
+        CHECK(!memcmp(snapshot,ios_tail_carves,sizeof snapshot));
+        printf("PASS November8 captured208MiB:all29grants/address/leases,5tiny/3live128,ordinaryFREE32before6receiptclienttransfer; exactembree21.14MiBfailure andretainedparentretry at6MiBvirgin\n");
+    }
+    else
+    {
+        CHECK(!allocate_image(0x1524000, &embree));
+        CHECK(ios_pool_ledger_holds(embree,0x1524000,(void *)owner));
+        check_owned_executable_image(embree,0x1524000);
+        size_t virgin=ios_jit_pool_size_global-jit_pool_offset-ios_jit_tail_reserved;
+        printf("November8 projected reserve=%zuMiB limit=%zuMiB early=%d head=0x%zx tail=0x%zx client=0x%zx embree=0x%zx virgin=0x%zx resized=%u\n",reserve/MB,code_limit/MB,early_rotation,jit_pool_offset,(size_t)ios_jit_tail_reserved,client,embree,virgin,resized);
+        /* Preserve every still-live initial process generation byte-for-byte. */
+        for (unsigned i=0;i<pinned_n;++i)
+        {
+            CHECK(!memcmp(&ios_tail_carves[find_carve(pinned[i].off)],&pinned[i],sizeof pinned[i]));
+            CHECK(*(const uint64_t *)((char *)rx_memory+pinned[i].off)==0xabc0000000000000ULL+i);
+            CHECK(*(const uint64_t *)((char *)rx_memory+pinned[i].off+pinned[i].size-8)==0xdef0000000000000ULL+i);
+        }
+        check_code_image_nonoverlap();
+        /* Synthetic subsequent generations alternate two honest released16MiB
+         * buffers. A live generation is not free until migration completes. */
+        void *active=handles[28];
+        size_t tail=ios_jit_tail_reserved;
+        for (unsigned i=0;i<6;++i)
+        {
+            void *next=NULL,*released=NULL;size_t bytes=0;
+            CHECK(rotate(&next)>=16*MB && next != active);
+            CHECK(ios_jit_tail_reserved == tail);
+            CHECK(!ios_tail_carves[find_carve((uintptr_t)active-(uintptr_t)rx_memory)].free);
+            CHECK(release_code(active,MEM_RELEASE,&released,&bytes)==STATUS_SUCCESS && released==active);
+            active=next;check_code_image_nonoverlap();
+        }
+        if (!code_limit || code_limit >= 512*MB)
+        {
+            expect_failed_image(20*MB);
+            puts("PASS bounded capacity limit:allthree128MiB generations preserved; a subsequent single20MiB image genuinely does not fit despite smaller reusable extents");
+        }
+        /* Bounded synthetic image stress is deliberately separated from the
+         * observed game chain, which ends with the first embree failure. */
+        static const size_t moderate[] = {8*MB,8*MB,8*MB,8*MB};
+        static const size_t larger[] = {20*MB,40*MB};
+        const size_t *requests = code_limit && code_limit<=448*MB ? larger : moderate;
+        unsigned count = code_limit && code_limit<=448*MB ? ARRAY_SIZE(larger):ARRAY_SIZE(moderate);
+        for(unsigned i=0;i<count;++i)
+        {
+            size_t more=(size_t)-1; CHECK(!allocate_image(requests[i],&more));
+            CHECK(ios_pool_ledger_holds(more,requests[i],(void *)owner));
+            check_owned_executable_image(more,requests[i]); check_code_image_nonoverlap();
+        }
+        /* Compile again after image pressure; no cursor growth or double-live
+         * code assignment is allowed. True exhaustion remains honest. */
+        void *next=NULL,*released=NULL;size_t bytes=0;
+        CHECK(rotate(&next)>=16*MB && next!=active && ios_jit_tail_reserved==tail);
+        CHECK(release_code(active,MEM_RELEASE,&released,&bytes)==STATUS_SUCCESS);
+        if (!code_limit || code_limit >= 512*MB) expect_failed_image(8*MB);
+        expect_failed_image(128*MB);
+        CHECK(ios_pool_ledger_holds(client,0x29a8000,(void *)owner));
+        CHECK(ios_pool_ledger_holds(embree,0x1524000,(void *)owner));
+        printf("PASS November8 policy240/%zuMiB:client+embree executable,6safe rotations,syntheticimage-stress=%zuMiB,continuedcompilation,trueOOM;noordinaryFREEimagecertification\n",code_limit/MB,code_limit&&code_limit<=448*MB?60UL:32UL);
+    }
+    for (unsigned i=0;i<pinned_n;++i)
+    {
+        CHECK(!memcmp(&ios_tail_carves[find_carve(pinned[i].off)],&pinned[i],sizeof pinned[i]));
+        CHECK(*(const uint64_t *)((char *)rx_memory+pinned[i].off)==0xabc0000000000000ULL+i);
+        CHECK(*(const uint64_t *)((char *)rx_memory+pinned[i].off+pinned[i].size-8)==0xdef0000000000000ULL+i);
+    }
 }
 
 struct scheduled_request { unsigned role; size_t size, limit, off; void *ret; int status; };
@@ -1274,20 +1590,37 @@ int main(void)
     unsetenv("MADEIRA_POOL_LOW_IMAGES"); unsetenv("MADEIRA_POOL_RECYCLE_IMAGES");
     unsetenv("MADEIRA_POOL_CODE_EXIT_RECLAIM"); unsetenv("MADEIRA_POOL_QUARANTINE");
     uint64_t selected, reserve;
-    check_budget_plan(&selected, &reserve);
+    if (REPLAY_LEGACY_ONLY) { selected=1152; reserve=208; }
+    else check_budget_plan(&selected, &reserve);
     mapped_size = selected * MB;
     FILE *backing = tmpfile(); CHECK(backing && !ftruncate(fileno(backing), (off_t)(mapped_size + 0x4000)));
     rw_memory = map_pool_alias(backing, PROT_READ | PROT_WRITE);
     rx_memory = map_pool_alias(backing, PROT_READ | PROT_EXEC);
     CHECK(rw_memory != MAP_FAILED && rx_memory != MAP_FAILED && rw_memory != rx_memory);
+    if (REPLAY_LEGACY_ONLY)
+    {
+        check_captured_november8_tail_history(208*MB,0,0);
+        CHECK(!munmap(rx_memory,mapped_size)&&!munmap(rw_memory,mapped_size));
+        CHECK(!fclose(backing));
+        return 0;
+    }
     check_original_and_growth_only();
     check_paired_budget(selected, reserve);
     check_capacity_failure();
     check_captured_server_failure();
-    check_captured_tail_history();
-    check_captured_nov7_tail_history();
-    check_captured_embree_tail_history(REPLAY_CODE_TIE ? 208 * MB : 176 * MB);
-    if (!REPLAY_CODE_TIE) check_captured_embree_tail_history(208 * MB);
+    check_captured_tail_history(176*MB,0);
+    check_captured_tail_history(240*MB,512*MB);
+    check_captured_nov7_tail_history(176*MB,0);
+    check_captured_nov7_tail_history(240*MB,512*MB);
+    check_captured_embree_tail_history(REPLAY_CODE_TIE ? 208 * MB : 176 * MB,0);
+    check_captured_embree_tail_history(240*MB,512*MB);
+    if (!REPLAY_CODE_TIE) check_captured_embree_tail_history(208 * MB,0);
+    check_captured_november8_tail_history(208*MB, 0, 0);
+    check_captured_november8_tail_history(240*MB, 0, 0);
+    check_captured_november8_tail_history(240*MB, 0, 1);
+    check_captured_november8_tail_history(240*MB, 512*MB, 0);
+    check_captured_november8_tail_history(240*MB, 512*MB, 1);
+    check_captured_november8_tail_history(240*MB, 448*MB, 0);
     check_head_tail_and_last_slot_schedules();
     CHECK(!munmap(rx_memory, mapped_size) && !munmap(rw_memory, mapped_size));
     CHECK(!fclose(backing));
