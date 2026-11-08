@@ -25,43 +25,56 @@ FILES = ('Source/Windows/WOW64/Module.cpp', 'FEXCore/include/FEXCore/Utils/Alloc
          'Source/Windows/WOW64/CMakeLists.txt',
          'Source/Windows/WOW64/libwow64fex.def')
 PATCH = ROOT / 'build/fex-compat/thread-init.patch'
+PATCHES = ('thread-init.patch', 'guest-write.patch', 'compiler-startup.patch', 'ir-pool-failure.patch',
+           'arena-exports.patch', 'lookup-blocklist.patch', 'hold-release.patch', 'thread-retire.patch')
+ARM64EC_FILES = ('Source/Windows/ARM64EC/Module.cpp', 'Source/Windows/ARM64EC/libarm64ecfex_ios.def')
+
+
+def files_for(backend):
+    if backend == 'arm64ec':
+        return tuple(n for n in FILES if '/WOW64/' not in n) + ARM64EC_FILES
+    return FILES + (ARM64EC_FILES if backend == 'both' else ())
 
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def stage(destination, source):
-    for name in FILES:
+def stage(destination, source, backend='wow64'):
+    files = files_for(backend)
+    for name in files:
         target = destination / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source / name, target)
-    subprocess.run(['git', '-C', str(destination), 'apply', '--check', str(PATCH)], check=True)
-    subprocess.run(['git', '-C', str(destination), 'apply', str(PATCH)], check=True)
-    memory_patch = ROOT / 'build/fex-compat/guest-write.patch'
-    subprocess.run(['git', '-C', str(destination), 'apply', '--check', str(memory_patch)], check=True)
-    subprocess.run(['git', '-C', str(destination), 'apply', str(memory_patch)], check=True)
-    for name in ('compiler-startup.patch', 'arena-exports.patch', 'lookup-blocklist.patch', 'hold-release.patch', 'thread-retire.patch'):
+    # Select by source path: ARM64EC shares the core allocator/compiler fixes,
+    # but retains its own Module.cpp, TLS/termination ABI and existing DATA exports.
+    includes = [f'--include={name}' for name in files]
+    for name in PATCHES:
         patch = ROOT / 'build/fex-compat' / name
-        subprocess.run(['git', '-C', str(destination), 'apply', '--check', str(patch)], check=True)
-        subprocess.run(['git', '-C', str(destination), 'apply', str(patch)], check=True)
+        # git apply rejects a patch whose every file was intentionally excluded.
+        paths = [line[6:] for line in patch.read_text().splitlines() if line.startswith('+++ b/')]
+        if not any(path in files for path in paths):
+            continue
+        subprocess.run(['git', '-C', str(destination), 'apply', *includes, '--check', str(patch)], check=True)
+        subprocess.run(['git', '-C', str(destination), 'apply', *includes, str(patch)], check=True)
 
 
-def apply(state, source):
-    for name in FILES:
+def apply(state, source, backend='wow64'):
+    files = files_for(backend)
+    for name in files:
         subprocess.run(['git', '-C', str(source), 'diff', '--exit-code', 'HEAD', '--', name], check=True)
-    stage(state / 'staged', source)
-    for name in FILES:
+    stage(state / 'staged', source, backend)
+    for name in files:
         backup = state / 'originals' / name
         backup.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source / name, backup)
-    manifest = {'source': str(source), 'after': {n: digest(state / 'staged' / n) for n in FILES}}
+    manifest = {'source': str(source), 'backend': backend, 'after': {n: digest(state / 'staged' / n) for n in files}}
     (state / 'manifest.json').write_text(json.dumps(manifest))
     try:
-        for name in FILES:
+        for name in files:
             shutil.copyfile(state / 'staged' / name, source / name)
     except BaseException:
-        for name in FILES:
+        for name in files:
             shutil.copyfile(state / 'originals' / name, source / name)
         raise
 
@@ -72,7 +85,7 @@ def restore(state):
     for name, expected in manifest['after'].items():
         if digest(source / name) != expected:
             raise SystemExit(f'Refusing to overwrite build-time edits: {name}; backup: {state}')
-    for name in FILES:
+    for name in manifest['after']:
         shutil.copyfile(state / 'originals' / name, source / name)
 
 
@@ -81,8 +94,9 @@ if __name__ == '__main__':
     parser.add_argument('operation', choices=('stage', 'apply', 'restore'))
     parser.add_argument('directory', type=Path)
     parser.add_argument('--source', type=Path, default=ROOT / 'FEX')
+    parser.add_argument('--backend', choices=('wow64', 'arm64ec', 'both'), default='wow64')
     args = parser.parse_args()
     args.directory.mkdir(parents=True, exist_ok=True)
-    if args.operation == 'stage': stage(args.directory, args.source)
-    elif args.operation == 'apply': apply(args.directory, args.source)
+    if args.operation == 'stage': stage(args.directory, args.source, args.backend)
+    elif args.operation == 'apply': apply(args.directory, args.source, args.backend)
     else: restore(args.directory)

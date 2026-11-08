@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Require the matching native IOSB consumer and rebuilt ARM64 WoW64 producer."""
+"""Require matching IOSB images and rebuilt ARM64/WoW64 and ARM64EC FEX CPUs."""
 import argparse
 from pathlib import Path
 import struct
@@ -9,7 +9,7 @@ PRODUCER = b'madeira-io-abi-v2'
 CONSUMER = b'[io-abi] v2 native-owned IOSB scopes active'
 
 
-def fex_arena_exports(data, require_hold_release=False):
+def fex_arena_exports(data, require_hold_release=False, code_exports=(), require_hybrid=False):
     """Require real DATA/code exports, not matching strings in a stale PE."""
     pe = struct.unpack_from('<I', data, 0x3c)[0]
     assert data[:2] == b'MZ' and data[pe:pe + 4] == b'PE\0\0', 'invalid FEX PE headers'
@@ -30,12 +30,35 @@ def fex_arena_exports(data, require_hold_release=False):
                 return raw + rva - start
         raise AssertionError('FEX export metadata outside file-backed sections')
 
+    if require_hybrid:
+        config_rva, config_size = struct.unpack_from('<II', data, optional + 112 + 10 * 8)
+        assert config_rva and config_size >= 208, 'ARM64EC FEX load configuration missing'
+        config = offset(config_rva, 208)
+        assert struct.unpack_from('<I', data, config)[0] >= 208, 'ARM64EC FEX load configuration too small'
+        image_base = struct.unpack_from('<Q', data, optional + 24)[0]
+        metadata_va = struct.unpack_from('<Q', data, config + 200)[0]
+        assert metadata_va >= image_base, 'ARM64EC FEX CHPE metadata missing'
+        metadata = offset(metadata_va - image_base, 12)
+        version, code_map, code_count = struct.unpack_from('<III', data, metadata)
+        assert version in (1, 2) and 0 < code_count <= 65536, 'invalid ARM64EC FEX CHPE code map'
+        native = False
+        for i in range(code_count):
+            encoded, size = struct.unpack_from('<II', data, offset(code_map + i * 8, 8))
+            start = encoded & ~3
+            if encoded & 3 == 1 and size:
+                assert any(base <= start and start + size <= base + extent and flags & 0x20000000
+                           and flags & 0x40000000 and not flags & 0x80000000
+                           for base, extent, _, _, flags in sections), 'ARM64EC code range must be native RX'
+                native = True
+        assert native, 'ARM64EC FEX has no native ARM64EC code range'
+
     directory, directory_size = struct.unpack_from('<II', data, optional + 112)
     assert directory and directory_size >= 40, 'FEX arena DATA exports missing'
     fields = struct.unpack_from('<IIHHIIIIIII', data, offset(directory, 40))
     functions, names, addresses, strings, ordinals = fields[6:]
     assert names <= functions <= 65536, 'invalid FEX export counts'
     required = {b'ios_fex_band_base', b'ios_fex_band_end'}
+    required.update(code_exports)
     hold_release = b'MadeiraBTCpuIosReleaseThreadHolds'
     if require_hold_release:
         required.update({hold_release,b'MadeiraBTCpuIosRetireThread'})
@@ -53,7 +76,7 @@ def fex_arena_exports(data, require_hold_release=False):
         assert ordinal < functions, 'invalid FEX arena export ordinal'
         target = struct.unpack_from('<I', data, offset(addresses + ordinal * 4, 4))[0]
         assert target and not directory <= target < directory + directory_size, 'FEX arena export is forwarded'
-        if name in {hold_release,b'MadeiraBTCpuIosRetireThread'}:
+        if name in {hold_release,b'MadeiraBTCpuIosRetireThread', *code_exports}:
             assert any(base <= target and target + 4 <= base + raw_size and flags & 0x20000000 and
                        flags & 0x40000000 and not flags & 0x80000000
                        for base, _, _, raw_size, flags in sections), 'FEX hold release must be a file-backed native RX function'
@@ -70,6 +93,34 @@ def producer(data):
     assert data[pe:pe + 4] == b'PE\0\0', 'invalid WoW64 PE signature'
     assert struct.unpack_from('<H', data, pe + 4)[0] == 0xaa64, 'WoW64 producer must be native ARM64'
     assert PRODUCER in data, 'stale WoW64 IOSB producer'
+
+
+def fex_cpu(data, backend):
+    """The shared allocator/IR protections apply to both Windows PE backends.
+
+    ARM64EC retains its own thread/TLS/hold ABI. Its existing CPU image is an
+    AMD64-header hybrid; an ordinary AMD64 image must not pass this gate.
+    """
+    assert data[:2] == b'MZ', f'{backend} FEX is not a PE image'
+    pe = struct.unpack_from('<I', data, 0x3c)[0]
+    assert data[pe:pe + 4] == b'PE\0\0', f'invalid {backend} FEX signature'
+    machine = struct.unpack_from('<H', data, pe + 4)[0]
+    code_exports = ()
+    if backend == 'wow64':
+        assert machine == 0xaa64, 'WoW64 FEX must be native ARM64'
+        for marker in (b'MadeiraBTCpuThreadInit', b'[fex-thread-init-v1]',
+                       b'MadeiraBTCpuWriteMemory', b'[fex-guest-write-v1]',
+                       b'[fex-first-use-v1]', b'[fex-blocklist-v1]',
+                       b'[fex-hold-release-v1]', b'[fex-thread-retire-v1]'):
+            assert marker in data, f'stale WoW64 FEX: {marker!r}'
+    else:
+        assert backend == 'arm64ec' and machine in (0xa641, 0x8664), 'ARM64EC FEX machine mismatch'
+        # These are actual ARM64EC module exports, not the WoW64 BTCpu ABI.
+        code_exports = (b'BTCpu64FlushInstructionCache', b'BTCpu64NotifyMemoryDirty', b'BTCpu64IosAddAliasMapping')
+    for marker in (b'[fex-core-init-v1]', b'[fex-ir-pool-v1]', b'[fex-owner-allocator-v1]'):
+        assert marker in data, f'stale {backend} FEX shared protection: {marker!r}'
+    fex_arena_exports(data, require_hold_release=backend == 'wow64', code_exports=code_exports,
+                      require_hybrid=backend == 'arm64ec')
 
 
 def check(staged, app, ipa):
@@ -97,13 +148,10 @@ def check(staged, app, ipa):
     assert b'[wow-write]' in native and b'[guest32-symbols]' in native, 'native guest memory diagnostics missing'
     cpu = staged.parent / 'xtajit.dll'
     cpu_data = cpu.read_bytes()
-    assert struct.unpack_from('<H', cpu_data, struct.unpack_from('<I', cpu_data, 0x3c)[0] + 4)[0] == 0xaa64
-    assert b'MadeiraBTCpuThreadInit' in cpu_data and b'[fex-thread-init-v1]' in cpu_data, 'stale FEX CPU producer'
-    assert b'MadeiraBTCpuWriteMemory' in cpu_data and b'[fex-guest-write-v1]' in cpu_data, 'stale FEX native-write producer'
-    assert b'[fex-first-use-v1]' in cpu_data, 'stale FEX first-execution allocation checks'
-    assert b'[fex-blocklist-v1]' in cpu_data, 'stale FEX contiguous block map'
-    assert b'[fex-hold-release-v1]' in cpu_data, 'stale FEX terminal hold cleanup'
-    assert b'[fex-thread-retire-v1]' in cpu_data, 'stale FEX private thread destruction'
+    fex_cpu(cpu_data, 'wow64')
+    ec_cpu_data = (staged.parent.parent / 'arm64ec-windows/xtajit64.dll').read_bytes()
+    fex_cpu(ec_cpu_data, 'arm64ec')
+    assert (app / 'arm64ec-windows/xtajit64.dll').read_bytes() == ec_cpu_data, 'Xcode packaged stale ARM64EC FEX'
     assert b'[alias-prot-v2]' in native and b'[fex-exit-v1]' in native and b'[native-thread-cancel-v1]' in native, 'native protection/retirement/cancellation consumer missing'
     assert b'[alias-prot-compat]' in native and b'[image-alias-retire-v1]' in native and b'[swp-context-v1]' in native, 'stale native alias lifetime/protection producer'
     assert b'[surface-expose-v1]' in native and b'[steam-client-update-v1]' in native, 'stale popup expose or official Steam updater integration'
@@ -115,7 +163,6 @@ def check(staged, app, ipa):
     assert b'[native-group-retire-v1]' in native, 'stale native process-group retirement'
     assert b'[cef-image-owner-v1]' in native, 'stale private CEF image retirement'
     assert b'[guest-breakpoint64-v1]' in native, 'stale AMD64 guest breakpoint diagnostics'
-    fex_arena_exports(cpu_data, require_hold_release=True)
     assert (app / 'aarch64-windows/xtajit.dll').read_bytes() == cpu_data, 'Xcode packaged stale FEX'
     guest = (staged.parent.parent / 'i386-windows/kernelbase.dll').read_bytes()
     assert struct.unpack_from('<H', guest, struct.unpack_from('<I', guest, 0x3c)[0] + 4)[0] == 0x14c
@@ -135,10 +182,11 @@ def check(staged, app, ipa):
         assert archive.read('Payload/Madeira.app/aarch64-windows/wow64.dll') == expected, 'ZIP producer differs'
         assert archive.read('Payload/Madeira.app/Madeira.debug.dylib') == native, 'ZIP native consumer differs'
         assert archive.read('Payload/Madeira.app/aarch64-windows/xtajit.dll') == cpu_data, 'ZIP FEX producer differs'
+        assert archive.read('Payload/Madeira.app/arm64ec-windows/xtajit64.dll') == ec_cpu_data, 'ZIP ARM64EC FEX producer differs'
         assert archive.read('Payload/Madeira.app/i386-windows/kernelbase.dll') == guest, 'ZIP guest32 caller differs'
         assert archive.read('Payload/Madeira.app/arm64ec-windows/madeira-steam-service.exe') == service, 'ZIP Steam service helper differs'
         assert archive.read('Payload/Madeira.app/aarch64-windows/services.exe') == scm, 'ZIP SCM startup producer differs'
-    print('PASS final IPA contains matching native IOSB consumer and byte-identical rebuilt ARM64 WoW64 producer')
+    print('PASS final IPA contains matching IOSB images and byte-identical rebuilt WoW64/ARM64EC FEX CPUs')
 
 
 if __name__ == '__main__':

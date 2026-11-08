@@ -1,0 +1,29 @@
+--- a/FEXCore/Source/Interface/IR/IREmitter.h
++++ b/FEXCore/Source/Interface/IR/IREmitter.h
+@@ -14,6 +14,10 @@
+ #include <algorithm>
+ #include <stdint.h>
+ #include <string.h>
++
++#if defined(FEX_IOS_HOST) && defined(_WIN32)
++#include <Windows/include/wine/debug.h>
++#endif
+ 
+ namespace FEXCore::IR {
+ 
+@@ -31,7 +35,14 @@
+     return true;
+   }
+   void ReownOrClaimBuffer() {
+-    if (!TryReownOrClaimBuffer()) fextl::ReportAllocationFailure(alignof(uintptr_t), 16 * 1024 * 1024);
++    if (!TryReownOrClaimBuffer()) {
++#if defined(FEX_IOS_HOST) && defined(_WIN32)
++      // The legacy compiler path cannot recover. Report without allocating;
++      // failed backing has not become a List pointer or reached a node clear.
++      __wine_dbg_output("[fex-ir-pool-v1] backing unavailable; list reset withheld before fatal allocation\n");
++#endif
++      fextl::ReportAllocationFailure(alignof(uintptr_t), 16 * 1024 * 1024);
++    }
+   }
+ 
+   void DelayedDisownBuffer() {

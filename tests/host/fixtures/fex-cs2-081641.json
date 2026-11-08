@@ -1,0 +1,1304 @@
+{
+  "schema_version": 1,
+  "source_log": "fex-cs2-081641 device capture; bounded allocator evidence",
+  "source_provenance": {
+    "build_source": "477f8d41e6146bf171e7f5612cf310d9f7cdffca",
+    "build_source_log_line": 11,
+    "reviewed_checkout": "573e24b1d60aedf9d7ff45bdc8ec0d79379cbb45",
+    "source_references_note": "Producer source references identify the reviewed checkout; native module offsets are derived from the captured module mapping, not local symbol addresses.",
+    "arena_publication_log_line": 357,
+    "arena_native_hold_log_line": 358,
+    "placement": "alignment-ends-v1",
+    "scratch_placement": "span-grid-v2"
+  },
+  "arena_start": 48586817536,
+  "arena_end": 57176752128,
+  "arena_size": 8589934592,
+  "request_size": 16777216,
+  "request_alignment": 65536,
+  "summary": {
+    "arena": 48586817536,
+    "failed_range": 48586817536,
+    "request": 16777216,
+    "align_mask": 65535,
+    "views": 1043,
+    "covered": 8505450496,
+    "free": 84484096,
+    "committed": 4950159360,
+    "overlap": 0,
+    "holes": 505,
+    "maxgap": 6291456,
+    "max_aligned_gap": 6291456,
+    "arena_end": 57176752128,
+    "failed_range_end": 57176752128
+  },
+  "summary_log_line": 53295,
+  "visible_size_buckets": [
+    {
+      "size": 16777216,
+      "flags": 3,
+      "views": 383,
+      "reserved": 6425673728,
+      "committed": 3061805056,
+      "log_line": 53296
+    },
+    {
+      "size": 8396800,
+      "flags": 0,
+      "views": 119,
+      "reserved": 999219200,
+      "committed": 998244352,
+      "log_line": 53297
+    },
+    {
+      "size": 16777216,
+      "flags": 35,
+      "views": 28,
+      "reserved": 469762048,
+      "committed": 469762048,
+      "log_line": 53298
+    },
+    {
+      "size": 2097152,
+      "flags": 35,
+      "views": 119,
+      "reserved": 249561088,
+      "committed": 59113472,
+      "log_line": 53299
+    },
+    {
+      "size": 9437184,
+      "flags": 35,
+      "views": 20,
+      "reserved": 188743680,
+      "committed": 188743680,
+      "log_line": 53300
+    },
+    {
+      "size": 6545408,
+      "flags": 35,
+      "views": 2,
+      "reserved": 13090816,
+      "committed": 13090816,
+      "log_line": 53301
+    },
+    {
+      "size": 2908160,
+      "flags": 35,
+      "views": 3,
+      "reserved": 8724480,
+      "committed": 8724480,
+      "log_line": 53302
+    },
+    {
+      "size": 860160,
+      "flags": 35,
+      "views": 10,
+      "reserved": 8601600,
+      "committed": 8601600,
+      "log_line": 53303
+    },
+    {
+      "size": 1937408,
+      "flags": 35,
+      "views": 4,
+      "reserved": 7749632,
+      "committed": 7749632,
+      "log_line": 53304
+    },
+    {
+      "size": 1290240,
+      "flags": 35,
+      "views": 6,
+      "reserved": 7741440,
+      "committed": 7741440,
+      "log_line": 53305
+    },
+    {
+      "size": 573440,
+      "flags": 35,
+      "views": 13,
+      "reserved": 7454720,
+      "committed": 7454720,
+      "log_line": 53306
+    },
+    {
+      "size": 380928,
+      "flags": 35,
+      "views": 14,
+      "reserved": 5332992,
+      "committed": 5332992,
+      "log_line": 53307
+    },
+    {
+      "size": 253952,
+      "flags": 35,
+      "views": 14,
+      "reserved": 3555328,
+      "committed": 3555328,
+      "log_line": 53308
+    },
+    {
+      "size": 167936,
+      "flags": 35,
+      "views": 15,
+      "reserved": 2519040,
+      "committed": 2519040,
+      "log_line": 53309
+    },
+    {
+      "size": 110592,
+      "flags": 35,
+      "views": 15,
+      "reserved": 1658880,
+      "committed": 1658880,
+      "log_line": 53310
+    },
+    {
+      "size": 73728,
+      "flags": 35,
+      "views": 15,
+      "reserved": 1105920,
+      "committed": 1105920,
+      "log_line": 53311
+    },
+    {
+      "size": 49152,
+      "flags": 35,
+      "views": 15,
+      "reserved": 737280,
+      "committed": 737280,
+      "log_line": 53312
+    },
+    {
+      "size": 32768,
+      "flags": 35,
+      "views": 18,
+      "reserved": 589824,
+      "committed": 589824,
+      "log_line": 53313
+    },
+    {
+      "size": 4096,
+      "flags": 3,
+      "views": 130,
+      "reserved": 532480,
+      "committed": 532480,
+      "log_line": 53314
+    },
+    {
+      "size": 20480,
+      "flags": 35,
+      "views": 17,
+      "reserved": 348160,
+      "committed": 348160,
+      "log_line": 53315
+    },
+    {
+      "size": 163840,
+      "flags": 35,
+      "views": 2,
+      "reserved": 327680,
+      "committed": 327680,
+      "log_line": 53316
+    },
+    {
+      "size": 221184,
+      "flags": 35,
+      "views": 1,
+      "reserved": 221184,
+      "committed": 221184,
+      "log_line": 53317
+    },
+    {
+      "size": 12288,
+      "flags": 35,
+      "views": 17,
+      "reserved": 208896,
+      "committed": 208896,
+      "log_line": 53318
+    },
+    {
+      "size": 8192,
+      "flags": 35,
+      "views": 15,
+      "reserved": 122880,
+      "committed": 122880,
+      "log_line": 53319
+    },
+    {
+      "size": 90112,
+      "flags": 35,
+      "views": 1,
+      "reserved": 90112,
+      "committed": 90112,
+      "log_line": 53320
+    },
+    {
+      "size": 77824,
+      "flags": 35,
+      "views": 1,
+      "reserved": 77824,
+      "committed": 77824,
+      "log_line": 53321
+    },
+    {
+      "size": 61440,
+      "flags": 35,
+      "views": 1,
+      "reserved": 61440,
+      "committed": 61440,
+      "log_line": 53322
+    },
+    {
+      "size": 4096,
+      "flags": 35,
+      "views": 15,
+      "reserved": 61440,
+      "committed": 61440,
+      "log_line": 53323
+    },
+    {
+      "size": 57344,
+      "flags": 35,
+      "views": 1,
+      "reserved": 57344,
+      "committed": 57344,
+      "log_line": 53324
+    },
+    {
+      "size": 45056,
+      "flags": 35,
+      "views": 1,
+      "reserved": 45056,
+      "committed": 45056,
+      "log_line": 53325
+    },
+    {
+      "size": 28672,
+      "flags": 35,
+      "views": 1,
+      "reserved": 28672,
+      "committed": 28672,
+      "log_line": 53326
+    },
+    {
+      "size": 24576,
+      "flags": 35,
+      "views": 1,
+      "reserved": 24576,
+      "committed": 24576,
+      "log_line": 53327
+    }
+  ],
+  "other": {
+    "views": 26,
+    "reserved": 101421056,
+    "committed": 101421056,
+    "log_line": 53328
+  },
+  "owner_class_order": [
+    "reserved16",
+    "committed16",
+    "guarded_callret_802000",
+    "lookup_l1_200000",
+    "frontend_900000",
+    "frontend_800000",
+    "other"
+  ],
+  "owners": [
+    {
+      "name": "steamwebhelper.exe",
+      "owner": 21478047744,
+      "lease": 7,
+      "current_lease": 7,
+      "state": "active",
+      "native_threads": 64,
+      "exiting": 0,
+      "cleanup_ready": 0,
+      "views": 638,
+      "reserved": 5038505984,
+      "committed": 2997329920,
+      "extent_start": 48586817536,
+      "extent_end": 56891539456,
+      "classes": [
+        227,
+        18,
+        64,
+        64,
+        19,
+        0,
+        246
+      ],
+      "log_line": 53329,
+      "image_identity_log_line": 19451,
+      "registration_log_line": 8539
+    },
+    {
+      "name": "steam.exe",
+      "owner": 4343316480,
+      "lease": 5,
+      "current_lease": 5,
+      "state": "active",
+      "native_threads": 36,
+      "exiting": 0,
+      "cleanup_ready": 0,
+      "views": 251,
+      "reserved": 2239266816,
+      "committed": 1242054656,
+      "extent_start": 48586948608,
+      "extent_end": 57176752128,
+      "classes": [
+        107,
+        2,
+        36,
+        36,
+        0,
+        2,
+        68
+      ],
+      "log_line": 53330,
+      "image_identity_log_line": 6498,
+      "registration_log_line": 3608
+    },
+    {
+      "name": "SteamService.exe",
+      "owner": 17183080448,
+      "lease": 4,
+      "current_lease": 4,
+      "state": "active",
+      "native_threads": 4,
+      "exiting": 0,
+      "cleanup_ready": 0,
+      "views": 36,
+      "reserved": 270176256,
+      "committed": 171728896,
+      "extent_start": 48587145216,
+      "extent_end": 57143197696,
+      "classes": [
+        12,
+        1,
+        4,
+        4,
+        1,
+        0,
+        14
+      ],
+      "log_line": 53331,
+      "image_identity_log_line": 6493,
+      "registration_log_line": 2265
+    },
+    {
+      "name": "cs2.exe",
+      "owner": 4568743936,
+      "lease": 23,
+      "current_lease": 23,
+      "state": "active",
+      "native_threads": 15,
+      "exiting": 0,
+      "cleanup_ready": 0,
+      "views": 118,
+      "reserved": 957501440,
+      "committed": 539045888,
+      "extent_start": 48643702784,
+      "extent_end": 52529463296,
+      "classes": [
+        37,
+        7,
+        15,
+        15,
+        0,
+        7,
+        37
+      ],
+      "log_line": 53332,
+      "image_identity_log_line": 48770,
+      "registration_log_line": 48430
+    }
+  ],
+  "owner_totals": {
+    "native_threads": 119,
+    "views": 1043,
+    "reserved": 8505450496,
+    "committed": 4950159360,
+    "uncommitted": 3555291136
+  },
+  "derived_other": {
+    "frontend_800000_views": 9,
+    "frontend_800000_reserved": 75497472,
+    "remaining_views": 17,
+    "remaining_reserved": 25923584,
+    "note": "The nine 8MiB views follow from owner size classes and are included in other_sizes; sizes of the remaining 17 views were not logged."
+  },
+  "headroom": [
+    {
+      "log_line": 48237,
+      "used_mib_floor": 7151,
+      "free_mib_floor": 1040,
+      "views": 914,
+      "holes": 441,
+      "maxgap_kib": 860544,
+      "max_4mb_aligned_gap_kib": 860160
+    },
+    {
+      "log_line": 48600,
+      "used_mib_floor": 7256,
+      "free_mib_floor": 935,
+      "views": 921,
+      "holes": 439,
+      "maxgap_kib": 795008,
+      "max_4mb_aligned_gap_kib": 794624
+    },
+    {
+      "log_line": 50132,
+      "used_mib_floor": 7539,
+      "free_mib_floor": 652,
+      "views": 983,
+      "holes": 477,
+      "maxgap_kib": 473472,
+      "max_4mb_aligned_gap_kib": 471040
+    },
+    {
+      "log_line": 52767,
+      "used_mib_floor": 7786,
+      "free_mib_floor": 405,
+      "views": 1006,
+      "holes": 489,
+      "maxgap_kib": 306560,
+      "max_4mb_aligned_gap_kib": 303104
+    }
+  ],
+  "failure_chronology": [
+    {
+      "log_line": 53294,
+      "event": "reservation_failure",
+      "request_size": 16777216,
+      "request_alignment": 65536,
+      "scan_views": 1042,
+      "max_aligned_gap": 6291456,
+      "owner": null,
+      "thread": null,
+      "attribution": "The allocator diagnostic carries no current owner or thread; the four subsequent owner records are an arena-wide census."
+    },
+    {
+      "log_line": 53295,
+      "event": "first_failure_census",
+      "views": 1043,
+      "holes": 505,
+      "free": 84484096,
+      "maxgap": 6291456
+    },
+    {
+      "log_line": 53334,
+      "event": "reservation_failure",
+      "request_size": 9437184,
+      "request_alignment": 65536,
+      "scan_views": 1042,
+      "max_aligned_gap": 6291456,
+      "owner": null,
+      "thread": null
+    },
+    {
+      "log_line": 53337,
+      "event": "reservation_failure",
+      "request_size": 16777216,
+      "request_alignment": 65536,
+      "scan_views": 1042,
+      "max_aligned_gap": 6291456,
+      "owner": null,
+      "thread": null
+    },
+    {
+      "log_line": 53373,
+      "event": "reservation_failure",
+      "request_size": 16777216,
+      "request_alignment": 16777216,
+      "scan_views": 1042,
+      "max_aligned_gap": 655360,
+      "owner": null,
+      "thread": null,
+      "attribution": "Immediately precedes the fatal FEXAlloc diagnostic; the scan itself does not log identity."
+    },
+    {
+      "log_line": 53375,
+      "event": "fatal_fex_allocation_failure",
+      "request_size": 7184,
+      "request_alignment": 1,
+      "owner": 4568743936,
+      "thread": 912,
+      "owner_identity_log_line": 53386,
+      "thread_owner_log_line": 52696
+    },
+    {
+      "log_line": 53419,
+      "event": "native_fault_site",
+      "module": "libarm64ecfex.dll",
+      "pool_pc": 13105271064,
+      "module_rva": 1147160,
+      "pe_pc": 16782754072,
+      "owner": 4568743936,
+      "thread": 912
+    },
+    {
+      "log_line": 53569,
+      "event": "pseudo_process_termination",
+      "owner": 4568743936,
+      "thread": 912,
+      "status": 3246391296
+    }
+  ],
+  "native_fault": {
+    "module": "libarm64ecfex.dll",
+    "pe_base": 16781606912,
+    "rx_base": 13104123904,
+    "module_size": 4276224,
+    "module_mapping_log_line": 48439,
+    "owner_registration_log_line": 48430,
+    "owner": 4568743936,
+    "owner_lease": 23,
+    "thread": 912,
+    "pc": 13105271064,
+    "pc_rva": 1147160,
+    "pe_pc": 16782754072,
+    "lr": 13105269900,
+    "lr_rva": 1145996,
+    "pe_lr": 16782752908,
+    "trap_instruction": 3560964128,
+    "register_bytes_x19": 7184,
+    "register_alignment_x20": 1,
+    "registers_log_lines": [
+      53401,
+      53402
+    ],
+    "module_offset_log_lines": [
+      53419,
+      53420
+    ],
+    "pe_exception_log_line": 53557,
+    "note": "The exception occurs at an intentional FEX allocation failure trap. The guest saved RIP is not the native fault site. Module copy owner=0 is not the current process owner."
+  },
+  "lifetime_vname_events": {
+    "scope": "Observed name records before the first fatal FEXAlloc diagnostic at line 53375.",
+    "events": 806,
+    "records": [
+      {
+        "name": "FEXMemJIT",
+        "events": 14,
+        "named_bytes": 469762048,
+        "sizes": [
+          {
+            "size": 16777216,
+            "events": 12
+          },
+          {
+            "size": 134217728,
+            "events": 2
+          }
+        ],
+        "first_log_line": 1160,
+        "last_log_line": 49254,
+        "producer_source": [
+          "FEX/FEXCore/Source/Interface/Core/CPUBackend.cpp:542"
+        ]
+      },
+      {
+        "name": "FEXMem_BlockLinks",
+        "events": 110,
+        "named_bytes": 12824576,
+        "sizes": [
+          {
+            "size": 4096,
+            "events": 14
+          },
+          {
+            "size": 8192,
+            "events": 14
+          },
+          {
+            "size": 12288,
+            "events": 13
+          },
+          {
+            "size": 20480,
+            "events": 11
+          },
+          {
+            "size": 32768,
+            "events": 10
+          },
+          {
+            "size": 49152,
+            "events": 9
+          },
+          {
+            "size": 73728,
+            "events": 8
+          },
+          {
+            "size": 110592,
+            "events": 7
+          },
+          {
+            "size": 167936,
+            "events": 7
+          },
+          {
+            "size": 253952,
+            "events": 5
+          },
+          {
+            "size": 380928,
+            "events": 4
+          },
+          {
+            "size": 573440,
+            "events": 4
+          },
+          {
+            "size": 860160,
+            "events": 3
+          },
+          {
+            "size": 1290240,
+            "events": 1
+          }
+        ],
+        "first_log_line": 1162,
+        "last_log_line": 52312,
+        "producer_source": [
+          "FEX/FEXCore/Source/Interface/Core/LookupCache.cpp:23"
+        ]
+      },
+      {
+        "name": "FEXMem_CPUBackend",
+        "events": 161,
+        "named_bytes": 28893184,
+        "sizes": [
+          {
+            "size": 16384,
+            "events": 8
+          },
+          {
+            "size": 40960,
+            "events": 7
+          },
+          {
+            "size": 45056,
+            "events": 3
+          },
+          {
+            "size": 12288,
+            "events": 9
+          },
+          {
+            "size": 135168,
+            "events": 8
+          },
+          {
+            "size": 139264,
+            "events": 7
+          },
+          {
+            "size": 163840,
+            "events": 6
+          },
+          {
+            "size": 569344,
+            "events": 5
+          },
+          {
+            "size": 143360,
+            "events": 2
+          },
+          {
+            "size": 356352,
+            "events": 1
+          },
+          {
+            "size": 24576,
+            "events": 7
+          },
+          {
+            "size": 32768,
+            "events": 7
+          },
+          {
+            "size": 77824,
+            "events": 7
+          },
+          {
+            "size": 81920,
+            "events": 3
+          },
+          {
+            "size": 286720,
+            "events": 2
+          },
+          {
+            "size": 495616,
+            "events": 1
+          },
+          {
+            "size": 315392,
+            "events": 1
+          },
+          {
+            "size": 425984,
+            "events": 2
+          },
+          {
+            "size": 172032,
+            "events": 1
+          },
+          {
+            "size": 53248,
+            "events": 4
+          },
+          {
+            "size": 114688,
+            "events": 2
+          },
+          {
+            "size": 65536,
+            "events": 6
+          },
+          {
+            "size": 69632,
+            "events": 1
+          },
+          {
+            "size": 585728,
+            "events": 2
+          },
+          {
+            "size": 241664,
+            "events": 1
+          },
+          {
+            "size": 258048,
+            "events": 1
+          },
+          {
+            "size": 516096,
+            "events": 1
+          },
+          {
+            "size": 548864,
+            "events": 1
+          },
+          {
+            "size": 217088,
+            "events": 1
+          },
+          {
+            "size": 20480,
+            "events": 3
+          },
+          {
+            "size": 57344,
+            "events": 4
+          },
+          {
+            "size": 573440,
+            "events": 1
+          },
+          {
+            "size": 61440,
+            "events": 2
+          },
+          {
+            "size": 73728,
+            "events": 3
+          },
+          {
+            "size": 49152,
+            "events": 1
+          },
+          {
+            "size": 167936,
+            "events": 3
+          },
+          {
+            "size": 225280,
+            "events": 2
+          },
+          {
+            "size": 307200,
+            "events": 1
+          },
+          {
+            "size": 602112,
+            "events": 1
+          },
+          {
+            "size": 675840,
+            "events": 1
+          },
+          {
+            "size": 696320,
+            "events": 1
+          },
+          {
+            "size": 28672,
+            "events": 4
+          },
+          {
+            "size": 102400,
+            "events": 1
+          },
+          {
+            "size": 147456,
+            "events": 1
+          },
+          {
+            "size": 184320,
+            "events": 1
+          },
+          {
+            "size": 86016,
+            "events": 1
+          },
+          {
+            "size": 794624,
+            "events": 1
+          },
+          {
+            "size": 237568,
+            "events": 1
+          },
+          {
+            "size": 249856,
+            "events": 1
+          },
+          {
+            "size": 802816,
+            "events": 1
+          },
+          {
+            "size": 745472,
+            "events": 1
+          },
+          {
+            "size": 851968,
+            "events": 1
+          },
+          {
+            "size": 786432,
+            "events": 1
+          },
+          {
+            "size": 884736,
+            "events": 1
+          },
+          {
+            "size": 36864,
+            "events": 2
+          },
+          {
+            "size": 94208,
+            "events": 1
+          },
+          {
+            "size": 110592,
+            "events": 1
+          },
+          {
+            "size": 434176,
+            "events": 1
+          },
+          {
+            "size": 204800,
+            "events": 1
+          },
+          {
+            "size": 708608,
+            "events": 1
+          },
+          {
+            "size": 200704,
+            "events": 1
+          },
+          {
+            "size": 118784,
+            "events": 1
+          },
+          {
+            "size": 274432,
+            "events": 2
+          },
+          {
+            "size": 106496,
+            "events": 1
+          },
+          {
+            "size": 327680,
+            "events": 1
+          },
+          {
+            "size": 741376,
+            "events": 1
+          },
+          {
+            "size": 90112,
+            "events": 1
+          }
+        ],
+        "first_log_line": 1336,
+        "last_log_line": 53037,
+        "producer_source": [
+          "FEX/FEXCore/Source/Interface/Context/Context.h:435",
+          "FEX/FEXCore/include/FEXCore/Utils/ThreadPoolAllocator.h:419"
+        ]
+      },
+      {
+        "name": "FEXMem_CallRetStacks",
+        "events": 113,
+        "named_bytes": 948838400,
+        "sizes": [
+          {
+            "size": 8396800,
+            "events": 113
+          }
+        ],
+        "first_log_line": 1169,
+        "last_log_line": 53205,
+        "producer_source": [
+          "FEX/Source/Windows/Common/CallRetStack.h:146"
+        ]
+      },
+      {
+        "name": "FEXMem_Frontend",
+        "events": 85,
+        "named_bytes": 756023296,
+        "sizes": [
+          {
+            "size": 8388608,
+            "events": 44
+          },
+          {
+            "size": 9437184,
+            "events": 41
+          }
+        ],
+        "first_log_line": 1328,
+        "last_log_line": 53043,
+        "producer_source": [
+          "FEX/FEXCore/Source/Interface/Context/Context.h:434",
+          "FEX/FEXCore/include/FEXCore/Utils/ThreadPoolAllocator.h:388"
+        ]
+      },
+      {
+        "name": "FEXMem_Lookup_L1",
+        "events": 113,
+        "named_bytes": 236978176,
+        "sizes": [
+          {
+            "size": 2097152,
+            "events": 113
+          }
+        ],
+        "first_log_line": 1143,
+        "last_log_line": 53198,
+        "producer_source": [
+          "FEX/FEXCore/Source/Interface/Core/LookupCache.cpp:118"
+        ]
+      },
+      {
+        "name": "FEXMem_Misc",
+        "events": 12,
+        "named_bytes": 196608,
+        "sizes": [
+          {
+            "size": 16384,
+            "events": 12
+          }
+        ],
+        "first_log_line": 1067,
+        "last_log_line": 48570,
+        "producer_source": [
+          "FEX/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp:73"
+        ]
+      },
+      {
+        "name": "FEXMem_OpDispatcher",
+        "events": 85,
+        "named_bytes": 1426063360,
+        "sizes": [
+          {
+            "size": 16777216,
+            "events": 85
+          }
+        ],
+        "first_log_line": 1326,
+        "last_log_line": 53042,
+        "producer_source": [
+          "FEX/FEXCore/Source/Interface/Context/Context.h:433",
+          "FEX/FEXCore/include/FEXCore/Utils/ThreadPoolAllocator.h:388"
+        ]
+      },
+      {
+        "name": "FEXMem_ThreadState",
+        "events": 113,
+        "named_bytes": 1388544,
+        "sizes": [
+          {
+            "size": 12288,
+            "events": 113
+          }
+        ],
+        "first_log_line": 1139,
+        "last_log_line": 53196,
+        "producer_source": [
+          "FEX/FEXCore/Source/Interface/Core/Core.cpp:585"
+        ]
+      }
+    ],
+    "note": "Allocation/name events, not live reservations or residency. VirtualName output is capped at 256 calls per module instance and has no corresponding free records; names can repeat at reused addresses. FEXMemJIT and the observed 16KiB FEXMem_Misc dispatchers are executable code-pool memory outside the host arena.",
+    "logger_source": "FEX/Source/Windows/Common/FEXUnixLib.cpp:242"
+  },
+  "completed_owner_retirements": {
+    "scope": "Owner retire diagnostics before the first fatal FEXAlloc diagnostic.",
+    "records": [
+      {
+        "owner": 4340924416,
+        "lease": 2,
+        "native_threads": 0,
+        "freed_views": 12,
+        "freed_reserved": 94404608,
+        "freed_committed": 35819520,
+        "remaining_views": 0,
+        "retained_unsafe": 0,
+        "log_line": 3441
+      },
+      {
+        "owner": 4343300096,
+        "lease": 6,
+        "native_threads": 0,
+        "freed_views": 17,
+        "freed_reserved": 111296512,
+        "freed_committed": 59555840,
+        "remaining_views": 0,
+        "retained_unsafe": 0,
+        "log_line": 10659
+      },
+      {
+        "owner": 4346593280,
+        "lease": 8,
+        "native_threads": 0,
+        "freed_views": 0,
+        "freed_reserved": 0,
+        "freed_committed": 0,
+        "remaining_views": 0,
+        "retained_unsafe": 0,
+        "log_line": 10666
+      },
+      {
+        "owner": 4420681728,
+        "lease": 12,
+        "native_threads": 0,
+        "freed_views": 10,
+        "freed_reserved": 60858368,
+        "freed_committed": 39100416,
+        "remaining_views": 0,
+        "retained_unsafe": 0,
+        "log_line": 16771
+      },
+      {
+        "owner": 4563386368,
+        "lease": 14,
+        "native_threads": 0,
+        "freed_views": 0,
+        "freed_reserved": 0,
+        "freed_committed": 0,
+        "remaining_views": 0,
+        "retained_unsafe": 0,
+        "log_line": 16798
+      },
+      {
+        "owner": 25773015040,
+        "lease": 11,
+        "native_threads": 0,
+        "freed_views": 16,
+        "freed_reserved": 94392320,
+        "freed_committed": 39772160,
+        "remaining_views": 0,
+        "retained_unsafe": 0,
+        "log_line": 16958
+      },
+      {
+        "owner": 4568547328,
+        "lease": 16,
+        "native_threads": 0,
+        "freed_views": 0,
+        "freed_reserved": 0,
+        "freed_committed": 0,
+        "remaining_views": 0,
+        "retained_unsafe": 0,
+        "log_line": 17159
+      },
+      {
+        "owner": 30067982336,
+        "lease": 13,
+        "native_threads": 0,
+        "freed_views": 16,
+        "freed_reserved": 77385728,
+        "freed_committed": 35213312,
+        "remaining_views": 0,
+        "retained_unsafe": 0,
+        "log_line": 17279
+      },
+      {
+        "owner": 4563025920,
+        "lease": 15,
+        "native_threads": 0,
+        "freed_views": 0,
+        "freed_reserved": 0,
+        "freed_committed": 0,
+        "remaining_views": 0,
+        "retained_unsafe": 0,
+        "log_line": 17299
+      },
+      {
+        "owner": 4420616192,
+        "lease": 10,
+        "native_threads": 0,
+        "freed_views": 10,
+        "freed_reserved": 60858368,
+        "freed_committed": 39165952,
+        "remaining_views": 0,
+        "retained_unsafe": 0,
+        "log_line": 17454
+      },
+      {
+        "owner": 4568301568,
+        "lease": 20,
+        "native_threads": 0,
+        "freed_views": 0,
+        "freed_reserved": 0,
+        "freed_committed": 0,
+        "remaining_views": 0,
+        "retained_unsafe": 0,
+        "log_line": 29380
+      },
+      {
+        "owner": 4343250944,
+        "lease": 22,
+        "native_threads": 0,
+        "freed_views": 0,
+        "freed_reserved": 0,
+        "freed_committed": 0,
+        "remaining_views": 0,
+        "retained_unsafe": 0,
+        "log_line": 41883
+      },
+      {
+        "owner": 30067982336,
+        "lease": 21,
+        "native_threads": 0,
+        "freed_views": 19,
+        "freed_reserved": 94642176,
+        "freed_committed": 46243840,
+        "remaining_views": 0,
+        "retained_unsafe": 0,
+        "log_line": 41988
+      },
+      {
+        "owner": 25773015040,
+        "lease": 18,
+        "native_threads": 0,
+        "freed_views": 19,
+        "freed_reserved": 94547968,
+        "freed_committed": 40779776,
+        "remaining_views": 0,
+        "retained_unsafe": 0,
+        "log_line": 42070
+      },
+      {
+        "owner": 4568285184,
+        "lease": 19,
+        "native_threads": 0,
+        "freed_views": 0,
+        "freed_reserved": 0,
+        "freed_committed": 0,
+        "remaining_views": 0,
+        "retained_unsafe": 0,
+        "log_line": 42088
+      }
+    ],
+    "freed_views": 119,
+    "freed_reserved": 688386048,
+    "freed_committed": 335650816,
+    "note": "All 15 observed retirement records have zero remaining views and retained_unsafe=0. The failure census contains four active current-lease owners."
+  },
+  "interpretation_notes": [
+    "Reserved and committed fields describe virtual bytes and Wine page-protection bookkeeping, not physical residency.",
+    "View flags identify the original allocation class; flags=3 does not imply committed=0. The 383 reserved 16MiB spans contain logical commits.",
+    "Census holes and maxgap are the raw logical-view complement; va-scan maxgap is usable space after its requested alignment. The census and scanner view counts use different traversal boundaries.",
+    "The published capture already used span-grid-v2 scratch placement. Reproducing a failure with an older placement policy does not establish the cause of this capture."
+  ],
+  "replay_note": "Counts, bytes, owner generations, extents and failure chronology are captured aggregates. Exact live-view bases, hole positions, allocation order and 17 unlisted sizes cannot be recovered from bounded logging. Any replay geometry or missing sizes must be labeled synthetic and must not claim to reproduce original device VAD offsets.",
+  "allocation_class_producers": [
+    {
+      "size": 16777216,
+      "flags": 3,
+      "views": 383,
+      "category": "reserved 16MiB views; rpmalloc span correlation",
+      "source": [
+        "FEX/External/rpmalloc/rpmalloc/rpmalloc.c:218",
+        "FEX/External/rpmalloc/rpmalloc/rpmalloc.c:1269",
+        "FEX/External/rpmalloc/rpmalloc/rpmalloc.c:2602"
+      ],
+      "note": "The rpmalloc producer requests 16MiB aligned MEM_RESERVE spans and subsequently commits inside those views. Size/flags and source behavior correlate this class with spans; the census does not record per-view producer identity, so all 383 views cannot be individually attributed. Named ThreadState objects can be suballocations inside spans."
+    },
+    {
+      "size": 8396800,
+      "flags": 0,
+      "views": 119,
+      "category": "guarded call/return stacks",
+      "name": "FEXMem_CallRetStacks",
+      "source": [
+        "FEX/Source/Windows/Common/CallRetStack.h:117",
+        "FEX/Source/Windows/Common/CallRetStack.h:146"
+      ],
+      "note": "Each view reserves an 8MiB usable stack plus two 4KiB guard pages, then commits the usable stack."
+    },
+    {
+      "size": 2097152,
+      "flags": 35,
+      "views": 119,
+      "category": "L1-only lookup caches",
+      "name": "FEXMem_Lookup_L1",
+      "source": [
+        "FEX/FEXCore/Source/Interface/Core/LookupCache.cpp:118"
+      ],
+      "note": "The capture uses L1-only mode; committed bytes reflect observed Wine page bookkeeping, not the 2MiB reservation capacity."
+    },
+    {
+      "size": 16777216,
+      "flags": 35,
+      "views": 28,
+      "category": "pooled virtual scratch",
+      "name": "FEXMem_OpDispatcher",
+      "source": [
+        "FEX/FEXCore/Source/Interface/Context/Context.h:433",
+        "FEX/FEXCore/include/FEXCore/Utils/ThreadPoolAllocator.h:388"
+      ],
+      "note": "The named OpDispatcher producer requests 16MiB committed virtual buffers. Census class identity is size/flags, so this is a producer correlation rather than a per-view name attribution."
+    },
+    {
+      "sizes": [
+        9437184,
+        8388608
+      ],
+      "flags": 35,
+      "views": 29,
+      "category": "pooled frontend buffers",
+      "name": "FEXMem_Frontend",
+      "source": [
+        "FEX/FEXCore/Source/Interface/Context/Context.h:434",
+        "FEX/FEXCore/include/FEXCore/Utils/ThreadPoolAllocator.h:388"
+      ],
+      "note": "Observed Frontend name events use 8MiB and 9MiB sizes. The owner classes capture 20 nine-MiB and 9 eight-MiB live views."
+    }
+  ]
+}

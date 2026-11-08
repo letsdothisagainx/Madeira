@@ -287,6 +287,7 @@ jobs:
       - id: pins
         run: |
           echo "wine=$(git rev-parse HEAD:wine)" >> "$GITHUB_OUTPUT"
+          echo "fex=$(git rev-parse HEAD:FEX)" >> "$GITHUB_OUTPUT"
           echo "dxmt=$(git rev-parse HEAD:dxmt)" >> "$GITHUB_OUTPUT"
       # Seed the split caches only when every legacy input still matches.
       - uses: actions/cache/restore@v4
@@ -339,6 +340,13 @@ jobs:
           path: |
             wine/build-macos
             wine/build-arm64ec
+      # Cache objects, never skip the shared staging/configure/build/package gates.
+      - uses: actions/cache@v4
+        with:
+          key: plan19-${{ steps.sdk.outputs.key }}-fex-pe-${{ steps.pins.outputs.fex }}-${{ hashFiles('build/fex-compat/**', 'build/fex-wow64/build.sh', 'build/fex-arm64ec/build.sh', 'tools/build/stage-fex-compat.py', 'tools/build/build-fex-pe-compat.sh', 'tools/build/build-fex-wow64-compat.sh', 'tools/build/build-fex-arm64ec-compat.sh', 'tools/build/setup-llvm-mingw.sh', 'tools/check-io-abi-package.py') }}
+          path: |
+            FEX/build-wow64
+            FEX/build-arm64ec
       - uses: actions/cache@v4
         with:
           key: plan19-${{ steps.sdk.outputs.graphics }}-dxmt-ios-${{ steps.pins.outputs.dxmt }}-${{ steps.pins.outputs.wine }}-${{ hashFiles('build/dxmt-ios/build.sh', 'tools/build/build-dxmt-ios.sh', 'tools/build/build-shader-headers.sh', 'tools/build/build-llvm-ios.sh', 'build/madeira-d3d12/deps.sh', 'madeira-d3d12/src/**', 'madeira-d3d12/tests/native/**', 'madeira-d3d12/third_party/**', 'app/Madeira/d3d12/**') }}
