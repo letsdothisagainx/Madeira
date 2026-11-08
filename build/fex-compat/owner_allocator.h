@@ -5,16 +5,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Image-local counters. Reservations and residency remain Wine's census. */
+/* Image-local failure/acquisition counters; no per-allocation counter writes.
+ * Reservations and residency remain Wine's census. */
 struct MadeiraFEXOwnerAllocatorStats {
   uint64_t version;
   uint64_t heap_acquires;
-  uint64_t allocation_calls;
   uint64_t allocation_failures;
   uint64_t rejected_owners;
   uint64_t rejected_arguments;
-  uint64_t free_calls;
-  uint64_t last_request;
 };
 
 #ifdef __cplusplus

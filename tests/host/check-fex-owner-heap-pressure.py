@@ -161,12 +161,12 @@ void module_bind(unsigned o,const struct bridge* b) {
  assert(get_size_class(7184)==76 && global_size_class[76].block_size==8192);
  assert(get_page_type(get_size_class(8*1024*1024))==PAGE_LARGE);
 }
-void module_old_attach(void) { rpmalloc_thread_initialize(); }
-void module_detach(void) { rpmalloc_thread_finalize(); }
-void* module_old_alloc(size_t n) { return rpmalloc(n); }
-void* module_old_final_alloc(size_t a,size_t n) { return rpaligned_alloc(a,n); }
-void module_old_free(void* p) { rpfree(p); }
-void module_old_collect(void) { rpmalloc_thread_collect(); }
+void module_old_attach(void) { fex_ios_rpm_lock();rpmalloc_thread_initialize();fex_ios_rpm_unlock(); }
+void module_detach(void) { fex_ios_rpm_lock();rpmalloc_thread_finalize();fex_ios_rpm_unlock(); }
+void* module_old_alloc(size_t n) { fex_ios_rpm_lock();void* p=rpmalloc(n);fex_ios_rpm_unlock();return p; }
+void* module_old_final_alloc(size_t a,size_t n) { fex_ios_rpm_lock();void* p=rpaligned_alloc(a,n);fex_ios_rpm_unlock();return p; }
+void module_old_free(void* p) { fex_ios_rpm_lock();rpfree(p);fex_ios_rpm_unlock(); }
+void module_old_collect(void) { fex_ios_rpm_lock();rpmalloc_thread_collect();fex_ios_rpm_unlock(); }
 '''
 MODULE_CPP = r'''
 #include "owner_allocator.h"
@@ -195,9 +195,9 @@ arena = arena.replace('static struct file_view storage[2048];','static struct fi
 owner_init=','.join('{(void*)0x%x,%d,0}'%(o['owner'],o['lease']) for o in fixture['owners'])
 arena,n=re.subn(r'owners\[3\] = \{.*?\};','owners[4] = {'+owner_init+'};',arena,count=1,flags=re.S)
 assert n==1
-arena = arena.replace('static void unmap_area(void *p,size_t n) { assert(mmap_is_in_reserved_area(p,n)); restored++; }', 'static void unmap_area(void *p,size_t n) { assert(mmap_is_in_reserved_area(p,n));assert(mmap(p,n,PROT_NONE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,-1,0)==p);restored++; }')
+arena = arena.replace('static void unmap_area(void *p,size_t n) { assert(mmap_is_in_reserved_area(p,n)); restored++; }', 'static void unmap_area(void *p,size_t n) { assert(mmap_is_in_reserved_area(p,n));host_vm_decommit(p,n);restored++; }')
 # anon_mmap_fixed is an owned syscall stub, not Wine placement code.
-arena = arena.replace('    return p;\n}\nstatic void *map_reserved_area_inner', '    assert(!mprotect(p,n,PROT_NONE));\n    return p;\n}\nstatic void *map_reserved_area_inner',1)
+arena = arena.replace('    return p;\n}\nstatic void *map_reserved_area_inner', '    host_vm_protect(p,n,PROT_NONE);\n    return p;\n}\nstatic void *map_reserved_area_inner',1)
 external=[]
 for row in fixture['visible_size_buckets']:
     if (row['size'],row['flags']) in [(0x1000000,3),(0x1000,3)]:continue
@@ -215,7 +215,38 @@ external.extend([(0x1000,3)]*7)
 last=external.pop(next(i for i,r in enumerate(external) if r==(0x1000000,0x23)))
 external.append(last)
 arena += '\n#include "abi.h"\n#include <pthread.h>\n'
-arena = arena.replace('#include <sys/mman.h>', '#include <sys/mman.h>\n#ifndef MAP_NORESERVE\n#define MAP_NORESERVE 0\n#endif')
+arena = arena.replace('#include <sys/mman.h>', r'''
+#include <sys/mman.h>
+#include <unistd.h>
+#ifndef MAP_NORESERVE
+#define MAP_NORESERVE 0
+#endif
+/* Windows4KiB logical protections are represented by the commit bitmap.
+ * A coarser native page cannot protect either4KiB edge independently, so this
+ * owned syscall shim preserves neighboring live bytes and zeros only the
+ * requested decommit range. Production allocation/guard decisions are unchanged.
+ */
+static size_t host_vm_page_size;
+static void host_vm_protect(void* p,size_t n,int prot) {
+ uintptr_t lo=(uintptr_t)p&~(uintptr_t)(host_vm_page_size-1);
+ uintptr_t hi=((uintptr_t)p+n+host_vm_page_size-1)&~(uintptr_t)(host_vm_page_size-1);
+ assert(n&&!((uintptr_t)p&4095)&&!(n&4095));
+ assert(!mprotect((void*)lo,hi-lo,prot));
+}
+static void host_vm_decommit(void* p,size_t n) {
+ uintptr_t lo=(uintptr_t)p,hi=lo+n;
+ uintptr_t first=(lo+host_vm_page_size-1)&~(uintptr_t)(host_vm_page_size-1);
+ uintptr_t last=hi&~(uintptr_t)(host_vm_page_size-1);
+ host_vm_protect(p,n,PROT_READ|PROT_WRITE);
+ if(first>hi) { memset(p,0,n);return; }
+ if(first>lo)memset((void*)lo,0,first-lo);
+ if(last<hi)memset((void*)last,0,hi-last);
+ if(last>first) {
+  assert(!(first&(host_vm_page_size-1))&&!((last-first)&(host_vm_page_size-1)));
+  assert(mmap((void*)first,last-first,PROT_NONE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,-1,0)==(void*)first);
+ }
+}
+''')
 arena += 'static const struct {size_t size;unsigned flags;} external[]={'+','.join('{0x%x,0x%x}'%r for r in external)+'};\n'
 arena += r'''
 static pthread_mutex_t arena_mutex=PTHREAD_MUTEX_INITIALIZER;
@@ -227,6 +258,11 @@ static unsigned owner_index(const struct file_view* v) {
  assert(!"missing owner");return 0;
 }
 void arena_initialize(void) {
+ size_t native_page=(size_t)sysconf(_SC_PAGESIZE);
+ const char* requested=getenv("MADEIRA_PRESSURE_HOST_PAGE_SIZE");
+ host_vm_page_size=requested?(size_t)strtoul(requested,NULL,10):native_page;
+ assert(host_vm_page_size>=native_page&&!(host_vm_page_size&(host_vm_page_size-1))&&host_vm_page_size<=0x10000);
+ printf("host VM shim: native-page=%zu modeled-page=%zu Windows4KiB protections tracked logically\n",native_page,host_vm_page_size);
  size_t n=0x200000000ULL;
  void* raw=mmap(NULL,n+0x1000000,PROT_NONE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE,-1,0);assert(raw!=MAP_FAILED);
  arena_lo=((uintptr_t)raw+0xffffff)&~(uintptr_t)0xffffff;arena_hi=arena_lo+n;
@@ -262,16 +298,15 @@ void* arena_reserve(unsigned owner,size_t n,size_t a,unsigned flags) {
 }
 int arena_commit(unsigned owner,void* p,size_t n) {
  pthread_mutex_lock(&arena_mutex);struct file_view* v=find_view_range(p,n);assert(v&&owner_index(v)==owner);
- assert(!mprotect(p,n,PROT_READ|PROT_WRITE));
+ host_vm_protect(p,n,PROT_READ|PROT_WRITE);
  for(uintptr_t q=(uintptr_t)p;q<(uintptr_t)p+n;q+=4096){size_t i=(q-arena_lo)/4096;if(!committed_pages[i]){committed_pages[i]=1;committed_count[owner]+=4096;}}
  pthread_mutex_unlock(&arena_mutex);return 1;
 }
 void arena_decommit(unsigned owner,void* p,size_t n) {
  pthread_mutex_lock(&arena_mutex);struct file_view* v=find_view_range(p,n);assert(v&&owner_index(v)==owner);
- /* Windows decommit guarantees fresh zeros on recommit. Exact-address
-  * replacement is confined to the native arena held by this fixture.
-  * Darwin MADV_DONTNEED alone does not provide that guarantee. */
- assert(mmap(p,n,PROT_NONE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,-1,0)==p);
+ /* Only aligned native interior pages are replaced. Partial host-page
+  * edges are zeroed without replacing live headers or adjacent payloads. */
+ host_vm_decommit(p,n);
  for(uintptr_t q=(uintptr_t)p;q<(uintptr_t)p+n;q+=4096){size_t i=(q-arena_lo)/4096;if(committed_pages[i]){committed_pages[i]=0;committed_count[owner]-=4096;}}
  pthread_mutex_unlock(&arena_mutex);
 }
@@ -408,7 +443,15 @@ int main(int argc,char** argv) {
   * every byte of a small mapping, without faulting1.2GiB of large payloads. */
  void* zero=arena_reserve(0,0x10000,0x10000,0x23);assert(zero);assert(arena_commit(0,zero,0x10000));
  memset(zero,0xa5,0x10000);arena_decommit(0,zero,0x10000);assert(arena_commit(0,zero,0x10000));
- for(unsigned i=0;i<0x10000;i++)assert(!((unsigned char*)zero)[i]);arena_release(0,zero);
+ for(unsigned i=0;i<0x10000;i++)assert(!((unsigned char*)zero)[i]);
+ /* Both4KiB edges share16KiB native pages with this decommitted interior.
+  * A Windows-small-page decommit must preserve the live header and neighbor. */
+ memset(zero,0xa5,0x10000);memset(zero,0x3c,0x1000);memset((char*)zero+0xf000,0x7e,0x1000);
+ arena_decommit(0,(char*)zero+0x1000,0xe000);
+ for(unsigned i=0;i<0x1000;i++){assert(((unsigned char*)zero)[i]==0x3c);assert(((unsigned char*)zero)[i+0xf000]==0x7e);}
+ assert(arena_commit(0,(char*)zero+0x1000,0xe000));
+ for(unsigned i=0;i<0x10000;i++)assert(((unsigned char*)zero)[i]==(i<0x1000?0x3c:i>=0xf000?0x7e:0));
+ arena_release(0,zero);
  arena_check_leases();for(Payload& p:payloads)check(p);
  if(shared) {
   /* APIs use the same image heap on a native thread which never owned the
@@ -464,8 +507,14 @@ with tempfile.TemporaryDirectory(prefix='madeira-owner-heap-pressure-') as direc
         subprocess.run(cxx+link_shared+identity+['-pthread','-fsanitize=undefined','-fno-sanitize-recover=all',str(d/'module.o'),str(d/'module-cpp.o'),str(d/'owner.o'),'-o',str(d/f'module{i}.so')],check=True)
     subprocess.run(cc+['-std=gnu11']+common+['-DWINE_IOS','-c',str(d/'arena.c'),'-o',str(d/'arena.o')],check=True)
     subprocess.run(cxx+['-std=c++20']+common+[str(d/'main.cpp'),str(d/'arena.o')]+([] if platform.system()=='Darwin' else ['-ldl'])+['-o',str(d/'pressure')],check=True)
-    for mode in ['old','new','oom-default','oom-heap','oom-span']:
-        result=subprocess.run([str(d/'pressure'),mode]+[str(d/f'module{i}.so') for i in range(4)],text=True,capture_output=True,timeout=120)
-        print(''.join(line+'\n' for line in result.stdout.splitlines() if not line.startswith('[fex-owner-v1]')),end='')
-        if result.returncode:print(result.stderr,end='');result.check_returncode()
+    # Linux4KiB hosts also execute16KiB edge handling, so Apple-sized native
+    # page behavior is covered before the separate macOS CI run.
+    native_page=os.sysconf('SC_PAGE_SIZE')
+    host_pages=[native_page]+([16384] if native_page<16384 else [])
+    for host_page in host_pages:
+        for mode in ['old','new','oom-default','oom-heap','oom-span']:
+            result=subprocess.run([str(d/'pressure'),mode]+[str(d/f'module{i}.so') for i in range(4)],text=True,capture_output=True,timeout=120,
+                                  env=dict(os.environ,MADEIRA_PRESSURE_HOST_PAGE_SIZE=str(host_page)))
+            print(''.join(line+'\n' for line in result.stdout.splitlines() if not line.startswith('[fex-owner-v1]')),end='')
+            if result.returncode:print(result.stderr,end='');result.check_returncode()
 print('PASS pinned input hash; only the two reviewed NULL guards differ in the generated allocation-failure build copy')

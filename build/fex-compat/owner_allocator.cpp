@@ -117,13 +117,7 @@ bool Owns(void* pointer) {
   return true;
 }
 
-void Begin(size_t size) {
-  ++Stats.allocation_calls;
-  Stats.last_request = size;
-}
-
 void* Allocate(size_t size, size_t alignment, bool zero) {
-  Begin(size);
   if (!ValidSize(size) || (alignment && (!ValidAlignment(alignment) ||
       size > (std::numeric_limits<size_t>::max)() - alignment)))
     return Failure("invalid-size-or-alignment", size, true);
@@ -147,7 +141,6 @@ void* malloc(size_t size) {
 void* calloc(size_t count, size_t size) {
   Guard guard;
   if (size && count > (std::numeric_limits<size_t>::max)() / size) {
-    Begin(size);
     return Failure("calloc-overflow", size, true);
   }
   return Allocate(count * size, 0, true);
@@ -156,7 +149,6 @@ void* calloc(size_t count, size_t size) {
 void* memalign(size_t alignment, size_t size) {
   Guard guard;
   if (!ValidAlignment(alignment)) {
-    Begin(size);
     return Failure("invalid-alignment", size, true);
   }
   return Allocate(size, alignment, false);
@@ -168,7 +160,6 @@ int posix_memalign(void** output, size_t alignment, size_t size) {
   Guard guard;
   // Numeric POSIX status values avoid touching CRT errno/TLS on early entries.
   if (!output || alignment < sizeof(void*) || !ValidAlignment(alignment)) {
-    Begin(size);
     Failure("invalid-posix-alignment", size, true);
     return 22;
   }
@@ -182,7 +173,6 @@ void* aligned_alloc(size_t alignment, size_t size) { return memalign(alignment, 
 
 void free(void* pointer) {
   Guard guard;
-  ++Stats.free_calls;
   if (!pointer) return;
   // Preserve the pinned allocator's allocation watch and low-pointer diagnostic
   // before it decodes any span. Valid owner-zero heap frees are local under the
@@ -204,7 +194,6 @@ size_t malloc_usable_size(void* pointer) {
 void* realloc(void* pointer, size_t size) {
   Guard guard;
   if (!pointer) return Allocate(size, 0, false);
-  Begin(size);
   if (!ValidSize(size)) return Failure("invalid-realloc-size", size, true);
   if (!Owns(pointer)) return Failure("foreign-realloc rejected", size);
   if (!size) {
