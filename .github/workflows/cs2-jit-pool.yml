@@ -1,4 +1,4 @@
-name: Verify CS2 executable pool capacity
+name: Verify CS2 FEX arena and executable pool capacity
 on:
   workflow_dispatch:
   push:
@@ -16,6 +16,18 @@ on:
       - tests/host/check-jit-pool-meter.py
       - tests/host/check-loader-import-failure-retention.py
       - tests/host/fixtures/loader-import-failure-*.c
+      - build/fex-compat/**
+      - build/fex-arm64ec/build.sh
+      - build/fex-wow64/build.sh
+      - tools/build/build-fex-*-compat.sh
+      - tools/build-ipa.sh
+      - tools/check-io-abi-package.py
+      - tools/build/stage-fex-compat.py
+      - tests/host/check-fex-owner-heap-pressure.py
+      - tests/host/check-fex-owner-allocator-config.py
+      - tests/host/check-fex-arm64ec-startup.py
+      - tests/host/check-fex-pe-build.py
+      - tests/host/fixtures/fex-cs2-081641.json
       - .github/workflows/cs2-jit-pool.yml
   pull_request:
     paths:
@@ -31,6 +43,18 @@ on:
       - tests/host/check-jit-pool-meter.py
       - tests/host/check-loader-import-failure-retention.py
       - tests/host/fixtures/loader-import-failure-*.c
+      - build/fex-compat/**
+      - build/fex-arm64ec/build.sh
+      - build/fex-wow64/build.sh
+      - tools/build/build-fex-*-compat.sh
+      - tools/build-ipa.sh
+      - tools/check-io-abi-package.py
+      - tools/build/stage-fex-compat.py
+      - tests/host/check-fex-owner-heap-pressure.py
+      - tests/host/check-fex-owner-allocator-config.py
+      - tests/host/check-fex-arm64ec-startup.py
+      - tests/host/check-fex-pe-build.py
+      - tests/host/fixtures/fex-cs2-081641.json
       - .github/workflows/cs2-jit-pool.yml
 permissions:
   contents: read
@@ -51,7 +75,14 @@ jobs:
       - name: Load pinned Wine and FEX declarations
         run: |
           git submodule update --init --depth 1 wine FEX
-          git -C FEX submodule update --init --depth 1 External/fmt
+          git -C FEX submodule update --init --depth 1 External/fmt External/rpmalloc
+      - name: Replay FEX owner heaps and checked ARM64EC startup
+        run: |
+          python3 tests/host/check-fex-owner-heap-pressure.py
+          python3 tests/host/check-fex-owner-allocator-config.py
+          python3 tests/host/check-fex-arm64ec-startup.py
+          python3 tests/host/check-fex-pe-build.py
+          python3 tests/host/check-rpmalloc-thread-reuse.py
       - name: Replay real head/tail allocations and measured startup policy
         run: |
           python3 tests/host/check-pool-cs2-budget.py

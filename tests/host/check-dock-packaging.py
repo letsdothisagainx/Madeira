@@ -76,7 +76,31 @@ with tempfile.TemporaryDirectory() as temp:
                          (0x2c0, b'MadeiraBTCpuIosReleaseThreadHolds\0'), (0x2e8, b'MadeiraBTCpuIosRetireThread\0')]:
         cpu[offset:offset + len(name)] = name
     cpu.extend(b'MadeiraBTCpuThreadInit[fex-thread-init-v1]MadeiraBTCpuWriteMemory[fex-guest-write-v1][fex-first-use-v1][fex-blocklist-v1][fex-hold-release-v1][fex-thread-retire-v1]')
+    shared = b'[fex-core-init-v1][fex-ir-pool-v1][fex-owner-allocator-v1]'
+    cpu.extend(shared)
     (t/'app/Madeira/aarch64-windows/xtajit.dll').write_bytes(cpu)
+    # ARM64EC keeps its own exports and hybrid metadata, without acquiring
+    # WoW64-only TLS/hold exports. This is a packaging fixture, not executable FEX.
+    ec_cpu = bytearray(cpu[:0x700])
+    struct.pack_into('<H', ec_cpu, 0x84, 0x8664)
+    struct.pack_into('<Q', ec_cpu, 0x98 + 24, 0x180000000)
+    struct.pack_into('<II', ec_cpu, 0x98 + 112 + 80, 0x1180, 208)
+    ec_cpu[0x240:0x600] = bytes(0x3c0)
+    struct.pack_into('<IIHHIIIIIII', ec_cpu, 0x200, 0, 0, 0, 0, 0, 1, 5, 5, 0x1040, 0x1060, 0x1080)
+    struct.pack_into('<IIIII', ec_cpu, 0x240, 0x13a0, 0x13a8, 0x1400, 0x1404, 0x1408)
+    struct.pack_into('<IIIII', ec_cpu, 0x260, 0x10a0, 0x10c0, 0x10e0, 0x1100, 0x1120)
+    struct.pack_into('<HHHHH', ec_cpu, 0x280, 0, 1, 2, 3, 4)
+    for offset, name in [(0x2a0, b'ios_fex_band_base'), (0x2c0, b'ios_fex_band_end'),
+                         (0x2e0, b'BTCpu64FlushInstructionCache'), (0x300, b'BTCpu64NotifyMemoryDirty'),
+                         (0x320, b'BTCpu64IosAddAliasMapping')]:
+        ec_cpu[offset:offset + len(name) + 1] = name + b'\0'
+    struct.pack_into('<I', ec_cpu, 0x380, 208)
+    struct.pack_into('<Q', ec_cpu, 0x380 + 200, 0x180001260)
+    struct.pack_into('<III', ec_cpu, 0x460, 1, 0x1270, 1)
+    struct.pack_into('<II', ec_cpu, 0x470, 0x1401, 0x100)
+    ec_cpu.extend(shared)
+    ec_cpu_path = t/'app/Madeira/arm64ec-windows/xtajit64.dll'
+    ec_cpu_path.write_bytes(ec_cpu)
     guest = bytearray(wow)
     struct.pack_into('<H',guest,0x84,0x14c)
     guest.extend(b'[wpm-call-v1][steam-arch-v1]')
@@ -114,7 +138,8 @@ fi
 cp "$ROOT/app/Madeira/i386-windows/kernelbase.dll" "$TEST_APP/i386-windows/"
 printf fixture > "$TEST_APP/Madeira"
 printf fixture > "$TEST_APP/prefix-template.tar.gz"
-printf fixture > "$TEST_APP/arm64ec-windows/xtajit64.dll"
+cp "$ROOT/app/Madeira/arm64ec-windows/xtajit64.dll" "$TEST_APP/arm64ec-windows/"
+if [ "${STALE_EC_CPU:-}" = 1 ]; then printf 'old CPU' > "$TEST_APP/arm64ec-windows/xtajit64.dll"; fi
 printf fixture > "$TEST_APP/x86_64-vcruntime/vcruntime140.dll"
 for resource in dockhost.exe dock-notices.txt madeira-steam-service.exe madeira-scm-probe.exe madeira-htmlipc-bridge.dll madeira-htmlipc-bridge.manifest.json; do
   if [ "${OMIT_RESOURCE:-}" != "$resource" ]; then cp "$ROOT/app/Madeira/arm64ec-windows/$resource" "$TEST_APP/arm64ec-windows/"; fi
@@ -135,6 +160,20 @@ done
     def run(extra=None):
         return subprocess.run(['bash',str(package)],env=dict(env,**(extra or {})),capture_output=True,text=True)
     result=run(); assert result.returncode == 0, result.stdout+result.stderr
+    result=run({'STALE_EC_CPU':'1'})
+    assert result.returncode and 'Xcode packaged stale ARM64EC FEX' in result.stderr, result.stderr
+    for marker in (b'[fex-ir-pool-v1]', b'[fex-owner-allocator-v1]'):
+        ec_cpu_path.write_bytes(ec_cpu.replace(marker, b'old'))
+        result=run()
+        assert result.returncode and 'stale arm64ec FEX shared protection' in result.stderr, result.stderr
+    ec_cpu_path.write_bytes(ec_cpu)
+    invalid_ec = bytearray(ec_cpu); struct.pack_into('<Q', invalid_ec, 0x380 + 200, 0)
+    ec_cpu_path.write_bytes(invalid_ec)
+    result=run()
+    assert result.returncode and 'CHPE metadata missing' in result.stderr, result.stderr
+    ec_cpu_path.write_bytes(ec_cpu)
+    result=run(); assert result.returncode == 0, result.stdout+result.stderr
+    print('PASS both PE CPUs require shared allocator/IR protections; stale ARM64EC copies and missing hybrid metadata fail')
     with zipfile.ZipFile(t/'dist/Madeira.ipa') as archive:
         info = plistlib.loads(archive.read('Payload/Madeira.app/Info.plist'))
         assert info['MadeiraBuild'] == 'v0.1.3 (4) source=' + revision
@@ -233,7 +272,7 @@ done
     print('PASS writable, non-executable and forwarded FEX hold-release callbacks fail final IPA validation')
     (t/'app/Madeira/aarch64-windows/xtajit.dll').write_bytes(wow)
     result=run()
-    assert result.returncode and 'stale FEX CPU producer' in result.stderr, result.stderr
+    assert result.returncode and 'stale WoW64 FEX' in result.stderr, result.stderr
     (t/'app/Madeira/aarch64-windows/xtajit.dll').write_bytes(cpu)
     print('PASS stale FEX checked-init producer fails final IPA validation')
     (t/'app/Madeira/aarch64-windows/wow64.dll').write_bytes(b'old image')
