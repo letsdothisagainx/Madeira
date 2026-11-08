@@ -132,6 +132,7 @@ def check(staged, app, ipa):
     assert b'[steam-handoff-v1]' in native and b'_madeira_child_server_exited' in native, 'native Steam restart consumer missing'
     assert b'[fex-owner-v1] pre-crt' in native and b'[fex-owner-v1] retired' in native, 'native FEX ownership lifecycle missing'
     assert b'[fex-owner-census-v2]' in native, 'native FEX live-owner census missing'
+    assert b'[pool-code-growth]' in native, 'stale native executable-pool growth budget'
     assert b'[hold-release-v2]' in native and b'[deliver-hold-v2]' in native, 'native FEX hold-release boundary missing'
     assert b'[native-window-retire-v1]' in native, 'native dead-window layer cleanup missing'
     assert b'_winios_native_window_create' in native and b'_winios_native_window_retire' in native, 'native window lifecycle bridge missing'

@@ -460,12 +460,12 @@ bool jit_memory_snapshot(uint64_t *available_bytes, uint64_t *footprint_bytes) {
 /* CS2's measured 1024MB run had 476.8MB of image head and 512.1MB of
  * retained code buffers when phonon.dll needed a contiguous 51.1MB. Merely
  * adding 128MB lets the next FEX generation consume that whole increase.
- * Pair 1152MB with 208MB of image reserve. The November 7 embree3.dll run
- * still spent 32MB on a fresh code generation with reusable 16MB generations
- * available. Keeping that extra 32MB of headroom makes FEX's existing halving
- * ladder reach those releases, leaving virgin space for embree3.dll while
- * retaining the three earlier 128MB generations. These are startup choices,
- * never a request to resize a live pool.
+ * Pair 1152MB with 240MB of image headroom. The November 8 rotation arrives
+ * earlier than the November 7 replay: 208MB still admits another 32MB code
+ * generation. The separate 512MB large-code growth budget below prevents that
+ * reservation even if image loading moves earlier or later. Existing code
+ * reuse and FEX's minimum-buffer fallback remain available. These are startup
+ * choices, never a request to resize a live pool.
  *
  * All bytes are charged once physically, even though RX/RW need two virtual
  * ranges. No no-footprint exemption is assumed. The observed 3818MB peak,
@@ -494,8 +494,17 @@ bool jit_cs2_pool_plan(uint64_t requested_pool_mb, uint64_t available_bytes,
         map_min >= map_max || map_max > INT64_MAX || map_max - map_min < selected * 2)
         return false;
     *pool_mb = selected / mb;
-    *head_reserve_mb = 208;
+    *head_reserve_mb = 240;
     return true;
+}
+
+/* The observed three 128MB generations and their initial small carves occupy
+ * 496.109375MB. Keep them intact while preventing a further fresh 32MB growth
+ * from consuming image capacity, independently of the image-head cursor.
+ * This limits large fresh growth, not reusable code or required <=16MB units.
+ * It does not reserve physical memory or guarantee arbitrary future images. */
+uint64_t jit_cs2_code_tail_limit_mb(void) {
+    return 512;
 }
 
 bool jit_pool_alias_layout_valid(uint64_t rx, uint64_t rw, uint64_t size,

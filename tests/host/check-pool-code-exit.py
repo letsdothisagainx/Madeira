@@ -42,6 +42,10 @@ helpers = ''.join(function(signature) for signature in (
     'static int ios_tail_carve_in_low(',
     'static int ios_pool_code_carve_better(',
     'static int ios_pool_preserve_code_carve(',
+    'static size_t ios_pool_code_growth_cap(',
+    'static int ios_pool_code_growth_fits(',
+    'static int ios_pool_reserve_code_tail(',
+    'static void ios_pool_tail_unreserve(',
     'static int ios_pool_fresh_tail_fits(',
     'static int ios_tail_carve_ready(',
     'static unsigned ios_tail_carves_retire_owner(',
@@ -97,7 +101,7 @@ static time_t fake_time(time_t *t) { if (t) *t = fake_now; return fake_now; }
 static void *ios_jit_rx_base_global, *ios_jit_rw_base_global;
 uintptr_t ios_jit_low_rx_global, ios_jit_low_rw_global;
 size_t ios_jit_low_size_global;
-static size_t ios_jit_pool_size_global, jit_pool_offset, ios_pool_head_reserve;
+static size_t ios_jit_pool_size_global, jit_pool_offset, ios_pool_head_reserve, ios_pool_code_tail_limit;
 static volatile size_t ios_jit_low_reserved, ios_jit_tail_reserved;
 static size_t ios_jit_hole_off_eff, ios_jit_hole_end_eff, ios_jit_hole2_off, ios_jit_hole2_end;
 static int ios_jit_low_full_logged;
@@ -132,16 +136,20 @@ static int release(void *base, unsigned type, void **addr_ptr, size_t *size_ptr)
 static int tail_carve(size_t *size_ptr, void **ret)
 {
     size_t total = ios_jit_pool_size_global, size = (*size_ptr + 0x3fff) & ~(size_t)0x3fff;
-    size_t cur = ios_jit_tail_reserved, po[3], ps[3];
-    size_t start = ios_pool_holes_tail_start(total, cur, size, ios_jit_hole_off_eff, ios_jit_hole_end_eff,
-                                             ios_jit_hole2_off, ios_jit_hole2_end);
+    size_t cur, start, added, po[3], ps[3];
     int n = 0, k;
 
-    if (start + size > total / 4 * 3 || total - start - size < jit_pool_offset) return STATUS_NO_MEMORY;
+    if (!ios_pool_reserve_code_tail(&ios_jit_tail_reserved, total, size, ios_pool_code_tail_limit,
+            ios_jit_hole_off_eff, ios_jit_hole_end_eff, ios_jit_hole2_off, ios_jit_hole2_end,
+            &start, &added, &cur)) return STATUS_NO_MEMORY;
+    if (start + size > total / 4 * 3 || total - start - size < jit_pool_offset) {
+        ios_pool_tail_unreserve(&ios_jit_tail_reserved, start + size, added,
+                               ios_jit_hole_end_eff > ios_jit_hole_off_eff);
+        return STATUS_NO_MEMORY;
+    }
     if (start != cur)
         n = ios_pool_skip_pieces(total - start, total - cur, ios_jit_hole_off_eff, ios_jit_hole_end_eff,
                                  ios_jit_hole2_off, ios_jit_hole2_end, po, ps);
-    ios_jit_tail_reserved = start + size;
     CHECK(ios_tail_carve_n + 1 + n <= IOS_TAIL_CARVE_MAX);
     ios_tail_carves[ios_tail_carve_n++] = (struct ios_tail_carve){ .off = total - start - size, .size = size,
                                                                    .peb = (void *)owner, .allocation_lease = owner };
@@ -223,6 +231,7 @@ static void reset(void)
     ios_jit_hole_end_eff = 0x277cc000;
     ios_jit_hole2_off = ios_jit_hole2_end = 0;
     ios_pool_head_reserve = 128 * MB;
+    ios_pool_code_tail_limit = 0;
     ios_jit_low_full_logged = scan_busy = scans = occupied = 0;
     memset(ios_tail_carves, 0, sizeof(ios_tail_carves));
     ios_tail_carve_n = 0;

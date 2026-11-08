@@ -1,5 +1,10 @@
 # CS2 executable-pool startup budget
 
+The current November 8 policy is described in the final section: the pool stays
+1152 MiB, with 240 MiB soft image headroom and a separate 512 MiB budget for
+fresh large MAIN-tail growth. Earlier measurements below retain their original
+settings as regression controls.
+
 The `86a0a17` device capture reaches the genuine `cs2.exe -steam -joy` process,
 loads engine2 and initializes DXMT/Metal. It then fails to load the existing
 `phonon.dll` because a contiguous executable copy cannot be allocated. The
@@ -346,3 +351,113 @@ RAM available to JIT: later assets still need it. The DirectX fixed-address
 installer failure and high emulated-write-fault cost remain separate issues.
 Device acceptance requires a real embree executable copy and resolved client
 imports, subsequent real modules, and an actual presented game frame/menu.
+
+## November 8 earlier rotation and embree3.dll
+
+The `5b22a6e` device log verifies the separate FEX data-arena correction:
+8192 MiB total, approximately 2258 MiB used and 5933 MiB free, with no FEXAlloc
+fatal abort. Real Steam launches CS2, and audio, scene and server modules load.
+Client's first executable copy succeeds, then embree's `0x1524000` request fails
+in the 1152 MiB executable pool. The per-image FEX heaps and startup guards are
+unchanged by this correction.
+
+The new fixture `pool-cs2-095621-tail.json` records all 29 successful code grants,
+owner leases, releases, retirements, image endpoints and the two failed imports.
+Five tiny-carve preservations and three retained 128 MiB generations occur
+before CS2's late rotation. The crucial ordering differs from November 7:
+
+| Captured state/event | Value |
+| --- | --- |
+| Head when fresh code growth is requested | `0x1825c000` (386.359375 MiB) |
+| Tail before that request | `0x1f01c000` (496.109375 MiB) |
+| Gap before growth | 269.53125 MiB |
+| New fresh generation under 208 MiB policy | 32 MiB |
+| Gap after growth | 237.53125 MiB |
+| Subsequent release | Ordinary code-only FREE, before client/embree |
+| Certified transfer for client | Six receipts, `off=0x41fe4000`, `bytes=0x300c000` |
+| Final image head / tail | `0x269e4000` / `0x2101c000` |
+| Embree request / virgin room | 21.140625 MiB / 6 MiB |
+
+The ordinary 32 MiB release still lacks process-retirement proof. The correct
+recycler rejection is preserved. The two remaining certified 16 MiB ranges
+are separated by live mappings; their sum cannot satisfy one embree allocation.
+Wine's failed-import retention keeps the first client image live, so a failed
+retry does not authorize reclaiming it.
+
+### Selected policy and timing control
+
+The automatic CS2 plan now selects 240 MiB soft headroom. That blocks the
+captured fresh 32 MiB request, but has only 2.46875 MiB of timing cushion:
+a slightly earlier image head would admit it again. The regression therefore
+also moves the rotation to the earlier captured CS2 initialization head,
+`0x15cdc000`. The 240-only control then admits a 64 MiB generation, server
+consumes the certified range and client genuinely fails. A larger soft reserve
+alone is not treated as an order-independent repair.
+
+A second startup-pool policy limits **fresh large MAIN-tail growth** against
+512 MiB of retained tail reservations. It counts the actual successful cursor,
+including any hole skips, instead of subtracting the current image head. All
+three observed 128 MiB generations still fit: their combined tail ends at
+496.109375 MiB. Adding another 32 MiB would exceed 512 MiB regardless of when
+DLL copying happens. FEX uses its existing real allocation-failure/halving path
+and takes an eligible 16 MiB code buffer.
+
+Existing reusable code, verified region C and the existing <=16 MiB minimum
+fallback retain their contracts. This is a limit on optional large growth,
+not a promise that every future generation or image will fit. New concurrent
+large requests check the limit inside the cursor CAS before reserving anything;
+a failed request does not consume space or rely on a racy budget rollback.
+Normal head collisions, live-code overlap checks and truthful OOM remain.
+There is no change to image certification, owner leases, grace, poison checks,
+RX/RW permissions or process/thread retirement.
+
+The limit is selected only with the automatic CS2 pool plan and imported through
+`WINE_IOS_JIT_CODE_TAIL_LIMIT_MB`. The app clears the private value for a fresh
+launch and failed pool preparation. Other startup plans retain the previous
+unlimited large-growth policy unless this CS2 pool policy was selected.
+
+### Replay results and finite capacity
+
+The 208 control reproduces every observed code address/size/lease, the six-
+receipt client transfer, four image-free extents totaling `0x690000`, largest
+`0x664000`, and the actual embree failure plus retained-client retry.
+With 240/512, both the recorded and earlier-rotation replays load client and
+embree through the production image allocator and executable aliases:
+
+| Corrected replay result | Value |
+| --- | --- |
+| Client offset / allocation | `0x41fe4000` / `0x29a8000` |
+| Embree offset / allocation | `0x269e4000` / `0x1524000` |
+| Image head | `0x27f08000` (639.03125 MiB) |
+| Retained code tail | `0x1f01c000` (496.109375 MiB) |
+| Virgin gap | `0x10dc000` (16.859375 MiB) |
+| Tail capacity avoided | 32 MiB |
+
+Six further synthetic rotations reuse two distinct eligible 16 MiB buffers
+without fresh tail growth. Active code, return/PC guards and all three 128 MiB
+generations remain intact. Another 32 MiB across explicitly synthetic 8 MiB
+images fits, followed by further legitimate code allocation. True exhaustion
+still fails. Those extra requests are stress, not game modules observed after
+embree: the device log contains no successful subsequent game imports.
+
+A single subsequent **20 MiB image still fails** with the selected policy:
+16.859375 MiB virgin space, 6.5625 MiB image-free space and one isolated certified
+16 MiB range are not one contiguous extent. This limit is tested explicitly.
+The test also evaluates a 448 MiB growth budget, which would shrink the third
+fresh 128 MiB generation to 64 MiB and fit synthetic 20+40 MiB images. It is not
+selected: it changes a working browser code-cache size, with unverified CEF
+working-set and recompilation costs. Historical flat small-buffer limits caused
+severe cache churn. No live 128 MiB buffer is reclaimed to make either test pass.
+
+The backing stays 1152 MiB, charged once for both aliases. There is no pool
+increase, address-map enlargement, RAM-limit change or physical-memory exemption.
+The capture's roughly 4235 MiB peak leaves about 1909 MiB below the 6144 MiB
+cap, not a guaranteed 2 GiB for future assets. Startup budget eligibility does
+not guarantee later shader, texture or game-asset residency.
+
+CI must pass the new production replay, timing adversary, atomic reservation
+and real FEX constructor/retirement tests as well as the older pool fixtures.
+Actual iPhone acceptance still requires a genuine client/embree dependency
+chain, continued FEX compilation and a presented game frame. If a later actual
+module exceeds the remaining contiguous capacity, its name and allocator state
+must be reported; these tests do not establish a menu or playability.

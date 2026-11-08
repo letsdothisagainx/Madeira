@@ -1,0 +1,8591 @@
+{
+  "capture": "madeira-log(20261108-095621).txt; installed5b22a6ef1c711ee07d5846f05e98d578be39860e",
+  "log_sha256": "f07f408706cefbee6aaa5d5ceefd06a55dbba51ddc543050a17491e1ecc3a90b",
+  "description": "Successful main-tail allocation, ordinary release and verified owner retirement through client.dll and embree3.dll. Captured code request timing is earlier than November7; current208MiB headroom admits a fresh32MiB buffer at head1825c000. Its ordinary FREE precedes both image failures but is not process-retired image capacity. Native executable ownership, lease and grace checks remain required. Replay releases actual returned handles after counterfactual placement.",
+  "pool": "0x48000000",
+  "rx_base": "0x300000000",
+  "head_reserve": "0xd000000",
+  "reuse_grace_seconds": 3,
+  "line_note": "Raw LF line numbers; bounded log text does not identify every original image freelist offset.",
+  "clock_note": "Integer seconds from latest xp wallclock, relative04:48:17. Before firstxp zero. Timestamp values are lower bounds, not fabricated exact event times.",
+  "head_note": "Largest known actual image allocation endpoint or explicit fresh-tail snapshot; shifted image used excludes data alignment delta to recover actual allocator endpoint. High recycled client allocation does not advance image bump.",
+  "final_head": "0x269e4000",
+  "observed_tail_before_final_fresh": "0x1f01c000",
+  "observed_tail": "0x2101c000",
+  "server": "0x2580000",
+  "client": "0x29a8000",
+  "embree": "0x1524000",
+  "owner_processes": [
+    {
+      "line": 832,
+      "backend": "libarm64ecfex.dll",
+      "module": "0xfbe300000",
+      "owner": "0x10425c000",
+      "lease": 2
+    },
+    {
+      "line": 2288,
+      "backend": "libwow64fex.dll",
+      "module": "0x3ffab0000",
+      "owner": "0x400310000",
+      "lease": 4
+    },
+    {
+      "line": 3681,
+      "backend": "libarm64ecfex.dll",
+      "module": "0x3ff120000",
+      "owner": "0x1043d0000",
+      "lease": 5
+    },
+    {
+      "line": 8446,
+      "backend": "libarm64ecfex.dll",
+      "module": "0x3f7a90000",
+      "owner": "0x1043dc000",
+      "lease": 6
+    },
+    {
+      "line": 8681,
+      "backend": "libwow64fex.dll",
+      "module": "0x3f7060000",
+      "owner": "0x500310000",
+      "lease": 7
+    },
+    {
+      "line": 14748,
+      "backend": "libarm64ecfex.dll",
+      "module": "0x3f15b0000",
+      "owner": "0x10941c000",
+      "lease": 10
+    },
+    {
+      "line": 15024,
+      "backend": "libwow64fex.dll",
+      "module": "0x3f0a50000",
+      "owner": "0x600310000",
+      "lease": 11
+    },
+    {
+      "line": 15066,
+      "backend": "libarm64ecfex.dll",
+      "module": "0x3f0300000",
+      "owner": "0x109424000",
+      "lease": 12
+    },
+    {
+      "line": 15255,
+      "backend": "libwow64fex.dll",
+      "module": "0x3ef7c0000",
+      "owner": "0x700310000",
+      "lease": 13
+    },
+    {
+      "line": 28742,
+      "backend": "libwow64fex.dll",
+      "module": "0x3eaa60000",
+      "owner": "0x600310000",
+      "lease": 18
+    },
+    {
+      "line": 29725,
+      "backend": "libwow64fex.dll",
+      "module": "0x3e8f30000",
+      "owner": "0x700310000",
+      "lease": 21
+    },
+    {
+      "line": 41152,
+      "backend": "libarm64ecfex.dll",
+      "module": "0x3e8430000",
+      "owner": "0x115afc000",
+      "lease": 23
+    }
+  ],
+  "events": [
+    {
+      "line": 1066,
+      "seconds": 0,
+      "op": "allocate",
+      "handle": 0,
+      "owner": "0x10425c000",
+      "lease": 2,
+      "requested": "0x4000",
+      "original_requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x347ffc000",
+      "head": "0x1f40000",
+      "rotation": false,
+      "observed_tail": "0x4000"
+    },
+    {
+      "line": 1159,
+      "seconds": 0,
+      "op": "allocate",
+      "handle": 1,
+      "owner": "0x10425c000",
+      "lease": 2,
+      "requested": "0x1000000",
+      "original_requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x346ffc000",
+      "head": "0x1f44000",
+      "rotation": false,
+      "observed_tail": "0x1004000"
+    },
+    {
+      "line": 2388,
+      "seconds": 1,
+      "clock_lower_bound": "04:48:18.199",
+      "op": "allocate",
+      "handle": 2,
+      "owner": "0x400310000",
+      "lease": 4,
+      "requested": "0x4000",
+      "original_requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x346ff8000",
+      "head": "0x363c000",
+      "rotation": false,
+      "observed_tail": "0x1008000"
+    },
+    {
+      "line": 2451,
+      "seconds": 1,
+      "clock_lower_bound": "04:48:18.517",
+      "op": "allocate",
+      "handle": 3,
+      "owner": "0x400310000",
+      "lease": 4,
+      "requested": "0x1000000",
+      "original_requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x345ff8000",
+      "head": "0x363c000",
+      "rotation": false,
+      "observed_tail": "0x2008000"
+    },
+    {
+      "line": 3443,
+      "seconds": 2,
+      "clock_lower_bound": "04:48:19.959",
+      "op": "release",
+      "handle": 0,
+      "owner": "0x10425c000",
+      "lease": 2,
+      "observed_rx": "0x347ffc000",
+      "observed": "0x4000"
+    },
+    {
+      "line": 3463,
+      "seconds": 2,
+      "clock_lower_bound": "04:48:19.959",
+      "op": "retire",
+      "owner": "0x10425c000",
+      "lease": 2
+    },
+    {
+      "line": 3857,
+      "seconds": 3,
+      "clock_lower_bound": "04:48:20.277",
+      "op": "allocate",
+      "handle": 4,
+      "owner": "0x1043d0000",
+      "lease": 5,
+      "requested": "0x4000",
+      "original_requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x347ffc000",
+      "head": "0x47bc000",
+      "rotation": false
+    },
+    {
+      "line": 4084,
+      "seconds": 3,
+      "clock_lower_bound": "04:48:20.598",
+      "op": "allocate",
+      "handle": 5,
+      "owner": "0x1043d0000",
+      "lease": 5,
+      "requested": "0x1000000",
+      "original_requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x344ff8000",
+      "head": "0x47d4000",
+      "rotation": false,
+      "observed_tail": "0x3008000"
+    },
+    {
+      "line": 8900,
+      "seconds": 63,
+      "clock_lower_bound": "04:49:20.889",
+      "op": "allocate",
+      "handle": 6,
+      "owner": "0x1043dc000",
+      "lease": 6,
+      "requested": "0x4000",
+      "original_requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x344ff4000",
+      "head": "0xc7b8000",
+      "rotation": false,
+      "observed_tail": "0x300c000"
+    },
+    {
+      "line": 8926,
+      "seconds": 63,
+      "clock_lower_bound": "04:49:20.889",
+      "op": "allocate",
+      "handle": 7,
+      "owner": "0x500310000",
+      "lease": 7,
+      "requested": "0x4000",
+      "original_requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x344ff0000",
+      "head": "0xc7b8000",
+      "rotation": false,
+      "observed_tail": "0x3010000"
+    },
+    {
+      "line": 9437,
+      "seconds": 64,
+      "clock_lower_bound": "04:49:21.701",
+      "op": "allocate",
+      "handle": 8,
+      "owner": "0x1043dc000",
+      "lease": 6,
+      "requested": "0x1000000",
+      "original_requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x346ffc000",
+      "head": "0xc89c000",
+      "rotation": false
+    },
+    {
+      "line": 9557,
+      "seconds": 65,
+      "clock_lower_bound": "04:49:22.003",
+      "op": "allocate",
+      "handle": 9,
+      "owner": "0x500310000",
+      "lease": 7,
+      "requested": "0x1000000",
+      "original_requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x343ff0000",
+      "head": "0xcf80000",
+      "rotation": false,
+      "observed_tail": "0x4010000"
+    },
+    {
+      "line": 10745,
+      "seconds": 66,
+      "clock_lower_bound": "04:49:23.278",
+      "op": "release",
+      "handle": 6,
+      "owner": "0x1043dc000",
+      "lease": 6,
+      "observed_rx": "0x344ff4000",
+      "observed": "0x4000"
+    },
+    {
+      "line": 10765,
+      "seconds": 66,
+      "clock_lower_bound": "04:49:23.278",
+      "op": "retire",
+      "owner": "0x1043dc000",
+      "lease": 6
+    },
+    {
+      "line": 15078,
+      "seconds": 73,
+      "clock_lower_bound": "04:49:30.107",
+      "op": "allocate",
+      "handle": 10,
+      "owner": "0x10941c000",
+      "lease": 10,
+      "requested": "0x4000",
+      "original_requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x344ff4000",
+      "head": "0xfb8c000",
+      "rotation": false
+    },
+    {
+      "line": 15464,
+      "seconds": 73,
+      "clock_lower_bound": "04:49:30.417",
+      "op": "allocate",
+      "handle": 11,
+      "owner": "0x600310000",
+      "lease": 11,
+      "requested": "0x4000",
+      "original_requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x343fec000",
+      "head": "0x10ebc000",
+      "rotation": false,
+      "observed_tail": "0x4014000"
+    },
+    {
+      "line": 15593,
+      "seconds": 73,
+      "clock_lower_bound": "04:49:30.680",
+      "op": "allocate",
+      "handle": 12,
+      "owner": "0x109424000",
+      "lease": 12,
+      "requested": "0x4000",
+      "original_requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x343fe8000",
+      "head": "0x11d2c000",
+      "rotation": false,
+      "observed_tail": "0x4018000"
+    },
+    {
+      "line": 15626,
+      "seconds": 73,
+      "clock_lower_bound": "04:49:30.680",
+      "op": "allocate",
+      "handle": 13,
+      "owner": "0x700310000",
+      "lease": 13,
+      "requested": "0x4000",
+      "original_requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x343fe4000",
+      "head": "0x11d2c000",
+      "rotation": false,
+      "observed_tail": "0x401c000"
+    },
+    {
+      "line": 16421,
+      "seconds": 77,
+      "clock_lower_bound": "04:49:34.536",
+      "op": "allocate",
+      "handle": 14,
+      "owner": "0x10941c000",
+      "lease": 10,
+      "requested": "0x1000000",
+      "original_requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x346ffc000",
+      "head": "0x11e00000",
+      "rotation": false
+    },
+    {
+      "line": 16466,
+      "seconds": 77,
+      "clock_lower_bound": "04:49:34.536",
+      "op": "allocate",
+      "handle": 15,
+      "owner": "0x109424000",
+      "lease": 12,
+      "requested": "0x1000000",
+      "original_requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x342fe4000",
+      "head": "0x11e00000",
+      "rotation": false,
+      "observed_tail": "0x501c000"
+    },
+    {
+      "line": 16479,
+      "seconds": 77,
+      "clock_lower_bound": "04:49:34.536",
+      "op": "allocate",
+      "handle": 16,
+      "owner": "0x700310000",
+      "lease": 13,
+      "requested": "0x1000000",
+      "original_requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x341fe4000",
+      "head": "0x11e00000",
+      "rotation": false,
+      "observed_tail": "0x601c000"
+    },
+    {
+      "line": 16567,
+      "seconds": 77,
+      "clock_lower_bound": "04:49:34.536",
+      "op": "allocate",
+      "handle": 17,
+      "owner": "0x600310000",
+      "lease": 11,
+      "requested": "0x1000000",
+      "original_requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x340fe4000",
+      "head": "0x11f34000",
+      "rotation": false,
+      "observed_tail": "0x701c000"
+    },
+    {
+      "line": 16801,
+      "seconds": 77,
+      "clock_lower_bound": "04:49:34.832",
+      "op": "release",
+      "handle": 12,
+      "owner": "0x109424000",
+      "lease": 12,
+      "observed_rx": "0x343fe8000",
+      "observed": "0x4000"
+    },
+    {
+      "line": 16827,
+      "seconds": 77,
+      "clock_lower_bound": "04:49:34.832",
+      "op": "retire",
+      "owner": "0x109424000",
+      "lease": 12
+    },
+    {
+      "line": 16897,
+      "seconds": 78,
+      "clock_lower_bound": "04:49:35.087",
+      "op": "allocate",
+      "handle": 18,
+      "owner": "0x1043d0000",
+      "lease": 5,
+      "requested": "0x8000000",
+      "original_requested": "0x8000000",
+      "observed": "0x8000000",
+      "observed_rx": "0x338fe4000",
+      "head": "0x130f4000",
+      "rotation": false,
+      "observed_tail": "0xf01c000"
+    },
+    {
+      "line": 16939,
+      "seconds": 78,
+      "clock_lower_bound": "04:49:35.087",
+      "op": "release",
+      "handle": 5,
+      "owner": "0x1043d0000",
+      "lease": 5,
+      "observed_rx": "0x344ff8000",
+      "observed": "0x1000000"
+    },
+    {
+      "line": 17043,
+      "seconds": 78,
+      "clock_lower_bound": "04:49:35.366",
+      "op": "retire",
+      "owner": "0x600310000",
+      "lease": 11
+    },
+    {
+      "line": 17337,
+      "seconds": 78,
+      "clock_lower_bound": "04:49:35.927",
+      "op": "retire",
+      "owner": "0x700310000",
+      "lease": 13
+    },
+    {
+      "line": 17484,
+      "seconds": 79,
+      "clock_lower_bound": "04:49:36.227",
+      "op": "release",
+      "handle": 10,
+      "owner": "0x10941c000",
+      "lease": 10,
+      "observed_rx": "0x344ff4000",
+      "observed": "0x4000"
+    },
+    {
+      "line": 17488,
+      "seconds": 79,
+      "clock_lower_bound": "04:49:36.227",
+      "op": "retire",
+      "owner": "0x10941c000",
+      "lease": 10
+    },
+    {
+      "line": 17985,
+      "seconds": 80,
+      "clock_lower_bound": "04:49:37.944",
+      "op": "allocate",
+      "handle": 19,
+      "owner": "0x500310000",
+      "lease": 7,
+      "requested": "0x8000000",
+      "original_requested": "0x8000000",
+      "observed": "0x8000000",
+      "observed_rx": "0x330fe4000",
+      "head": "0x144f0000",
+      "rotation": false,
+      "observed_tail": "0x1701c000"
+    },
+    {
+      "line": 19674,
+      "seconds": 94,
+      "clock_lower_bound": "04:49:51.816",
+      "op": "release",
+      "handle": 9,
+      "owner": "0x500310000",
+      "lease": 7,
+      "observed_rx": "0x343ff0000",
+      "observed": "0x1000000"
+    },
+    {
+      "line": 23846,
+      "seconds": 146,
+      "clock_lower_bound": "04:50:43.028",
+      "op": "allocate",
+      "handle": 20,
+      "owner": "0x500310000",
+      "lease": 7,
+      "requested": "0x8000000",
+      "original_requested": "0x8000000",
+      "observed": "0x8000000",
+      "observed_rx": "0x328fe4000",
+      "head": "0x144f0000",
+      "rotation": false,
+      "observed_tail": "0x1f01c000"
+    },
+    {
+      "line": 28913,
+      "seconds": 212,
+      "clock_lower_bound": "04:51:49.263",
+      "op": "allocate",
+      "handle": 21,
+      "owner": "0x600310000",
+      "lease": 18,
+      "requested": "0x4000",
+      "original_requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x344ff4000",
+      "head": "0x14874000",
+      "rotation": false
+    },
+    {
+      "line": 29275,
+      "seconds": 216,
+      "clock_lower_bound": "04:51:53.749",
+      "op": "allocate",
+      "handle": 22,
+      "owner": "0x600310000",
+      "lease": 18,
+      "requested": "0x1000000",
+      "original_requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x344ff8000",
+      "head": "0x14874000",
+      "rotation": false
+    },
+    {
+      "line": 29774,
+      "seconds": 219,
+      "clock_lower_bound": "04:51:56.780",
+      "op": "allocate",
+      "handle": 23,
+      "owner": "0x700310000",
+      "lease": 21,
+      "requested": "0x4000",
+      "original_requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x343fe8000",
+      "head": "0x15cdc000",
+      "rotation": false
+    },
+    {
+      "line": 30488,
+      "seconds": 223,
+      "clock_lower_bound": "04:52:00.513",
+      "op": "allocate",
+      "handle": 24,
+      "owner": "0x700310000",
+      "lease": 21,
+      "requested": "0x1000000",
+      "original_requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x343ff0000",
+      "head": "0x15cdc000",
+      "rotation": false
+    },
+    {
+      "line": 40444,
+      "seconds": 380,
+      "clock_lower_bound": "04:54:37.257",
+      "op": "retire",
+      "owner": "0x700310000",
+      "lease": 21
+    },
+    {
+      "line": 40535,
+      "seconds": 380,
+      "clock_lower_bound": "04:54:37.576",
+      "op": "retire",
+      "owner": "0x600310000",
+      "lease": 18
+    },
+    {
+      "line": 41343,
+      "seconds": 387,
+      "clock_lower_bound": "04:54:44.115",
+      "op": "allocate",
+      "handle": 25,
+      "owner": "0x115afc000",
+      "lease": 23,
+      "requested": "0x4000",
+      "original_requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x344ff4000",
+      "head": "0x15cdc000",
+      "rotation": false
+    },
+    {
+      "line": 41470,
+      "seconds": 390,
+      "clock_lower_bound": "04:54:47.434",
+      "op": "allocate",
+      "handle": 26,
+      "owner": "0x115afc000",
+      "lease": 23,
+      "requested": "0x1000000",
+      "original_requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x346ffc000",
+      "head": "0x15cdc000",
+      "rotation": false
+    },
+    {
+      "line": 45201,
+      "seconds": 410,
+      "clock_lower_bound": "04:55:07.197",
+      "op": "allocate",
+      "handle": 27,
+      "owner": "0x115afc000",
+      "lease": 23,
+      "requested": "0x2000000",
+      "original_requested": "0x8000000",
+      "observed": "0x2000000",
+      "observed_rx": "0x326fe4000",
+      "head": "0x1825c000",
+      "rotation": true,
+      "observed_tail": "0x2101c000"
+    },
+    {
+      "line": 45208,
+      "seconds": 410,
+      "clock_lower_bound": "04:55:07.197",
+      "op": "release",
+      "handle": 26,
+      "owner": "0x115afc000",
+      "lease": 23,
+      "observed_rx": "0x346ffc000",
+      "observed": "0x1000000"
+    },
+    {
+      "line": 46265,
+      "seconds": 422,
+      "clock_lower_bound": "04:55:19.931",
+      "op": "allocate",
+      "handle": 28,
+      "owner": "0x115afc000",
+      "lease": 23,
+      "requested": "0x1000000",
+      "original_requested": "0x8000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x346ffc000",
+      "head": "0x269e4000",
+      "rotation": true
+    },
+    {
+      "line": 46273,
+      "seconds": 422,
+      "clock_lower_bound": "04:55:19.931",
+      "op": "release",
+      "handle": 27,
+      "owner": "0x115afc000",
+      "lease": 23,
+      "observed_rx": "0x326fe4000",
+      "observed": "0x2000000"
+    }
+  ],
+  "tiny_preservations": [
+    {
+      "line": 8899,
+      "seconds": 63,
+      "clock_lower_bound": "04:49:20.889",
+      "next_grant_line": 8900,
+      "decision": "preserve 16MiB code carve for a fresh16KiB reservation"
+    },
+    {
+      "line": 8925,
+      "seconds": 63,
+      "clock_lower_bound": "04:49:20.889",
+      "next_grant_line": 8926,
+      "decision": "preserve 16MiB code carve for a fresh16KiB reservation"
+    },
+    {
+      "line": 15463,
+      "seconds": 73,
+      "clock_lower_bound": "04:49:30.417",
+      "next_grant_line": 15464,
+      "decision": "preserve 16MiB code carve for a fresh16KiB reservation"
+    },
+    {
+      "line": 15592,
+      "seconds": 73,
+      "clock_lower_bound": "04:49:30.680",
+      "next_grant_line": 15593,
+      "decision": "preserve 16MiB code carve for a fresh16KiB reservation"
+    },
+    {
+      "line": 15625,
+      "seconds": 73,
+      "clock_lower_bound": "04:49:30.680",
+      "next_grant_line": 15626,
+      "decision": "preserve 16MiB code carve for a fresh16KiB reservation"
+    }
+  ],
+  "generation_sweeps": [
+    {
+      "line": 16930,
+      "seconds": 78,
+      "clock_lower_bound": "04:49:35.087",
+      "gen": 2,
+      "threads": 26,
+      "migrated": 24,
+      "in_sim": 2,
+      "sig_pin": 0,
+      "raced": 0,
+      "retry": 0,
+      "left": 256
+    },
+    {
+      "line": 16940,
+      "seconds": 78,
+      "clock_lower_bound": "04:49:35.087",
+      "gen": 2,
+      "threads": 26,
+      "migrated": 2,
+      "in_sim": 2,
+      "sig_pin": 0,
+      "raced": 0,
+      "retry": 1,
+      "left": 255
+    },
+    {
+      "line": 17992,
+      "seconds": 80,
+      "clock_lower_bound": "04:49:37.944",
+      "gen": 2,
+      "threads": 24,
+      "migrated": 21,
+      "in_sim": 3,
+      "sig_pin": 0,
+      "raced": 0,
+      "retry": 0,
+      "left": 256
+    },
+    {
+      "line": 23851,
+      "seconds": 146,
+      "clock_lower_bound": "04:50:43.028",
+      "gen": 3,
+      "threads": 59,
+      "migrated": 53,
+      "in_sim": 6,
+      "sig_pin": 0,
+      "raced": 0,
+      "retry": 0,
+      "left": 256
+    },
+    {
+      "line": 45209,
+      "seconds": 410,
+      "clock_lower_bound": "04:55:07.197",
+      "gen": 2,
+      "threads": 15,
+      "migrated": 15,
+      "in_sim": 0,
+      "sig_pin": 0,
+      "raced": 0,
+      "retry": 0,
+      "left": 256
+    },
+    {
+      "line": 46272,
+      "seconds": 422,
+      "clock_lower_bound": "04:55:19.931",
+      "gen": 3,
+      "threads": 21,
+      "migrated": 20,
+      "in_sim": 1,
+      "sig_pin": 0,
+      "raced": 0,
+      "retry": 0,
+      "left": 256
+    },
+    {
+      "line": 46274,
+      "seconds": 422,
+      "clock_lower_bound": "04:55:19.931",
+      "gen": 3,
+      "threads": 21,
+      "migrated": 1,
+      "in_sim": 0,
+      "sig_pin": 0,
+      "raced": 0,
+      "retry": 1,
+      "left": 255
+    }
+  ],
+  "retirement_proofs": [
+    {
+      "line": 3463,
+      "seconds": 2,
+      "clock_lower_bound": "04:48:19.959",
+      "owner": "0x10425c000",
+      "lease": 2,
+      "known": true,
+      "native_threads": 0,
+      "ready": true,
+      "reclaimed": true
+    },
+    {
+      "line": 10765,
+      "seconds": 66,
+      "clock_lower_bound": "04:49:23.278",
+      "owner": "0x1043dc000",
+      "lease": 6,
+      "known": true,
+      "native_threads": 0,
+      "ready": true,
+      "reclaimed": true
+    },
+    {
+      "line": 16827,
+      "seconds": 77,
+      "clock_lower_bound": "04:49:34.832",
+      "owner": "0x109424000",
+      "lease": 12,
+      "known": true,
+      "native_threads": 0,
+      "ready": true,
+      "reclaimed": true
+    },
+    {
+      "line": 17043,
+      "seconds": 78,
+      "clock_lower_bound": "04:49:35.366",
+      "owner": "0x600310000",
+      "lease": 11,
+      "known": true,
+      "native_threads": 0,
+      "ready": true,
+      "reclaimed": true
+    },
+    {
+      "line": 17337,
+      "seconds": 78,
+      "clock_lower_bound": "04:49:35.927",
+      "owner": "0x700310000",
+      "lease": 13,
+      "known": true,
+      "native_threads": 0,
+      "ready": true,
+      "reclaimed": true
+    },
+    {
+      "line": 17488,
+      "seconds": 79,
+      "clock_lower_bound": "04:49:36.227",
+      "owner": "0x10941c000",
+      "lease": 10,
+      "known": true,
+      "native_threads": 0,
+      "ready": true,
+      "reclaimed": true
+    },
+    {
+      "line": 40444,
+      "seconds": 380,
+      "clock_lower_bound": "04:54:37.257",
+      "owner": "0x700310000",
+      "lease": 21,
+      "known": true,
+      "native_threads": 0,
+      "ready": true,
+      "reclaimed": true
+    },
+    {
+      "line": 40535,
+      "seconds": 380,
+      "clock_lower_bound": "04:54:37.576",
+      "owner": "0x600310000",
+      "lease": 18,
+      "known": true,
+      "native_threads": 0,
+      "ready": true,
+      "reclaimed": true
+    }
+  ],
+  "carve_snapshots": {
+    "before_client_transfer": [
+      {
+        "rx": "0x326fe4000",
+        "size": "0x2000000",
+        "owner": "0x115afc000",
+        "lease": 23,
+        "free": true,
+        "retired": false,
+        "allocation_line": 45201,
+        "handle": 27,
+        "freed_line": 46273,
+        "freed_seconds": 422
+      },
+      {
+        "rx": "0x328fe4000",
+        "size": "0x8000000",
+        "owner": "0x500310000",
+        "lease": 7,
+        "free": false,
+        "retired": false,
+        "allocation_line": 23846,
+        "handle": 20
+      },
+      {
+        "rx": "0x330fe4000",
+        "size": "0x8000000",
+        "owner": "0x500310000",
+        "lease": 7,
+        "free": false,
+        "retired": false,
+        "allocation_line": 17985,
+        "handle": 19
+      },
+      {
+        "rx": "0x338fe4000",
+        "size": "0x8000000",
+        "owner": "0x1043d0000",
+        "lease": 5,
+        "free": false,
+        "retired": false,
+        "allocation_line": 16897,
+        "handle": 18
+      },
+      {
+        "rx": "0x340fe4000",
+        "size": "0x1000000",
+        "owner": "0x600310000",
+        "lease": 11,
+        "free": true,
+        "retired": true,
+        "allocation_line": 16567,
+        "handle": 17,
+        "freed_line": 17043,
+        "freed_seconds": 78,
+        "retired_lease": 11
+      },
+      {
+        "rx": "0x341fe4000",
+        "size": "0x1000000",
+        "owner": "0x700310000",
+        "lease": 13,
+        "free": true,
+        "retired": true,
+        "allocation_line": 16479,
+        "handle": 16,
+        "freed_line": 17337,
+        "freed_seconds": 78,
+        "retired_lease": 13
+      },
+      {
+        "rx": "0x342fe4000",
+        "size": "0x1000000",
+        "owner": "0x109424000",
+        "lease": 12,
+        "free": true,
+        "retired": true,
+        "allocation_line": 16466,
+        "handle": 15,
+        "freed_line": 16827,
+        "freed_seconds": 77,
+        "retired_lease": 12
+      },
+      {
+        "rx": "0x343fe4000",
+        "size": "0x4000",
+        "owner": "0x700310000",
+        "lease": 13,
+        "free": true,
+        "retired": true,
+        "allocation_line": 15626,
+        "handle": 13,
+        "freed_line": 17337,
+        "freed_seconds": 78,
+        "retired_lease": 13
+      },
+      {
+        "rx": "0x343fe8000",
+        "size": "0x4000",
+        "owner": "0x700310000",
+        "lease": 21,
+        "free": true,
+        "retired": true,
+        "allocation_line": 29774,
+        "handle": 23,
+        "freed_line": 40444,
+        "freed_seconds": 380,
+        "retired_lease": 21
+      },
+      {
+        "rx": "0x343fec000",
+        "size": "0x4000",
+        "owner": "0x600310000",
+        "lease": 11,
+        "free": true,
+        "retired": true,
+        "allocation_line": 15464,
+        "handle": 11,
+        "freed_line": 17043,
+        "freed_seconds": 78,
+        "retired_lease": 11
+      },
+      {
+        "rx": "0x343ff0000",
+        "size": "0x1000000",
+        "owner": "0x700310000",
+        "lease": 21,
+        "free": true,
+        "retired": true,
+        "allocation_line": 30488,
+        "handle": 24,
+        "freed_line": 40444,
+        "freed_seconds": 380,
+        "retired_lease": 21
+      },
+      {
+        "rx": "0x344ff0000",
+        "size": "0x4000",
+        "owner": "0x500310000",
+        "lease": 7,
+        "free": false,
+        "retired": false,
+        "allocation_line": 8926,
+        "handle": 7
+      },
+      {
+        "rx": "0x344ff4000",
+        "size": "0x4000",
+        "owner": "0x115afc000",
+        "lease": 23,
+        "free": false,
+        "retired": false,
+        "allocation_line": 41343,
+        "handle": 25
+      },
+      {
+        "rx": "0x344ff8000",
+        "size": "0x1000000",
+        "owner": "0x600310000",
+        "lease": 18,
+        "free": true,
+        "retired": true,
+        "allocation_line": 29275,
+        "handle": 22,
+        "freed_line": 40535,
+        "freed_seconds": 380,
+        "retired_lease": 18
+      },
+      {
+        "rx": "0x345ff8000",
+        "size": "0x1000000",
+        "owner": "0x400310000",
+        "lease": 4,
+        "free": false,
+        "retired": false,
+        "allocation_line": 2451,
+        "handle": 3
+      },
+      {
+        "rx": "0x346ff8000",
+        "size": "0x4000",
+        "owner": "0x400310000",
+        "lease": 4,
+        "free": false,
+        "retired": false,
+        "allocation_line": 2388,
+        "handle": 2
+      },
+      {
+        "rx": "0x346ffc000",
+        "size": "0x1000000",
+        "owner": "0x115afc000",
+        "lease": 23,
+        "free": false,
+        "retired": false,
+        "allocation_line": 46265,
+        "handle": 28
+      },
+      {
+        "rx": "0x347ffc000",
+        "size": "0x4000",
+        "owner": "0x1043d0000",
+        "lease": 5,
+        "free": false,
+        "retired": false,
+        "allocation_line": 3857,
+        "handle": 4
+      }
+    ],
+    "embree_failure": [
+      {
+        "rx": "0x326fe4000",
+        "size": "0x2000000",
+        "owner": "0x115afc000",
+        "lease": 23,
+        "free": true,
+        "retired": false,
+        "allocation_line": 45201,
+        "handle": 27,
+        "freed_line": 46273,
+        "freed_seconds": 422
+      },
+      {
+        "rx": "0x328fe4000",
+        "size": "0x8000000",
+        "owner": "0x500310000",
+        "lease": 7,
+        "free": false,
+        "retired": false,
+        "allocation_line": 23846,
+        "handle": 20
+      },
+      {
+        "rx": "0x330fe4000",
+        "size": "0x8000000",
+        "owner": "0x500310000",
+        "lease": 7,
+        "free": false,
+        "retired": false,
+        "allocation_line": 17985,
+        "handle": 19
+      },
+      {
+        "rx": "0x338fe4000",
+        "size": "0x8000000",
+        "owner": "0x1043d0000",
+        "lease": 5,
+        "free": false,
+        "retired": false,
+        "allocation_line": 16897,
+        "handle": 18
+      },
+      {
+        "rx": "0x340fe4000",
+        "size": "0x1000000",
+        "owner": "0x600310000",
+        "lease": 11,
+        "free": true,
+        "retired": true,
+        "allocation_line": 16567,
+        "handle": 17,
+        "freed_line": 17043,
+        "freed_seconds": 78,
+        "retired_lease": 11
+      },
+      {
+        "rx": "0x344ff0000",
+        "size": "0x4000",
+        "owner": "0x500310000",
+        "lease": 7,
+        "free": false,
+        "retired": false,
+        "allocation_line": 8926,
+        "handle": 7
+      },
+      {
+        "rx": "0x344ff4000",
+        "size": "0x4000",
+        "owner": "0x115afc000",
+        "lease": 23,
+        "free": false,
+        "retired": false,
+        "allocation_line": 41343,
+        "handle": 25
+      },
+      {
+        "rx": "0x344ff8000",
+        "size": "0x1000000",
+        "owner": "0x600310000",
+        "lease": 18,
+        "free": true,
+        "retired": true,
+        "allocation_line": 29275,
+        "handle": 22,
+        "freed_line": 40535,
+        "freed_seconds": 380,
+        "retired_lease": 18
+      },
+      {
+        "rx": "0x345ff8000",
+        "size": "0x1000000",
+        "owner": "0x400310000",
+        "lease": 4,
+        "free": false,
+        "retired": false,
+        "allocation_line": 2451,
+        "handle": 3
+      },
+      {
+        "rx": "0x346ff8000",
+        "size": "0x4000",
+        "owner": "0x400310000",
+        "lease": 4,
+        "free": false,
+        "retired": false,
+        "allocation_line": 2388,
+        "handle": 2
+      },
+      {
+        "rx": "0x346ffc000",
+        "size": "0x1000000",
+        "owner": "0x115afc000",
+        "lease": 23,
+        "free": false,
+        "retired": false,
+        "allocation_line": 46265,
+        "handle": 28
+      },
+      {
+        "rx": "0x347ffc000",
+        "size": "0x4000",
+        "owner": "0x1043d0000",
+        "lease": 5,
+        "free": false,
+        "retired": false,
+        "allocation_line": 3857,
+        "handle": 4
+      }
+    ]
+  },
+  "image_event_columns": [
+    "line",
+    "seconds",
+    "module",
+    "image_base",
+    "image_size",
+    "observed_rx",
+    "allocation_size",
+    "data_align_delta",
+    "actual_allocation_end"
+  ],
+  "image_events": [
+    [
+      331,
+      0,
+      "?",
+      "0x123f10000",
+      "0xa0000",
+      "0x300004000",
+      "0xa4000",
+      "0x0",
+      "0xa8000"
+    ],
+    [
+      360,
+      0,
+      "ntdll.dll",
+      "0xfbfcf0000",
+      "0x110000",
+      "0x3000a8000",
+      "0x118000",
+      "0x0",
+      "0x1c0000"
+    ],
+    [
+      470,
+      0,
+      "KERNEL32.dll",
+      "0xfbfc50000",
+      "0xa0000",
+      "0x3001c0000",
+      "0xa8000",
+      "0x0",
+      "0x268000"
+    ],
+    [
+      481,
+      0,
+      "kernelbase.dll",
+      "0xfbfae0000",
+      "0x170000",
+      "0x300268000",
+      "0x180000",
+      "0x0",
+      "0x3e8000"
+    ],
+    [
+      503,
+      0,
+      "shell32.dll",
+      "0xfbf200000",
+      "0x8e0000",
+      "0x3003e8000",
+      "0x8e4000",
+      "0x0",
+      "0xccc000"
+    ],
+    [
+      513,
+      0,
+      "shlwapi.dll",
+      "0xfbf170000",
+      "0x90000",
+      "0x300ccc000",
+      "0x94000",
+      "0x0",
+      "0xd60000"
+    ],
+    [
+      523,
+      0,
+      "shcore.dll",
+      "0xfbf110000",
+      "0x60000",
+      "0x300d60000",
+      "0x64000",
+      "0x0",
+      "0xdc4000"
+    ],
+    [
+      533,
+      0,
+      "advapi32.dll",
+      "0xfbf080000",
+      "0x90000",
+      "0x300dc4000",
+      "0x94000",
+      "0x0",
+      "0xe58000"
+    ],
+    [
+      544,
+      0,
+      "sechost.dll",
+      "0xfbf020000",
+      "0x60000",
+      "0x300e58000",
+      "0x64000",
+      "0x0",
+      "0xebc000"
+    ],
+    [
+      555,
+      0,
+      "ucrtbase.dll",
+      "0xfbef00000",
+      "0x120000",
+      "0x300ebc000",
+      "0x124000",
+      "0x0",
+      "0xfe0000"
+    ],
+    [
+      575,
+      0,
+      "msvcrt.dll",
+      "0xfbee10000",
+      "0xf0000",
+      "0x300fe0000",
+      "0xf4000",
+      "0x0",
+      "0x10d4000"
+    ],
+    [
+      627,
+      0,
+      "user32.dll",
+      "0xfbec20000",
+      "0x1f0000",
+      "0x3010d4000",
+      "0x1f8000",
+      "0x0",
+      "0x12cc000"
+    ],
+    [
+      632,
+      0,
+      "gdi32.dll",
+      "0xfbeb50000",
+      "0xd0000",
+      "0x3012cc000",
+      "0xd8000",
+      "0x0",
+      "0x13a4000"
+    ],
+    [
+      639,
+      0,
+      "win32u.dll",
+      "0xfbeac0000",
+      "0x90000",
+      "0x3013a4000",
+      "0x94000",
+      "0x0",
+      "0x1438000"
+    ],
+    [
+      703,
+      0,
+      "imm32.dll",
+      "0xfbea50000",
+      "0x70000",
+      "0x301438000",
+      "0x74000",
+      "0x0",
+      "0x14ac000"
+    ],
+    [
+      761,
+      0,
+      "?",
+      "0x121140000",
+      "0x3b000",
+      "0x3014ad000",
+      "0x40000",
+      "0x1000",
+      "0x14ec000"
+    ],
+    [
+      781,
+      0,
+      "ntdll.dll",
+      "0xfbe920000",
+      "0x130000",
+      "0x3014ec000",
+      "0x138000",
+      "0x0",
+      "0x1624000"
+    ],
+    [
+      836,
+      0,
+      "libarm64ecfex.dll",
+      "0xfbe300000",
+      "0x418000",
+      "0x301625000",
+      "0x420000",
+      "0x1000",
+      "0x1a44000"
+    ],
+    [
+      868,
+      0,
+      "ucrtbase.dll",
+      "0xfbe1d0000",
+      "0x130000",
+      "0x301a44000",
+      "0x134000",
+      "0x0",
+      "0x1b78000"
+    ],
+    [
+      892,
+      0,
+      "kernel32.dll",
+      "0xfbe110000",
+      "0xc0000",
+      "0x301b78000",
+      "0xc8000",
+      "0x0",
+      "0x1c40000"
+    ],
+    [
+      906,
+      0,
+      "kernelbase.dll",
+      "0xfbde20000",
+      "0x2f0000",
+      "0x301c40000",
+      "0x300000",
+      "0x0",
+      "0x1f40000"
+    ],
+    [
+      1198,
+      0,
+      "advapi32.dll",
+      "0xfbdd10000",
+      "0xb0000",
+      "0x301f44000",
+      "0xb4000",
+      "0x0",
+      "0x1ff8000"
+    ],
+    [
+      1214,
+      0,
+      "sechost.dll",
+      "0xfbdc90000",
+      "0x80000",
+      "0x301ff8000",
+      "0x84000",
+      "0x0",
+      "0x207c000"
+    ],
+    [
+      1230,
+      0,
+      "rpcrt4.dll",
+      "0xfbdba0000",
+      "0xf0000",
+      "0x30207c000",
+      "0xf4000",
+      "0x0",
+      "0x2170000"
+    ],
+    [
+      1241,
+      0,
+      "cryptbase.dll",
+      "0xfbdb20000",
+      "0x80000",
+      "0x302170000",
+      "0x84000",
+      "0x0",
+      "0x21f4000"
+    ],
+    [
+      1268,
+      0,
+      "msvcrt.dll",
+      "0xfbda10000",
+      "0x110000",
+      "0x3021f4000",
+      "0x114000",
+      "0x0",
+      "0x2308000"
+    ],
+    [
+      1512,
+      0,
+      "?",
+      "0x115e10000",
+      "0x60000",
+      "0x302308000",
+      "0x64000",
+      "0x0",
+      "0x236c000"
+    ],
+    [
+      1563,
+      0,
+      "KERNEL32.dll",
+      "0xfbd970000",
+      "0xa0000",
+      "0x302484000",
+      "0xa8000",
+      "0x0",
+      "0x252c000"
+    ],
+    [
+      1566,
+      0,
+      "kernelbase.dll",
+      "0xfbd800000",
+      "0x170000",
+      "0x30252c000",
+      "0x180000",
+      "0x0",
+      "0x26ac000"
+    ],
+    [
+      1572,
+      0,
+      "rpcrt4.dll",
+      "0xfbd730000",
+      "0xd0000",
+      "0x3026ac000",
+      "0xd4000",
+      "0x0",
+      "0x2780000"
+    ],
+    [
+      1576,
+      0,
+      "advapi32.dll",
+      "0xfbd6a0000",
+      "0x90000",
+      "0x302780000",
+      "0x94000",
+      "0x0",
+      "0x2814000"
+    ],
+    [
+      1579,
+      0,
+      "sechost.dll",
+      "0xfbd640000",
+      "0x60000",
+      "0x302814000",
+      "0x64000",
+      "0x0",
+      "0x2878000"
+    ],
+    [
+      1582,
+      0,
+      "ucrtbase.dll",
+      "0xfbd520000",
+      "0x120000",
+      "0x302878000",
+      "0x124000",
+      "0x0",
+      "0x299c000"
+    ],
+    [
+      1585,
+      0,
+      "msvcrt.dll",
+      "0xfbd430000",
+      "0xf0000",
+      "0x30299c000",
+      "0xf4000",
+      "0x0",
+      "0x2a90000"
+    ],
+    [
+      1588,
+      0,
+      "cryptbase.dll",
+      "0xfbd3d0000",
+      "0x60000",
+      "0x302a90000",
+      "0x64000",
+      "0x0",
+      "0x2af4000"
+    ],
+    [
+      1591,
+      0,
+      "userenv.dll",
+      "0xfbd370000",
+      "0x60000",
+      "0x302af4000",
+      "0x64000",
+      "0x0",
+      "0x2b58000"
+    ],
+    [
+      1594,
+      0,
+      "setupapi.dll",
+      "0xfbd2b0000",
+      "0xc0000",
+      "0x302b58000",
+      "0xc4000",
+      "0x0",
+      "0x2c1c000"
+    ],
+    [
+      1597,
+      0,
+      "cfgmgr32.dll",
+      "0xfbd250000",
+      "0x60000",
+      "0x302c1c000",
+      "0x64000",
+      "0x0",
+      "0x2c80000"
+    ],
+    [
+      2247,
+      1,
+      "ntdll.dll",
+      "0x3ffef0000",
+      "0x110000",
+      "0x302c80000",
+      "0x118000",
+      "0x0",
+      "0x2d98000"
+    ],
+    [
+      2280,
+      1,
+      "wow64.dll",
+      "0x3ffe80000",
+      "0x70000",
+      "0x302d98000",
+      "0x74000",
+      "0x0",
+      "0x2e0c000"
+    ],
+    [
+      2291,
+      1,
+      "libwow64fex.dll",
+      "0x3ffab0000",
+      "0x3c3000",
+      "0x302e0f000",
+      "0x3cc000",
+      "0x3000",
+      "0x31d8000"
+    ],
+    [
+      2296,
+      1,
+      "ucrtbase.dll",
+      "0x3ff990000",
+      "0x120000",
+      "0x3031d8000",
+      "0x124000",
+      "0x0",
+      "0x32fc000"
+    ],
+    [
+      2314,
+      1,
+      "KERNEL32.dll",
+      "0x3ff8f0000",
+      "0xa0000",
+      "0x3032fc000",
+      "0xa8000",
+      "0x0",
+      "0x33a4000"
+    ],
+    [
+      2322,
+      1,
+      "kernelbase.dll",
+      "0x3ff780000",
+      "0x170000",
+      "0x3033a4000",
+      "0x180000",
+      "0x0",
+      "0x3524000"
+    ],
+    [
+      2356,
+      1,
+      "wow64win.dll",
+      "0x3ff700000",
+      "0x80000",
+      "0x303524000",
+      "0x84000",
+      "0x0",
+      "0x35a8000"
+    ],
+    [
+      2359,
+      1,
+      "win32u.dll",
+      "0x3ff670000",
+      "0x90000",
+      "0x3035a8000",
+      "0x94000",
+      "0x0",
+      "0x363c000"
+    ],
+    [
+      3558,
+      2,
+      "steamexe.exe",
+      "0x134e30000",
+      "0x716000",
+      "0x303650000",
+      "0x718000",
+      "0x0",
+      "0x3d68000"
+    ],
+    [
+      3574,
+      2,
+      "ntdll.dll",
+      "0x3ff540000",
+      "0x130000",
+      "0x303d68000",
+      "0x138000",
+      "0x0",
+      "0x3ea0000"
+    ],
+    [
+      3685,
+      2,
+      "libarm64ecfex.dll",
+      "0x3ff120000",
+      "0x418000",
+      "0x303ea1000",
+      "0x420000",
+      "0x1000",
+      "0x42c0000"
+    ],
+    [
+      3702,
+      2,
+      "ucrtbase.dll",
+      "0x3feff0000",
+      "0x130000",
+      "0x3042c0000",
+      "0x134000",
+      "0x0",
+      "0x43f4000"
+    ],
+    [
+      3720,
+      3,
+      "kernel32.dll",
+      "0x3fef30000",
+      "0xc0000",
+      "0x3043f4000",
+      "0xc8000",
+      "0x0",
+      "0x44bc000"
+    ],
+    [
+      3729,
+      3,
+      "kernelbase.dll",
+      "0x3fec40000",
+      "0x2f0000",
+      "0x3044bc000",
+      "0x300000",
+      "0x0",
+      "0x47bc000"
+    ],
+    [
+      4129,
+      3,
+      "user32.dll",
+      "0x3fe9c0000",
+      "0x220000",
+      "0x3047d4000",
+      "0x228000",
+      "0x0",
+      "0x49fc000"
+    ],
+    [
+      4144,
+      3,
+      "gdi32.dll",
+      "0x3fe8d0000",
+      "0xf0000",
+      "0x3049fc000",
+      "0xf8000",
+      "0x0",
+      "0x4af4000"
+    ],
+    [
+      4155,
+      3,
+      "advapi32.dll",
+      "0x3fe820000",
+      "0xb0000",
+      "0x304af4000",
+      "0xb4000",
+      "0x0",
+      "0x4ba8000"
+    ],
+    [
+      4168,
+      3,
+      "sechost.dll",
+      "0x3fe7a0000",
+      "0x80000",
+      "0x304ba8000",
+      "0x84000",
+      "0x0",
+      "0x4c2c000"
+    ],
+    [
+      4210,
+      3,
+      "rpcrt4.dll",
+      "0x3fe6b0000",
+      "0xf0000",
+      "0x304c2c000",
+      "0xf4000",
+      "0x0",
+      "0x4d20000"
+    ],
+    [
+      4223,
+      3,
+      "cryptbase.dll",
+      "0x3fe630000",
+      "0x80000",
+      "0x304d20000",
+      "0x84000",
+      "0x0",
+      "0x4da4000"
+    ],
+    [
+      4249,
+      3,
+      "msvcrt.dll",
+      "0x3fe520000",
+      "0x110000",
+      "0x304da4000",
+      "0x114000",
+      "0x0",
+      "0x4eb8000"
+    ],
+    [
+      4270,
+      3,
+      "win32u.dll",
+      "0x3fe480000",
+      "0xa0000",
+      "0x304eb8000",
+      "0xa4000",
+      "0x0",
+      "0x4f5c000"
+    ],
+    [
+      4299,
+      3,
+      "shell32.dll",
+      "0x3fdb00000",
+      "0x980000",
+      "0x304f5c000",
+      "0x984000",
+      "0x0",
+      "0x58e0000"
+    ],
+    [
+      4345,
+      3,
+      "shlwapi.dll",
+      "0x3fda50000",
+      "0xb0000",
+      "0x3058e0000",
+      "0xb4000",
+      "0x0",
+      "0x5994000"
+    ],
+    [
+      4371,
+      3,
+      "shcore.dll",
+      "0x3fd9d0000",
+      "0x80000",
+      "0x305994000",
+      "0x84000",
+      "0x0",
+      "0x5a18000"
+    ],
+    [
+      4413,
+      3,
+      "psapi.dll",
+      "0x3fd940000",
+      "0x90000",
+      "0x305a18000",
+      "0x94000",
+      "0x0",
+      "0x5aac000"
+    ],
+    [
+      4433,
+      3,
+      "version.dll",
+      "0x3fd8b0000",
+      "0x90000",
+      "0x305aac000",
+      "0x94000",
+      "0x0",
+      "0x5b40000"
+    ],
+    [
+      4451,
+      3,
+      "crypt32.dll",
+      "0x3fd780000",
+      "0x130000",
+      "0x305b40000",
+      "0x138000",
+      "0x0",
+      "0x5c78000"
+    ],
+    [
+      4468,
+      3,
+      "bcrypt.dll",
+      "0x3fd6f0000",
+      "0x90000",
+      "0x305c78000",
+      "0x94000",
+      "0x0",
+      "0x5d0c000"
+    ],
+    [
+      4496,
+      3,
+      "imm32.dll",
+      "0x3fd650000",
+      "0xa0000",
+      "0x305d0c000",
+      "0xa4000",
+      "0x0",
+      "0x5db0000"
+    ],
+    [
+      4613,
+      4,
+      "ws2_32.dll",
+      "0x3fd5b0000",
+      "0xa0000",
+      "0x305db0000",
+      "0xa4000",
+      "0x0",
+      "0x5e54000"
+    ],
+    [
+      4663,
+      4,
+      "uxtheme.dll",
+      "0x3fd500000",
+      "0xb0000",
+      "0x305e54000",
+      "0xb4000",
+      "0x0",
+      "0x5f08000"
+    ],
+    [
+      4732,
+      4,
+      "crashhandler64.dll",
+      "0x3fd3f0000",
+      "0x1b4000",
+      "0x305f0b000",
+      "0x1b8000",
+      "0x3000",
+      "0x60c0000"
+    ],
+    [
+      4742,
+      4,
+      "wininet.dll",
+      "0x3fd1e0000",
+      "0x210000",
+      "0x3060c0000",
+      "0x214000",
+      "0x0",
+      "0x62d4000"
+    ],
+    [
+      4752,
+      4,
+      "mpr.dll",
+      "0x3fd150000",
+      "0x90000",
+      "0x3062d4000",
+      "0x94000",
+      "0x0",
+      "0x6368000"
+    ],
+    [
+      4842,
+      4,
+      "comctl32.dll",
+      "0x3fcfd0000",
+      "0x180000",
+      "0x306368000",
+      "0x184000",
+      "0x0",
+      "0x64ec000"
+    ],
+    [
+      5172,
+      5,
+      "winhttp.dll",
+      "0x3fcee0000",
+      "0xb0000",
+      "0x3064ec000",
+      "0xb4000",
+      "0x0",
+      "0x65a0000"
+    ],
+    [
+      5182,
+      5,
+      "jsproxy.dll",
+      "0x3fce40000",
+      "0xa0000",
+      "0x3065a0000",
+      "0xa4000",
+      "0x0",
+      "0x6644000"
+    ],
+    [
+      5192,
+      5,
+      "oleaut32.dll",
+      "0x3fcd10000",
+      "0x130000",
+      "0x306644000",
+      "0x134000",
+      "0x0",
+      "0x6778000"
+    ],
+    [
+      5202,
+      5,
+      "ole32.dll",
+      "0x3fcbf0000",
+      "0x120000",
+      "0x306778000",
+      "0x124000",
+      "0x0",
+      "0x689c000"
+    ],
+    [
+      5212,
+      5,
+      "combase.dll",
+      "0x3fcb40000",
+      "0xb0000",
+      "0x30689c000",
+      "0xb4000",
+      "0x0",
+      "0x6950000"
+    ],
+    [
+      5230,
+      5,
+      "coml2.dll",
+      "0x3fcab0000",
+      "0x90000",
+      "0x306950000",
+      "0x94000",
+      "0x0",
+      "0x69e4000"
+    ],
+    [
+      5362,
+      5,
+      "iphlpapi.dll",
+      "0x3fc9d0000",
+      "0xa0000",
+      "0x3069e4000",
+      "0xa4000",
+      "0x0",
+      "0x6a88000"
+    ],
+    [
+      5373,
+      5,
+      "dnsapi.dll",
+      "0x3fc940000",
+      "0x90000",
+      "0x306a88000",
+      "0x94000",
+      "0x0",
+      "0x6b1c000"
+    ],
+    [
+      5387,
+      5,
+      "nsi.dll",
+      "0x3fc8c0000",
+      "0x80000",
+      "0x306b1c000",
+      "0x84000",
+      "0x0",
+      "0x6ba0000"
+    ],
+    [
+      5426,
+      5,
+      "dhcpcsvc.dll",
+      "0x3fc840000",
+      "0x80000",
+      "0x306ba0000",
+      "0x84000",
+      "0x0",
+      "0x6c24000"
+    ],
+    [
+      5651,
+      5,
+      "rsaenh.dll",
+      "0x3fc740000",
+      "0xc0000",
+      "0x306c24000",
+      "0xc4000",
+      "0x0",
+      "0x6ce8000"
+    ],
+    [
+      5674,
+      5,
+      "rsaenh.dll",
+      "0x3fc740000",
+      "0xc0000",
+      "0x306c24000",
+      "0xc4000",
+      "0x0",
+      "0x6ce8000"
+    ],
+    [
+      5689,
+      5,
+      "cryptnet.dll",
+      "0x3fc660000",
+      "0xe0000",
+      "0x3014ac000",
+      "0xe4000",
+      "0x0",
+      "0x1590000"
+    ],
+    [
+      7160,
+      60,
+      "steamui.dll",
+      "0x3fb380000",
+      "0x12d1000",
+      "0x306cea000",
+      "0x12d8000",
+      "0x2000",
+      "0x7fc0000"
+    ],
+    [
+      7197,
+      60,
+      "winmm.dll",
+      "0x3fb260000",
+      "0x120000",
+      "0x3015a0000",
+      "0x124000",
+      "0x0",
+      "0x16c4000"
+    ],
+    [
+      7207,
+      60,
+      "msacm32.dll",
+      "0x3fb1d0000",
+      "0x90000",
+      "0x3016c4000",
+      "0x94000",
+      "0x0",
+      "0x1758000"
+    ],
+    [
+      7227,
+      60,
+      "setupapi.dll",
+      "0x3fb0f0000",
+      "0xe0000",
+      "0x301758000",
+      "0xe4000",
+      "0x0",
+      "0x183c000"
+    ],
+    [
+      7237,
+      60,
+      "cfgmgr32.dll",
+      "0x3fb070000",
+      "0x80000",
+      "0x30183c000",
+      "0x84000",
+      "0x0",
+      "0x18c0000"
+    ],
+    [
+      7263,
+      60,
+      "libavcodec-62.dll",
+      "0x3fa800000",
+      "0x864000",
+      "0x3018c3000",
+      "0x868000",
+      "0x3000",
+      "0x2128000"
+    ],
+    [
+      7270,
+      60,
+      "libavutil-60.dll",
+      "0x3fa470000",
+      "0x38e000",
+      "0x307fc0000",
+      "0x390000",
+      "0x0",
+      "0x8350000"
+    ],
+    [
+      7285,
+      60,
+      "libpyrowave-shared-1.dll",
+      "0x3fa1c0000",
+      "0x2ad000",
+      "0x308350000",
+      "0x2b0000",
+      "0x0",
+      "0x8600000"
+    ],
+    [
+      7297,
+      60,
+      "SDL3.dll",
+      "0x3f9ec0000",
+      "0x2f8000",
+      "0x308602000",
+      "0x2fc000",
+      "0x2000",
+      "0x88fc000"
+    ],
+    [
+      7304,
+      60,
+      "hid.dll",
+      "0x3f9e30000",
+      "0x90000",
+      "0x302128000",
+      "0x94000",
+      "0x0",
+      "0x21bc000"
+    ],
+    [
+      7321,
+      60,
+      "tier0_s64.dll",
+      "0x3f9b20000",
+      "0x30b000",
+      "0x3088fd000",
+      "0x310000",
+      "0x1000",
+      "0x8c0c000"
+    ],
+    [
+      7334,
+      60,
+      "video64.dll",
+      "0x3f9470000",
+      "0x6a8000",
+      "0x308c0d000",
+      "0x6ac000",
+      "0x1000",
+      "0x92b8000"
+    ],
+    [
+      7343,
+      60,
+      "libavfilter-11.dll",
+      "0x3f9360000",
+      "0x10c000",
+      "0x3021bf000",
+      "0x110000",
+      "0x3000",
+      "0x22cc000"
+    ],
+    [
+      7348,
+      60,
+      "libswscale-9.dll",
+      "0x3f90d0000",
+      "0x28a000",
+      "0x3092bb000",
+      "0x290000",
+      "0x3000",
+      "0x9548000"
+    ],
+    [
+      7359,
+      60,
+      "libavformat-62.dll",
+      "0x3f8e90000",
+      "0x23c000",
+      "0x30954a000",
+      "0x240000",
+      "0x2000",
+      "0x9788000"
+    ],
+    [
+      7369,
+      61,
+      "secur32.dll",
+      "0x3f8e00000",
+      "0x90000",
+      "0x309788000",
+      "0x94000",
+      "0x0",
+      "0x981c000"
+    ],
+    [
+      7381,
+      61,
+      "ncrypt.dll",
+      "0x3f8d80000",
+      "0x80000",
+      "0x30981c000",
+      "0x84000",
+      "0x0",
+      "0x98a0000"
+    ],
+    [
+      7396,
+      61,
+      "libswresample-6.dll",
+      "0x3f8cb0000",
+      "0xcf000",
+      "0x3098a2000",
+      "0xd4000",
+      "0x2000",
+      "0x9974000"
+    ],
+    [
+      7404,
+      61,
+      "wsock32.dll",
+      "0x3f8c20000",
+      "0x90000",
+      "0x309974000",
+      "0x94000",
+      "0x0",
+      "0x9a08000"
+    ],
+    [
+      7416,
+      61,
+      "mswsock.dll",
+      "0x3f8b90000",
+      "0x90000",
+      "0x309a08000",
+      "0x94000",
+      "0x0",
+      "0x9a9c000"
+    ],
+    [
+      7433,
+      61,
+      "vstdlib_s64.dll",
+      "0x3f8ac0000",
+      "0xc3000",
+      "0x309a9e000",
+      "0xc8000",
+      "0x2000",
+      "0x9b64000"
+    ],
+    [
+      8005,
+      62,
+      "filesystem_stdio.dll",
+      "0x3f8a70000",
+      "0x45000",
+      "0x309b66000",
+      "0x4c000",
+      "0x2000",
+      "0x9bb0000"
+    ],
+    [
+      8022,
+      63,
+      "vgui2_s.dll",
+      "0x3f8660000",
+      "0x404000",
+      "0x309bb2000",
+      "0x408000",
+      "0x2000",
+      "0x9fb8000"
+    ],
+    [
+      8030,
+      63,
+      "comdlg32.dll",
+      "0x3f8500000",
+      "0x160000",
+      "0x309fb8000",
+      "0x164000",
+      "0x0",
+      "0xa11c000"
+    ],
+    [
+      8043,
+      63,
+      "msimg32.dll",
+      "0x3f8480000",
+      "0x80000",
+      "0x30a11c000",
+      "0x84000",
+      "0x0",
+      "0xa1a0000"
+    ],
+    [
+      8055,
+      63,
+      "opengl32.dll",
+      "0x3f8320000",
+      "0x160000",
+      "0x30a1a0000",
+      "0x17c000",
+      "0x0",
+      "0xa31c000"
+    ],
+    [
+      8067,
+      63,
+      "wtsapi32.dll",
+      "0x3f82a0000",
+      "0x80000",
+      "0x30a31c000",
+      "0x84000",
+      "0x0",
+      "0xa3a0000"
+    ],
+    [
+      8079,
+      63,
+      "dwmapi.dll",
+      "0x3f8210000",
+      "0x90000",
+      "0x30a3a0000",
+      "0x94000",
+      "0x0",
+      "0xa434000"
+    ],
+    [
+      8141,
+      63,
+      "madeira-htmlipc-bridge.dll",
+      "0x3f81c0000",
+      "0x42000",
+      "0x30a435000",
+      "0x48000",
+      "0x1000",
+      "0xa47c000"
+    ],
+    [
+      8151,
+      63,
+      "chromehtml.dll",
+      "0x3f8020000",
+      "0x19c000",
+      "0x30a47d000",
+      "0x1a0000",
+      "0x1000",
+      "0xa61c000"
+    ],
+    [
+      8381,
+      63,
+      "steamsysinfo.exe",
+      "0x12de00000",
+      "0x2e0000",
+      "0x30a61c000",
+      "0x2e0000",
+      "0x0",
+      "0xa8fc000"
+    ],
+    [
+      8393,
+      63,
+      "ntdll.dll",
+      "0x3f7eb0000",
+      "0x130000",
+      "0x30a8fc000",
+      "0x138000",
+      "0x0",
+      "0xaa34000"
+    ],
+    [
+      8450,
+      63,
+      "libarm64ecfex.dll",
+      "0x3f7a90000",
+      "0x418000",
+      "0x30aa35000",
+      "0x420000",
+      "0x1000",
+      "0xae54000"
+    ],
+    [
+      8471,
+      63,
+      "ucrtbase.dll",
+      "0x3f7960000",
+      "0x130000",
+      "0x30ae54000",
+      "0x134000",
+      "0x0",
+      "0xaf88000"
+    ],
+    [
+      8484,
+      63,
+      "kernel32.dll",
+      "0x3f78a0000",
+      "0xc0000",
+      "0x30af88000",
+      "0xc8000",
+      "0x0",
+      "0xb050000"
+    ],
+    [
+      8491,
+      63,
+      "kernelbase.dll",
+      "0x3f75b0000",
+      "0x2f0000",
+      "0x30b050000",
+      "0x300000",
+      "0x0",
+      "0xb350000"
+    ],
+    [
+      8631,
+      63,
+      "ntdll.dll",
+      "0x3f74a0000",
+      "0x110000",
+      "0x30b350000",
+      "0x118000",
+      "0x0",
+      "0xb468000"
+    ],
+    [
+      8660,
+      63,
+      "wow64.dll",
+      "0x3f7430000",
+      "0x70000",
+      "0x30b468000",
+      "0x74000",
+      "0x0",
+      "0xb4dc000"
+    ],
+    [
+      8684,
+      63,
+      "libwow64fex.dll",
+      "0x3f7060000",
+      "0x3c3000",
+      "0x30b4df000",
+      "0x3cc000",
+      "0x3000",
+      "0xb8a8000"
+    ],
+    [
+      8702,
+      63,
+      "?",
+      "0x12fa40000",
+      "0x80000",
+      "0x30b8a8000",
+      "0x84000",
+      "0x0",
+      "0xb92c000"
+    ],
+    [
+      8716,
+      63,
+      "ucrtbase.dll",
+      "0x3f6f40000",
+      "0x120000",
+      "0x30b92c000",
+      "0x124000",
+      "0x0",
+      "0xba50000"
+    ],
+    [
+      8727,
+      63,
+      "KERNEL32.dll",
+      "0x3f6ea0000",
+      "0xa0000",
+      "0x30bb68000",
+      "0xa8000",
+      "0x0",
+      "0xbc10000"
+    ],
+    [
+      8772,
+      63,
+      "kernelbase.dll",
+      "0x3f6d30000",
+      "0x170000",
+      "0x30bc10000",
+      "0x180000",
+      "0x0",
+      "0xbd90000"
+    ],
+    [
+      8820,
+      63,
+      "KERNEL32.dll",
+      "0x3f6c50000",
+      "0xa0000",
+      "0x30bd90000",
+      "0xa8000",
+      "0x0",
+      "0xbe38000"
+    ],
+    [
+      8824,
+      63,
+      "kernelbase.dll",
+      "0x3f6ae0000",
+      "0x170000",
+      "0x30be38000",
+      "0x180000",
+      "0x0",
+      "0xbfb8000"
+    ],
+    [
+      8836,
+      63,
+      "user32.dll",
+      "0x3f68f0000",
+      "0x1f0000",
+      "0x30bfb8000",
+      "0x1f8000",
+      "0x0",
+      "0xc1b0000"
+    ],
+    [
+      8841,
+      63,
+      "gdi32.dll",
+      "0x3f6820000",
+      "0xd0000",
+      "0x30c1b0000",
+      "0xd8000",
+      "0x0",
+      "0xc288000"
+    ],
+    [
+      8846,
+      63,
+      "advapi32.dll",
+      "0x3f6790000",
+      "0x90000",
+      "0x30c288000",
+      "0x94000",
+      "0x0",
+      "0xc31c000"
+    ],
+    [
+      8851,
+      63,
+      "sechost.dll",
+      "0x3f6730000",
+      "0x60000",
+      "0x30c31c000",
+      "0x64000",
+      "0x0",
+      "0xc380000"
+    ],
+    [
+      8866,
+      63,
+      "wow64win.dll",
+      "0x3f66b0000",
+      "0x80000",
+      "0x30c380000",
+      "0x84000",
+      "0x0",
+      "0xc404000"
+    ],
+    [
+      8869,
+      63,
+      "ucrtbase.dll",
+      "0x3f6590000",
+      "0x120000",
+      "0x30c404000",
+      "0x124000",
+      "0x0",
+      "0xc528000"
+    ],
+    [
+      8873,
+      63,
+      "win32u.dll",
+      "0x3f6500000",
+      "0x90000",
+      "0x30c528000",
+      "0x94000",
+      "0x0",
+      "0xc5bc000"
+    ],
+    [
+      8875,
+      63,
+      "msvcrt.dll",
+      "0x3f6410000",
+      "0xf0000",
+      "0x30c5bc000",
+      "0xf4000",
+      "0x0",
+      "0xc6b0000"
+    ],
+    [
+      8882,
+      63,
+      "win32u.dll",
+      "0x3f6380000",
+      "0x90000",
+      "0x30c6b0000",
+      "0x94000",
+      "0x0",
+      "0xc744000"
+    ],
+    [
+      8894,
+      63,
+      "imm32.dll",
+      "0x3f6310000",
+      "0x70000",
+      "0x30c744000",
+      "0x74000",
+      "0x0",
+      "0xc7b8000"
+    ],
+    [
+      9306,
+      64,
+      "dwrite.dll",
+      "0x3f61b0000",
+      "0xe0000",
+      "0x30c7b8000",
+      "0xe4000",
+      "0x0",
+      "0xc89c000"
+    ],
+    [
+      9458,
+      64,
+      "user32.dll",
+      "0x3f5f30000",
+      "0x220000",
+      "0x30c89c000",
+      "0x228000",
+      "0x0",
+      "0xcac4000"
+    ],
+    [
+      9469,
+      64,
+      "gdi32.dll",
+      "0x3f5e40000",
+      "0xf0000",
+      "0x30cac4000",
+      "0xf8000",
+      "0x0",
+      "0xcbbc000"
+    ],
+    [
+      9479,
+      64,
+      "advapi32.dll",
+      "0x3f5d90000",
+      "0xb0000",
+      "0x30cbbc000",
+      "0xb4000",
+      "0x0",
+      "0xcc70000"
+    ],
+    [
+      9490,
+      64,
+      "sechost.dll",
+      "0x3f5d10000",
+      "0x80000",
+      "0x30cc70000",
+      "0x84000",
+      "0x0",
+      "0xccf4000"
+    ],
+    [
+      9502,
+      65,
+      "rpcrt4.dll",
+      "0x3f5c20000",
+      "0xf0000",
+      "0x30ccf4000",
+      "0xf4000",
+      "0x0",
+      "0xcde8000"
+    ],
+    [
+      9512,
+      65,
+      "cryptbase.dll",
+      "0x3f5ba0000",
+      "0x80000",
+      "0x30cde8000",
+      "0x84000",
+      "0x0",
+      "0xce6c000"
+    ],
+    [
+      9554,
+      65,
+      "msvcrt.dll",
+      "0x3f5a90000",
+      "0x110000",
+      "0x30ce6c000",
+      "0x114000",
+      "0x0",
+      "0xcf80000"
+    ],
+    [
+      9600,
+      65,
+      "win32u.dll",
+      "0x3f59f0000",
+      "0xa0000",
+      "0x30cf80000",
+      "0xa4000",
+      "0x0",
+      "0xd024000"
+    ],
+    [
+      9631,
+      65,
+      "shell32.dll",
+      "0x3f5070000",
+      "0x980000",
+      "0x30d024000",
+      "0x984000",
+      "0x0",
+      "0xd9a8000"
+    ],
+    [
+      9646,
+      65,
+      "shlwapi.dll",
+      "0x3f4fc0000",
+      "0xb0000",
+      "0x30d9a8000",
+      "0xb4000",
+      "0x0",
+      "0xda5c000"
+    ],
+    [
+      9661,
+      65,
+      "shcore.dll",
+      "0x3f4f40000",
+      "0x80000",
+      "0x30da5c000",
+      "0x84000",
+      "0x0",
+      "0xdae0000"
+    ],
+    [
+      9691,
+      65,
+      "psapi.dll",
+      "0x3f4eb0000",
+      "0x90000",
+      "0x30dae0000",
+      "0x94000",
+      "0x0",
+      "0xdb74000"
+    ],
+    [
+      9719,
+      65,
+      "imm32.dll",
+      "0x3f4e10000",
+      "0xa0000",
+      "0x30db74000",
+      "0xa4000",
+      "0x0",
+      "0xdc18000"
+    ],
+    [
+      10053,
+      65,
+      "crashhandler64.dll",
+      "0x3f4c50000",
+      "0x1b4000",
+      "0x30dc1b000",
+      "0x1b8000",
+      "0x3000",
+      "0xddd0000"
+    ],
+    [
+      10065,
+      65,
+      "wininet.dll",
+      "0x3f4a40000",
+      "0x210000",
+      "0x30ddd0000",
+      "0x214000",
+      "0x0",
+      "0xdfe4000"
+    ],
+    [
+      10077,
+      65,
+      "mpr.dll",
+      "0x3f49b0000",
+      "0x90000",
+      "0x30dfe4000",
+      "0x94000",
+      "0x0",
+      "0xe078000"
+    ],
+    [
+      10101,
+      65,
+      "ws2_32.dll",
+      "0x3f4910000",
+      "0xa0000",
+      "0x30e078000",
+      "0xa4000",
+      "0x0",
+      "0xe11c000"
+    ],
+    [
+      10461,
+      65,
+      "vulkan-1.dll",
+      "0x3f4860000",
+      "0x23000",
+      "0x30e11e000",
+      "0x2c000",
+      "0x2000",
+      "0xe148000"
+    ],
+    [
+      10851,
+      66,
+      "steamclient64.dll",
+      "0x3f2ea0000",
+      "0x19b4000",
+      "0x30e14b000",
+      "0x19b8000",
+      "0x3000",
+      "0xfb00000"
+    ],
+    [
+      10885,
+      66,
+      "imagehlp.dll",
+      "0x3f4d90000",
+      "0x80000",
+      "0x30fb00000",
+      "0x84000",
+      "0x0",
+      "0xfb84000"
+    ],
+    [
+      12362,
+      69,
+      "dxgi.dll",
+      "0x3f4c70000",
+      "0x116000",
+      "0x30c407000",
+      "0x120000",
+      "0x3000",
+      "0xc524000"
+    ],
+    [
+      12396,
+      69,
+      "winemetal.dll",
+      "0x3f48e0000",
+      "0x28000",
+      "0x30b8b6000",
+      "0x30000",
+      "0x2000",
+      "0xb8e4000"
+    ],
+    [
+      13381,
+      70,
+      "?",
+      "0x152880000",
+      "0x80000",
+      "0x30ba50000",
+      "0x84000",
+      "0x0",
+      "0xbad4000"
+    ],
+    [
+      13414,
+      70,
+      "KERNEL32.dll",
+      "0x3f2d40000",
+      "0xa0000",
+      "0x30c6d4000",
+      "0xa8000",
+      "0x0",
+      "0xc77c000"
+    ],
+    [
+      13418,
+      70,
+      "kernelbase.dll",
+      "0x3f2bd0000",
+      "0x170000",
+      "0x30bd90000",
+      "0x180000",
+      "0x0",
+      "0xbf10000"
+    ],
+    [
+      13426,
+      70,
+      "user32.dll",
+      "0x3f29e0000",
+      "0x1f0000",
+      "0x30bf10000",
+      "0x1f8000",
+      "0x0",
+      "0xc108000"
+    ],
+    [
+      13430,
+      70,
+      "gdi32.dll",
+      "0x3f2910000",
+      "0xd0000",
+      "0x30c108000",
+      "0xd8000",
+      "0x0",
+      "0xc1e0000"
+    ],
+    [
+      13434,
+      70,
+      "advapi32.dll",
+      "0x3f2880000",
+      "0x90000",
+      "0x30bad4000",
+      "0x94000",
+      "0x0",
+      "0xbb68000"
+    ],
+    [
+      13439,
+      70,
+      "sechost.dll",
+      "0x3f2820000",
+      "0x60000",
+      "0x30c1e0000",
+      "0x64000",
+      "0x0",
+      "0xc244000"
+    ],
+    [
+      13443,
+      70,
+      "ucrtbase.dll",
+      "0x3f2700000",
+      "0x120000",
+      "0x30c244000",
+      "0x124000",
+      "0x0",
+      "0xc368000"
+    ],
+    [
+      13450,
+      70,
+      "wlanapi.dll",
+      "0x3f2680000",
+      "0x80000",
+      "0x30a61c000",
+      "0x84000",
+      "0x0",
+      "0xa6a0000"
+    ],
+    [
+      13462,
+      70,
+      "msvcrt.dll",
+      "0x3f2590000",
+      "0xf0000",
+      "0x30a6a0000",
+      "0xf4000",
+      "0x0",
+      "0xa794000"
+    ],
+    [
+      13468,
+      70,
+      "win32u.dll",
+      "0x3f2500000",
+      "0x90000",
+      "0x30a794000",
+      "0x94000",
+      "0x0",
+      "0xa828000"
+    ],
+    [
+      13485,
+      70,
+      "imm32.dll",
+      "0x3f2490000",
+      "0x70000",
+      "0x30a828000",
+      "0x74000",
+      "0x0",
+      "0xa89c000"
+    ],
+    [
+      13877,
+      71,
+      "wbemprox.dll",
+      "0x3f22d0000",
+      "0xc0000",
+      "0x30a89c000",
+      "0xc4000",
+      "0x0",
+      "0xa960000"
+    ],
+    [
+      13885,
+      71,
+      "winspool.drv",
+      "0x3f21a0000",
+      "0x130000",
+      "0x30a960000",
+      "0x134000",
+      "0x0",
+      "0xaa94000"
+    ],
+    [
+      13895,
+      71,
+      "compstui.dll",
+      "0x3f2100000",
+      "0xa0000",
+      "0x30aa94000",
+      "0xa4000",
+      "0x0",
+      "0xab38000"
+    ],
+    [
+      13913,
+      71,
+      "libusb-1.0.dll",
+      "0x3f20a0000",
+      "0x53000",
+      "0x30ab3a000",
+      "0x58000",
+      "0x2000",
+      "0xab90000"
+    ],
+    [
+      13947,
+      71,
+      "winusb.dll",
+      "0x3f2020000",
+      "0x80000",
+      "0x30ab90000",
+      "0x84000",
+      "0x0",
+      "0xac14000"
+    ],
+    [
+      14096,
+      71,
+      "dsound.dll",
+      "0x3f1f20000",
+      "0xc0000",
+      "0x30ac14000",
+      "0xc4000",
+      "0x0",
+      "0xacd8000"
+    ],
+    [
+      14158,
+      71,
+      "mmdevapi.dll",
+      "0x3f1e40000",
+      "0xa0000",
+      "0x30acd8000",
+      "0xa4000",
+      "0x0",
+      "0xad7c000"
+    ],
+    [
+      14382,
+      72,
+      "xinput1_4.dll",
+      "0x3f1cb0000",
+      "0x90000",
+      "0x30ad7c000",
+      "0x94000",
+      "0x0",
+      "0xae10000"
+    ],
+    [
+      14399,
+      72,
+      "dinput8.dll",
+      "0x3f1c00000",
+      "0xb0000",
+      "0x30ae10000",
+      "0xb4000",
+      "0x0",
+      "0xaec4000"
+    ],
+    [
+      14631,
+      72,
+      "opengl-program.exe",
+      "0x15d250000",
+      "0xf1000",
+      "0x30aec6000",
+      "0xf8000",
+      "0x2000",
+      "0xafbc000"
+    ],
+    [
+      14646,
+      72,
+      "ntdll.dll",
+      "0x3f1a10000",
+      "0x130000",
+      "0x30afbc000",
+      "0x138000",
+      "0x0",
+      "0xb0f4000"
+    ],
+    [
+      14753,
+      72,
+      "libarm64ecfex.dll",
+      "0x3f15b0000",
+      "0x418000",
+      "0x30c89d000",
+      "0x420000",
+      "0x1000",
+      "0xccbc000"
+    ],
+    [
+      14768,
+      72,
+      "ucrtbase.dll",
+      "0x3f1480000",
+      "0x130000",
+      "0x30b0f4000",
+      "0x134000",
+      "0x0",
+      "0xb228000"
+    ],
+    [
+      14780,
+      72,
+      "kernel32.dll",
+      "0x3f13c0000",
+      "0xc0000",
+      "0x30b228000",
+      "0xc8000",
+      "0x0",
+      "0xb2f0000"
+    ],
+    [
+      14788,
+      72,
+      "kernelbase.dll",
+      "0x3f10d0000",
+      "0x2f0000",
+      "0x30ccbc000",
+      "0x300000",
+      "0x0",
+      "0xcfbc000"
+    ],
+    [
+      14920,
+      73,
+      "ntdll.dll",
+      "0x3f0fc0000",
+      "0x110000",
+      "0x30cfbc000",
+      "0x118000",
+      "0x0",
+      "0xd0d4000"
+    ],
+    [
+      14969,
+      73,
+      "?",
+      "0x15fd30000",
+      "0x37000",
+      "0x30c77d000",
+      "0x3c000",
+      "0x1000",
+      "0xc7b8000"
+    ],
+    [
+      14983,
+      73,
+      "ntdll.dll",
+      "0x3f0e90000",
+      "0x130000",
+      "0x30d0d4000",
+      "0x138000",
+      "0x0",
+      "0xd20c000"
+    ],
+    [
+      15006,
+      73,
+      "wow64.dll",
+      "0x3f0e20000",
+      "0x70000",
+      "0x30d20c000",
+      "0x74000",
+      "0x0",
+      "0xd280000"
+    ],
+    [
+      15028,
+      73,
+      "libwow64fex.dll",
+      "0x3f0a50000",
+      "0x3c3000",
+      "0x30d283000",
+      "0x3cc000",
+      "0x3000",
+      "0xd64c000"
+    ],
+    [
+      15036,
+      73,
+      "ucrtbase.dll",
+      "0x3f0930000",
+      "0x120000",
+      "0x30d64c000",
+      "0x124000",
+      "0x0",
+      "0xd770000"
+    ],
+    [
+      15042,
+      73,
+      "KERNEL32.dll",
+      "0x3f0890000",
+      "0xa0000",
+      "0x30d770000",
+      "0xa8000",
+      "0x0",
+      "0xd818000"
+    ],
+    [
+      15048,
+      73,
+      "kernelbase.dll",
+      "0x3f0720000",
+      "0x170000",
+      "0x30d818000",
+      "0x180000",
+      "0x0",
+      "0xd998000"
+    ],
+    [
+      15072,
+      73,
+      "libarm64ecfex.dll",
+      "0x3f0300000",
+      "0x418000",
+      "0x30d999000",
+      "0x420000",
+      "0x1000",
+      "0xddb8000"
+    ],
+    [
+      15095,
+      73,
+      "ucrtbase.dll",
+      "0x3f01d0000",
+      "0x130000",
+      "0x30ddb8000",
+      "0x134000",
+      "0x0",
+      "0xdeec000"
+    ],
+    [
+      15108,
+      73,
+      "kernel32.dll",
+      "0x3f0110000",
+      "0xc0000",
+      "0x30deec000",
+      "0xc8000",
+      "0x0",
+      "0xdfb4000"
+    ],
+    [
+      15115,
+      73,
+      "kernelbase.dll",
+      "0x3efe20000",
+      "0x2f0000",
+      "0x30fb8c000",
+      "0x300000",
+      "0x0",
+      "0xfe8c000"
+    ],
+    [
+      15198,
+      73,
+      "wow64win.dll",
+      "0x3efda0000",
+      "0x80000",
+      "0x30dfb4000",
+      "0x84000",
+      "0x0",
+      "0xe038000"
+    ],
+    [
+      15207,
+      73,
+      "ntdll.dll",
+      "0x3efc90000",
+      "0x110000",
+      "0x30fe8c000",
+      "0x118000",
+      "0x0",
+      "0xffa4000"
+    ],
+    [
+      15243,
+      73,
+      "win32u.dll",
+      "0x3efc00000",
+      "0x90000",
+      "0x30e038000",
+      "0x94000",
+      "0x0",
+      "0xe0cc000"
+    ],
+    [
+      15246,
+      73,
+      "wow64.dll",
+      "0x3efb90000",
+      "0x70000",
+      "0x30e0cc000",
+      "0x74000",
+      "0x0",
+      "0xe140000"
+    ],
+    [
+      15258,
+      73,
+      "libwow64fex.dll",
+      "0x3ef7c0000",
+      "0x3c3000",
+      "0x30ffa7000",
+      "0x3cc000",
+      "0x3000",
+      "0x10370000"
+    ],
+    [
+      15268,
+      73,
+      "ucrtbase.dll",
+      "0x3ef6a0000",
+      "0x120000",
+      "0x310370000",
+      "0x124000",
+      "0x0",
+      "0x10494000"
+    ],
+    [
+      15271,
+      73,
+      "KERNEL32.dll",
+      "0x3ef600000",
+      "0xa0000",
+      "0x310494000",
+      "0xa8000",
+      "0x0",
+      "0x1053c000"
+    ],
+    [
+      15274,
+      73,
+      "kernelbase.dll",
+      "0x3ef490000",
+      "0x170000",
+      "0x31053c000",
+      "0x180000",
+      "0x0",
+      "0x106bc000"
+    ],
+    [
+      15322,
+      73,
+      "?",
+      "0x161ba0000",
+      "0x80000",
+      "0x3106bc000",
+      "0x84000",
+      "0x0",
+      "0x10740000"
+    ],
+    [
+      15396,
+      73,
+      "?",
+      "0x162570000",
+      "0x80000",
+      "0x310858000",
+      "0x84000",
+      "0x0",
+      "0x108dc000"
+    ],
+    [
+      15429,
+      73,
+      "KERNEL32.dll",
+      "0x3ef3f0000",
+      "0xa0000",
+      "0x3109f4000",
+      "0xa8000",
+      "0x0",
+      "0x10a9c000"
+    ],
+    [
+      15432,
+      73,
+      "kernelbase.dll",
+      "0x3ef280000",
+      "0x170000",
+      "0x310a9c000",
+      "0x180000",
+      "0x0",
+      "0x10c1c000"
+    ],
+    [
+      15456,
+      73,
+      "KERNEL32.dll",
+      "0x3ef1e0000",
+      "0xa0000",
+      "0x310c1c000",
+      "0xa8000",
+      "0x0",
+      "0x10cc4000"
+    ],
+    [
+      15459,
+      73,
+      "user32.dll",
+      "0x3eeff0000",
+      "0x1f0000",
+      "0x310cc4000",
+      "0x1f8000",
+      "0x0",
+      "0x10ebc000"
+    ],
+    [
+      15469,
+      73,
+      "kernelbase.dll",
+      "0x3eee80000",
+      "0x170000",
+      "0x310ebc000",
+      "0x180000",
+      "0x0",
+      "0x1103c000"
+    ],
+    [
+      15472,
+      73,
+      "wow64win.dll",
+      "0x3eee00000",
+      "0x80000",
+      "0x31103c000",
+      "0x84000",
+      "0x0",
+      "0x110c0000"
+    ],
+    [
+      15476,
+      73,
+      "win32u.dll",
+      "0x3eed70000",
+      "0x90000",
+      "0x3110c0000",
+      "0x94000",
+      "0x0",
+      "0x11154000"
+    ],
+    [
+      15478,
+      73,
+      "gdi32.dll",
+      "0x3eeca0000",
+      "0xd0000",
+      "0x311154000",
+      "0xd8000",
+      "0x0",
+      "0x1122c000"
+    ],
+    [
+      15482,
+      73,
+      "advapi32.dll",
+      "0x3eec10000",
+      "0x90000",
+      "0x31122c000",
+      "0x94000",
+      "0x0",
+      "0x112c0000"
+    ],
+    [
+      15487,
+      73,
+      "sechost.dll",
+      "0x3eebb0000",
+      "0x60000",
+      "0x3112c0000",
+      "0x64000",
+      "0x0",
+      "0x11324000"
+    ],
+    [
+      15493,
+      73,
+      "ucrtbase.dll",
+      "0x3eea90000",
+      "0x120000",
+      "0x311324000",
+      "0x124000",
+      "0x0",
+      "0x11448000"
+    ],
+    [
+      15496,
+      73,
+      "user32.dll",
+      "0x3ee8a0000",
+      "0x1f0000",
+      "0x311448000",
+      "0x1f8000",
+      "0x0",
+      "0x11640000"
+    ],
+    [
+      15499,
+      73,
+      "gdi32.dll",
+      "0x3ee7d0000",
+      "0xd0000",
+      "0x311640000",
+      "0xd8000",
+      "0x0",
+      "0x11718000"
+    ],
+    [
+      15502,
+      73,
+      "msvcrt.dll",
+      "0x3ee6e0000",
+      "0xf0000",
+      "0x311718000",
+      "0xf4000",
+      "0x0",
+      "0x1180c000"
+    ],
+    [
+      15505,
+      73,
+      "advapi32.dll",
+      "0x3ee650000",
+      "0x90000",
+      "0x31180c000",
+      "0x94000",
+      "0x0",
+      "0x118a0000"
+    ],
+    [
+      15509,
+      73,
+      "sechost.dll",
+      "0x3ee5f0000",
+      "0x60000",
+      "0x3118a0000",
+      "0x64000",
+      "0x0",
+      "0x11904000"
+    ],
+    [
+      15512,
+      73,
+      "win32u.dll",
+      "0x3ee560000",
+      "0x90000",
+      "0x311904000",
+      "0x94000",
+      "0x0",
+      "0x11998000"
+    ],
+    [
+      15515,
+      73,
+      "ucrtbase.dll",
+      "0x3ee440000",
+      "0x120000",
+      "0x311998000",
+      "0x124000",
+      "0x0",
+      "0x11abc000"
+    ],
+    [
+      15530,
+      73,
+      "msvcrt.dll",
+      "0x3ee350000",
+      "0xf0000",
+      "0x311abc000",
+      "0xf4000",
+      "0x0",
+      "0x11bb0000"
+    ],
+    [
+      15534,
+      73,
+      "win32u.dll",
+      "0x3ee2c0000",
+      "0x90000",
+      "0x311bb0000",
+      "0x94000",
+      "0x0",
+      "0x11c44000"
+    ],
+    [
+      15564,
+      73,
+      "imm32.dll",
+      "0x3ee250000",
+      "0x70000",
+      "0x311c44000",
+      "0x74000",
+      "0x0",
+      "0x11cb8000"
+    ],
+    [
+      15588,
+      73,
+      "imm32.dll",
+      "0x3ee1e0000",
+      "0x70000",
+      "0x311cb8000",
+      "0x74000",
+      "0x0",
+      "0x11d2c000"
+    ],
+    [
+      15806,
+      74,
+      "openvr_api.dll",
+      "0x3ee110000",
+      "0xcf000",
+      "0x311d2f000",
+      "0xd4000",
+      "0x3000",
+      "0x11e00000"
+    ],
+    [
+      16527,
+      77,
+      "msvcr120.dll",
+      "0x3edf10000",
+      "0x130000",
+      "0x311e00000",
+      "0x134000",
+      "0x0",
+      "0x11f34000"
+    ],
+    [
+      16568,
+      77,
+      "user32.dll",
+      "0x3edcf0000",
+      "0x220000",
+      "0x311f34000",
+      "0x228000",
+      "0x0",
+      "0x1215c000"
+    ],
+    [
+      16599,
+      77,
+      "gdi32.dll",
+      "0x3edc00000",
+      "0xf0000",
+      "0x31215c000",
+      "0xf8000",
+      "0x0",
+      "0x12254000"
+    ],
+    [
+      16612,
+      77,
+      "advapi32.dll",
+      "0x3edb50000",
+      "0xb0000",
+      "0x312254000",
+      "0xb4000",
+      "0x0",
+      "0x12308000"
+    ],
+    [
+      16626,
+      77,
+      "sechost.dll",
+      "0x3edad0000",
+      "0x80000",
+      "0x312308000",
+      "0x84000",
+      "0x0",
+      "0x1238c000"
+    ],
+    [
+      16641,
+      77,
+      "rpcrt4.dll",
+      "0x3ed9e0000",
+      "0xf0000",
+      "0x31238c000",
+      "0xf4000",
+      "0x0",
+      "0x12480000"
+    ],
+    [
+      16653,
+      77,
+      "cryptbase.dll",
+      "0x3ed960000",
+      "0x80000",
+      "0x312480000",
+      "0x84000",
+      "0x0",
+      "0x12504000"
+    ],
+    [
+      16688,
+      77,
+      "vulkan-1.dll",
+      "0x3ed930000",
+      "0x23000",
+      "0x30b8e6000",
+      "0x2c000",
+      "0x2000",
+      "0xb910000"
+    ],
+    [
+      16701,
+      77,
+      "msvcrt.dll",
+      "0x3ed820000",
+      "0x110000",
+      "0x312504000",
+      "0x114000",
+      "0x0",
+      "0x12618000"
+    ],
+    [
+      16731,
+      77,
+      "win32u.dll",
+      "0x3ed780000",
+      "0xa0000",
+      "0x312618000",
+      "0xa4000",
+      "0x0",
+      "0x126bc000"
+    ],
+    [
+      16871,
+      77,
+      "shell32.dll",
+      "0x3ece00000",
+      "0x980000",
+      "0x3126bc000",
+      "0x984000",
+      "0x0",
+      "0x13040000"
+    ],
+    [
+      16886,
+      77,
+      "shlwapi.dll",
+      "0x3ecd50000",
+      "0xb0000",
+      "0x313040000",
+      "0xb4000",
+      "0x0",
+      "0x130f4000"
+    ],
+    [
+      16906,
+      78,
+      "shcore.dll",
+      "0x3eccd0000",
+      "0x80000",
+      "0x3130f4000",
+      "0x84000",
+      "0x0",
+      "0x13178000"
+    ],
+    [
+      16950,
+      78,
+      "ole32.dll",
+      "0x3ecbb0000",
+      "0x120000",
+      "0x313178000",
+      "0x124000",
+      "0x0",
+      "0x1329c000"
+    ],
+    [
+      16962,
+      78,
+      "combase.dll",
+      "0x3ecb00000",
+      "0xb0000",
+      "0x31329c000",
+      "0xb4000",
+      "0x0",
+      "0x13350000"
+    ],
+    [
+      16991,
+      78,
+      "coml2.dll",
+      "0x3eca70000",
+      "0x90000",
+      "0x313350000",
+      "0x94000",
+      "0x0",
+      "0x133e4000"
+    ],
+    [
+      17020,
+      78,
+      "oleaut32.dll",
+      "0x3ec940000",
+      "0x130000",
+      "0x3133e4000",
+      "0x134000",
+      "0x0",
+      "0x13518000"
+    ],
+    [
+      17064,
+      78,
+      "winmm.dll",
+      "0x3ec820000",
+      "0x120000",
+      "0x313518000",
+      "0x124000",
+      "0x0",
+      "0x1363c000"
+    ],
+    [
+      17105,
+      78,
+      "?",
+      "0x131120000",
+      "0x80000",
+      "0x31363c000",
+      "0x84000",
+      "0x0",
+      "0x136c0000"
+    ],
+    [
+      17138,
+      78,
+      "msacm32.dll",
+      "0x3ec790000",
+      "0x90000",
+      "0x3137d8000",
+      "0x94000",
+      "0x0",
+      "0x1386c000"
+    ],
+    [
+      17149,
+      78,
+      "KERNEL32.dll",
+      "0x3ec6f0000",
+      "0xa0000",
+      "0x31386c000",
+      "0xa8000",
+      "0x0",
+      "0x13914000"
+    ],
+    [
+      17152,
+      78,
+      "kernelbase.dll",
+      "0x3ec580000",
+      "0x170000",
+      "0x313914000",
+      "0x180000",
+      "0x0",
+      "0x13a94000"
+    ],
+    [
+      17168,
+      78,
+      "user32.dll",
+      "0x3ec390000",
+      "0x1f0000",
+      "0x313a94000",
+      "0x1f8000",
+      "0x0",
+      "0x13c8c000"
+    ],
+    [
+      17172,
+      78,
+      "gdi32.dll",
+      "0x3ec2c0000",
+      "0xd0000",
+      "0x313c8c000",
+      "0xd8000",
+      "0x0",
+      "0x13d64000"
+    ],
+    [
+      17176,
+      78,
+      "advapi32.dll",
+      "0x3ec230000",
+      "0x90000",
+      "0x313d64000",
+      "0x94000",
+      "0x0",
+      "0x13df8000"
+    ],
+    [
+      17179,
+      78,
+      "sechost.dll",
+      "0x3ec1d0000",
+      "0x60000",
+      "0x313df8000",
+      "0x64000",
+      "0x0",
+      "0x13e5c000"
+    ],
+    [
+      17182,
+      78,
+      "ucrtbase.dll",
+      "0x3ec0b0000",
+      "0x120000",
+      "0x313e5c000",
+      "0x124000",
+      "0x0",
+      "0x13f80000"
+    ],
+    [
+      17186,
+      78,
+      "imm32.dll",
+      "0x3ec010000",
+      "0xa0000",
+      "0x313f80000",
+      "0xa4000",
+      "0x0",
+      "0x14024000"
+    ],
+    [
+      17193,
+      78,
+      "msvcrt.dll",
+      "0x3ebf20000",
+      "0xf0000",
+      "0x314024000",
+      "0xf4000",
+      "0x0",
+      "0x14118000"
+    ],
+    [
+      17198,
+      78,
+      "win32u.dll",
+      "0x3ebe90000",
+      "0x90000",
+      "0x314118000",
+      "0x94000",
+      "0x0",
+      "0x141ac000"
+    ],
+    [
+      17213,
+      78,
+      "version.dll",
+      "0x3ebe00000",
+      "0x90000",
+      "0x3141ac000",
+      "0x94000",
+      "0x0",
+      "0x14240000"
+    ],
+    [
+      17240,
+      78,
+      "imm32.dll",
+      "0x3ebd90000",
+      "0x70000",
+      "0x314240000",
+      "0x74000",
+      "0x0",
+      "0x142b4000"
+    ],
+    [
+      17389,
+      78,
+      "uxtheme.dll",
+      "0x3ebce0000",
+      "0xb0000",
+      "0x3142b4000",
+      "0xb4000",
+      "0x0",
+      "0x14368000"
+    ],
+    [
+      17413,
+      78,
+      "opengl32.dll",
+      "0x3ebc30000",
+      "0x160000",
+      "0x314368000",
+      "0x17c000",
+      "0x0",
+      "0x144e4000"
+    ],
+    [
+      23191,
+      141,
+      "?",
+      "0x132d90000",
+      "0x60000",
+      "0x30aec4000",
+      "0x64000",
+      "0x0",
+      "0xaf28000"
+    ],
+    [
+      23224,
+      141,
+      "KERNEL32.dll",
+      "0x3eba90000",
+      "0xa0000",
+      "0x30b040000",
+      "0xa8000",
+      "0x0",
+      "0xb0e8000"
+    ],
+    [
+      23229,
+      141,
+      "kernelbase.dll",
+      "0x3eb920000",
+      "0x170000",
+      "0x30b0e8000",
+      "0x180000",
+      "0x0",
+      "0xb268000"
+    ],
+    [
+      23236,
+      141,
+      "rpcrt4.dll",
+      "0x3eb850000",
+      "0xd0000",
+      "0x30b268000",
+      "0xd4000",
+      "0x0",
+      "0xb33c000"
+    ],
+    [
+      23240,
+      141,
+      "advapi32.dll",
+      "0x3eb7c0000",
+      "0x90000",
+      "0x30c89c000",
+      "0x94000",
+      "0x0",
+      "0xc930000"
+    ],
+    [
+      23244,
+      141,
+      "sechost.dll",
+      "0x3eb760000",
+      "0x60000",
+      "0x30c930000",
+      "0x64000",
+      "0x0",
+      "0xc994000"
+    ],
+    [
+      23248,
+      141,
+      "ucrtbase.dll",
+      "0x3eb640000",
+      "0x120000",
+      "0x30c994000",
+      "0x124000",
+      "0x0",
+      "0xcab8000"
+    ],
+    [
+      23252,
+      141,
+      "msvcrt.dll",
+      "0x3eb550000",
+      "0xf0000",
+      "0x30cab8000",
+      "0xf4000",
+      "0x0",
+      "0xcbac000"
+    ],
+    [
+      23256,
+      141,
+      "cryptbase.dll",
+      "0x3eb4f0000",
+      "0x60000",
+      "0x30cbac000",
+      "0x64000",
+      "0x0",
+      "0xcc10000"
+    ],
+    [
+      24180,
+      158,
+      "explorerframe.dll",
+      "0x3eb450000",
+      "0xa0000",
+      "0x30cc10000",
+      "0xa4000",
+      "0x0",
+      "0xccb4000"
+    ],
+    [
+      25200,
+      167,
+      "friendsui.dll",
+      "0x3eb040000",
+      "0x34a000",
+      "0x30ccb6000",
+      "0x350000",
+      "0x2000",
+      "0xd004000"
+    ],
+    [
+      27936,
+      202,
+      "audio64.dll",
+      "0x3eafb0000",
+      "0x42000",
+      "0x30b8e5000",
+      "0x48000",
+      "0x1000",
+      "0xb92c000"
+    ],
+    [
+      28702,
+      211,
+      "ntdll.dll",
+      "0x3eaea0000",
+      "0x110000",
+      "0x30d004000",
+      "0x118000",
+      "0x0",
+      "0xd11c000"
+    ],
+    [
+      28731,
+      211,
+      "wow64.dll",
+      "0x3eae30000",
+      "0x70000",
+      "0x30d11c000",
+      "0x74000",
+      "0x0",
+      "0xd190000"
+    ],
+    [
+      28746,
+      211,
+      "libwow64fex.dll",
+      "0x3eaa60000",
+      "0x3c3000",
+      "0x30d193000",
+      "0x3cc000",
+      "0x3000",
+      "0xd55c000"
+    ],
+    [
+      28752,
+      211,
+      "ucrtbase.dll",
+      "0x3ea940000",
+      "0x120000",
+      "0x30d55c000",
+      "0x124000",
+      "0x0",
+      "0xd680000"
+    ],
+    [
+      28756,
+      211,
+      "KERNEL32.dll",
+      "0x3ea8a0000",
+      "0xa0000",
+      "0x30d680000",
+      "0xa8000",
+      "0x0",
+      "0xd728000"
+    ],
+    [
+      28760,
+      211,
+      "kernelbase.dll",
+      "0x3ea730000",
+      "0x170000",
+      "0x30d728000",
+      "0x180000",
+      "0x0",
+      "0xd8a8000"
+    ],
+    [
+      28801,
+      211,
+      "?",
+      "0x3ae130000",
+      "0x80000",
+      "0x30d8a8000",
+      "0x84000",
+      "0x0",
+      "0xd92c000"
+    ],
+    [
+      28838,
+      212,
+      "wow64win.dll",
+      "0x3ea6b0000",
+      "0x80000",
+      "0x30da44000",
+      "0x84000",
+      "0x0",
+      "0xdac8000"
+    ],
+    [
+      28842,
+      212,
+      "win32u.dll",
+      "0x3ea620000",
+      "0x90000",
+      "0x30dac8000",
+      "0x94000",
+      "0x0",
+      "0xdb5c000"
+    ],
+    [
+      28845,
+      212,
+      "KERNEL32.dll",
+      "0x3ea580000",
+      "0xa0000",
+      "0x30db5c000",
+      "0xa8000",
+      "0x0",
+      "0xdc04000"
+    ],
+    [
+      28850,
+      212,
+      "kernelbase.dll",
+      "0x3ea410000",
+      "0x170000",
+      "0x30dc04000",
+      "0x180000",
+      "0x0",
+      "0xdd84000"
+    ],
+    [
+      28859,
+      212,
+      "user32.dll",
+      "0x3ea220000",
+      "0x1f0000",
+      "0x30dd84000",
+      "0x1f8000",
+      "0x0",
+      "0xdf7c000"
+    ],
+    [
+      28863,
+      212,
+      "gdi32.dll",
+      "0x3ea150000",
+      "0xd0000",
+      "0x30df7c000",
+      "0xd8000",
+      "0x0",
+      "0xe054000"
+    ],
+    [
+      28867,
+      212,
+      "advapi32.dll",
+      "0x3ea0c0000",
+      "0x90000",
+      "0x30e054000",
+      "0x94000",
+      "0x0",
+      "0xe0e8000"
+    ],
+    [
+      28871,
+      212,
+      "sechost.dll",
+      "0x3ea060000",
+      "0x60000",
+      "0x3144f0000",
+      "0x64000",
+      "0x0",
+      "0x14554000"
+    ],
+    [
+      28875,
+      212,
+      "ucrtbase.dll",
+      "0x3e9f40000",
+      "0x120000",
+      "0x314554000",
+      "0x124000",
+      "0x0",
+      "0x14678000"
+    ],
+    [
+      28879,
+      212,
+      "msvcrt.dll",
+      "0x3e9e50000",
+      "0xf0000",
+      "0x314678000",
+      "0xf4000",
+      "0x0",
+      "0x1476c000"
+    ],
+    [
+      28884,
+      212,
+      "win32u.dll",
+      "0x3e9dc0000",
+      "0x90000",
+      "0x31476c000",
+      "0x94000",
+      "0x0",
+      "0x14800000"
+    ],
+    [
+      28894,
+      212,
+      "imm32.dll",
+      "0x3e9d50000",
+      "0x70000",
+      "0x314800000",
+      "0x74000",
+      "0x0",
+      "0x14874000"
+    ],
+    [
+      29460,
+      217,
+      "?",
+      "0x3ae2b0000",
+      "0x80000",
+      "0x314874000",
+      "0x84000",
+      "0x0",
+      "0x148f8000"
+    ],
+    [
+      29494,
+      217,
+      "KERNEL32.dll",
+      "0x3e9cb0000",
+      "0xa0000",
+      "0x314a10000",
+      "0xa8000",
+      "0x0",
+      "0x14ab8000"
+    ],
+    [
+      29498,
+      217,
+      "kernelbase.dll",
+      "0x3e9b40000",
+      "0x170000",
+      "0x314ab8000",
+      "0x180000",
+      "0x0",
+      "0x14c38000"
+    ],
+    [
+      29506,
+      217,
+      "user32.dll",
+      "0x3e9950000",
+      "0x1f0000",
+      "0x314c38000",
+      "0x1f8000",
+      "0x0",
+      "0x14e30000"
+    ],
+    [
+      29511,
+      217,
+      "gdi32.dll",
+      "0x3e9880000",
+      "0xd0000",
+      "0x314e30000",
+      "0xd8000",
+      "0x0",
+      "0x14f08000"
+    ],
+    [
+      29515,
+      217,
+      "advapi32.dll",
+      "0x3e97f0000",
+      "0x90000",
+      "0x314f08000",
+      "0x94000",
+      "0x0",
+      "0x14f9c000"
+    ],
+    [
+      29519,
+      217,
+      "sechost.dll",
+      "0x3e9790000",
+      "0x60000",
+      "0x314f9c000",
+      "0x64000",
+      "0x0",
+      "0x15000000"
+    ],
+    [
+      29523,
+      217,
+      "ucrtbase.dll",
+      "0x3e9670000",
+      "0x120000",
+      "0x315000000",
+      "0x124000",
+      "0x0",
+      "0x15124000"
+    ],
+    [
+      29527,
+      217,
+      "msvcrt.dll",
+      "0x3e9580000",
+      "0xf0000",
+      "0x315124000",
+      "0xf4000",
+      "0x0",
+      "0x15218000"
+    ],
+    [
+      29532,
+      217,
+      "win32u.dll",
+      "0x3e94f0000",
+      "0x90000",
+      "0x315218000",
+      "0x94000",
+      "0x0",
+      "0x152ac000"
+    ],
+    [
+      29544,
+      217,
+      "imm32.dll",
+      "0x3e9480000",
+      "0x70000",
+      "0x3152ac000",
+      "0x74000",
+      "0x0",
+      "0x15320000"
+    ],
+    [
+      29692,
+      219,
+      "ntdll.dll",
+      "0x3e9370000",
+      "0x110000",
+      "0x315320000",
+      "0x118000",
+      "0x0",
+      "0x15438000"
+    ],
+    [
+      29718,
+      219,
+      "wow64.dll",
+      "0x3e9300000",
+      "0x70000",
+      "0x315438000",
+      "0x74000",
+      "0x0",
+      "0x154ac000"
+    ],
+    [
+      29729,
+      219,
+      "libwow64fex.dll",
+      "0x3e8f30000",
+      "0x3c3000",
+      "0x3154af000",
+      "0x3cc000",
+      "0x3000",
+      "0x15878000"
+    ],
+    [
+      29734,
+      219,
+      "ucrtbase.dll",
+      "0x3e8e10000",
+      "0x120000",
+      "0x315878000",
+      "0x124000",
+      "0x0",
+      "0x1599c000"
+    ],
+    [
+      29737,
+      219,
+      "KERNEL32.dll",
+      "0x3e8d70000",
+      "0xa0000",
+      "0x31599c000",
+      "0xa8000",
+      "0x0",
+      "0x15a44000"
+    ],
+    [
+      29740,
+      219,
+      "kernelbase.dll",
+      "0x3e8c00000",
+      "0x170000",
+      "0x315a44000",
+      "0x180000",
+      "0x0",
+      "0x15bc4000"
+    ],
+    [
+      29747,
+      219,
+      "wow64win.dll",
+      "0x3e8b80000",
+      "0x80000",
+      "0x315bc4000",
+      "0x84000",
+      "0x0",
+      "0x15c48000"
+    ],
+    [
+      29750,
+      219,
+      "win32u.dll",
+      "0x3e8af0000",
+      "0x90000",
+      "0x315c48000",
+      "0x94000",
+      "0x0",
+      "0x15cdc000"
+    ],
+    [
+      40322,
+      377,
+      "?",
+      "0x1480b0000",
+      "0x10000",
+      "0x314aac000",
+      "0x10000",
+      "0x0",
+      "0x14abc000"
+    ],
+    [
+      40336,
+      377,
+      "ntdll.dll",
+      "0x3e89c0000",
+      "0x130000",
+      "0x314abc000",
+      "0x138000",
+      "0x0",
+      "0x14bf4000"
+    ],
+    [
+      41087,
+      386,
+      "cs2.exe",
+      "0x3b7000000",
+      "0x432000",
+      "0x30d007000",
+      "0x438000",
+      "0x3000",
+      "0xd43c000"
+    ],
+    [
+      41104,
+      386,
+      "ntdll.dll",
+      "0x3e8850000",
+      "0x130000",
+      "0x30d43c000",
+      "0x138000",
+      "0x0",
+      "0xd574000"
+    ],
+    [
+      41157,
+      386,
+      "libarm64ecfex.dll",
+      "0x3e8430000",
+      "0x418000",
+      "0x30d575000",
+      "0x420000",
+      "0x1000",
+      "0xd994000"
+    ],
+    [
+      41169,
+      386,
+      "ucrtbase.dll",
+      "0x3e8300000",
+      "0x130000",
+      "0x30d994000",
+      "0x134000",
+      "0x0",
+      "0xdac8000"
+    ],
+    [
+      41181,
+      386,
+      "kernel32.dll",
+      "0x3e8240000",
+      "0xc0000",
+      "0x30dac8000",
+      "0xc8000",
+      "0x0",
+      "0xdb90000"
+    ],
+    [
+      41189,
+      386,
+      "kernelbase.dll",
+      "0x3e7f50000",
+      "0x2f0000",
+      "0x30db90000",
+      "0x300000",
+      "0x0",
+      "0xde90000"
+    ],
+    [
+      41490,
+      390,
+      "user32.dll",
+      "0x3e7d30000",
+      "0x220000",
+      "0x30de90000",
+      "0x228000",
+      "0x0",
+      "0xe0b8000"
+    ],
+    [
+      41503,
+      390,
+      "gdi32.dll",
+      "0x3e7c40000",
+      "0xf0000",
+      "0x3144f0000",
+      "0xf8000",
+      "0x0",
+      "0x145e8000"
+    ],
+    [
+      41514,
+      390,
+      "advapi32.dll",
+      "0x3e7b90000",
+      "0xb0000",
+      "0x3145e8000",
+      "0xb4000",
+      "0x0",
+      "0x1469c000"
+    ],
+    [
+      41525,
+      390,
+      "sechost.dll",
+      "0x3e7b10000",
+      "0x80000",
+      "0x30e0b8000",
+      "0x84000",
+      "0x0",
+      "0xe13c000"
+    ],
+    [
+      41536,
+      390,
+      "rpcrt4.dll",
+      "0x3e7a20000",
+      "0xf0000",
+      "0x31469c000",
+      "0xf4000",
+      "0x0",
+      "0x14790000"
+    ],
+    [
+      41547,
+      390,
+      "cryptbase.dll",
+      "0x3e79a0000",
+      "0x80000",
+      "0x314790000",
+      "0x84000",
+      "0x0",
+      "0x14814000"
+    ],
+    [
+      41572,
+      390,
+      "msvcrt.dll",
+      "0x3e7890000",
+      "0x110000",
+      "0x314814000",
+      "0x114000",
+      "0x0",
+      "0x14928000"
+    ],
+    [
+      41591,
+      390,
+      "win32u.dll",
+      "0x3e77f0000",
+      "0xa0000",
+      "0x314928000",
+      "0xa4000",
+      "0x0",
+      "0x149cc000"
+    ],
+    [
+      41622,
+      390,
+      "imm32.dll",
+      "0x3e7750000",
+      "0xa0000",
+      "0x3149cc000",
+      "0xa4000",
+      "0x0",
+      "0x14a70000"
+    ],
+    [
+      41680,
+      390,
+      "wintrust.dll",
+      "0x3e76b0000",
+      "0xa0000",
+      "0x314a70000",
+      "0xa4000",
+      "0x0",
+      "0x14b14000"
+    ],
+    [
+      41694,
+      391,
+      "crypt32.dll",
+      "0x3e7580000",
+      "0x130000",
+      "0x314b14000",
+      "0x138000",
+      "0x0",
+      "0x14c4c000"
+    ],
+    [
+      41705,
+      391,
+      "bcrypt.dll",
+      "0x3e74f0000",
+      "0x90000",
+      "0x314c4c000",
+      "0x94000",
+      "0x0",
+      "0x14ce0000"
+    ],
+    [
+      42299,
+      396,
+      "tier0.dll",
+      "0x3e70d0000",
+      "0x401000",
+      "0x314ce3000",
+      "0x408000",
+      "0x3000",
+      "0x150e8000"
+    ],
+    [
+      42308,
+      396,
+      "ws2_32.dll",
+      "0x3e7030000",
+      "0xa0000",
+      "0x3150e8000",
+      "0xa4000",
+      "0x0",
+      "0x1518c000"
+    ],
+    [
+      42321,
+      396,
+      "winmm.dll",
+      "0x3e6f10000",
+      "0x120000",
+      "0x31518c000",
+      "0x124000",
+      "0x0",
+      "0x152b0000"
+    ],
+    [
+      42330,
+      396,
+      "ole32.dll",
+      "0x3e6df0000",
+      "0x120000",
+      "0x3152b0000",
+      "0x124000",
+      "0x0",
+      "0x153d4000"
+    ],
+    [
+      42340,
+      396,
+      "combase.dll",
+      "0x3e6d40000",
+      "0xb0000",
+      "0x3153d4000",
+      "0xb4000",
+      "0x0",
+      "0x15488000"
+    ],
+    [
+      42355,
+      396,
+      "coml2.dll",
+      "0x3e6cb0000",
+      "0x90000",
+      "0x315488000",
+      "0x94000",
+      "0x0",
+      "0x1551c000"
+    ],
+    [
+      42372,
+      396,
+      "msacm32.dll",
+      "0x3e6c20000",
+      "0x90000",
+      "0x31551c000",
+      "0x94000",
+      "0x0",
+      "0x155b0000"
+    ],
+    [
+      42541,
+      397,
+      "ntdll.dll",
+      "0x3e6af0000",
+      "0x130000",
+      "0x3155b0000",
+      "0x138000",
+      "0x0",
+      "0x156e8000"
+    ],
+    [
+      42551,
+      397,
+      "engine2.dll",
+      "0x3e6200000",
+      "0xa15000",
+      "0x30fb8c000",
+      "0xa18000",
+      "0x0",
+      "0x105a4000"
+    ],
+    [
+      42559,
+      397,
+      "steam_api64.dll",
+      "0x3e61b0000",
+      "0x50000",
+      "0x3156e8000",
+      "0x50000",
+      "0x0",
+      "0x15738000"
+    ],
+    [
+      42569,
+      397,
+      "shell32.dll",
+      "0x3e5830000",
+      "0x980000",
+      "0x3105a4000",
+      "0x984000",
+      "0x0",
+      "0x10f28000"
+    ],
+    [
+      42578,
+      397,
+      "shlwapi.dll",
+      "0x3e5780000",
+      "0xb0000",
+      "0x315738000",
+      "0xb4000",
+      "0x0",
+      "0x157ec000"
+    ],
+    [
+      42587,
+      397,
+      "shcore.dll",
+      "0x3e5700000",
+      "0x80000",
+      "0x3157ec000",
+      "0x84000",
+      "0x0",
+      "0x15870000"
+    ],
+    [
+      42611,
+      397,
+      "steamnetworkingsockets.dll",
+      "0x3e52e0000",
+      "0x41f000",
+      "0x315872000",
+      "0x424000",
+      "0x2000",
+      "0x15c94000"
+    ],
+    [
+      42620,
+      397,
+      "iphlpapi.dll",
+      "0x3e5240000",
+      "0xa0000",
+      "0x310f28000",
+      "0xa4000",
+      "0x0",
+      "0x10fcc000"
+    ],
+    [
+      42629,
+      397,
+      "dnsapi.dll",
+      "0x3e51b0000",
+      "0x90000",
+      "0x310fcc000",
+      "0x94000",
+      "0x0",
+      "0x11060000"
+    ],
+    [
+      42642,
+      397,
+      "nsi.dll",
+      "0x3e5130000",
+      "0x80000",
+      "0x311060000",
+      "0x84000",
+      "0x0",
+      "0x110e4000"
+    ],
+    [
+      42718,
+      398,
+      "dbghelp.dll",
+      "0x3e5040000",
+      "0xf0000",
+      "0x3110e4000",
+      "0xf4000",
+      "0x0",
+      "0x111d8000"
+    ],
+    [
+      42738,
+      398,
+      "psapi.dll",
+      "0x3e4fb0000",
+      "0x90000",
+      "0x3111d8000",
+      "0x94000",
+      "0x0",
+      "0x1126c000"
+    ],
+    [
+      42766,
+      398,
+      "steamclient64.dll",
+      "0x3e35f0000",
+      "0x19b4000",
+      "0x311e03000",
+      "0x19b8000",
+      "0x3000",
+      "0x137b8000"
+    ],
+    [
+      42788,
+      398,
+      "oleaut32.dll",
+      "0x3e34c0000",
+      "0x130000",
+      "0x31126c000",
+      "0x134000",
+      "0x0",
+      "0x113a0000"
+    ],
+    [
+      42814,
+      398,
+      "imagehlp.dll",
+      "0x3e3440000",
+      "0x80000",
+      "0x3113a0000",
+      "0x84000",
+      "0x0",
+      "0x11424000"
+    ],
+    [
+      42835,
+      398,
+      "version.dll",
+      "0x3e33b0000",
+      "0x90000",
+      "0x311424000",
+      "0x94000",
+      "0x0",
+      "0x114b8000"
+    ],
+    [
+      42850,
+      398,
+      "setupapi.dll",
+      "0x3e32d0000",
+      "0xe0000",
+      "0x3114b8000",
+      "0xe4000",
+      "0x0",
+      "0x1159c000"
+    ],
+    [
+      42859,
+      398,
+      "cfgmgr32.dll",
+      "0x3e3250000",
+      "0x80000",
+      "0x31159c000",
+      "0x84000",
+      "0x0",
+      "0x11620000"
+    ],
+    [
+      42878,
+      398,
+      "tier0_s64.dll",
+      "0x3e2f40000",
+      "0x30b000",
+      "0x311621000",
+      "0x310000",
+      "0x1000",
+      "0x11930000"
+    ],
+    [
+      42892,
+      398,
+      "vstdlib_s64.dll",
+      "0x3e2e70000",
+      "0xc3000",
+      "0x311932000",
+      "0xc8000",
+      "0x2000",
+      "0x119f8000"
+    ],
+    [
+      42907,
+      398,
+      "mswsock.dll",
+      "0x3e2de0000",
+      "0x90000",
+      "0x3119f8000",
+      "0x94000",
+      "0x0",
+      "0x11a8c000"
+    ],
+    [
+      42925,
+      398,
+      "secur32.dll",
+      "0x3e2d50000",
+      "0x90000",
+      "0x311a8c000",
+      "0x94000",
+      "0x0",
+      "0x11b20000"
+    ],
+    [
+      43075,
+      401,
+      "uxtheme.dll",
+      "0x3e2ca0000",
+      "0xb0000",
+      "0x311b20000",
+      "0xb4000",
+      "0x0",
+      "0x11bd4000"
+    ],
+    [
+      43102,
+      401,
+      "crashhandler64.dll",
+      "0x3e2b90000",
+      "0x1b4000",
+      "0x3137bb000",
+      "0x1b8000",
+      "0x3000",
+      "0x13970000"
+    ],
+    [
+      43111,
+      401,
+      "wininet.dll",
+      "0x3e2980000",
+      "0x210000",
+      "0x313970000",
+      "0x214000",
+      "0x0",
+      "0x13b84000"
+    ],
+    [
+      43120,
+      401,
+      "mpr.dll",
+      "0x3e28f0000",
+      "0x90000",
+      "0x311bd4000",
+      "0x94000",
+      "0x0",
+      "0x11c68000"
+    ],
+    [
+      43189,
+      402,
+      "GameOverlayRenderer64.dll",
+      "0x3e26e0000",
+      "0x1d0000",
+      "0x313b87000",
+      "0x1d4000",
+      "0x3000",
+      "0x13d58000"
+    ],
+    [
+      43480,
+      402,
+      "SDL3.dll",
+      "0x3e2410000",
+      "0x2c7000",
+      "0x313d5b000",
+      "0x2cc000",
+      "0x3000",
+      "0x14024000"
+    ],
+    [
+      43489,
+      402,
+      "hid.dll",
+      "0x3e2380000",
+      "0x90000",
+      "0x311c68000",
+      "0x94000",
+      "0x0",
+      "0x11cfc000"
+    ],
+    [
+      43528,
+      403,
+      "dwmapi.dll",
+      "0x3e22f0000",
+      "0x90000",
+      "0x314024000",
+      "0x94000",
+      "0x0",
+      "0x140b8000"
+    ],
+    [
+      43542,
+      403,
+      "dxgi.dll",
+      "0x3e21d0000",
+      "0x116000",
+      "0x3140bb000",
+      "0x120000",
+      "0x3000",
+      "0x141d8000"
+    ],
+    [
+      43555,
+      403,
+      "winemetal.dll",
+      "0x3e28c0000",
+      "0x28000",
+      "0x311cfe000",
+      "0x30000",
+      "0x2000",
+      "0x11d2c000"
+    ],
+    [
+      43718,
+      403,
+      "filesystem_stdio.dll",
+      "0x3e1f60000",
+      "0x22c000",
+      "0x3141da000",
+      "0x230000",
+      "0x2000",
+      "0x14408000"
+    ],
+    [
+      43757,
+      404,
+      "inputsystem.dll",
+      "0x3e1f00000",
+      "0x53000",
+      "0x314409000",
+      "0x58000",
+      "0x1000",
+      "0x14460000"
+    ],
+    [
+      43774,
+      404,
+      "imemanager.dll",
+      "0x3e1ec0000",
+      "0x3e000",
+      "0x315c96000",
+      "0x44000",
+      "0x2000",
+      "0x15cd8000"
+    ],
+    [
+      43809,
+      404,
+      "gameinput.dll",
+      "0x3e1e40000",
+      "0x80000",
+      "0x314460000",
+      "0x84000",
+      "0x0",
+      "0x144e4000"
+    ],
+    [
+      43820,
+      404,
+      "xinput1_4.dll",
+      "0x3e1db0000",
+      "0x90000",
+      "0x315cdc000",
+      "0x94000",
+      "0x0",
+      "0x15d70000"
+    ],
+    [
+      43832,
+      404,
+      "dinput8.dll",
+      "0x3e1d00000",
+      "0xb0000",
+      "0x315d70000",
+      "0xb4000",
+      "0x0",
+      "0x15e24000"
+    ],
+    [
+      43841,
+      404,
+      "comctl32.dll",
+      "0x3e1b80000",
+      "0x180000",
+      "0x315e24000",
+      "0x184000",
+      "0x0",
+      "0x15fa8000"
+    ],
+    [
+      43969,
+      405,
+      "localize.dll",
+      "0x3e1aa0000",
+      "0x5f000",
+      "0x315faa000",
+      "0x64000",
+      "0x2000",
+      "0x1600c000"
+    ],
+    [
+      43991,
+      405,
+      "rendersystemdx11.dll",
+      "0x3e15e0000",
+      "0x4b4000",
+      "0x31600e000",
+      "0x4b8000",
+      "0x2000",
+      "0x164c4000"
+    ],
+    [
+      43999,
+      405,
+      "amd_ags_x64.dll",
+      "0x3e15b0000",
+      "0x30000",
+      "0x3164c5000",
+      "0x34000",
+      "0x1000",
+      "0x164f8000"
+    ],
+    [
+      44008,
+      405,
+      "d3d11.dll",
+      "0x3e1130000",
+      "0x477000",
+      "0x3164fb000",
+      "0x480000",
+      "0x3000",
+      "0x16978000"
+    ],
+    [
+      44025,
+      405,
+      "d3d9.dll",
+      "0x3e0e00000",
+      "0x323000",
+      "0x31697a000",
+      "0x32c000",
+      "0x2000",
+      "0x16ca4000"
+    ],
+    [
+      44040,
+      405,
+      "D3DCOMPILER_47.dll",
+      "0x3e09d0000",
+      "0x42e000",
+      "0x316ca7000",
+      "0x434000",
+      "0x3000",
+      "0x170d8000"
+    ],
+    [
+      44092,
+      405,
+      "resourcesystem.dll",
+      "0x3e0930000",
+      "0x96000",
+      "0x3170db000",
+      "0x9c000",
+      "0x3000",
+      "0x17174000"
+    ],
+    [
+      44108,
+      405,
+      "schemasystem.dll",
+      "0x3e08b0000",
+      "0x7f000",
+      "0x317175000",
+      "0x84000",
+      "0x1000",
+      "0x171f8000"
+    ],
+    [
+      44121,
+      406,
+      "msasn1.dll",
+      "0x3e0830000",
+      "0x80000",
+      "0x3171f8000",
+      "0x84000",
+      "0x0",
+      "0x1727c000"
+    ],
+    [
+      44131,
+      406,
+      "cryptnet.dll",
+      "0x3e0750000",
+      "0xe0000",
+      "0x31727c000",
+      "0xe4000",
+      "0x0",
+      "0x17360000"
+    ],
+    [
+      44140,
+      406,
+      "wldp.dll",
+      "0x3e06d0000",
+      "0x80000",
+      "0x317360000",
+      "0x84000",
+      "0x0",
+      "0x173e4000"
+    ],
+    [
+      44151,
+      406,
+      "nvapi64.dll",
+      "0x3e05c0000",
+      "0x10d000",
+      "0x3173e4000",
+      "0x114000",
+      "0x0",
+      "0x174f8000"
+    ],
+    [
+      44898,
+      408,
+      "uxtheme.dll",
+      "0x3e03a0000",
+      "0xb0000",
+      "0x3174f8000",
+      "0xb4000",
+      "0x0",
+      "0x175ac000"
+    ],
+    [
+      45052,
+      408,
+      "materialsystem2.dll",
+      "0x3e0280000",
+      "0x186000",
+      "0x3175ad000",
+      "0x18c000",
+      "0x1000",
+      "0x17738000"
+    ],
+    [
+      45137,
+      409,
+      "meshsystem.dll",
+      "0x3e0020000",
+      "0x21c000",
+      "0x317738000",
+      "0x21c000",
+      "0x0",
+      "0x17954000"
+    ],
+    [
+      45149,
+      409,
+      "worldrenderer.dll",
+      "0x3dfdb0000",
+      "0x26b000",
+      "0x317955000",
+      "0x270000",
+      "0x1000",
+      "0x17bc4000"
+    ],
+    [
+      45164,
+      409,
+      "pulse_system.dll",
+      "0x3dfb30000",
+      "0x278000",
+      "0x317bc6000",
+      "0x27c000",
+      "0x2000",
+      "0x17e40000"
+    ],
+    [
+      45173,
+      409,
+      "vscript.dll",
+      "0x3df9d0000",
+      "0x153000",
+      "0x317e40000",
+      "0x154000",
+      "0x0",
+      "0x17f94000"
+    ],
+    [
+      45184,
+      409,
+      "networksystem.dll",
+      "0x3df700000",
+      "0x2c5000",
+      "0x317f94000",
+      "0x2c8000",
+      "0x0",
+      "0x1825c000"
+    ],
+    [
+      45214,
+      410,
+      "animationsystem.dll",
+      "0x3deb10000",
+      "0xbeb000",
+      "0x31825f000",
+      "0xbf0000",
+      "0x3000",
+      "0x18e4c000"
+    ],
+    [
+      45247,
+      410,
+      "vphysics2.dll",
+      "0x3de570000",
+      "0x596000",
+      "0x318e4f000",
+      "0x59c000",
+      "0x3000",
+      "0x193e8000"
+    ],
+    [
+      45259,
+      411,
+      "soundsystem.dll",
+      "0x3ddeb0000",
+      "0x6ba000",
+      "0x3193eb000",
+      "0x6c0000",
+      "0x3000",
+      "0x19aa8000"
+    ],
+    [
+      45304,
+      411,
+      "steamaudio.dll",
+      "0x3ddb10000",
+      "0x39c000",
+      "0x319aa9000",
+      "0x3a0000",
+      "0x1000",
+      "0x19e48000"
+    ],
+    [
+      45312,
+      411,
+      "phonon.dll",
+      "0x3da800000",
+      "0x330e000",
+      "0x319e48000",
+      "0x3310000",
+      "0x0",
+      "0x1d158000"
+    ],
+    [
+      45344,
+      411,
+      "scenesystem.dll",
+      "0x3d9e80000",
+      "0x978000",
+      "0x31d15b000",
+      "0x97c000",
+      "0x3000",
+      "0x1dad4000"
+    ],
+    [
+      45359,
+      412,
+      "particles.dll",
+      "0x3d9600000",
+      "0x87b000",
+      "0x31dad7000",
+      "0x880000",
+      "0x3000",
+      "0x1e354000"
+    ],
+    [
+      45370,
+      412,
+      "panoramauiclient.dll",
+      "0x3d9340000",
+      "0x2b8000",
+      "0x31e355000",
+      "0x2bc000",
+      "0x1000",
+      "0x1e610000"
+    ],
+    [
+      45376,
+      412,
+      "v8.dll",
+      "0x3d62e0000",
+      "0x3059000",
+      "0x31e611000",
+      "0x3060000",
+      "0x1000",
+      "0x21670000"
+    ],
+    [
+      45385,
+      412,
+      "v8_libbase.dll",
+      "0x3d6140000",
+      "0x196000",
+      "0x321670000",
+      "0x198000",
+      "0x0",
+      "0x21808000"
+    ],
+    [
+      45393,
+      412,
+      "v8_icui18n.dll",
+      "0x3d5d70000",
+      "0x3ca000",
+      "0x32180b000",
+      "0x3d0000",
+      "0x3000",
+      "0x21bd8000"
+    ],
+    [
+      45398,
+      412,
+      "v8_icuuc.dll",
+      "0x3d5aa0000",
+      "0x2c8000",
+      "0x321bdb000",
+      "0x2cc000",
+      "0x3000",
+      "0x21ea4000"
+    ],
+    [
+      45409,
+      412,
+      "v8_zlib.dll",
+      "0x3d59c0000",
+      "0xd3000",
+      "0x321ea5000",
+      "0xd8000",
+      "0x1000",
+      "0x21f7c000"
+    ],
+    [
+      45423,
+      412,
+      "video64.dll",
+      "0x3d5420000",
+      "0x596000",
+      "0x321f7f000",
+      "0x59c000",
+      "0x3000",
+      "0x22518000"
+    ],
+    [
+      45430,
+      412,
+      "libavcodec-58.dll",
+      "0x3d4c40000",
+      "0x7d2000",
+      "0x32251a000",
+      "0x7d8000",
+      "0x2000",
+      "0x22cf0000"
+    ],
+    [
+      45435,
+      412,
+      "libavutil-56.dll",
+      "0x3d4840000",
+      "0x3fb000",
+      "0x322cf1000",
+      "0x400000",
+      "0x1000",
+      "0x230f0000"
+    ],
+    [
+      45442,
+      412,
+      "libavformat-58.dll",
+      "0x3d4670000",
+      "0x1c6000",
+      "0x3230f1000",
+      "0x1cc000",
+      "0x1000",
+      "0x232bc000"
+    ],
+    [
+      45448,
+      412,
+      "libavresample-4.dll",
+      "0x3d45b0000",
+      "0xbe000",
+      "0x3232be000",
+      "0xc4000",
+      "0x2000",
+      "0x23380000"
+    ],
+    [
+      45454,
+      412,
+      "libswscale-5.dll",
+      "0x3d4460000",
+      "0x148000",
+      "0x323382000",
+      "0x14c000",
+      "0x2000",
+      "0x234cc000"
+    ],
+    [
+      45462,
+      412,
+      "wsock32.dll",
+      "0x3d43d0000",
+      "0x90000",
+      "0x3234cc000",
+      "0x94000",
+      "0x0",
+      "0x23560000"
+    ],
+    [
+      45572,
+      413,
+      "panorama.dll",
+      "0x3d3da0000",
+      "0x630000",
+      "0x323561000",
+      "0x634000",
+      "0x1000",
+      "0x23b94000"
+    ],
+    [
+      45585,
+      414,
+      "panorama_text_pango.dll",
+      "0x3d3ac0000",
+      "0x2e0000",
+      "0x323b97000",
+      "0x2e4000",
+      "0x3000",
+      "0x23e78000"
+    ],
+    [
+      45591,
+      414,
+      "libfontconfig-1.dll",
+      "0x3b1350000",
+      "0x7c000",
+      "0x323e79000",
+      "0x80000",
+      "0x1000",
+      "0x23ef8000"
+    ],
+    [
+      45597,
+      414,
+      "libfreetype-6.dll",
+      "0x3d39b0000",
+      "0x108000",
+      "0x323efa000",
+      "0x10c000",
+      "0x2000",
+      "0x24004000"
+    ],
+    [
+      45604,
+      414,
+      "libglib-2.0-0.dll",
+      "0x3c3220000",
+      "0x17e000",
+      "0x324005000",
+      "0x184000",
+      "0x1000",
+      "0x24188000"
+    ],
+    [
+      45612,
+      414,
+      "libgobject-2.0-0.dll",
+      "0x3b07a0000",
+      "0x55000",
+      "0x32418a000",
+      "0x5c000",
+      "0x2000",
+      "0x241e4000"
+    ],
+    [
+      45621,
+      414,
+      "libpango-1.0-0.dll",
+      "0x3d3940000",
+      "0x65000",
+      "0x3241e6000",
+      "0x6c000",
+      "0x2000",
+      "0x24250000"
+    ],
+    [
+      45626,
+      414,
+      "libgmodule-2.0-0.dll",
+      "0x39f990000",
+      "0x1b000",
+      "0x30c788000",
+      "0x1c000",
+      "0x0",
+      "0xc7a4000"
+    ],
+    [
+      45634,
+      414,
+      "libpangoft2-1.0-0.dll",
+      "0x3d38d0000",
+      "0x63000",
+      "0x324250000",
+      "0x64000",
+      "0x0",
+      "0x242b4000"
+    ],
+    [
+      45658,
+      414,
+      "v8system.dll",
+      "0x3d3890000",
+      "0x3b000",
+      "0x3242b5000",
+      "0x40000",
+      "0x1000",
+      "0x242f4000"
+    ],
+    [
+      45664,
+      414,
+      "v8_libplatform.dll",
+      "0x3d3720000",
+      "0x16a000",
+      "0x3242f6000",
+      "0x170000",
+      "0x2000",
+      "0x24464000"
+    ],
+    [
+      46105,
+      420,
+      "server.dll",
+      "0xfbacd0000",
+      "0x257c000",
+      "0x324467000",
+      "0x2580000",
+      "0x3000",
+      "0x269e4000"
+    ],
+    [
+      46351,
+      423,
+      "client.dll",
+      "0xfb8320000",
+      "0x29a3000",
+      "0x341fe5000",
+      "0x29a8000",
+      "0x1000",
+      "0x4498c000"
+    ]
+  ],
+  "head_history_columns": [
+    "line",
+    "seconds",
+    "head",
+    "source",
+    "module"
+  ],
+  "head_history": [
+    [
+      331,
+      0,
+      "0xa8000",
+      "image",
+      "?"
+    ],
+    [
+      360,
+      0,
+      "0x1c0000",
+      "image",
+      "ntdll.dll"
+    ],
+    [
+      470,
+      0,
+      "0x268000",
+      "image",
+      "KERNEL32.dll"
+    ],
+    [
+      481,
+      0,
+      "0x3e8000",
+      "image",
+      "kernelbase.dll"
+    ],
+    [
+      503,
+      0,
+      "0xccc000",
+      "image",
+      "shell32.dll"
+    ],
+    [
+      513,
+      0,
+      "0xd60000",
+      "image",
+      "shlwapi.dll"
+    ],
+    [
+      523,
+      0,
+      "0xdc4000",
+      "image",
+      "shcore.dll"
+    ],
+    [
+      533,
+      0,
+      "0xe58000",
+      "image",
+      "advapi32.dll"
+    ],
+    [
+      544,
+      0,
+      "0xebc000",
+      "image",
+      "sechost.dll"
+    ],
+    [
+      555,
+      0,
+      "0xfe0000",
+      "image",
+      "ucrtbase.dll"
+    ],
+    [
+      575,
+      0,
+      "0x10d4000",
+      "image",
+      "msvcrt.dll"
+    ],
+    [
+      627,
+      0,
+      "0x12cc000",
+      "image",
+      "user32.dll"
+    ],
+    [
+      632,
+      0,
+      "0x13a4000",
+      "image",
+      "gdi32.dll"
+    ],
+    [
+      639,
+      0,
+      "0x1438000",
+      "image",
+      "win32u.dll"
+    ],
+    [
+      703,
+      0,
+      "0x14ac000",
+      "image",
+      "imm32.dll"
+    ],
+    [
+      761,
+      0,
+      "0x14ec000",
+      "image",
+      "?"
+    ],
+    [
+      781,
+      0,
+      "0x1624000",
+      "image",
+      "ntdll.dll"
+    ],
+    [
+      836,
+      0,
+      "0x1a44000",
+      "image",
+      "libarm64ecfex.dll"
+    ],
+    [
+      868,
+      0,
+      "0x1b78000",
+      "image",
+      "ucrtbase.dll"
+    ],
+    [
+      892,
+      0,
+      "0x1c40000",
+      "image",
+      "kernel32.dll"
+    ],
+    [
+      906,
+      0,
+      "0x1f40000",
+      "image",
+      "kernelbase.dll"
+    ],
+    [
+      1066,
+      0,
+      "0x1f40000",
+      "fresh-tail",
+      ""
+    ],
+    [
+      1123,
+      0,
+      "0x1f44000",
+      "anonymous",
+      ""
+    ],
+    [
+      1159,
+      0,
+      "0x1f44000",
+      "fresh-tail",
+      ""
+    ],
+    [
+      1198,
+      0,
+      "0x1ff8000",
+      "image",
+      "advapi32.dll"
+    ],
+    [
+      1214,
+      0,
+      "0x207c000",
+      "image",
+      "sechost.dll"
+    ],
+    [
+      1230,
+      0,
+      "0x2170000",
+      "image",
+      "rpcrt4.dll"
+    ],
+    [
+      1241,
+      0,
+      "0x21f4000",
+      "image",
+      "cryptbase.dll"
+    ],
+    [
+      1268,
+      0,
+      "0x2308000",
+      "image",
+      "msvcrt.dll"
+    ],
+    [
+      1512,
+      0,
+      "0x236c000",
+      "image",
+      "?"
+    ],
+    [
+      1563,
+      0,
+      "0x252c000",
+      "image",
+      "KERNEL32.dll"
+    ],
+    [
+      1566,
+      0,
+      "0x26ac000",
+      "image",
+      "kernelbase.dll"
+    ],
+    [
+      1572,
+      0,
+      "0x2780000",
+      "image",
+      "rpcrt4.dll"
+    ],
+    [
+      1576,
+      0,
+      "0x2814000",
+      "image",
+      "advapi32.dll"
+    ],
+    [
+      1579,
+      0,
+      "0x2878000",
+      "image",
+      "sechost.dll"
+    ],
+    [
+      1582,
+      0,
+      "0x299c000",
+      "image",
+      "ucrtbase.dll"
+    ],
+    [
+      1585,
+      0,
+      "0x2a90000",
+      "image",
+      "msvcrt.dll"
+    ],
+    [
+      1588,
+      0,
+      "0x2af4000",
+      "image",
+      "cryptbase.dll"
+    ],
+    [
+      1591,
+      0,
+      "0x2b58000",
+      "image",
+      "userenv.dll"
+    ],
+    [
+      1594,
+      0,
+      "0x2c1c000",
+      "image",
+      "setupapi.dll"
+    ],
+    [
+      1597,
+      0,
+      "0x2c80000",
+      "image",
+      "cfgmgr32.dll"
+    ],
+    [
+      2247,
+      1,
+      "0x2d98000",
+      "image",
+      "ntdll.dll"
+    ],
+    [
+      2280,
+      1,
+      "0x2e0c000",
+      "image",
+      "wow64.dll"
+    ],
+    [
+      2291,
+      1,
+      "0x31d8000",
+      "image",
+      "libwow64fex.dll"
+    ],
+    [
+      2296,
+      1,
+      "0x32fc000",
+      "image",
+      "ucrtbase.dll"
+    ],
+    [
+      2314,
+      1,
+      "0x33a4000",
+      "image",
+      "KERNEL32.dll"
+    ],
+    [
+      2322,
+      1,
+      "0x3524000",
+      "image",
+      "kernelbase.dll"
+    ],
+    [
+      2356,
+      1,
+      "0x35a8000",
+      "image",
+      "wow64win.dll"
+    ],
+    [
+      2359,
+      1,
+      "0x363c000",
+      "image",
+      "win32u.dll"
+    ],
+    [
+      2388,
+      1,
+      "0x363c000",
+      "fresh-tail",
+      ""
+    ],
+    [
+      2451,
+      1,
+      "0x363c000",
+      "fresh-tail",
+      ""
+    ],
+    [
+      2704,
+      1,
+      "0x3640000",
+      "anonymous",
+      ""
+    ],
+    [
+      2747,
+      1,
+      "0x3644000",
+      "anonymous",
+      ""
+    ],
+    [
+      2773,
+      1,
+      "0x3648000",
+      "anonymous",
+      ""
+    ],
+    [
+      2781,
+      1,
+      "0x364c000",
+      "anonymous",
+      ""
+    ],
+    [
+      2893,
+      2,
+      "0x3650000",
+      "anonymous",
+      ""
+    ],
+    [
+      3558,
+      2,
+      "0x3d68000",
+      "image",
+      "steamexe.exe"
+    ],
+    [
+      3574,
+      2,
+      "0x3ea0000",
+      "image",
+      "ntdll.dll"
+    ],
+    [
+      3685,
+      2,
+      "0x42c0000",
+      "image",
+      "libarm64ecfex.dll"
+    ],
+    [
+      3702,
+      2,
+      "0x43f4000",
+      "image",
+      "ucrtbase.dll"
+    ],
+    [
+      3720,
+      3,
+      "0x44bc000",
+      "image",
+      "kernel32.dll"
+    ],
+    [
+      3729,
+      3,
+      "0x47bc000",
+      "image",
+      "kernelbase.dll"
+    ],
+    [
+      3889,
+      3,
+      "0x47cc000",
+      "anonymous",
+      ""
+    ],
+    [
+      3895,
+      3,
+      "0x47d0000",
+      "anonymous",
+      ""
+    ],
+    [
+      4053,
+      3,
+      "0x47d4000",
+      "anonymous",
+      ""
+    ],
+    [
+      4084,
+      3,
+      "0x47d4000",
+      "fresh-tail",
+      ""
+    ],
+    [
+      4129,
+      3,
+      "0x49fc000",
+      "image",
+      "user32.dll"
+    ],
+    [
+      4144,
+      3,
+      "0x4af4000",
+      "image",
+      "gdi32.dll"
+    ],
+    [
+      4155,
+      3,
+      "0x4ba8000",
+      "image",
+      "advapi32.dll"
+    ],
+    [
+      4168,
+      3,
+      "0x4c2c000",
+      "image",
+      "sechost.dll"
+    ],
+    [
+      4210,
+      3,
+      "0x4d20000",
+      "image",
+      "rpcrt4.dll"
+    ],
+    [
+      4223,
+      3,
+      "0x4da4000",
+      "image",
+      "cryptbase.dll"
+    ],
+    [
+      4249,
+      3,
+      "0x4eb8000",
+      "image",
+      "msvcrt.dll"
+    ],
+    [
+      4270,
+      3,
+      "0x4f5c000",
+      "image",
+      "win32u.dll"
+    ],
+    [
+      4299,
+      3,
+      "0x58e0000",
+      "image",
+      "shell32.dll"
+    ],
+    [
+      4345,
+      3,
+      "0x5994000",
+      "image",
+      "shlwapi.dll"
+    ],
+    [
+      4371,
+      3,
+      "0x5a18000",
+      "image",
+      "shcore.dll"
+    ],
+    [
+      4413,
+      3,
+      "0x5aac000",
+      "image",
+      "psapi.dll"
+    ],
+    [
+      4433,
+      3,
+      "0x5b40000",
+      "image",
+      "version.dll"
+    ],
+    [
+      4451,
+      3,
+      "0x5c78000",
+      "image",
+      "crypt32.dll"
+    ],
+    [
+      4468,
+      3,
+      "0x5d0c000",
+      "image",
+      "bcrypt.dll"
+    ],
+    [
+      4496,
+      3,
+      "0x5db0000",
+      "image",
+      "imm32.dll"
+    ],
+    [
+      4613,
+      4,
+      "0x5e54000",
+      "image",
+      "ws2_32.dll"
+    ],
+    [
+      4663,
+      4,
+      "0x5f08000",
+      "image",
+      "uxtheme.dll"
+    ],
+    [
+      4732,
+      4,
+      "0x60c0000",
+      "image",
+      "crashhandler64.dll"
+    ],
+    [
+      4742,
+      4,
+      "0x62d4000",
+      "image",
+      "wininet.dll"
+    ],
+    [
+      4752,
+      4,
+      "0x6368000",
+      "image",
+      "mpr.dll"
+    ],
+    [
+      4842,
+      4,
+      "0x64ec000",
+      "image",
+      "comctl32.dll"
+    ],
+    [
+      5172,
+      5,
+      "0x65a0000",
+      "image",
+      "winhttp.dll"
+    ],
+    [
+      5182,
+      5,
+      "0x6644000",
+      "image",
+      "jsproxy.dll"
+    ],
+    [
+      5192,
+      5,
+      "0x6778000",
+      "image",
+      "oleaut32.dll"
+    ],
+    [
+      5202,
+      5,
+      "0x689c000",
+      "image",
+      "ole32.dll"
+    ],
+    [
+      5212,
+      5,
+      "0x6950000",
+      "image",
+      "combase.dll"
+    ],
+    [
+      5230,
+      5,
+      "0x69e4000",
+      "image",
+      "coml2.dll"
+    ],
+    [
+      5362,
+      5,
+      "0x6a88000",
+      "image",
+      "iphlpapi.dll"
+    ],
+    [
+      5373,
+      5,
+      "0x6b1c000",
+      "image",
+      "dnsapi.dll"
+    ],
+    [
+      5387,
+      5,
+      "0x6ba0000",
+      "image",
+      "nsi.dll"
+    ],
+    [
+      5426,
+      5,
+      "0x6c24000",
+      "image",
+      "dhcpcsvc.dll"
+    ],
+    [
+      5651,
+      5,
+      "0x6ce8000",
+      "image",
+      "rsaenh.dll"
+    ],
+    [
+      7160,
+      60,
+      "0x7fc0000",
+      "image",
+      "steamui.dll"
+    ],
+    [
+      7270,
+      60,
+      "0x8350000",
+      "image",
+      "libavutil-60.dll"
+    ],
+    [
+      7285,
+      60,
+      "0x8600000",
+      "image",
+      "libpyrowave-shared-1.dll"
+    ],
+    [
+      7297,
+      60,
+      "0x88fc000",
+      "image",
+      "SDL3.dll"
+    ],
+    [
+      7321,
+      60,
+      "0x8c0c000",
+      "image",
+      "tier0_s64.dll"
+    ],
+    [
+      7334,
+      60,
+      "0x92b8000",
+      "image",
+      "video64.dll"
+    ],
+    [
+      7348,
+      60,
+      "0x9548000",
+      "image",
+      "libswscale-9.dll"
+    ],
+    [
+      7359,
+      60,
+      "0x9788000",
+      "image",
+      "libavformat-62.dll"
+    ],
+    [
+      7369,
+      61,
+      "0x981c000",
+      "image",
+      "secur32.dll"
+    ],
+    [
+      7381,
+      61,
+      "0x98a0000",
+      "image",
+      "ncrypt.dll"
+    ],
+    [
+      7396,
+      61,
+      "0x9974000",
+      "image",
+      "libswresample-6.dll"
+    ],
+    [
+      7404,
+      61,
+      "0x9a08000",
+      "image",
+      "wsock32.dll"
+    ],
+    [
+      7416,
+      61,
+      "0x9a9c000",
+      "image",
+      "mswsock.dll"
+    ],
+    [
+      7433,
+      61,
+      "0x9b64000",
+      "image",
+      "vstdlib_s64.dll"
+    ],
+    [
+      8005,
+      62,
+      "0x9bb0000",
+      "image",
+      "filesystem_stdio.dll"
+    ],
+    [
+      8022,
+      63,
+      "0x9fb8000",
+      "image",
+      "vgui2_s.dll"
+    ],
+    [
+      8030,
+      63,
+      "0xa11c000",
+      "image",
+      "comdlg32.dll"
+    ],
+    [
+      8043,
+      63,
+      "0xa1a0000",
+      "image",
+      "msimg32.dll"
+    ],
+    [
+      8055,
+      63,
+      "0xa31c000",
+      "image",
+      "opengl32.dll"
+    ],
+    [
+      8067,
+      63,
+      "0xa3a0000",
+      "image",
+      "wtsapi32.dll"
+    ],
+    [
+      8079,
+      63,
+      "0xa434000",
+      "image",
+      "dwmapi.dll"
+    ],
+    [
+      8141,
+      63,
+      "0xa47c000",
+      "image",
+      "madeira-htmlipc-bridge.dll"
+    ],
+    [
+      8151,
+      63,
+      "0xa61c000",
+      "image",
+      "chromehtml.dll"
+    ],
+    [
+      8381,
+      63,
+      "0xa8fc000",
+      "image",
+      "steamsysinfo.exe"
+    ],
+    [
+      8393,
+      63,
+      "0xaa34000",
+      "image",
+      "ntdll.dll"
+    ],
+    [
+      8450,
+      63,
+      "0xae54000",
+      "image",
+      "libarm64ecfex.dll"
+    ],
+    [
+      8471,
+      63,
+      "0xaf88000",
+      "image",
+      "ucrtbase.dll"
+    ],
+    [
+      8484,
+      63,
+      "0xb050000",
+      "image",
+      "kernel32.dll"
+    ],
+    [
+      8491,
+      63,
+      "0xb350000",
+      "image",
+      "kernelbase.dll"
+    ],
+    [
+      8631,
+      63,
+      "0xb468000",
+      "image",
+      "ntdll.dll"
+    ],
+    [
+      8660,
+      63,
+      "0xb4dc000",
+      "image",
+      "wow64.dll"
+    ],
+    [
+      8684,
+      63,
+      "0xb8a8000",
+      "image",
+      "libwow64fex.dll"
+    ],
+    [
+      8702,
+      63,
+      "0xb92c000",
+      "image",
+      "?"
+    ],
+    [
+      8716,
+      63,
+      "0xba50000",
+      "image",
+      "ucrtbase.dll"
+    ],
+    [
+      8727,
+      63,
+      "0xbc10000",
+      "image",
+      "KERNEL32.dll"
+    ],
+    [
+      8772,
+      63,
+      "0xbd90000",
+      "image",
+      "kernelbase.dll"
+    ],
+    [
+      8820,
+      63,
+      "0xbe38000",
+      "image",
+      "KERNEL32.dll"
+    ],
+    [
+      8824,
+      63,
+      "0xbfb8000",
+      "image",
+      "kernelbase.dll"
+    ],
+    [
+      8836,
+      63,
+      "0xc1b0000",
+      "image",
+      "user32.dll"
+    ],
+    [
+      8841,
+      63,
+      "0xc288000",
+      "image",
+      "gdi32.dll"
+    ],
+    [
+      8846,
+      63,
+      "0xc31c000",
+      "image",
+      "advapi32.dll"
+    ],
+    [
+      8851,
+      63,
+      "0xc380000",
+      "image",
+      "sechost.dll"
+    ],
+    [
+      8866,
+      63,
+      "0xc404000",
+      "image",
+      "wow64win.dll"
+    ],
+    [
+      8869,
+      63,
+      "0xc528000",
+      "image",
+      "ucrtbase.dll"
+    ],
+    [
+      8873,
+      63,
+      "0xc5bc000",
+      "image",
+      "win32u.dll"
+    ],
+    [
+      8875,
+      63,
+      "0xc6b0000",
+      "image",
+      "msvcrt.dll"
+    ],
+    [
+      8882,
+      63,
+      "0xc744000",
+      "image",
+      "win32u.dll"
+    ],
+    [
+      8894,
+      63,
+      "0xc7b8000",
+      "image",
+      "imm32.dll"
+    ],
+    [
+      8900,
+      63,
+      "0xc7b8000",
+      "fresh-tail",
+      ""
+    ],
+    [
+      8926,
+      63,
+      "0xc7b8000",
+      "fresh-tail",
+      ""
+    ],
+    [
+      9306,
+      64,
+      "0xc89c000",
+      "image",
+      "dwrite.dll"
+    ],
+    [
+      9458,
+      64,
+      "0xcac4000",
+      "image",
+      "user32.dll"
+    ],
+    [
+      9469,
+      64,
+      "0xcbbc000",
+      "image",
+      "gdi32.dll"
+    ],
+    [
+      9479,
+      64,
+      "0xcc70000",
+      "image",
+      "advapi32.dll"
+    ],
+    [
+      9490,
+      64,
+      "0xccf4000",
+      "image",
+      "sechost.dll"
+    ],
+    [
+      9502,
+      65,
+      "0xcde8000",
+      "image",
+      "rpcrt4.dll"
+    ],
+    [
+      9512,
+      65,
+      "0xce6c000",
+      "image",
+      "cryptbase.dll"
+    ],
+    [
+      9554,
+      65,
+      "0xcf80000",
+      "image",
+      "msvcrt.dll"
+    ],
+    [
+      9557,
+      65,
+      "0xcf80000",
+      "fresh-tail",
+      ""
+    ],
+    [
+      9600,
+      65,
+      "0xd024000",
+      "image",
+      "win32u.dll"
+    ],
+    [
+      9631,
+      65,
+      "0xd9a8000",
+      "image",
+      "shell32.dll"
+    ],
+    [
+      9646,
+      65,
+      "0xda5c000",
+      "image",
+      "shlwapi.dll"
+    ],
+    [
+      9661,
+      65,
+      "0xdae0000",
+      "image",
+      "shcore.dll"
+    ],
+    [
+      9691,
+      65,
+      "0xdb74000",
+      "image",
+      "psapi.dll"
+    ],
+    [
+      9719,
+      65,
+      "0xdc18000",
+      "image",
+      "imm32.dll"
+    ],
+    [
+      10053,
+      65,
+      "0xddd0000",
+      "image",
+      "crashhandler64.dll"
+    ],
+    [
+      10065,
+      65,
+      "0xdfe4000",
+      "image",
+      "wininet.dll"
+    ],
+    [
+      10077,
+      65,
+      "0xe078000",
+      "image",
+      "mpr.dll"
+    ],
+    [
+      10101,
+      65,
+      "0xe11c000",
+      "image",
+      "ws2_32.dll"
+    ],
+    [
+      10461,
+      65,
+      "0xe148000",
+      "image",
+      "vulkan-1.dll"
+    ],
+    [
+      10851,
+      66,
+      "0xfb00000",
+      "image",
+      "steamclient64.dll"
+    ],
+    [
+      10885,
+      66,
+      "0xfb84000",
+      "image",
+      "imagehlp.dll"
+    ],
+    [
+      11606,
+      68,
+      "0xfb88000",
+      "anonymous",
+      ""
+    ],
+    [
+      11621,
+      68,
+      "0xfb8c000",
+      "anonymous",
+      ""
+    ],
+    [
+      15115,
+      73,
+      "0xfe8c000",
+      "image",
+      "kernelbase.dll"
+    ],
+    [
+      15207,
+      73,
+      "0xffa4000",
+      "image",
+      "ntdll.dll"
+    ],
+    [
+      15258,
+      73,
+      "0x10370000",
+      "image",
+      "libwow64fex.dll"
+    ],
+    [
+      15268,
+      73,
+      "0x10494000",
+      "image",
+      "ucrtbase.dll"
+    ],
+    [
+      15271,
+      73,
+      "0x1053c000",
+      "image",
+      "KERNEL32.dll"
+    ],
+    [
+      15274,
+      73,
+      "0x106bc000",
+      "image",
+      "kernelbase.dll"
+    ],
+    [
+      15322,
+      73,
+      "0x10740000",
+      "image",
+      "?"
+    ],
+    [
+      15396,
+      73,
+      "0x108dc000",
+      "image",
+      "?"
+    ],
+    [
+      15429,
+      73,
+      "0x10a9c000",
+      "image",
+      "KERNEL32.dll"
+    ],
+    [
+      15432,
+      73,
+      "0x10c1c000",
+      "image",
+      "kernelbase.dll"
+    ],
+    [
+      15456,
+      73,
+      "0x10cc4000",
+      "image",
+      "KERNEL32.dll"
+    ],
+    [
+      15459,
+      73,
+      "0x10ebc000",
+      "image",
+      "user32.dll"
+    ],
+    [
+      15464,
+      73,
+      "0x10ebc000",
+      "fresh-tail",
+      ""
+    ],
+    [
+      15469,
+      73,
+      "0x1103c000",
+      "image",
+      "kernelbase.dll"
+    ],
+    [
+      15472,
+      73,
+      "0x110c0000",
+      "image",
+      "wow64win.dll"
+    ],
+    [
+      15476,
+      73,
+      "0x11154000",
+      "image",
+      "win32u.dll"
+    ],
+    [
+      15478,
+      73,
+      "0x1122c000",
+      "image",
+      "gdi32.dll"
+    ],
+    [
+      15482,
+      73,
+      "0x112c0000",
+      "image",
+      "advapi32.dll"
+    ],
+    [
+      15487,
+      73,
+      "0x11324000",
+      "image",
+      "sechost.dll"
+    ],
+    [
+      15493,
+      73,
+      "0x11448000",
+      "image",
+      "ucrtbase.dll"
+    ],
+    [
+      15496,
+      73,
+      "0x11640000",
+      "image",
+      "user32.dll"
+    ],
+    [
+      15499,
+      73,
+      "0x11718000",
+      "image",
+      "gdi32.dll"
+    ],
+    [
+      15502,
+      73,
+      "0x1180c000",
+      "image",
+      "msvcrt.dll"
+    ],
+    [
+      15505,
+      73,
+      "0x118a0000",
+      "image",
+      "advapi32.dll"
+    ],
+    [
+      15509,
+      73,
+      "0x11904000",
+      "image",
+      "sechost.dll"
+    ],
+    [
+      15512,
+      73,
+      "0x11998000",
+      "image",
+      "win32u.dll"
+    ],
+    [
+      15515,
+      73,
+      "0x11abc000",
+      "image",
+      "ucrtbase.dll"
+    ],
+    [
+      15530,
+      73,
+      "0x11bb0000",
+      "image",
+      "msvcrt.dll"
+    ],
+    [
+      15534,
+      73,
+      "0x11c44000",
+      "image",
+      "win32u.dll"
+    ],
+    [
+      15564,
+      73,
+      "0x11cb8000",
+      "image",
+      "imm32.dll"
+    ],
+    [
+      15588,
+      73,
+      "0x11d2c000",
+      "image",
+      "imm32.dll"
+    ],
+    [
+      15593,
+      73,
+      "0x11d2c000",
+      "fresh-tail",
+      ""
+    ],
+    [
+      15626,
+      73,
+      "0x11d2c000",
+      "fresh-tail",
+      ""
+    ],
+    [
+      15806,
+      74,
+      "0x11e00000",
+      "image",
+      "openvr_api.dll"
+    ],
+    [
+      16466,
+      77,
+      "0x11e00000",
+      "fresh-tail",
+      ""
+    ],
+    [
+      16479,
+      77,
+      "0x11e00000",
+      "fresh-tail",
+      ""
+    ],
+    [
+      16527,
+      77,
+      "0x11f34000",
+      "image",
+      "msvcr120.dll"
+    ],
+    [
+      16567,
+      77,
+      "0x11f34000",
+      "fresh-tail",
+      ""
+    ],
+    [
+      16568,
+      77,
+      "0x1215c000",
+      "image",
+      "user32.dll"
+    ],
+    [
+      16599,
+      77,
+      "0x12254000",
+      "image",
+      "gdi32.dll"
+    ],
+    [
+      16612,
+      77,
+      "0x12308000",
+      "image",
+      "advapi32.dll"
+    ],
+    [
+      16626,
+      77,
+      "0x1238c000",
+      "image",
+      "sechost.dll"
+    ],
+    [
+      16641,
+      77,
+      "0x12480000",
+      "image",
+      "rpcrt4.dll"
+    ],
+    [
+      16653,
+      77,
+      "0x12504000",
+      "image",
+      "cryptbase.dll"
+    ],
+    [
+      16701,
+      77,
+      "0x12618000",
+      "image",
+      "msvcrt.dll"
+    ],
+    [
+      16731,
+      77,
+      "0x126bc000",
+      "image",
+      "win32u.dll"
+    ],
+    [
+      16871,
+      77,
+      "0x13040000",
+      "image",
+      "shell32.dll"
+    ],
+    [
+      16886,
+      77,
+      "0x130f4000",
+      "image",
+      "shlwapi.dll"
+    ],
+    [
+      16897,
+      78,
+      "0x130f4000",
+      "fresh-tail",
+      ""
+    ],
+    [
+      16906,
+      78,
+      "0x13178000",
+      "image",
+      "shcore.dll"
+    ],
+    [
+      16950,
+      78,
+      "0x1329c000",
+      "image",
+      "ole32.dll"
+    ],
+    [
+      16962,
+      78,
+      "0x13350000",
+      "image",
+      "combase.dll"
+    ],
+    [
+      16991,
+      78,
+      "0x133e4000",
+      "image",
+      "coml2.dll"
+    ],
+    [
+      17020,
+      78,
+      "0x13518000",
+      "image",
+      "oleaut32.dll"
+    ],
+    [
+      17064,
+      78,
+      "0x1363c000",
+      "image",
+      "winmm.dll"
+    ],
+    [
+      17105,
+      78,
+      "0x136c0000",
+      "image",
+      "?"
+    ],
+    [
+      17138,
+      78,
+      "0x1386c000",
+      "image",
+      "msacm32.dll"
+    ],
+    [
+      17149,
+      78,
+      "0x13914000",
+      "image",
+      "KERNEL32.dll"
+    ],
+    [
+      17152,
+      78,
+      "0x13a94000",
+      "image",
+      "kernelbase.dll"
+    ],
+    [
+      17168,
+      78,
+      "0x13c8c000",
+      "image",
+      "user32.dll"
+    ],
+    [
+      17172,
+      78,
+      "0x13d64000",
+      "image",
+      "gdi32.dll"
+    ],
+    [
+      17176,
+      78,
+      "0x13df8000",
+      "image",
+      "advapi32.dll"
+    ],
+    [
+      17179,
+      78,
+      "0x13e5c000",
+      "image",
+      "sechost.dll"
+    ],
+    [
+      17182,
+      78,
+      "0x13f80000",
+      "image",
+      "ucrtbase.dll"
+    ],
+    [
+      17186,
+      78,
+      "0x14024000",
+      "image",
+      "imm32.dll"
+    ],
+    [
+      17193,
+      78,
+      "0x14118000",
+      "image",
+      "msvcrt.dll"
+    ],
+    [
+      17198,
+      78,
+      "0x141ac000",
+      "image",
+      "win32u.dll"
+    ],
+    [
+      17213,
+      78,
+      "0x14240000",
+      "image",
+      "version.dll"
+    ],
+    [
+      17240,
+      78,
+      "0x142b4000",
+      "image",
+      "imm32.dll"
+    ],
+    [
+      17389,
+      78,
+      "0x14368000",
+      "image",
+      "uxtheme.dll"
+    ],
+    [
+      17413,
+      78,
+      "0x144e4000",
+      "image",
+      "opengl32.dll"
+    ],
+    [
+      17645,
+      79,
+      "0x144e8000",
+      "anonymous",
+      ""
+    ],
+    [
+      17719,
+      79,
+      "0x144ec000",
+      "anonymous",
+      ""
+    ],
+    [
+      17728,
+      79,
+      "0x144f0000",
+      "anonymous",
+      ""
+    ],
+    [
+      17985,
+      80,
+      "0x144f0000",
+      "fresh-tail",
+      ""
+    ],
+    [
+      23846,
+      146,
+      "0x144f0000",
+      "fresh-tail",
+      ""
+    ],
+    [
+      28871,
+      212,
+      "0x14554000",
+      "image",
+      "sechost.dll"
+    ],
+    [
+      28875,
+      212,
+      "0x14678000",
+      "image",
+      "ucrtbase.dll"
+    ],
+    [
+      28879,
+      212,
+      "0x1476c000",
+      "image",
+      "msvcrt.dll"
+    ],
+    [
+      28884,
+      212,
+      "0x14800000",
+      "image",
+      "win32u.dll"
+    ],
+    [
+      28894,
+      212,
+      "0x14874000",
+      "image",
+      "imm32.dll"
+    ],
+    [
+      29460,
+      217,
+      "0x148f8000",
+      "image",
+      "?"
+    ],
+    [
+      29494,
+      217,
+      "0x14ab8000",
+      "image",
+      "KERNEL32.dll"
+    ],
+    [
+      29498,
+      217,
+      "0x14c38000",
+      "image",
+      "kernelbase.dll"
+    ],
+    [
+      29506,
+      217,
+      "0x14e30000",
+      "image",
+      "user32.dll"
+    ],
+    [
+      29511,
+      217,
+      "0x14f08000",
+      "image",
+      "gdi32.dll"
+    ],
+    [
+      29515,
+      217,
+      "0x14f9c000",
+      "image",
+      "advapi32.dll"
+    ],
+    [
+      29519,
+      217,
+      "0x15000000",
+      "image",
+      "sechost.dll"
+    ],
+    [
+      29523,
+      217,
+      "0x15124000",
+      "image",
+      "ucrtbase.dll"
+    ],
+    [
+      29527,
+      217,
+      "0x15218000",
+      "image",
+      "msvcrt.dll"
+    ],
+    [
+      29532,
+      217,
+      "0x152ac000",
+      "image",
+      "win32u.dll"
+    ],
+    [
+      29544,
+      217,
+      "0x15320000",
+      "image",
+      "imm32.dll"
+    ],
+    [
+      29692,
+      219,
+      "0x15438000",
+      "image",
+      "ntdll.dll"
+    ],
+    [
+      29718,
+      219,
+      "0x154ac000",
+      "image",
+      "wow64.dll"
+    ],
+    [
+      29729,
+      219,
+      "0x15878000",
+      "image",
+      "libwow64fex.dll"
+    ],
+    [
+      29734,
+      219,
+      "0x1599c000",
+      "image",
+      "ucrtbase.dll"
+    ],
+    [
+      29737,
+      219,
+      "0x15a44000",
+      "image",
+      "KERNEL32.dll"
+    ],
+    [
+      29740,
+      219,
+      "0x15bc4000",
+      "image",
+      "kernelbase.dll"
+    ],
+    [
+      29747,
+      219,
+      "0x15c48000",
+      "image",
+      "wow64win.dll"
+    ],
+    [
+      29750,
+      219,
+      "0x15cdc000",
+      "image",
+      "win32u.dll"
+    ],
+    [
+      43820,
+      404,
+      "0x15d70000",
+      "image",
+      "xinput1_4.dll"
+    ],
+    [
+      43832,
+      404,
+      "0x15e24000",
+      "image",
+      "dinput8.dll"
+    ],
+    [
+      43841,
+      404,
+      "0x15fa8000",
+      "image",
+      "comctl32.dll"
+    ],
+    [
+      43969,
+      405,
+      "0x1600c000",
+      "image",
+      "localize.dll"
+    ],
+    [
+      43991,
+      405,
+      "0x164c4000",
+      "image",
+      "rendersystemdx11.dll"
+    ],
+    [
+      43999,
+      405,
+      "0x164f8000",
+      "image",
+      "amd_ags_x64.dll"
+    ],
+    [
+      44008,
+      405,
+      "0x16978000",
+      "image",
+      "d3d11.dll"
+    ],
+    [
+      44025,
+      405,
+      "0x16ca4000",
+      "image",
+      "d3d9.dll"
+    ],
+    [
+      44040,
+      405,
+      "0x170d8000",
+      "image",
+      "D3DCOMPILER_47.dll"
+    ],
+    [
+      44092,
+      405,
+      "0x17174000",
+      "image",
+      "resourcesystem.dll"
+    ],
+    [
+      44108,
+      405,
+      "0x171f8000",
+      "image",
+      "schemasystem.dll"
+    ],
+    [
+      44121,
+      406,
+      "0x1727c000",
+      "image",
+      "msasn1.dll"
+    ],
+    [
+      44131,
+      406,
+      "0x17360000",
+      "image",
+      "cryptnet.dll"
+    ],
+    [
+      44140,
+      406,
+      "0x173e4000",
+      "image",
+      "wldp.dll"
+    ],
+    [
+      44151,
+      406,
+      "0x174f8000",
+      "image",
+      "nvapi64.dll"
+    ],
+    [
+      44898,
+      408,
+      "0x175ac000",
+      "image",
+      "uxtheme.dll"
+    ],
+    [
+      45052,
+      408,
+      "0x17738000",
+      "image",
+      "materialsystem2.dll"
+    ],
+    [
+      45137,
+      409,
+      "0x17954000",
+      "image",
+      "meshsystem.dll"
+    ],
+    [
+      45149,
+      409,
+      "0x17bc4000",
+      "image",
+      "worldrenderer.dll"
+    ],
+    [
+      45164,
+      409,
+      "0x17e40000",
+      "image",
+      "pulse_system.dll"
+    ],
+    [
+      45173,
+      409,
+      "0x17f94000",
+      "image",
+      "vscript.dll"
+    ],
+    [
+      45184,
+      409,
+      "0x1825c000",
+      "image",
+      "networksystem.dll"
+    ],
+    [
+      45201,
+      410,
+      "0x1825c000",
+      "fresh-tail",
+      ""
+    ],
+    [
+      45214,
+      410,
+      "0x18e4c000",
+      "image",
+      "animationsystem.dll"
+    ],
+    [
+      45247,
+      410,
+      "0x193e8000",
+      "image",
+      "vphysics2.dll"
+    ],
+    [
+      45259,
+      411,
+      "0x19aa8000",
+      "image",
+      "soundsystem.dll"
+    ],
+    [
+      45304,
+      411,
+      "0x19e48000",
+      "image",
+      "steamaudio.dll"
+    ],
+    [
+      45312,
+      411,
+      "0x1d158000",
+      "image",
+      "phonon.dll"
+    ],
+    [
+      45344,
+      411,
+      "0x1dad4000",
+      "image",
+      "scenesystem.dll"
+    ],
+    [
+      45359,
+      412,
+      "0x1e354000",
+      "image",
+      "particles.dll"
+    ],
+    [
+      45370,
+      412,
+      "0x1e610000",
+      "image",
+      "panoramauiclient.dll"
+    ],
+    [
+      45376,
+      412,
+      "0x21670000",
+      "image",
+      "v8.dll"
+    ],
+    [
+      45385,
+      412,
+      "0x21808000",
+      "image",
+      "v8_libbase.dll"
+    ],
+    [
+      45393,
+      412,
+      "0x21bd8000",
+      "image",
+      "v8_icui18n.dll"
+    ],
+    [
+      45398,
+      412,
+      "0x21ea4000",
+      "image",
+      "v8_icuuc.dll"
+    ],
+    [
+      45409,
+      412,
+      "0x21f7c000",
+      "image",
+      "v8_zlib.dll"
+    ],
+    [
+      45423,
+      412,
+      "0x22518000",
+      "image",
+      "video64.dll"
+    ],
+    [
+      45430,
+      412,
+      "0x22cf0000",
+      "image",
+      "libavcodec-58.dll"
+    ],
+    [
+      45435,
+      412,
+      "0x230f0000",
+      "image",
+      "libavutil-56.dll"
+    ],
+    [
+      45442,
+      412,
+      "0x232bc000",
+      "image",
+      "libavformat-58.dll"
+    ],
+    [
+      45448,
+      412,
+      "0x23380000",
+      "image",
+      "libavresample-4.dll"
+    ],
+    [
+      45454,
+      412,
+      "0x234cc000",
+      "image",
+      "libswscale-5.dll"
+    ],
+    [
+      45462,
+      412,
+      "0x23560000",
+      "image",
+      "wsock32.dll"
+    ],
+    [
+      45572,
+      413,
+      "0x23b94000",
+      "image",
+      "panorama.dll"
+    ],
+    [
+      45585,
+      414,
+      "0x23e78000",
+      "image",
+      "panorama_text_pango.dll"
+    ],
+    [
+      45591,
+      414,
+      "0x23ef8000",
+      "image",
+      "libfontconfig-1.dll"
+    ],
+    [
+      45597,
+      414,
+      "0x24004000",
+      "image",
+      "libfreetype-6.dll"
+    ],
+    [
+      45604,
+      414,
+      "0x24188000",
+      "image",
+      "libglib-2.0-0.dll"
+    ],
+    [
+      45612,
+      414,
+      "0x241e4000",
+      "image",
+      "libgobject-2.0-0.dll"
+    ],
+    [
+      45621,
+      414,
+      "0x24250000",
+      "image",
+      "libpango-1.0-0.dll"
+    ],
+    [
+      45634,
+      414,
+      "0x242b4000",
+      "image",
+      "libpangoft2-1.0-0.dll"
+    ],
+    [
+      45658,
+      414,
+      "0x242f4000",
+      "image",
+      "v8system.dll"
+    ],
+    [
+      45664,
+      414,
+      "0x24464000",
+      "image",
+      "v8_libplatform.dll"
+    ],
+    [
+      46105,
+      420,
+      "0x269e4000",
+      "image",
+      "server.dll"
+    ]
+  ],
+  "failure": {
+    "line": 46359,
+    "image": "embree3.dll",
+    "requested": "0x1524000",
+    "head": "0x269e4000",
+    "tail": "0x2101c000",
+    "main_virgin": "0x600000",
+    "free_entries": 4,
+    "free_bytes": "0x690000",
+    "largest_free": "0x664000",
+    "qualified_retired_receipts": 2,
+    "qualified_retired_bytes": "0x2000000",
+    "largest_qualified_retired": "0x1000000",
+    "missing_proof": 1
+  },
+  "transfers": [
+    {
+      "line": 46348,
+      "image": "client.dll",
+      "want": "0x29a8000",
+      "off": "0x41fe4000",
+      "bytes": "0x300c000",
+      "receipts": 6,
+      "aged_receipts": 8,
+      "aged_bytes": "0x500c000",
+      "largest": "0x300c000",
+      "missing_proof": 1,
+      "cursors_unchanged": true,
+      "carves": [
+        {
+          "rx": "0x341fe4000",
+          "size": "0x1000000",
+          "owner": "0x700310000",
+          "lease": 13,
+          "free": true,
+          "retired": true,
+          "allocation_line": 16479,
+          "handle": 16,
+          "freed_line": 17337,
+          "freed_seconds": 78,
+          "retired_lease": 13
+        },
+        {
+          "rx": "0x342fe4000",
+          "size": "0x1000000",
+          "owner": "0x109424000",
+          "lease": 12,
+          "free": true,
+          "retired": true,
+          "allocation_line": 16466,
+          "handle": 15,
+          "freed_line": 16827,
+          "freed_seconds": 77,
+          "retired_lease": 12
+        },
+        {
+          "rx": "0x343fe4000",
+          "size": "0x4000",
+          "owner": "0x700310000",
+          "lease": 13,
+          "free": true,
+          "retired": true,
+          "allocation_line": 15626,
+          "handle": 13,
+          "freed_line": 17337,
+          "freed_seconds": 78,
+          "retired_lease": 13
+        },
+        {
+          "rx": "0x343fe8000",
+          "size": "0x4000",
+          "owner": "0x700310000",
+          "lease": 21,
+          "free": true,
+          "retired": true,
+          "allocation_line": 29774,
+          "handle": 23,
+          "freed_line": 40444,
+          "freed_seconds": 380,
+          "retired_lease": 21
+        },
+        {
+          "rx": "0x343fec000",
+          "size": "0x4000",
+          "owner": "0x600310000",
+          "lease": 11,
+          "free": true,
+          "retired": true,
+          "allocation_line": 15464,
+          "handle": 11,
+          "freed_line": 17043,
+          "freed_seconds": 78,
+          "retired_lease": 11
+        },
+        {
+          "rx": "0x343ff0000",
+          "size": "0x1000000",
+          "owner": "0x700310000",
+          "lease": 21,
+          "free": true,
+          "retired": true,
+          "allocation_line": 30488,
+          "handle": 24,
+          "freed_line": 40444,
+          "freed_seconds": 380,
+          "retired_lease": 21
+        }
+      ]
+    }
+  ],
+  "chronology": [
+    {
+      "line": 46105,
+      "op": "image-success",
+      "image": "server.dll",
+      "allocation_off": "0x24464000",
+      "requested": "0x2580000"
+    },
+    {
+      "line": 46265,
+      "op": "generation-rotation",
+      "new_generation_size": "0x1000000"
+    },
+    {
+      "line": 46273,
+      "op": "ordinary-release",
+      "rx": "0x326fe4000",
+      "size": "0x2000000",
+      "image_certification": false
+    },
+    {
+      "line": 46348,
+      "op": "transfer",
+      "image": "client.dll",
+      "off": "0x41fe4000",
+      "bytes": "0x300c000",
+      "receipts": 6
+    },
+    {
+      "line": 46351,
+      "op": "image-success",
+      "image": "client.dll",
+      "allocation_off": "0x41fe4000",
+      "requested": "0x29a8000"
+    },
+    {
+      "line": 46359,
+      "op": "capacity-failure",
+      "image": "embree3.dll",
+      "requested": "0x1524000"
+    },
+    {
+      "line": 46365,
+      "op": "dependency-failure",
+      "image": "client.dll",
+      "status": "0xc0000135",
+      "parent_mapping_retained": true
+    },
+    {
+      "line": 46370,
+      "op": "retry-capacity-failure",
+      "image": "client.dll",
+      "requested": "0x29a8000"
+    }
+  ],
+  "free_extents_at_failure": [
+    {
+      "off": "0x4498c000",
+      "size": "0x664000",
+      "source": "unused client transfer suffix",
+      "source_line": 46349
+    }
+  ],
+  "older_free_extent_aggregate_at_failure": {
+    "entries": 3,
+    "bytes": "0x2c000",
+    "largest": "0x14000",
+    "note": "Original three offsets are not recorded. Replay uses separated synthetic extents, never fills live-image gaps from assumed metadata."
+  },
+  "projection_note": "Subsequent image stress is synthetic. Devicecapture ends actual successful module chain at firstclient copy; no claimoflatergameentryorframe.",
+  "contiguity_note": "The six certified receipts join41fe4000..44ff0000: three16MiB spans plus three16KiB dispatchers. Remaining two certified16MiB ranges are separated by live code/images. The ordinary32MiB release26fe4000 is not certified and cannot become image capacity.",
+  "owner_note": "Carve owner identifies its latest allocating process, retained as evidence after process retirement; production clears the active peb field and retains allocation_lease/retired_lease proof. Reused PEB addresses use distinct registered leases; the production replay invokes those lease-aware retirement functions."
+}
