@@ -27,6 +27,12 @@ source_dir = args.source_dir or ROOT / 'build/ntdll-unix'
 process = (source_dir / 'process_ios.c').read_text()
 virtual = (source_dir / 'virtual_ios.c').read_text()
 private = (ROOT / 'wine/dlls/ntdll/unix/unix_private.h').read_text()
+winternl = (ROOT / 'wine/include/winternl.h').read_text()
+for name, value in (('DISABLE', 1), ('ENABLE', 2),
+                    ('DISABLE_THUNK_EMULATION', 4), ('PERMANENT', 8)):
+    match = re.search(r'^#define MEM_EXECUTE_OPTION_' + name + r'\s+(0x[0-9a-fA-F]+)\s*$',
+                      winternl, re.M)
+    assert match and int(match[1], 16) == value, 'DEP fixture must match Wine ABI'
 
 
 def function(source, name):
@@ -83,8 +89,8 @@ typedef struct { unsigned unused; } WOW_TEB, WOW_PEB;
 #define STATUS_INVALID_PARAMETER 0xc000000du
 #define STATUS_INFO_LENGTH_MISMATCH 0xc0000004u
 #define STATUS_ACCESS_DENIED 0xc0000022u
-#define MEM_EXECUTE_OPTION_ENABLE 1
-#define MEM_EXECUTE_OPTION_DISABLE 2
+#define MEM_EXECUTE_OPTION_ENABLE 2
+#define MEM_EXECUTE_OPTION_DISABLE 1
 #define MEM_EXECUTE_OPTION_DISABLE_THUNK_EMULATION 4
 #define MEM_EXECUTE_OPTION_PERMANENT 8
 #define VPROT_COMMITTED 1
