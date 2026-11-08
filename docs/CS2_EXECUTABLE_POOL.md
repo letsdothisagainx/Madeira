@@ -1,7 +1,8 @@
 # CS2 executable-pool startup budget
 
-The current November 8 policy is described in the final section: the pool stays
-1152 MiB, with 240 MiB soft image headroom and a separate 512 MiB budget for
+The current November 8 policy is described under "November 8 earlier rotation
+and embree3.dll": the pool stays 1152 MiB, with 240 MiB soft image headroom
+and a separate 512 MiB budget for
 fresh large MAIN-tail growth. Earlier measurements below retain their original
 settings as regression controls.
 
@@ -461,3 +462,84 @@ Actual iPhone acceptance still requires a genuine client/embree dependency
 chain, continued FEX compilation and a presented game frame. If a later actual
 module exceeds the remaining contiguous capacity, its name and allocator state
 must be reported; these tests do not establish a menu or playability.
+
+## November 8 fbb4 device acceptance and a separate DEP sweep
+
+The next supplied attachment identifies its installed source as
+`fbb4a56f4e6959aef2f71651f281d844a451614f` at line 11, despite the accompanying
+request repeating the older `5b22a6e` metadata. The 84,688-line attachment starts
+at local time 16:49:30.932 and has SHA-256
+`bb8e30fa82eb3b55cb961d1411ca5496b9ee3e68743743d6d7ce906c19135c7a`.
+Its 1152 MiB pool, 240 MiB soft headroom and 512 MiB large-growth limit are active.
+
+This capture supplies the previously missing client/embree device evidence:
+
+* The certified six-carve transfer at lines 45789–45795 provides `0x300c000`
+  bytes at offset `0x41fe4000`; the real client.dll executable copy loads.
+* Embree's real executable copy then loads at pool address `0x326a28000`
+  (lines 45799–45803), advancing the image head to `0x27f4c000`.
+* The three earlier 128 MiB generations remain reserved. Later CS2 rotations
+  reject fresh 128, 64 and 32 MiB growth and reuse eligible 16 MiB buffers;
+  the recorded migration sweeps complete 15/15, 15/15 and 21/21 threads
+  (lines 44516–44527, 45171–45182 and 45734–45745). No fresh 32 MiB carve
+  appears, and the tail remains `0x1f01c000` (496.109375 MiB).
+
+The next exhaustion is therefore not embree. After libmpg123-0.dll loads,
+four `[force-exec]` operations outside a guest window precede a burst of
+42 additional image copies (lines 45976–46128), including previously loaded
+steamsysinfo.exe, opengl-program.exe and multiple processes' system DLLs.
+Their image bytes and recorded trampolines total approximately 37.6 MiB before
+alignment overhead. No new process creation accompanies this burst. The first
+failed copy is kernelbase.dll at PE base `0x3ea6f0000`, already successfully
+copied earlier at line 28086:
+
+| First failure, line 46131 | Captured value |
+| --- | ---: |
+| Requested executable allocation | `0x180000` (1.5 MiB) |
+| Image head | `0x28fd4000` (655.828125 MiB) |
+| Reserved tail | `0x1f01c000` (496.109375 MiB) |
+| Contiguous virgin room | `0x10000` (0.0625 MiB) |
+| Image free extents | 7, totaling `0x88000`; largest `0x4c000` |
+| Poison-marked free bytes | 0 |
+
+The source establishes a concrete scope defect: `is_wow64()` can fall back to
+session-global `wow_peb` for a native64 thread; `ProcessExecuteFlags` then admits
+that thread as WoW64. With no owned guest window,
+`ios_wow_force_exec_set_current()` returns the same fallback result as the
+legacy session-wide mode, and `virtual_set_force_exec()` re-protects every
+process's views. Its existing per-window DEP comments document how such a
+sweep duplicates executable copies under the wrong process context. Native64
+Windows execution flags must instead retain their fixed DEP semantics, and
+an absent guest-window identity must not authorize a global sweep.
+
+The erroneous source scope is directly visible. The device capture strongly
+matches that path, but contains no direct
+`NtSetInformationProcess(ProcessExecuteFlags)` entry trace or caller address;
+the exact initiating API call in this capture remains inferred, not observed.
+The first unhandled access violation appears only later at line 46477, after
+pool exhaustion has started; the 290 total allocation failures in this burst must not
+be described as independent normal game-module demand.
+
+Peak physical footprint is 4261 MiB, below the effective 6144 MiB cap. This
+capture supplies no evidence of renewed FEXAlloc fatal exhaustion or iOS
+jetsam. DXMT again reaches `nextDrawable #1`, but neither drawable acquisition
+nor successful client/embree copying proves a presented game frame, completed
+client initialization, or a usable menu. Those remain on-device acceptance
+requirements after correcting the separate DEP scope defect. No larger pool
+or weaker code-retirement proof is justified by this new failure.
+
+The correction keeps DEP query/set architecture checks local to the caller's
+companion WoW TEB and live PEB-owned guest window. Native64 queries retain
+permanent DEP and setters return `STATUS_INVALID_PARAMETER`. Independently,
+the internal force-exec entry refuses a missing window in per-process mode;
+only the explicit historical opt-out can select a global sweep. Neither the
+pool budget nor image/code retirement certification changes.
+
+`check-dep-process-isolation.py` compiles these production dispatch cases,
+window ownership functions and sweep. The saved pre-fix source fails 14
+isolation assertions; the corrected source passes under ASan/UBSan, including
+concurrent independent I386 transitions, missing/dead/recycled owners, an
+unbound bootstrap token, a native TEB matching a window without a companion
+TEB, and a genuine I386 caller whose session-global `wow_peb` is NULL. Its
+protection callbacks count boundary calls; they do not execute Wine or replace
+the real pool/RX/RW allocator regressions or the next iPhone run.

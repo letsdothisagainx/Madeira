@@ -114,6 +114,14 @@ tail_trace = json.loads((root / 'tests/host/fixtures/pool-cs2-200111-tail.json')
 nov7_trace = json.loads((root / 'tests/host/fixtures/pool-cs2-083837-tail.json').read_text())
 embree_trace = json.loads((root / 'tests/host/fixtures/pool-cs2-200636-tail.json').read_text())
 november8_trace = json.loads((root / 'tests/host/fixtures/pool-cs2-095621-tail.json').read_text())
+fbb4_trace = json.loads((root / 'tests/host/fixtures/pool-cs2-fbb4-dep-tail.json').read_text())
+assert fbb4_trace['installed_commit'] == 'fbb4a56f4e6959aef2f71651f281d844a451614f'
+assert len([e for e in fbb4_trace['events'] if e['op'] == 'allocate']) == 30
+dep_sweep = fbb4_trace['foreign_dep_sweep']
+assert len(dep_sweep['copies']) == dep_sweep['copy_count'] == 42
+assert sum(int(e['requested'], 16) for e in dep_sweep['copies']) == int(dep_sweep['bytes'], 16) == 0x25a8000
+assert dep_sweep['first_failure']['image'] == 'kernelbase.dll'
+assert fbb4_trace['embree']['line'] < dep_sweep['first_force_exec_line'] < dep_sweep['first_failure']['line']
 
 
 def captured_rows(trace):
@@ -145,6 +153,8 @@ tail_replay += '#define REPLAY_LEGACY_ONLY %d\n' % (os.environ.get('MADEIRA_POOL
 tail_replay += 'static const struct captured_tail_event captured_embree_tail_events[] = {\n' + captured_rows(embree_trace) + '\n};\n'
 
 tail_replay += 'static const struct captured_tail_event captured_november8_tail_events[] = {\n' + captured_rows(november8_trace) + '\n};\n'
+tail_replay += 'static const struct captured_tail_event captured_fbb4_tail_events[] = {\n' + captured_rows(fbb4_trace) + '\n};\n'
+tail_replay += 'static const size_t captured_fbb4_foreign_copy_sizes[] = {\n' + ','.join(e['requested'] for e in dep_sweep['copies']) + '\n};\n'
 
 # Swift's launch plumbing is platform-owned; the decision and arithmetic run
 # below as production C. Keep the selected game and the pre-Wine failure path
@@ -1471,6 +1481,104 @@ static void check_captured_november8_tail_history(size_t reserve, size_t code_li
     }
 }
 
+/* The newly attached log is fbb4, not the 5b22 metadata in the repeated request.
+ * Replay its actual30 grants and three CS2 rotations. It already loads embree;
+ * the following failure comes from a DEP sweep copying other processes' VADs.
+ * check-dep-process-isolation.py exercises that production scope boundary. */
+static void check_captured_fbb4_tail_history(void)
+{
+    void *handles[64] = {0}; size_t sizes[64] = {0};
+    struct ios_tail_carve pinned[3]; unsigned pinned_n=0, grants=0, tiny=0;
+    size_t server=(size_t)-1, client=(size_t)-1, embree=(size_t)-1;
+    reset(1152*MB,240*MB); ios_pool_code_tail_limit=512*MB;
+    jit_pool_offset=ios_jit_tail_reserved=0;
+    ios_pool_free_count=ios_pool_ledger_count=ios_tail_carve_n=0;
+    memset(ios_tail_carves,0,sizeof ios_tail_carves);
+    for(unsigned i=0;i<ARRAY_SIZE(captured_fbb4_tail_events);++i)
+    {
+        const struct captured_tail_event *e=&captured_fbb4_tail_events[i];
+        owner=e->owner; fake_now=1000+e->seconds;
+        set_process_lease((void *)owner,e->lease,e->op==2);
+        if(e->line==45737)
+        {
+            /* Older image-free offsets are not in the log; these three
+             * separated small extents exercise bounded fragmentation only. */
+            november8_image_extents(); jit_pool_offset=0x244a8000;
+            CHECK(!allocate_image(0x2580000,&server) && server==0x244a8000);
+            CHECK(jit_pool_offset==0x26a28000);
+        }
+        if(e->op==2) { ios_tail_carves_owner_died((void *)owner); continue; }
+        if(e->op==1)
+        {
+            void *released=NULL;size_t bytes=0;
+            CHECK(handles[e->handle]);
+            CHECK(release_code(handles[e->handle],MEM_RELEASE,&released,&bytes)==STATUS_SUCCESS);
+            CHECK(released==handles[e->handle]&&bytes==sizes[e->handle]); continue;
+        }
+        if(e->head>jit_pool_offset)jit_pool_offset=e->head;
+        size_t got=e->ask;
+        if(e->rotation||e->ask==128*MB)got=rotate(&handles[e->handle]);
+        else CHECK(allocate_code(&got,&handles[e->handle])==STATUS_SUCCESS);
+        size_t off=(uintptr_t)handles[e->handle]-(uintptr_t)rx_memory;
+        if(got!=e->observed||off!=e->observed_off)
+            fprintf(stderr,"fbb4 mismatch line%u size=%zx/%zx off=%zx/%zx\n",e->line,got,e->observed,off,e->observed_off);
+        CHECK(got==e->observed&&off==e->observed_off);
+        sizes[e->handle]=got;++grants;
+        if(e->line==9017||e->line==9183||e->line==15473||e->line==15499||e->line==15567)
+        { CHECK(got==0x4000);++tiny; }
+        if(e->ask==128*MB&&!e->rotation)
+        {
+            CHECK(pinned_n<ARRAY_SIZE(pinned)&&got==128*MB);
+            pinned[pinned_n]=ios_tail_carves[find_carve(off)];
+            *(uint64_t *)((char *)rw_memory+off)=0xabc1000000000000ULL+pinned_n;
+            *(uint64_t *)((char *)rw_memory+off+got-8)=0xdef1000000000000ULL+pinned_n;
+            ++pinned_n;
+        }
+    }
+    CHECK(grants==30&&tiny==5&&pinned_n==3);
+    CHECK(ios_jit_tail_reserved==0x1f01c000&&jit_pool_offset==0x26a28000);
+    owner=0x108118000; fake_now=1427;
+    CHECK(!allocate_image(0x29a8000,&client)&&client==0x41fe4000);
+    CHECK(!allocate_image(0x1524000,&embree)&&embree==0x26a28000);
+    CHECK(jit_pool_offset==0x27f4c000);
+    CHECK(ios_jit_pool_size_global-jit_pool_offset-ios_jit_tail_reserved==0x1098000);
+    CHECK(ios_pool_ledger_holds(server,0x2580000,(void *)owner));
+    CHECK(ios_pool_ledger_holds(client,0x29a8000,(void *)owner));
+    CHECK(ios_pool_ledger_holds(embree,0x1524000,(void *)owner));
+    check_owned_executable_image(server,0x2580000);
+    check_owned_executable_image(client,0x29a8000);
+    check_owned_executable_image(embree,0x1524000);
+    check_code_image_nonoverlap();
+    for(unsigned i=0;i<pinned_n;++i)
+    {
+        CHECK(!memcmp(&ios_tail_carves[find_carve(pinned[i].off)],&pinned[i],sizeof pinned[i]));
+        CHECK(*(const uint64_t *)((char *)rx_memory+pinned[i].off)==0xabc1000000000000ULL+i);
+        CHECK(*(const uint64_t *)((char *)rx_memory+pinned[i].off+pinned[i].size-8)==0xdef1000000000000ULL+i);
+    }
+    size_t copied=0;
+    for(unsigned i=0;i<ARRAY_SIZE(captured_fbb4_foreign_copy_sizes);++i)copied+=captured_fbb4_foreign_copy_sizes[i];
+    CHECK(ARRAY_SIZE(captured_fbb4_foreign_copy_sizes)==42&&copied==0x25a8000);
+    puts("PASS fbb4 actual30grants/5tiny/3live128/3CS2rotations: nofresh32,server+client+embree executable; head27f4c000 tail1f01c000 leaves16.59375MiB,notamenuguarantee; subsequent42foreignDEPcopies cost37.65625MiB");
+
+    /* The first observed failure is old kernelbase.dll, already copied at
+     * log28086. Reproduce its exact census with separated aggregate extents;
+     * their original addresses are unavailable, not invented here. */
+    reset(1152*MB,240*MB);ios_pool_code_tail_limit=512*MB;
+    jit_pool_offset=0x28fd4000;ios_jit_tail_reserved=0x1f01c000;
+    ios_pool_free_count=ios_pool_ledger_count=ios_tail_carve_n=0;
+    static const size_t remaining[]={0x4c000,0x14000,0xc000,0x8000,0x8000,0x8000,0x4000};
+    size_t sum=0;
+    for(unsigned i=0;i<ARRAY_SIZE(remaining);++i)
+    {
+        ios_pool_freelist[i]=(struct ios_pool_free){(i+1)*MB,remaining[i],0,1,0};
+        sum+=remaining[i];++ios_pool_free_count;
+    }
+    CHECK(sum==0x88000&&ios_pool_free_count==7);
+    CHECK(ios_jit_pool_size_global-jit_pool_offset-ios_jit_tail_reserved==0x10000);
+    expect_failed_image(0x180000);
+    puts("PASS fbb4 firstfailure kernelbase.dll180000 with64KiBvirgin/7freeextents88000/largest4c000; scopedDEPtestpreventsforeignsweepwithoutchangingcapacityorretirementproof");
+}
+
 struct scheduled_request { unsigned role; size_t size, limit, off; void *ret; int status; };
 static void *scheduled_allocate(void *opaque)
 {
@@ -1621,6 +1729,7 @@ int main(void)
     check_captured_november8_tail_history(240*MB, 512*MB, 0);
     check_captured_november8_tail_history(240*MB, 512*MB, 1);
     check_captured_november8_tail_history(240*MB, 448*MB, 0);
+    check_captured_fbb4_tail_history();
     check_head_tail_and_last_slot_schedules();
     CHECK(!munmap(rx_memory, mapped_size) && !munmap(rw_memory, mapped_size));
     CHECK(!fclose(backing));

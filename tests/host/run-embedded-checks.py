@@ -43,6 +43,7 @@ commands = [
     ['python3', 'tests/host/check-wow-window-capacity.py'],
     ['python3', 'tests/host/check-steam-validation-trace.py'],
     ['python3', 'tests/host/check-steam-launch-trace.py'],
+    ['python3', 'tests/host/check-dep-process-isolation.py'],
     ['python3', 'tests/host/check-pool-cs2-budget.py'],
     ['python3', 'tests/host/check-pool-code-growth-budget.py'],
     ['python3', 'tests/host/check-pool-retired-main.py'],
