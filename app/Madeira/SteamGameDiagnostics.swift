@@ -562,10 +562,15 @@ enum SteamGameDiagnostics {
             let performanceBudget = console ? min(32, recordCap / 8) : 0
             var selectedEvents: [ConsoleCandidate] = [], selectedPerformance: [ConsoleCandidate] = []
             var decodedConsole = 0, sampledPerformance = 0, performanceCounts: [String: Int] = [:]
-            let markerClocks = console ? observations.compactMap { event -> MarkerWallClock? in
-                guard event["record"] as? String == "cs2-user-marker-v1", let fields = event["fields"] as? [String: String] else { return nil }
-                return markerWallSecond(fields)
-            }.suffix(8) : []
+            // Ring rows precede the runtime-log scan. Rank anchors by their
+            // own app clock so older log copies cannot displace a recent ring
+            // error merely because that source was consumed later.
+            let markerClocks = console ? observations.compactMap { event -> [String: String]? in
+                guard event["record"] as? String == "cs2-user-marker-v1", let fields = event["fields"] as? [String: String],
+                      fields["kind"] == "error-reported", fields["app"] == "730" else { return nil }
+                return fields
+            }.sorted { (UInt64($0["monotonic-ms"] ?? "") ?? 0) < (UInt64($1["monotonic-ms"] ?? "") ?? 0) }
+                .suffix(8).compactMap(markerWallSecond) : []
             // Source-local row and record caps prevent a giant main log from
             // starving the actual console. Never allocate Data.split's one
             // subsequence per newline before applying those caps.

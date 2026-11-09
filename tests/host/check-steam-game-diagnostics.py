@@ -408,6 +408,17 @@ func markedConsolePriorityFixture(_ root: URL) {
     assert(source["performanceEventsSampled"] as? Int == 32 && events.count <= 512)
     let summary = try! JSONSerialization.jsonObject(with: result[3].data) as! [String: Any]
     assert(summary["serviceStateObservation"] as? String == "unmeasured")
+    var olderErrors: [String] = []
+    for index in 0..<9 {
+        var older = error.replacingOccurrences(of: "sequence=4000", with: "sequence=" + String(3000 + index))
+        older = older.replacingOccurrences(of: "monotonic-ms=510860109", with: "monotonic-ms=" + String(1000 + index))
+        older = older.replacingOccurrences(of: "22:51:55.489Z", with: "20:00:00.000Z")
+        olderErrors.append(older)
+    }
+    write("madeira-log.txt", ([error] + olderErrors).joined(separator: "\n") + "\n")
+    let reordered = try! SteamGameDiagnostics.collect(documents: root)
+    let reorderedEvents = try! JSONSerialization.jsonObject(with: reordered[2].data) as! [[String: Any]]
+    assert(reorderedEvents.contains { ($0["fields"] as? [String: String])?["marker-wall-proximity-seconds"] == "5" })
     // Offset changes affect only conditional selection; console time is never
     // silently relabeled as UTC or the app's monotonic clock.
     write("madeira-log.txt", error.replacingOccurrences(of: "utc-offset-min=-300", with: "utc-offset-min=0") + "\n")
