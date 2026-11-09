@@ -2,6 +2,7 @@ name: Verify Steam content integrity runtime
 
 on:
   workflow_dispatch:
+  workflow_call:
   push:
     branches: [main, 'codex/pr-build-*']
     paths: &integrity-paths

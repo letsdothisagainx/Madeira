@@ -58,6 +58,8 @@ permissions:
   contents: read
 
 jobs:
+  content-integrity:
+    uses: ./.github/workflows/steam-integrity-runtime.yml
   browser-bridge:
     runs-on: xcode-27
     timeout-minutes: 5
