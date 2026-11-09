@@ -92,12 +92,24 @@ def run():
     base,meta=fex_fixture();package.fex_cpu(bytes(base),'arm64ec')
     ec_machine=bytearray(base);struct.pack_into('<H',ec_machine,0x84,0xa641);package.fex_cpu(bytes(ec_machine),'arm64ec')
     native,unused=fex_fixture('wow64');package.fex_cpu(bytes(native),'wow64')
+    # The existing allocator-band exports are runtime-initialized variables.
+    # They may live in the zero-fill suffix of .data; only the versioned
+    # capability's initialized magic must be present in the actual PE file.
+    for backend in ('arm64ec','wow64'):
+        bss,layout=fex_fixture(backend)
+        struct.pack_into('<I',bss,layout['sections']['.data']+16,0x800)
+        for index,name in enumerate((b'ios_fex_band_base',b'ios_fex_band_end')):
+            struct.pack_into('<I',bss,layout['slots'][name],0x2800+index*8)
+        package.fex_cpu(bytes(bss),backend)
+    print('PASS existing ARM64EC/WoW64 runtime arena DATA may use private writable BSS; capability still requires initialized file bytes')
     count=0
-    def bad(edit,label):
+    def bad(edit,label,reason=None):
         nonlocal count
         changed=bytearray(base);edit(changed)
         try:package.fex_cpu(bytes(changed),'arm64ec')
-        except (AssertionError,ValueError,struct.error,IndexError):count+=1
+        except (AssertionError,ValueError,struct.error,IndexError) as error:
+            if reason is not None:assert reason in str(error),(label,str(error))
+            count+=1
         else:raise AssertionError('accepted invalid '+label)
     cap=meta['slots'][b'IosSubfloorProtocolV1'];cap_raw=meta['raw'](0x2010);data_section=meta['sections']['.data'];text_section=meta['sections']['.text']
     bad(lambda b:b.__setitem__(meta['strings'][b'IosSubfloorProtocolV1'],ord('x')),'missing DATA export')
@@ -110,7 +122,12 @@ def run():
     bad(lambda b:struct.pack_into('<I',b,data_section+12,0x5000),'DATA section beyond image')
     bad(lambda b:struct.pack_into('<I',b,data_section+20,0xfffffff0),'DATA raw section beyond file')
     bad(lambda b:b.__delitem__(slice(cap_raw+4,None)),'truncated file-backed DATA bytes')
-    bad(lambda b:struct.pack_into('<I',b,data_section+16,0x10),'zero-fill rather than file-backed DATA')
+    bad(lambda b:struct.pack_into('<I',b,data_section+16,0x10),'zero-fill rather than file-backed capability',
+        'IosSubfloorProtocolV1 requires eight file-backed bytes')
+    for name in (b'ios_fex_band_base',b'ios_fex_band_end'):
+        for rva in (0x2001,0x3000,0x4000,0xfffffff8):
+            bad(lambda b,name=name,rva=rva:struct.pack_into('<I',b,meta['slots'][name],rva),
+                'unaligned/executable/unmapped/out-of-image runtime arena DATA')
     for flags in (0x40000040,0x80000040,0xe0000040,0xd0000040,0xc2000040):
         bad(lambda b,flags=flags:struct.pack_into('<I',b,data_section+36,flags),'unreadable/nonwritable/executable/shared/discardable DATA')
     bad(lambda b:struct.pack_into('<I',b,meta['opt']+112+80,0),'absent hybrid load configuration')

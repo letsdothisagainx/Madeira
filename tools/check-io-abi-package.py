@@ -98,10 +98,16 @@ def fex_arena_exports(data, require_hold_release=False, code_exports=(), require
         else:
             assert not target & 7 and any(base <= target and target + 8 <= base + size and
                        flags & 0xc0000000 == 0xc0000000 and not flags & 0x32000000
-                       for base, size, _, _, flags in sections), 'FEX arena export must be aligned file-backed private writable non-executable DATA'
-            data_offset = offset(target, 8)
+                       for base, size, _, _, flags in sections), 'FEX arena export must be aligned private writable non-executable DATA'
             if name in data_exports:
-                assert struct.unpack_from('<Q', data, data_offset)[0] == data_exports[name], 'FEX DATA capability value differs from source ABI'
+                # Allocator band bounds are initialized at runtime and may be
+                # legitimate zero-fill DATA. An initialized protocol magic is
+                # different: its exact source ABI must exist in file bytes.
+                try:
+                    data_offset = offset(target, 8)
+                except AssertionError as error:
+                    raise AssertionError(f'FEX DATA capability {name.decode("ascii")} requires eight file-backed bytes') from error
+                assert struct.unpack_from('<Q', data, data_offset)[0] == data_exports[name], f'FEX DATA capability value differs from source ABI: {name.decode("ascii")}'
         found.add(name)
     assert found == required, 'FEX compatibility exports missing'
 
