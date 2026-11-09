@@ -86,6 +86,9 @@ WINE_DEFAULT_DEBUG_CHANNEL(process);
 
 #ifdef WINE_IOS
 #include "htmlipc_native.h"
+#define MADEIRA_STEAM_STARTUP_TIMELINE_IMPLEMENTATION
+#include "steam_startup_timeline.h"
+#undef MADEIRA_STEAM_STARTUP_TIMELINE_IMPLEMENTATION
 #endif
 
 
@@ -1333,6 +1336,7 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
     RTL_USER_PROCESS_PARAMETERS htmlipc_params;
     WCHAR *htmlipc_path = NULL, *htmlipc_command = NULL;
     BOOL htmlipc_redirected = FALSE;
+    uint32_t startup_timing = 0;
 #endif
 
     if (thread_flags & THREAD_CREATE_FLAGS_HIDE_FROM_DEBUGGER)
@@ -2176,6 +2180,12 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
     if (htmlipc_redirected) params = &htmlipc_params;
 #endif
 
+#ifdef WINE_IOS
+    startup_timing = ios_startup_process_request(
+        (const uint16_t *)params->ImagePathName.Buffer, params->ImagePathName.Length / sizeof(WCHAR),
+        (const uint16_t *)params->CommandLine.Buffer, params->CommandLine.Length / sizeof(WCHAR),
+        HandleToULong( NtCurrentTeb()->ClientId.UniqueProcess ));
+#endif
     unixdir = get_unix_curdir( params );
 
     InitializeObjectAttributes( &attr, &path, OBJ_CASE_INSENSITIVE, 0, 0 );
@@ -2192,6 +2202,9 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
         {
             *process_handle_ptr = *thread_handle_ptr = 0;
             memset( info, 0, sizeof(*info) );
+#ifdef WINE_IOS
+            ios_startup_process_returned( startup_timing, STATUS_SUCCESS, TRUE );
+#endif
             free( unix_name );
             free( nt_name.Buffer );
             return STATUS_SUCCESS;
@@ -2287,6 +2300,9 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
         process_info = wine_server_ptr_handle( reply->info );
     }
     SERVER_END_REQ;
+#ifdef WINE_IOS
+    if (!status) ios_startup_process_created( startup_timing, HandleToULong(id.UniqueProcess) );
+#endif
     close( socketfd[1] );
     free( objattr );
     free( handles );
@@ -2431,6 +2447,9 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
     status = STATUS_SUCCESS;
 
 done:
+#ifdef WINE_IOS
+    ios_startup_process_returned( startup_timing, status, status == STATUS_SUCCESS );
+#endif
     if (file_handle) NtClose( file_handle );
     if (process_info) NtClose( process_info );
     if (process_handle) NtClose( process_handle );

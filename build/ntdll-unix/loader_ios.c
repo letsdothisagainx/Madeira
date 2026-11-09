@@ -97,6 +97,7 @@
 
 #ifdef WINE_IOS
 #include <os/log.h>
+#include "steam_startup_timeline.h"
 #include <pthread.h>
 #include <mach-o/dyld.h>
 #endif
@@ -4143,6 +4144,7 @@ DECLSPEC_EXPORT void wine_ios_child_main( int argc, char *argv[], int child_fd_s
         {
             extern void madeira_child_process_started(void *, unsigned);
             madeira_child_process_started(child_peb, (unsigned)(ULONG_PTR)NtCurrentTeb()->ClientId.UniqueProcess);
+            ios_startup_process_bind( (unsigned)(ULONG_PTR)NtCurrentTeb()->ClientId.UniqueProcess, child_peb );
         }
 
         /* init_startup_info — reads startup info from wineserver, loads the
@@ -4366,6 +4368,7 @@ DECLSPEC_EXPORT void wine_ios_child_main( int argc, char *argv[], int child_fd_s
 
     /* Finalize init and enter PE code (calls signal_start_thread, never returns) */
     CHILD_STAGE( "server_init_process_done" );
+    ios_startup_process_pe_entry( (unsigned)(ULONG_PTR)NtCurrentTeb()->ClientId.UniqueProcess, child_peb );
     server_init_process_done();
 
     /* Never reaches here — server_init_process_done calls signal_start_thread */
@@ -4383,6 +4386,9 @@ DECLSPEC_EXPORT void wine_ios_child_main( int argc, char *argv[], int child_fd_s
  */
 DECLSPEC_EXPORT void __wine_main( int argc, char *argv[] )
 {
+#ifdef WINE_IOS
+    ios_startup_timeline_begin();
+#endif
     main_argc = argc;
     main_argv = argv;
 

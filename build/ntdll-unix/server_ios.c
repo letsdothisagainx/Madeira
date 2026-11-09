@@ -141,6 +141,7 @@ static void wine_log_write(const char *fmt, ...)
 #include "wine/debug.h"
 #include "unix_private.h"
 #include "ios_wow.h"
+#include "steam_startup_timeline.h"
 #include "ddk/wdm.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(server);
@@ -5237,6 +5238,7 @@ static void ios_finish_process_memory(void *dead_peb)
      * native child has no such later teardown and needs its own final boundary. */
     unsigned long long lease = ios_thread_process_quiescent_lease(dead_peb);
     int native_owner = !ios_wow_base_for_peb(dead_peb);
+    if (lease) ios_startup_process_quiesced(dead_peb);
     ios_fd_cache_release(dead_peb);
     ios_subfloor_release_owner(dead_peb);
     ios_jit_reclaim_process(dead_peb);

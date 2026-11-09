@@ -78,6 +78,7 @@ volatile long long ios_affinity_sets;   /* ml1117 */
 #include "wine/debug.h"
 #include "unix_private.h"
 #include "ios_wow.h"
+#include "steam_startup_timeline.h"
 #include "steam_helper_identity.h"
 #include "fex_hold_release_abi.h"
 #include "native_thread_lifetime.h"
@@ -2473,6 +2474,11 @@ void abort_thread( int status )
 void abort_process( int status )
 {
     ios_trace_steam_helper_exit( "process-abort", status );
+    {
+        TEB *timing_teb = NtCurrentTeb();
+        if (timing_teb) ios_startup_process_exit_request(
+            (unsigned)(ULONG_PTR)timing_teb->ClientId.UniqueProcess, timing_teb->Peb, (uint32_t)status, 1 );
+    }
 #ifdef WINE_IOS
     /* ml937: _exit() HERE KILLED THE WHOLE APP.
      *
@@ -2567,6 +2573,11 @@ static DECLSPEC_NORETURN void exit_thread( int status )
 void exit_process( int status )
 {
     ios_trace_steam_helper_exit( "process-exit", status );
+    {
+        TEB *timing_teb = NtCurrentTeb();
+        if (timing_teb) ios_startup_process_exit_request(
+            (unsigned)(ULONG_PTR)timing_teb->ClientId.UniqueProcess, timing_teb->Peb, (uint32_t)status, 0 );
+    }
 #ifdef WINE_IOS
     ERR("exit_process: raw_status=0x%x unix_code=%d\n", (unsigned)status, get_unix_exit_code(status));
 #endif

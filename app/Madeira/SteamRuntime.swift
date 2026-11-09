@@ -375,7 +375,10 @@ enum NativeSteamPlay {
     // replacement for Steam's own decision. Dock's separate host policy stays
     // unchanged. Callers already validate the directory and numeric App ID.
     static func clientLaunchScript(windowsDirectory: String, appID: Int? = nil) -> String {
-        let launch = appID.map { " -applaunch \($0)" } ?? ""
+        // Source 2's supported console-file switch supplies genuine session/
+        // connection diagnostics. Steam still owns the authenticated launch;
+        // no trust, secure-mode or game-state option is changed.
+        let launch = appID.map { " -applaunch \($0)" + ($0 == 730 ? " -condebug" : "") } ?? ""
         return "@echo off\r\n\"C:\\windows\\system32\\madeira-steam-service.exe\" \"\(windowsDirectory)\"\r\n" +
             "if not \"%errorlevel%\"==\"0\" echo [steam-client-start-v2] service-result=%errorlevel% policy=steam-managed\r\n" +
             "cd /d \"\(windowsDirectory)\"\r\n\"\(windowsDirectory)\\steam.exe\" \(clientArguments)\(launch)\r\n" +

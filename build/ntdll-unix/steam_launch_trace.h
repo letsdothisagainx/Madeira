@@ -21,6 +21,8 @@ static const char *ios_steam_launch_source( const char *path )
     return NULL;
 }
 
+#include "steam_session_trace.h"
+
 static int ios_steam_launch_app730( const char *line )
 {
     const char *p = line;
@@ -122,17 +124,23 @@ static void ios_steam_launch_log_observe( int fd, const void *buffer, unsigned i
     struct stat st;
     char path[PATH_MAX];
     const char *source, *bytes = buffer;
+    unsigned int role;
     int saved_errno = errno;
-    if (__atomic_load_n( &ios_steam_launch_lines, __ATOMIC_RELAXED ) >= 128 ||
-        !params || madeira_steam_ui_image( params->ImagePathName.Buffer,
-            params->ImagePathName.Length / sizeof(WCHAR) ) != 1 || !buffer || !length) return;
+    if ((__atomic_load_n( &ios_steam_launch_lines, __ATOMIC_RELAXED ) >= 128 &&
+         __atomic_load_n( &ios_steam_session_lines, __ATOMIC_RELAXED ) >= 96) ||
+        !params || !(role = ios_steam_session_role( params )) || !buffer || !length) return;
+    if (role != 1 && __atomic_load_n( &ios_steam_session_lines, __ATOMIC_RELAXED ) >= 96) return;
     if (!ios_guest_log_fd_path( fd, path, sizeof(path) ) ||
-        !(source = ios_steam_launch_source( path )) || fstat( fd, &st )) goto out;
+        !(source = ios_steam_session_source( path, role ))) goto out;
+    if (!ios_steam_launch_source( path ) &&
+        __atomic_load_n( &ios_steam_session_lines, __ATOMIC_RELAXED ) >= 96) goto out;
+    if (fstat( fd, &st )) goto out;
     if (stream.owner != (uintptr_t)teb->Peb || stream.dev != st.st_dev || stream.ino != st.st_ino ||
         stream.source != source)
     {
         stream.owner = (uintptr_t)teb->Peb; stream.dev = st.st_dev; stream.ino = st.st_ino;
         stream.source = source; stream.used = stream.dropped = 0;
+        ios_steam_session_source_observed( source, role, stream.owner, st.st_dev, st.st_ino );
     }
     /* Bound work too. If a very large write is clipped, drop its final partial
      * line; never join a missing middle to a later write. */
@@ -143,7 +151,8 @@ static void ios_steam_launch_log_observe( int fd, const void *buffer, unsigned i
             if (!stream.dropped)
             {
                 stream.line[stream.used] = 0;
-                ios_steam_launch_line( source, stream.line );
+                if (role == 1) ios_steam_launch_line( source, stream.line );
+                ios_steam_session_line( source, stream.line, role );
             }
             stream.used = stream.dropped = 0;
         }
