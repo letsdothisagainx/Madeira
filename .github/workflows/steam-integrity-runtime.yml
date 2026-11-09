@@ -19,6 +19,10 @@ on:
       - tests/host/check-steam-integrity-launch.py
       - app/Madeira/SteamGameDiagnostics.swift
       - tests/host/check-steam-game-diagnostics.py
+      - app/Madeira/CS2VACMarkers.swift
+      - tests/host/check-cs2-vac-markers.py
+      - build/crypto-unix/crypt32_unixlib_ios.c
+      - tests/host/check-crypt32-root-fd.py
       - .github/workflows/steam-integrity-runtime.yml
   pull_request:
     paths: *integrity-paths
@@ -54,6 +58,14 @@ jobs:
         run: python3 tests/host/check-steam-game-diagnostics.py --require-swift
       - name: Execute accepted CS2 observation and existing-lease bodies
         run: python3 tests/host/check-cs2-observation.py
+      - name: Execute bounded VAC user and input timestamps with Swift and ASan
+        run: python3 tests/host/check-cs2-vac-markers.py --require-swift
+      - name: Load pinned Wine list definitions for the production certificate reader
+        run: git submodule update --init --depth 1 wine
+      - name: Reproduce old crypto descriptor reuse and validate exact ownership
+        run: |
+          python3 tests/host/check-crypt32-root-fd.py --baseline 4711d1235dd8ccaa84556a7257127d266b57e20b --expect-baseline-reuse-failure
+          python3 tests/host/check-crypt32-root-fd.py
       - name: Reproduce the exact old downloader's runtime integrity failures
         run: |
           set +e
