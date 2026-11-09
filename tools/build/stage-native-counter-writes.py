@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Stage the private, source-built ntdll diagnostic-counter writer contract.
 
-Only diagnostic counter accesses change. Counter layout/exports, QPC arithmetic,
+Only diagnostic counter/history accesses change. Counter layout/exports, QPC arithmetic,
 Windows APIs and synchronization results are retained. Restore refuses unrelated
 edits; the pinned Wine worktree is never committed with this overlay applied.
 """
@@ -67,6 +67,53 @@ struct ios_xp_nt_write_contract ios_xp_nt_write_contract =
             raise ValueError(f"{path}: diagnostic counter accesses missing")
         out[path] = re.sub(r"\bios_xp_nt\.", "ios_xp_nt_writer()->", out[path])
     out[FILES[3]] = replace_once(out[FILES[3]], "@ extern -private ios_xp_nt\n", "@ extern -private ios_xp_nt\n@ extern -private ios_xp_nt_write_contract\n", FILES[3])
+    # The captured hot PCs are the diagnostic SRW ring, not the lock itself:
+    # an index increment and two history stores for every acquire/release.
+    # Keep all events and the existing LONG/entry layout. Only the private
+    # writer addresses change; Windows SRW operations remain byte-for-byte.
+    out[FILES[1]] = replace_once(out[FILES[1]],
+        "static struct ios_srw_ring_ent ios_srw_ring[512];\nstatic LONG ios_srw_ring_idx;",
+        '''struct ios_srw_ring_ent ios_srw_ring[512];
+LONG ios_srw_ring_idx;
+struct ios_srw_history_write_contract
+{
+    ULONGLONG magic;
+    ULONG ring_bytes, entry_bytes;
+    void *ring_writer, *index_writer;
+};
+struct ios_srw_history_write_contract ios_srw_history_write_contract =
+{
+    MADEIRA_NATIVE_SRW_ABI_V1, sizeof(ios_srw_ring), sizeof(ios_srw_ring[0]), NULL, NULL
+};
+#ifdef _WIN64
+C_ASSERT( sizeof(ios_srw_ring) == MADEIRA_NATIVE_SRW_RING_BYTES );
+C_ASSERT( sizeof(ios_srw_ring[0]) == MADEIRA_NATIVE_SRW_ENTRY_BYTES );
+C_ASSERT( sizeof(struct ios_srw_history_write_contract) == MADEIRA_NATIVE_SRW_CONTRACT_BYTES );
+C_ASSERT( FIELD_OFFSET(struct ios_srw_history_write_contract, ring_writer) == MADEIRA_NATIVE_SRW_RING_WRITER_OFFSET );
+C_ASSERT( FIELD_OFFSET(struct ios_srw_history_write_contract, index_writer) == MADEIRA_NATIVE_SRW_INDEX_WRITER_OFFSET );
+#endif
+static inline struct ios_srw_ring_ent *ios_srw_ring_writer(void)
+{
+    void *writer = __atomic_load_n( &ios_srw_history_write_contract.ring_writer, __ATOMIC_ACQUIRE );
+    return writer ? writer : ios_srw_ring;
+}
+static inline LONG *ios_srw_index_writer(void)
+{
+    void *writer = __atomic_load_n( &ios_srw_history_write_contract.index_writer, __ATOMIC_ACQUIRE );
+    return writer ? writer : &ios_srw_ring_idx;
+}''', FILES[1])
+    out[FILES[1]] = replace_once(out[FILES[1]],
+        "i = (ULONG)InterlockedIncrement( &ios_srw_ring_idx );",
+        "i = (ULONG)InterlockedIncrement( ios_srw_index_writer() );", FILES[1])
+    if out[FILES[1]].count("ios_srw_ring[i & 511]") != 2:
+        raise ValueError("SRW history must retain exactly two event stores")
+    out[FILES[1]] = out[FILES[1]].replace("ios_srw_ring[i & 511]", "ios_srw_ring_writer()[i & 511]")
+    out[FILES[1]] = replace_once(out[FILES[1]],
+        "ULONG i = (ULONG)ios_srw_ring_idx;",
+        "ULONG i = (ULONG)*ios_srw_index_writer();", FILES[1])
+    out[FILES[1]] = replace_once(out[FILES[1]],
+        "&ios_srw_ring[(i - n) & 511]", "&ios_srw_ring_writer()[(i - n) & 511]", FILES[1])
+    out[FILES[3]] += "\n@ extern -private ios_srw_ring\n@ extern -private ios_srw_ring_idx\n@ extern -private ios_srw_history_write_contract\n"
     return out
 
 
@@ -182,12 +229,12 @@ def verify_pe(path: Path, expected_machine: str) -> dict[str, int]:
         ordinal = struct.unpack_from("<H", mapped, otable+index*2)[0]
         if ordinal >= functions: raise ValueError("invalid native ntdll export ordinal")
         value = u32(ftable+ordinal*4)
-        if name in ("ios_xp_nt", "ios_xp_nt_write_contract"):
+        if name in ("ios_xp_nt", "ios_xp_nt_write_contract", "ios_srw_ring", "ios_srw_ring_idx", "ios_srw_history_write_contract"):
             if name in exports or export_rva <= value < export_rva+export_bytes:
                 raise ValueError("duplicate or forwarded counter export")
             exports[name] = value
-    if set(exports) != {"ios_xp_nt", "ios_xp_nt_write_contract"}:
-        raise ValueError("native counter contract exports missing")
+    if set(exports) != {"ios_xp_nt", "ios_xp_nt_write_contract", "ios_srw_ring", "ios_srw_ring_idx", "ios_srw_history_write_contract"}:
+        raise ValueError("native counter/history contract exports missing")
     counter, contract = exports["ios_xp_nt"], exports["ios_xp_nt_write_contract"]
     if not span_ok(counter,24712,True) or not span_ok(contract,24,True) or (counter < contract+24 and contract < counter+24712):
         raise ValueError("native counter contract is not disjoint nonexecutable RW data")
@@ -196,6 +243,17 @@ def verify_pe(path: Path, expected_machine: str) -> dict[str, int]:
     wanted_magic = int(re.search(r"#define MADEIRA_NATIVE_COUNTER_ABI_V1 (0x[0-9a-fA-F]+)ULL", abi_text)[1],16)
     if (magic,n,reserved,writer) != (wanted_magic,24712,0,0):
         raise ValueError("native counter contract contents differ from source ABI")
+    ring, index, history = (exports[k] for k in ("ios_srw_ring", "ios_srw_ring_idx", "ios_srw_history_write_contract"))
+    history_magic = int(re.search(r"#define MADEIRA_NATIVE_SRW_ABI_V1 (0x[0-9a-fA-F]+)ULL", abi_text)[1],16)
+    spans = ((counter,24712),(contract,24),(ring,8192),(index,4),(history,32))
+    for i,(start,length) in enumerate(spans):
+        if not span_ok(start,length,True) or start & (3 if length == 4 else 7):
+            raise ValueError("native private history span is unaligned or not complete RW data")
+        if any(start < other+bytes_ and other < start+length for other,bytes_ in spans[:i]):
+            raise ValueError("native counter/history spans overlap")
+    if struct.unpack_from("<QIIQQ",mapped,history) != (history_magic,8192,16,0,0):
+        raise ValueError("native SRW history contents differ from source ABI")
+    writer_slots = (contract+16,history+16,history+24)
     reloc_rva, reloc_size = read("<II",pe+24+112+5*8)
     if bool(reloc_rva) != bool(reloc_size) or reloc_size and not span_ok(reloc_rva,reloc_size):
         raise ValueError("invalid native ntdll relocations")
@@ -208,11 +266,12 @@ def verify_pe(path: Path, expected_machine: str) -> dict[str, int]:
             value = struct.unpack_from("<H",mapped,entry)[0]
             if value >> 12 == 10:
                 target = page+(value & 0xfff)
-                if target < contract+24 and contract+16 < target+8:
-                    raise ValueError("counter writer unexpectedly has a DIR64 relocation")
+                if any(target < slot+8 and slot < target+8 for slot in writer_slots):
+                    raise ValueError("private writer unexpectedly has a DIR64 relocation")
         cursor += block
-    result = {"machine": machine, "image_bytes": size, "counter_rva": counter, "counter_bytes": n, "contract_rva": contract}
-    print(f"native-counter-contract: machine={machine:04x} bytes={n} writer=null relocation=none")
+    result = {"machine": machine, "image_bytes": size, "counter_rva": counter, "counter_bytes": n, "contract_rva": contract,
+              "srw_ring_rva": ring, "srw_index_rva": index, "srw_contract_rva": history}
+    print(f"native-counter-contract: machine={machine:04x} bytes={n} srw-entries=512 writers=null relocation=none")
     return result
 
 

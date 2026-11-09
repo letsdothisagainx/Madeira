@@ -1,0 +1,70 @@
+{
+  "capture": "madeira-log(20261108) source9d4415464db914787df039a2eedc39ca8b187ae2",
+  "package_workflow": 42533433436,
+  "package_artifact": 13639280067,
+  "inspection_workflow": 42538443337,
+  "pe_member": "arm64ec-windows/ntdll.dll",
+  "pe_sha256": "975db861e62e49c254fedf87ba93dd8822f4f3e6d8f61cbec95f95e973062655",
+  "image_size": "0x130000",
+  "index_rva": "0xe0a58",
+  "ring_rva": "0xe0a60",
+  "ring_entries": 512,
+  "ring_stride": 16,
+  "source_producer": "wine/dlls/ntdll/sync.c:ios_srw_note",
+  "native_blocks": [
+    {
+      "rva": "0x69d40",
+      "words": [
+        "f0000348",
+        "39464108",
+        "37000208",
+        "f00003a8",
+        "91296108",
+        "885ffd09",
+        "11000529",
+        "880afd09",
+        "35ffffaa",
+        "12002128",
+        "f00003a9",
+        "91298129",
+        "8b285128",
+        "d5033bbf",
+        "f9000113",
+        "b9404a49",
+        "531e7529",
+        "b9000909",
+        "a9427bf5",
+        "a94153f3"
+      ]
+    },
+    {
+      "rva": "0x6a4d0",
+      "words": [
+        "17fffff5",
+        "d5033bbf",
+        "d0000349",
+        "39464129",
+        "37000229",
+        "d00003a9",
+        "91296129",
+        "885ffd2a",
+        "1100054a",
+        "880bfd2a",
+        "35ffffab",
+        "12002149",
+        "d00003aa",
+        "9129814a",
+        "8b295149",
+        "d5033bbf",
+        "5280002b",
+        "f9000120",
+        "b9404a4a",
+        "2a0a096a",
+        "b900092a",
+        "7100091f",
+        "540000c2",
+        "a9437bf9"
+      ]
+    }
+  ]
+}

@@ -41,7 +41,12 @@ for path in module.FILES[:2]:
     ok(staged[path].count("ios_xp_nt_writer()->") == sources[path].count("ios_xp_nt."), "exact counter member replacement")
 ok("struct ios_xp_nt ios_xp_nt;   /* layout: ntdll_misc.h */" in staged[module.FILES[1]], "existing exported block retained")
 ok("MADEIRA_NATIVE_COUNTER_ABI_V1, sizeof(ios_xp_nt), 0, NULL" in staged[module.FILES[1]], "writer NULL has no source pointer relocation")
-ok(staged[module.FILES[3]].replace("@ extern -private ios_xp_nt_write_contract\n", "") == sources[module.FILES[3]], "spec adds only private data export")
+added_exports = ["ios_xp_nt_write_contract", "ios_srw_ring", "ios_srw_ring_idx", "ios_srw_history_write_contract"]
+spec_without_additions = staged[module.FILES[3]]
+for name in added_exports:
+    ok(spec_without_additions.count("@ extern -private " + name + "\n") == 1, "one exact private writer export")
+    spec_without_additions = spec_without_additions.replace("@ extern -private " + name + "\n", "")
+ok(spec_without_additions.rstrip() == sources[module.FILES[3]].rstrip(), "spec adds only four private data exports")
 ok(staged[module.FILES[0]].replace("ios_xp_nt_writer()->", "ios_xp_nt.") == sources[module.FILES[0]], "all QPC arithmetic and status untouched")
 reject(lambda: module.stage(staged), "double application must fail")
 reject(lambda: module.stage({p:v for p,v in sources.items() if p != module.FILES[0]}), "missing source must fail")
@@ -149,13 +154,16 @@ def pe_fixture(machine):
         for start,base,size in ((0x1000,0x400,0x1000),(0x2000,0x1400,0x1000),(0x4000,0x2400,0x9000),(0xe000,0xb400,0x1000)):
             if start <= rva < start+size: return base+rva-start
         raise AssertionError(rva)
-    put("<IIIII",raw(0x1000)+20,2,2,0x1100,0x1120,0x1140)
-    put("<II",raw(0x1100),0x4000,0xa100)
-    put("<II",raw(0x1120),0x1180,0x11a0)
-    put("<HH",raw(0x1140),0,1)
-    b[raw(0x1180):raw(0x1180)+10]=b"ios_xp_nt\0"
-    name=b"ios_xp_nt_write_contract\0"; b[raw(0x11a0):raw(0x11a0)+len(name)]=name
+    put("<IIIII",raw(0x1000)+20,5,5,0x1100,0x1120,0x1140)
+    put("<5I",raw(0x1100),0x4000,0xa100,0xa200,0xc240,0xc280)
+    put("<5I",raw(0x1120),0x1180,0x11a0,0x11d0,0x11f0,0x1220)
+    put("<5H",raw(0x1140),0,1,2,3,4)
+    for name,rva in (("ios_xp_nt",0x1180),("ios_xp_nt_write_contract",0x11a0),
+                     ("ios_srw_ring",0x11d0),("ios_srw_ring_idx",0x11f0),
+                     ("ios_srw_history_write_contract",0x1220)):
+        data=name.encode()+b"\0"; b[raw(rva):raw(rva)+len(data)]=data
     put("<QIIQ",raw(0xa100),0x315752544e505849,24712,0,0)
+    put("<QIIQQ",raw(0xc280),0x3157525752535849,8192,16,0,0)
     put("<IIHH",raw(0xe000),0xa000,12,0,0)
     return b,raw
 
@@ -166,6 +174,8 @@ with tempfile.TemporaryDirectory(prefix="madeira-counter-pe-") as scratch:
         original,raw = pe_fixture(machine); path.write_bytes(original)
         with contextlib.redirect_stdout(io.StringIO()): result=module.verify_pe(path,arch)
         ok(result["counter_bytes"]==24712 and result["machine"]==machine,"native packaged contract accepted for correct architecture")
+        ok(result["srw_ring_rva"]==0xa200 and result["srw_index_rva"]==0xc240 and result["srw_contract_rva"]==0xc280,
+           "complete SRW history/index/two-writer contract accepted")
     base,raw=pe_fixture(0xaa64)
     def bad(mutator,label):
         data=bytearray(base); mutator(data); path.write_bytes(data)
@@ -177,6 +187,16 @@ with tempfile.TemporaryDirectory(prefix="madeira-counter-pe-") as scratch:
     bad(write("<I",raw(0xa100)+8,20616),"native counter bytes enforced")
     bad(write("<I",raw(0xa100)+12,1),"reserved bits enforced")
     bad(write("<Q",raw(0xa100)+16,0x300004000),"file writer must be NULL")
+    bad(write("<Q",raw(0xc280),0),"SRW contract magic enforced")
+    bad(write("<I",raw(0xc280)+8,4096),"all 512 history entries required")
+    bad(write("<I",raw(0xc280)+12,8),"native history entry layout retained")
+    bad(write("<Q",raw(0xc280)+16,0x30000a200),"file ring writer must be NULL")
+    bad(write("<Q",raw(0xc280)+24,0x30000c240),"file index writer must be NULL")
+    bad(write("<IIHH",raw(0xe000),0xc000,12,0xa290,0),"ring writer cannot carry DIR64 relocation")
+    bad(write("<IIHH",raw(0xe000),0xc000,12,0xa298,0),"index writer cannot carry DIR64 relocation")
+    bad(write("<I",raw(0x1100)+8,0xc280),"history cannot overlap contract")
+    bad(write("<I",raw(0x1100)+12,0xa104),"index cannot overlap existing counter contract")
+    bad(write("<I",raw(0x1100)+8,0xc000),"whole 8192-byte history must fit private data")
     bad(write("<H",raw(0xe000)+8,0xa110),"NULL writer cannot carry DIR64 relocation")
     bad(write("<I",raw(0x1100)+4,0x4008),"counter and contract cannot overlap")
     bad(write("<I",0x98+240+2*40+36,0xe0000040),"executable data cannot carry mutable diagnostic block")

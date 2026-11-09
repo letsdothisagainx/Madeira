@@ -7,11 +7,13 @@
 #include "native_counter_alias_abi.h"
 #include "native_atomic_image.h"
 
-static int ios_native_counter_data(const unsigned char *image, size_t size,
-                                  size_t sections, unsigned count, size_t rva, size_t bytes)
+static int ios_native_counter_data_aligned(const unsigned char *image, size_t size,
+                                          size_t sections, unsigned count, size_t rva, size_t bytes,
+                                          size_t alignment)
 {
     unsigned i;
-    if ((rva & 7) || !ios_native_span(rva,bytes,size)) return 0;
+    if (!alignment || (alignment&(alignment-1)) || (rva&(alignment-1)) ||
+        !ios_native_span(rva,bytes,size)) return 0;
     for (i=0;i<count;i++)
     {
         const unsigned char *s=image+sections+40*i;
@@ -23,6 +25,12 @@ static int ios_native_counter_data(const unsigned char *image, size_t size,
             rva>=start && rva-start<=length && bytes<=length-(rva-start)) return 1;
     }
     return 0;
+}
+
+static int ios_native_counter_data(const unsigned char *image, size_t size,
+                                  size_t sections, unsigned count, size_t rva, size_t bytes)
+{
+    return ios_native_counter_data_aligned(image,size,sections,count,rva,bytes,8);
 }
 
 struct ios_native_counter_alias_layout
