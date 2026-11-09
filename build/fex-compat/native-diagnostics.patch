@@ -8,7 +8,25 @@
  #ifdef ZYDIS_DISASSEMBLER
  #include <Zydis/Zydis.h>
  #endif
-@@ -124,8 +125,15 @@
+@@ -115,17 +116,27 @@
+ /* Per-thread tracking (4 slots). Key = Frame ptr (unique per FEX thread).
+  * Records callret_sp range, block-dispatch count, and last guest RIP seen
+  * to localize WHICH thread is leaking callret entries. */
+-static volatile uint64_t g_madeira_thr_key[4] = {0,0,0,0};
+-static volatile uint64_t g_madeira_thr_crsp_min[4] = {~(uint64_t)0, ~(uint64_t)0, ~(uint64_t)0, ~(uint64_t)0};
+-static volatile uint64_t g_madeira_thr_crsp_max[4] = {0,0,0,0};
+-static volatile uint64_t g_madeira_thr_crsp_last[4] = {0,0,0,0};
+-static volatile uint64_t g_madeira_thr_count[4] = {0,0,0,0};
+-static volatile uint64_t g_madeira_thr_last_rip[4] = {0,0,0,0};
++static MadeiraFEXDiagnostics::CallRetHistoryState MadeiraFEXHistoryStorage;
++extern "C" {
++MadeiraFEXNativeWriteContract MadeiraFEXHistoryWriteContract = {
++  MadeiraFEXHistoryTag, sizeof(MadeiraFEXHistoryStorage), alignof(decltype(MadeiraFEXHistoryStorage)),
++  &MadeiraFEXHistoryStorage, 0};
++}
++static MadeiraFEXDiagnostics::CallRetHistoryState& MadeiraFEXHistoryStats() {
++  return MadeiraFEXNativeWriter(MadeiraFEXHistoryWriteContract, MadeiraFEXHistoryStorage);
++}
  #endif
  
  /* iOS-Madeira 2026-05-18 low-noise CompileBlock instrumentation counters. */
@@ -26,7 +44,7 @@
  
  #if defined(FEX_IOS_HOST) && defined(_WIN32)
  /* iOS-Madeira ml460 (#75): pool-tail sweeper, implemented by the ARM64EC
-@@ -1992,21 +2000,14 @@
+@@ -1992,21 +2003,14 @@
     * proves we actually compile (see below at LookupCache fallthrough).
     * Boyer-Moore-style 1-slot hot-RIP estimator. Summary every 16K calls. */
    {
@@ -56,7 +74,7 @@
        /* iOS-Madeira 2026-07-03 perf hunt: also print the JIT-visible L1
         * lookup fields. The emitted dispatcher L1 probe reads
         * State.L1Pointer/L1Mask; the measured ~15K CompileBlock calls per
-@@ -2017,12 +2018,14 @@
+@@ -2017,12 +2021,14 @@
         * silently misses every time — no crash, pure 60us tax per lookup. */
        auto* T = Frame ? Frame->Thread : nullptr;
        LogMan::Msg::EFmt("[CB_SUMMARY] total={} real_compiles={} cache_hits={} "
@@ -73,7 +91,61 @@
                          Frame ? Frame->State.L1Pointer : 0,
                          Frame ? Frame->State.L1Mask : 0,
                          (T && T->LookupCache) ? T->LookupCache->GetL1Pointer() : 0);
-@@ -2225,7 +2228,7 @@
+@@ -2064,18 +2070,19 @@
+    * pointer (unique per FEX thread). Identifies WHICH thread is leaking
+    * callret entries vs healthy. */
+   {
++    auto& history = MadeiraFEXHistoryStats();
+     uintptr_t fk = reinterpret_cast<uintptr_t>(Frame);
+     int slot = (int)((fk >> 6) & 3);
+     /* Claim the slot if empty, or use if matches; ignore on collision. */
+-    if (g_madeira_thr_key[slot] == 0 || g_madeira_thr_key[slot] == fk) {
+-      g_madeira_thr_key[slot] = fk;
++    if (history.key[slot] == 0 || history.key[slot] == fk) {
++      history.key[slot] = fk;
+       uint64_t crsp = Frame->State.callret_sp;
+-      g_madeira_thr_crsp_last[slot] = crsp;
+-      g_madeira_thr_last_rip[slot] = GuestRIP;
+-      g_madeira_thr_count[slot]++;
++      history.crsp_last[slot] = crsp;
++      history.last_rip[slot] = GuestRIP;
++      history.count[slot]++;
+       if (crsp != 0) {
+-        if (crsp < g_madeira_thr_crsp_min[slot]) g_madeira_thr_crsp_min[slot] = crsp;
+-        if (crsp > g_madeira_thr_crsp_max[slot]) g_madeira_thr_crsp_max[slot] = crsp;
++        if (crsp < history.crsp_min[slot]) history.crsp_min[slot] = crsp;
++        if (crsp > history.crsp_max[slot]) history.crsp_max[slot] = crsp;
+       }
+     }
+   }
+@@ -2166,18 +2173,19 @@
+         /* Per-thread breakdown — dump all 4 slots so we can see which
+          * thread is leaking callret entries. Distance min→last is the
+          * "depth below high-water" — for the leaking thread this grows. */
++        auto& history = MadeiraFEXHistoryStats();
+         for (int s = 0; s < 4; s++) {
+-          if (g_madeira_thr_key[s] == 0) continue;
+-          uint64_t mn = g_madeira_thr_crsp_min[s];
+-          uint64_t la = g_madeira_thr_crsp_last[s];
+-          uint64_t mx = g_madeira_thr_crsp_max[s];
++          if (history.key[s] == 0) continue;
++          uint64_t mn = history.crsp_min[s];
++          uint64_t la = history.crsp_last[s];
++          uint64_t mx = history.crsp_max[s];
+           uint64_t span = (la <= mx) ? (mx - la) : 0;
+           LogMan::Msg::EFmt("[HOT thr{} t={}s] frame=0x{:x} blocks={} "
+                              "crsp[min..last..max]=0x{:x}..0x{:x}..0x{:x} "
+                              "leak_depth=0x{:x} last_rip=0x{:x}",
+-                             s, elapsed, g_madeira_thr_key[s],
+-                             g_madeira_thr_count[s], mn, la, mx, span,
+-                             g_madeira_thr_last_rip[s]);
++                             s, elapsed, history.key[s],
++                             history.count[s], mn, la, mx, span,
++                             history.last_rip[s]);
+         }
+       }
+     }
+@@ -2225,7 +2233,7 @@
  #endif
  
    // iOS-Madeira: cache miss reached — count as true compile.
@@ -173,7 +245,7 @@
    Proceed, // chain is (now) sound: the caller's backward walk will terminate
 --- a/Source/Windows/WOW64/libwow64fex.def
 +++ b/Source/Windows/WOW64/libwow64fex.def
-@@ -34,3 +34,8 @@
+@@ -34,3 +34,9 @@
  ; BTCpu64IosSetMonoBridge) is deliberately NOT listed here. It only exists in an iOS-host build, and
  ; a DEF entry for a symbol that does not exist is a link error - so it is exported with
  ; __declspec(dllexport) from IosMonoBridge.cpp instead, under the same #ifdef as its implementation.
@@ -182,9 +254,10 @@
 +  MadeiraFEXTelemetryWriteContract DATA
 +  MadeiraFEXIRTopoWriteContract DATA
 +  MadeiraFEXCompileWriteContract DATA
++  MadeiraFEXHistoryWriteContract DATA
 --- a/Source/Windows/ARM64EC/libarm64ecfex_ios.def
 +++ b/Source/Windows/ARM64EC/libarm64ecfex_ios.def
-@@ -47,3 +47,8 @@
+@@ -47,3 +47,9 @@
    IosXpFex DATA
    ; madeira-bcd: guest branch history v1
    IosGuestBranchTraceLayout DATA
@@ -193,3 +266,4 @@
 +  MadeiraFEXTelemetryWriteContract DATA
 +  MadeiraFEXIRTopoWriteContract DATA
 +  MadeiraFEXCompileWriteContract DATA
++  MadeiraFEXHistoryWriteContract DATA

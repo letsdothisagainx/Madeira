@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Apple ARM64/Mach execution of FEX's explicit native diagnostic writers.
 
-The production stager supplies GetTelemetryValue and IRTopoNoteChecked. The
+The production stager supplies GetTelemetryValue, IRTopoNoteChecked, and the
+unaltered call-return-history statements from the real CompileBlock body. The
 telemetry test executes exact captured STSETL 0xf860303f against addresses the
 actual getters selected, as the real emitter does. This is a focused fixture,
 not execution of the FEX compiler or a prediction of iPhone game frame rate.
@@ -33,6 +34,21 @@ def prepare(work):
     ir_path = 'FEXCore/Source/Interface/IR/IRTopologyCheck.h'
     old_telemetry, new_telemetry = [(base / telemetry_path).read_text() for base in (ROOT / 'FEX', staged)]
     old_ir, new_ir = [(base / ir_path).read_text() for base in (ROOT / 'FEX', staged)]
+    core_path = 'FEXCore/Source/Interface/Core/Core.cpp'
+    old_core, new_core = [(base / core_path).read_text() for base in (ROOT / 'FEX', staged)]
+    def history_block(source):
+        start = source.index('  /* iOS-Madeira 2026-05-14: per-thread callret tracking (runs for EVERY')
+        end = source.index('  /* iOS-Madeira 2026-05-13 lightweight HOTRIP', start)
+        return source[start:end]
+    old_history, new_history = history_block(old_core), history_block(new_core)
+    history_getter = function(new_core, 'static MadeiraFEXDiagnostics::CallRetHistoryState& MadeiraFEXHistoryStats(')
+    assert 'auto& history = MadeiraFEXHistoryStats();' in new_history
+    substitutions = {'key': 'key', 'crsp_min': 'crsp_min', 'crsp_max': 'crsp_max',
+                     'crsp_last': 'crsp_last', 'count': 'count', 'last_rip': 'last_rip'}
+    restored = new_history.replace('    auto& history = MadeiraFEXHistoryStats();\n', '')
+    for name, field in substitutions.items():
+        restored = restored.replace('history.' + field, 'g_madeira_thr_' + name)
+    assert restored == old_history, 'actual history statements/order must remain unchanged'
     emitter = (ROOT / 'FEX/FEXCore/Source/Interface/Core/JIT/AtomicOps.cpp').read_text()
     emit = emitter[emitter.index('DEF_OP(TelemetrySetValue)'):]
     assert 'Pointers.TelemetryValueAddresses, Op->TelemetryValueIndex' in emit
@@ -56,10 +72,12 @@ def prepare(work):
 #define FEX_DIAG_TELEMETRY 0x6000u
 #define FEX_DIAG_IRTOPO 0x6200u
 #define FEX_DIAG_COMPILE 0x6400u
+#define FEX_DIAG_HISTORY 0x6600u
 static unsigned char *diagnostic_source_rx;
 #define MadeiraFEXTelemetryWriteContract (*reinterpret_cast<MadeiraFEXNativeWriteContract*>(diagnostic_source_rx+FEX_DIAG_CONTRACT))
 #define MadeiraFEXIRTopoWriteContract (*reinterpret_cast<MadeiraFEXNativeWriteContract*>(diagnostic_source_rx+FEX_DIAG_CONTRACT+64))
 #define MadeiraFEXCompileWriteContract (*reinterpret_cast<MadeiraFEXNativeWriteContract*>(diagnostic_source_rx+FEX_DIAG_CONTRACT+128))
+#define MadeiraFEXHistoryWriteContract (*reinterpret_cast<MadeiraFEXNativeWriteContract*>(diagnostic_source_rx+FEX_DIAG_CONTRACT+192))
 namespace LogMan { namespace Msg {template<typename... T> void EFmt(const char*,T&&...) {}} }
 namespace FEXCore { namespace Telemetry {
 ''' + enum + r'''
@@ -92,10 +110,29 @@ namespace FEXCore { namespace IR {
 #undef MadeiraFEXIRTopoStorage
 }}
 '''
+    header += r'''
+struct alignas(64) DiagnosticHistoryFrame {
+  struct {uint64_t callret_sp;} State;
+  unsigned char fixture_padding[56];
+};
+static_assert(sizeof(DiagnosticHistoryFrame)==64);
+inline MadeiraFEXDiagnostics::CallRetHistoryState& DiagnosticCanonicalHistory() {
+  return *reinterpret_cast<MadeiraFEXDiagnostics::CallRetHistoryState*>(diagnostic_source_rx+FEX_DIAG_HISTORY);
+}
+#define MadeiraFEXHistoryStorage DiagnosticCanonicalHistory()
+''' + history_getter + r'''
+#undef MadeiraFEXHistoryStorage
+'''
+    for name, field in substitutions.items():
+        header += '#define g_madeira_thr_' + name + ' (DiagnosticCanonicalHistory().' + field + ')\n'
+    header += 'inline void OldRecordHistory(DiagnosticHistoryFrame* Frame,uint64_t GuestRIP) {\n' + old_history + '}\n'
+    for name in substitutions:
+        header += '#undef g_madeira_thr_' + name + '\n'
+    header += 'inline void RecordHistory(DiagnosticHistoryFrame* Frame,uint64_t GuestRIP) {\n' + new_history + '}\n'
     (work / 'production-fex-diagnostics-source.h').write_text(header)
     (work / 'production-fex-diagnostics-fixture.h').write_text(r'''
 #include "native_fex_diagnostics_alias.h"
-enum { FEX_DIAG_IMAGE_SIZE=0x10000,FEX_DIAG_CONTRACT=0x5000,FEX_DIAG_TELEMETRY=0x6000,FEX_DIAG_IRTOPO=0x6200,FEX_DIAG_COMPILE=0x6400 };
+enum { FEX_DIAG_IMAGE_SIZE=0x10000,FEX_DIAG_CONTRACT=0x5000,FEX_DIAG_TELEMETRY=0x6000,FEX_DIAG_IRTOPO=0x6200,FEX_DIAG_COMPILE=0x6400,FEX_DIAG_HISTORY=0x6600 };
 static void diag_w16(unsigned char *p,size_t at,uint16_t value){memcpy(p+at,&value,2);}
 static void diag_w32(unsigned char *p,size_t at,uint32_t value){memcpy(p+at,&value,4);}
 static void diag_w64(unsigned char *p,size_t at,uint64_t value){memcpy(p+at,&value,8);}
@@ -107,11 +144,11 @@ static void diagnostic_pe_fixture(unsigned char *p) {
   const uint32_t starts[]={0x1000,0x2000,0x4000},lengths[]={0x1000,0x1000,0x4000},flags[]={0x40000040,0x60000020,0xc0000040};
   for(unsigned i=0;i<3;i++){size_t a=0x188+i*40;diag_w32(p,a+8,lengths[i]);diag_w32(p,a+12,starts[i]);diag_w32(p,a+16,lengths[i]);diag_w32(p,a+36,flags[i]);}
   diag_w32(p,0x1000+12,0x1180);strcpy((char*)p+0x1180,"libarm64ecfex.dll");
-  diag_w32(p,0x1000+20,3);diag_w32(p,0x1000+24,3);diag_w32(p,0x1000+28,0x1100);diag_w32(p,0x1000+32,0x1120);diag_w32(p,0x1000+36,0x1140);
-  const char *names[]={"MadeiraFEXTelemetryWriteContract","MadeiraFEXIRTopoWriteContract","MadeiraFEXCompileWriteContract"};
-  const uint64_t tags[]={MADEIRA_FEX_TELEMETRY_TAG,MADEIRA_FEX_IRTOPO_TAG,MADEIRA_FEX_COMPILE_TAG};
-  const uint32_t payloads[]={FEX_DIAG_TELEMETRY,FEX_DIAG_IRTOPO,FEX_DIAG_COMPILE},length[]={136,32,48};
-  for(unsigned i=0;i<3;i++){
+  diag_w32(p,0x1000+20,4);diag_w32(p,0x1000+24,4);diag_w32(p,0x1000+28,0x1100);diag_w32(p,0x1000+32,0x1120);diag_w32(p,0x1000+36,0x1140);
+  const char *names[]={"MadeiraFEXTelemetryWriteContract","MadeiraFEXIRTopoWriteContract","MadeiraFEXCompileWriteContract","MadeiraFEXHistoryWriteContract"};
+  const uint64_t tags[]={MADEIRA_FEX_TELEMETRY_TAG,MADEIRA_FEX_IRTOPO_TAG,MADEIRA_FEX_COMPILE_TAG,MADEIRA_FEX_HISTORY_TAG};
+  const uint32_t payloads[]={FEX_DIAG_TELEMETRY,FEX_DIAG_IRTOPO,FEX_DIAG_COMPILE,FEX_DIAG_HISTORY},length[]={136,32,48,192};
+  for(unsigned i=0;i<4;i++){
     diag_w32(p,0x1100+4*i,FEX_DIAG_CONTRACT+64*i);diag_w32(p,0x1120+4*i,0x1200+64*i);diag_w16(p,0x1140+2*i,(uint16_t)i);
     strcpy((char*)p+0x1200+64*i,names[i]);diag_w64(p,FEX_DIAG_CONTRACT+64*i,tags[i]);
     diag_w32(p,FEX_DIAG_CONTRACT+64*i+8,length[i]);diag_w32(p,FEX_DIAG_CONTRACT+64*i+12,8);
@@ -126,19 +163,24 @@ def emulation_header(work):
     first = source.index('#define IOS_MACH_RMW(type)')
     last = source.index('#undef IOS_MACH_RMW', first) + len('#undef IOS_MACH_RMW')
     helpers = source[first:last]
+    for signature in ('static int ios_alias_write(',):
+        helpers += '\n' + function(source, signature)
     start = source.index('                    else if ((insn & 0x3fe07c00) == 0x08007c00)')
     end = source.index('                    /* iOS-Madeira ml626: SWP', start)
     exclusive = source[start:end].replace('else if', 'if', 1)
+    start = source.index('                    else if ((insn & 0xffc00000) == 0xf9000000)')
+    end = source.index('                    /* STR (immediate, unsigned offset, 32-bit)', start)
+    scalar = source[start:end]
     (work / 'production-atomic-emulation.h').write_text(helpers + r'''
 static int baseline_emulate(uint32_t insn,uintptr_t fault_pc,uintptr_t fault_addr,
                             uintptr_t rw_addr,arm_thread_state64_t *input){
-  arm_thread_state64_t state=*input;uint64_t gpr[32];int emulated=0;
+  arm_thread_state64_t state=*input;uint64_t gpr[32];int emulated=0,honor_guest_prot=1;uintptr_t alias_fault=0;
   memcpy(gpr,state.__x,sizeof(state.__x));gpr[29]=state.__fp;gpr[30]=state.__lr;gpr[31]=state.__sp;
   if(ios_mach_emulate_rmw(insn,rw_addr,gpr)){
     memcpy(state.__x,gpr,sizeof(state.__x));state.__fp=gpr[29];state.__lr=gpr[30];*input=state;return 1;
   }
 #define IOS_STORE_SRC(r) ((r)==31?0ULL:state.__x[r])
-''' + exclusive + r'''
+''' + exclusive + scalar + r'''
 #undef IOS_STORE_SRC
   *input=state;return emulated;
 }

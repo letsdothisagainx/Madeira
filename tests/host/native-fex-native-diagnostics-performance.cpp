@@ -9,6 +9,7 @@ extern "C" void madeira_diag_image(void *rx,void *rw) {
   for(auto& value:*values)value.store(0,std::memory_order_relaxed);
   new(static_cast<unsigned char*>(rw)+FEX_DIAG_IRTOPO) MadeiraFEXDiagnostics::IRTopoState;
   new(static_cast<unsigned char*>(rw)+FEX_DIAG_COMPILE) MadeiraFEXDiagnostics::CompileState;
+  new(static_cast<unsigned char*>(rw)+FEX_DIAG_HISTORY) MadeiraFEXDiagnostics::CallRetHistoryState;
 }
 extern "C" uintptr_t madeira_diag_telemetry_address(unsigned bound,unsigned index) {
   assert(index<17);
@@ -30,3 +31,22 @@ extern "C" __attribute__((noinline)) void madeira_diag_stsetl(uint64_t value,uin
 }
 extern "C" __attribute__((noinline)) void madeira_diag_ir_old(void) {FEXCore::IR::OldIRTopoNoteChecked();}
 extern "C" __attribute__((noinline)) void madeira_diag_ir_bound(void) {FEXCore::IR::IRTopoNoteChecked();}
+
+static DiagnosticHistoryFrame history_frames[8];
+extern "C" uintptr_t madeira_diag_history_frame(unsigned index) {
+  assert(index<8);
+  return reinterpret_cast<uintptr_t>(&history_frames[index]);
+}
+extern "C" uintptr_t madeira_diag_history_address(void) {
+  return reinterpret_cast<uintptr_t>(&MadeiraFEXHistoryStats());
+}
+extern "C" __attribute__((noinline)) void madeira_diag_history_old(unsigned index,uint64_t crsp,uint64_t rip) {
+  assert(index<8);
+  history_frames[index].State.callret_sp=crsp;
+  OldRecordHistory(&history_frames[index],rip);
+}
+extern "C" __attribute__((noinline)) void madeira_diag_history_bound(unsigned index,uint64_t crsp,uint64_t rip) {
+  assert(index<8);
+  history_frames[index].State.callret_sp=crsp;
+  RecordHistory(&history_frames[index],rip);
+}

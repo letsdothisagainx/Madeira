@@ -132,6 +132,7 @@ def fex_diagnostics_contracts(data):
         b'MadeiraFEXTelemetryWriteContract': (0x31544d584546574d, 136),
         b'MadeiraFEXIRTopoWriteContract': (0x315249584546574d, 32),
         b'MadeiraFEXCompileWriteContract': (0x314243584546574d, 48),
+        b'MadeiraFEXHistoryWriteContract': (0x314852584546574d, 192),
     }
     pe = struct.unpack_from('<I', data, 0x3c)[0]
     assert data[:2] == b'MZ' and data[pe:pe + 4] == b'PE\0\0', 'invalid diagnostics PE'
@@ -273,7 +274,7 @@ def check(staged, app, ipa):
     assert b'[pool-code-growth]' in native, 'stale native executable-pool growth budget'
     assert b'[subfloor-contract-v1]' in native, 'stale native fixed-image subfloor protocol consumer'
     assert b'[native-srw-alias-v1]' in native, 'stale native private SRW writer binder'
-    assert b'[fex-native-diagnostics-v1]' in native, 'stale native private FEX diagnostic writer binder'
+    assert b'[fex-native-diagnostics-v1] module=%s spans=4 action=%s' in native, 'stale native private FEX diagnostic writer binder (four spans required)'
     assert b'[hold-release-v2]' in native and b'[deliver-hold-v2]' in native, 'native FEX hold-release boundary missing'
     assert b'[native-window-retire-v1]' in native, 'native dead-window layer cleanup missing'
     assert b'_winios_native_window_create' in native and b'_winios_native_window_retire' in native, 'native window lifecycle bridge missing'

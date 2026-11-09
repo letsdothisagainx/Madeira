@@ -10,17 +10,17 @@
 #include "native_srw_alias.h"
 
 enum { SIZE=0x10000,PE=0x80,OPT=PE+24,TABLE=OPT+0xf0,CONTRACT=0x5000,
-       FUNCTIONS=0x1100,NAMES=0x1120,ORDINALS=0x1140,MODULE=0x1180 };
+       FUNCTIONS=0x1100,NAMES=0x1120,ORDINALS=0x1140,MODULE=0x1180,DIAGNOSTICS=4 };
 static const uintptr_t preferred=UINT64_C(0x180000000),source=UINT64_C(0x500000000),
     rx=UINT64_C(0x300000000),other=UINT64_C(0x380000000);
 static const intptr_t delta=0x48000000;
-static const unsigned payloads[]={0x6000,0x6200,0x6400};
-static const unsigned lengths[]={136,32,48};
+static const unsigned payloads[]={0x6000,0x6200,0x6400,0x6600};
+static const unsigned lengths[]={136,32,48,192};
 static const char *names[]={"MadeiraFEXTelemetryWriteContract","MadeiraFEXIRTopoWriteContract",
-                            "MadeiraFEXCompileWriteContract"};
+                            "MadeiraFEXCompileWriteContract","MadeiraFEXHistoryWriteContract"};
 /* Tags follow the production ABI, rather than a parallel definition. */
 static const uint64_t tags[]={MADEIRA_FEX_TELEMETRY_TAG,MADEIRA_FEX_IRTOPO_TAG,
-                              MADEIRA_FEX_COMPILE_TAG};
+                              MADEIRA_FEX_COMPILE_TAG,MADEIRA_FEX_HISTORY_TAG};
 static unsigned checks;
 static void w16(unsigned char*p,size_t a,uint16_t n){memcpy(p+a,&n,2);}
 static void w32(unsigned char*p,size_t a,uint32_t n){memcpy(p+a,&n,4);}
@@ -40,9 +40,9 @@ static unsigned char *fixture(unsigned machine,uintptr_t domain){
     section(p,1,".text",0x2000,0x1000,0x60000020);
     section(p,2,".data",0x4000,0x4000,0xc0000040);
     w32(p,0x1000+12,MODULE);memcpy(p+MODULE,"libarm64ecfex.dll",17);
-    w32(p,0x1000+20,3);w32(p,0x1000+24,3);w32(p,0x1000+28,FUNCTIONS);
+    w32(p,0x1000+20,DIAGNOSTICS);w32(p,0x1000+24,DIAGNOSTICS);w32(p,0x1000+28,FUNCTIONS);
     w32(p,0x1000+32,NAMES);w32(p,0x1000+36,ORDINALS);
-    for(unsigned i=0;i<3;i++){
+    for(unsigned i=0;i<DIAGNOSTICS;i++){
         w32(p,FUNCTIONS+4*i,CONTRACT+64*i);w32(p,NAMES+4*i,0x1200+64*i);w16(p,ORDINALS+2*i,i);
         memcpy(p+0x1200+64*i,names[i],strlen(names[i])+1);
         w64(p,CONTRACT+64*i,tags[i]);w32(p,CONTRACT+64*i+8,lengths[i]);
@@ -54,7 +54,7 @@ static unsigned char *fixture(unsigned machine,uintptr_t domain){
 static void check_layout(unsigned char*p,uintptr_t use_rx){
     struct ios_native_fex_diagnostics_layout layout;
     assert(ios_native_fex_diagnostics_layout_read(p,SIZE,source,use_rx,delta,&layout));
-    for(unsigned i=0;i<3;i++){
+    for(unsigned i=0;i<DIAGNOSTICS;i++){
         assert(layout.slots[i]==slot(i));assert(layout.payloads[i]==payloads[i]);
         assert(layout.values[i]==use_rx+payloads[i]+delta);
     }
@@ -67,9 +67,9 @@ static void accepted(void){
         unsigned char*p=fixture(machines[m],domains[d]),*before=malloc(SIZE);assert(before);
         memcpy(before,p,SIZE);check_layout(p,rx);
         assert(ios_native_fex_diagnostics_bind(p,SIZE,source,rx,delta,1));
-        for(unsigned i=0;i<3;i++)assert(pointer(p,slot(i))==rx+payloads[i]+delta);
+        for(unsigned i=0;i<DIAGNOSTICS;i++)assert(pointer(p,slot(i))==rx+payloads[i]+delta);
         for(size_t a=0;a<SIZE;a++){
-            int changed=0;for(unsigned i=0;i<3;i++)if(a>=slot(i)&&a<slot(i)+8)changed=1;
+            int changed=0;for(unsigned i=0;i<DIAGNOSTICS;i++)if(a>=slot(i)&&a<slot(i)+8)changed=1;
             if(!changed)assert(p[a]==before[a]);
         }
         memcpy(before,p,SIZE);
@@ -81,7 +81,7 @@ static void accepted(void){
     unsigned char*p=fixture(0xa641,preferred),*child=malloc(SIZE);assert(child);
     assert(ios_native_fex_diagnostics_bind(p,SIZE,source,rx,delta,1));memcpy(child,p,SIZE);
     assert(ios_native_fex_diagnostics_bind(child,SIZE,source,other,delta,1));
-    for(unsigned i=0;i<3;i++)assert(pointer(child,slot(i))==other+payloads[i]+delta);
+    for(unsigned i=0;i<DIAGNOSTICS;i++)assert(pointer(child,slot(i))==other+payloads[i]+delta);
     free(child);free(p);checks++;
     /* The shipped ARM64EC CPU retains an AMD64 header. Its real native code
      * map, rather than that header alone, supplies the architecture proof. */
@@ -121,7 +121,7 @@ static void negatives(void){
     BAD("duplicate contract export",w32(p,NAMES+4,0x1200));
     BAD("forwarded export",w32(p,FUNCTIONS,0x1200));
     BAD("missing contract export",p[0x1200]='X');
-    BAD("bad ordinal",w16(p,ORDINALS,3));
+    BAD("bad ordinal",w16(p,ORDINALS,DIAGNOSTICS));
     BAD("truncated export table",w32(p,0x1000+28,SIZE-4));
     BAD("section overlap",w32(p,TABLE+2*40+12,0x2800));
     BAD("executable DATA",w32(p,TABLE+2*40+36,0xe0000040));
@@ -144,7 +144,7 @@ static void negatives(void){
     free(p);checks+=4;
 }
 static int protected_byte(size_t a){
-    for(unsigned i=0;i<3;i++)if(a>=slot(i)-24&&a<slot(i)+8)return 1;
+    for(unsigned i=0;i<DIAGNOSTICS;i++)if(a>=slot(i)-24&&a<slot(i)+8)return 1;
     return 0;
 }
 static void synchronize(void){
@@ -153,8 +153,8 @@ static void synchronize(void){
     /* Reproduce the former production generic ntdll-only sync: it knows no FEX
      * private writer slots and copies their file-NULL values into a live copy. */
     memcpy(before,p,SIZE);
-    assert(ios_native_counter_and_srw_alias_copy(p,SIZE,rx,delta,CONTRACT,src+CONTRACT,160));
-    for(unsigned i=0;i<3;i++)assert(!pointer(p,slot(i)));
+    assert(ios_native_counter_and_srw_alias_copy(p,SIZE,rx,delta,CONTRACT,src+CONTRACT,DIAGNOSTICS*64));
+    for(unsigned i=0;i<DIAGNOSTICS;i++)assert(!pointer(p,slot(i)));
     memcpy(p,before,SIZE);checks++;
     /* Unbound valid descriptors retain ordinary copy semantics. A malformed
      * contract is refused without following either source/current writer. */
@@ -165,7 +165,7 @@ static void synchronize(void){
     assert(!ios_native_fex_diagnostics_copy(unbound,SIZE,source,rx,delta,0,src,SIZE));
     assert(!memcmp(unbound,before,SIZE));free(unbound);checks+=2;
     memcpy(before,p,SIZE);
-    for(unsigned which=0;which<3;which++)for(int displacement=-12;displacement<16;displacement++)
+    for(unsigned which=0;which<DIAGNOSTICS;which++)for(int displacement=-12;displacement<16;displacement++)
     for(unsigned n=1;n<=32;n++){
         size_t at=slot(which)+displacement;memcpy(before,p,SIZE);memset(src+at,0x5a,n);
         assert(ios_native_fex_diagnostics_copy(p,SIZE,source,rx,delta,at,src+at,n));
@@ -173,14 +173,14 @@ static void synchronize(void){
         memcpy(p,before,SIZE);memcpy(src,before,SIZE);checks++;
     }
     /* Whole-image source refresh must not adopt NULL or copied-parent writers. */
-    for(unsigned i=0;i<3;i++){
+    for(unsigned i=0;i<DIAGNOSTICS;i++){
         w64(src,slot(i),i?other+payloads[i]+delta:0);
         w64(src,slot(i)-8,other+payloads[i]);
         w32(src,slot(i)-16,999);w64(src,slot(i)-24,0);
         memset(src+payloads[i],0x70+i,lengths[i]);
     }
     assert(ios_native_fex_diagnostics_copy(p,SIZE,source,rx,delta,0,src,SIZE));
-    for(unsigned i=0;i<3;i++){
+    for(unsigned i=0;i<DIAGNOSTICS;i++){
         assert(pointer(p,slot(i))==rx+payloads[i]+delta);
         assert(!memcmp(p+slot(i)-24,before+slot(i)-24,32));
         assert(!memcmp(p+payloads[i],src+payloads[i],lengths[i]));
@@ -193,7 +193,7 @@ struct readers {unsigned char*image;atomic_uint started,done,bad;atomic_ulong po
 static void *read_writers(void*opaque){
     struct readers*r=opaque;atomic_fetch_add(&r->started,1);
     do{
-        for(unsigned i=0;i<3;i++)if(__atomic_load_n((uintptr_t*)(r->image+slot(i)),__ATOMIC_ACQUIRE)!=rx+payloads[i]+delta)
+        for(unsigned i=0;i<DIAGNOSTICS;i++)if(__atomic_load_n((uintptr_t*)(r->image+slot(i)),__ATOMIC_ACQUIRE)!=rx+payloads[i]+delta)
             atomic_fetch_add(&r->bad,1);
         struct ios_native_fex_diagnostics_layout layout;
         if(!ios_native_fex_diagnostics_layout_read(r->image,SIZE,source,rx,delta,&layout))
@@ -204,7 +204,7 @@ static void *read_writers(void*opaque){
 static void concurrent_refresh(void){
     unsigned char*p=fixture(0xa641,preferred),*src=fixture(0xa641,preferred);
     assert(ios_native_fex_diagnostics_bind(p,SIZE,source,rx,delta,1));
-    for(unsigned i=0;i<3;i++){
+    for(unsigned i=0;i<DIAGNOSTICS;i++){
         /* Deliberately wrong incoming metadata must never become visible to
          * a concurrent getter/proof, even through one-byte refresh slices. */
         w64(src,slot(i)-24,0);w64(src,slot(i)-8,other+payloads[i]);
@@ -213,7 +213,7 @@ static void concurrent_refresh(void){
     struct readers state={.image=p};pthread_t readers[2];
     for(unsigned i=0;i<2;i++)assert(!pthread_create(&readers[i],NULL,read_writers,&state));
     while(atomic_load(&state.started)!=2){}
-    for(unsigned n=0;n<4000;n++)for(unsigned i=0;i<3;i++){
+    for(unsigned n=0;n<4000;n++)for(unsigned i=0;i<DIAGNOSTICS;i++){
         size_t first=slot(i)-24+n%32,bytes=32-n%32;
         assert(ios_native_fex_diagnostics_copy(p,SIZE,source,rx,delta,first,src+first,bytes));
     }
@@ -226,5 +226,5 @@ int main(void){
     (void)ios_native_srw_alias_bind;
     (void)ios_native_counter_alias_bind;
     accepted();negatives();synchronize();concurrent_refresh();
-    printf("PASS production FEX diagnostics alias: %u native contracts/copy boundaries; preferred/source/RX/RW proof, foreign/malformed spans refused, old production sync loses writers, new private writer publication stable in12000 concurrent refreshes\n",checks);
+    printf("PASS production FEX diagnostics alias: %u native contracts/copy boundaries; preferred/source/RX/RW proof, foreign/malformed spans refused, old production sync loses writers, new private writer publication stable in16000 concurrent refreshes\n",checks);
 }

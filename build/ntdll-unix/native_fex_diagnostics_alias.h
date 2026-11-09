@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: MIT
- * Bind only three explicit Madeira-built FEX diagnostic spans. This helper
+ * Bind only four explicit Madeira-built FEX diagnostic spans. This helper
  * knows no guest address or arbitrary native pointer: every payload must be
  * wholly private DATA in this very image. The caller supplies the retained
  * aliases of an owned copy and binds only before that copy is published.
@@ -11,12 +11,14 @@
 #define MADEIRA_FEX_TELEMETRY_TAG UINT64_C(0x31544d584546574d)
 #define MADEIRA_FEX_IRTOPO_TAG UINT64_C(0x315249584546574d)
 #define MADEIRA_FEX_COMPILE_TAG UINT64_C(0x314243584546574d)
+#define MADEIRA_FEX_HISTORY_TAG UINT64_C(0x314852584546574d)
+#define MADEIRA_FEX_DIAGNOSTIC_SPANS 4u
 #define MADEIRA_FEX_DIAGNOSTIC_CONTRACT_BYTES 32u
 #define MADEIRA_FEX_DIAGNOSTIC_WRITER_OFFSET 24u
 
 struct ios_native_fex_diagnostics_layout {
-    size_t slots[3],payloads[3];
-    uintptr_t values[3];
+    size_t slots[MADEIRA_FEX_DIAGNOSTIC_SPANS],payloads[MADEIRA_FEX_DIAGNOSTIC_SPANS];
+    uintptr_t values[MADEIRA_FEX_DIAGNOSTIC_SPANS];
 };
 
 static int ios_native_fex_name(const char *name)
@@ -39,11 +41,11 @@ static int ios_native_fex_name(const char *name)
 static int ios_native_fex_diagnostics_layout_read(const unsigned char *image,size_t size,
     uintptr_t source,uintptr_t rx,intptr_t delta,struct ios_native_fex_diagnostics_layout *layout)
 {
-    const char *const wanted[]={"MadeiraFEXTelemetryWriteContract","MadeiraFEXIRTopoWriteContract","MadeiraFEXCompileWriteContract"};
-    const uint64_t tags[]={MADEIRA_FEX_TELEMETRY_TAG,MADEIRA_FEX_IRTOPO_TAG,MADEIRA_FEX_COMPILE_TAG};
-    const size_t bytes[]={136,32,48};
+    const char *const wanted[]={"MadeiraFEXTelemetryWriteContract","MadeiraFEXIRTopoWriteContract","MadeiraFEXCompileWriteContract","MadeiraFEXHistoryWriteContract"};
+    const uint64_t tags[]={MADEIRA_FEX_TELEMETRY_TAG,MADEIRA_FEX_IRTOPO_TAG,MADEIRA_FEX_COMPILE_TAG,MADEIRA_FEX_HISTORY_TAG};
+    const size_t bytes[]={136,32,48,192};
     size_t pe,opt,sections,export_rva,export_bytes,functions,names,ordinals,module,i,j;
-    size_t contracts[3]={SIZE_MAX,SIZE_MAX,SIZE_MAX},payloads[3];
+    size_t contracts[MADEIRA_FEX_DIAGNOSTIC_SPANS]={SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX},payloads[MADEIRA_FEX_DIAGNOSTIC_SPANS];
     unsigned count,opt_bytes,machine;
     uint32_t function_count,name_count;
     uint64_t preferred;
@@ -113,7 +115,7 @@ static int ios_native_fex_diagnostics_layout_read(const unsigned char *image,siz
         if(name>=size||ordinal>=function_count)return 0;
         text=(const char *)image+name;
         if(!memchr(text,0,size-name<64?size-name:64))continue;
-        for(j=0;j<3;j++){
+        for(j=0;j<MADEIRA_FEX_DIAGNOSTIC_SPANS;j++){
             if(strcmp(text,wanted[j]))continue;
             rva=ios_native_u32(image+functions+4*ordinal);
             if(contracts[j]!=SIZE_MAX||(rva>=export_rva&&rva-export_rva<export_bytes)||
@@ -121,13 +123,13 @@ static int ios_native_fex_diagnostics_layout_read(const unsigned char *image,siz
             contracts[j]=rva;
         }
     }
-    for(i=0;i<3;i++){
+    for(i=0;i<MADEIRA_FEX_DIAGNOSTIC_SPANS;i++){
         size_t contract=contracts[i];
         if(contract==SIZE_MAX||ios_native_u64(image+contract)!=tags[i]||
            ios_native_u32(image+contract+8)!=bytes[i]||ios_native_u32(image+contract+12)!=8)return 0;
         payloads[i]=ios_native_meta_rva(ios_native_u64(image+contract+16),preferred,source,rx,rx+(uintptr_t)delta,size);
         if(!ios_native_counter_data(image,size,sections,count,payloads[i],bytes[i]))return 0;
-        for(j=0;j<3;j++){
+        for(j=0;j<MADEIRA_FEX_DIAGNOSTIC_SPANS;j++){
             if(contracts[j]==SIZE_MAX)return 0;
             if(payloads[i]<contracts[j]+32&&contracts[j]<payloads[i]+bytes[i])return 0;
             if(j<i&&contracts[i]<contracts[j]+32&&contracts[j]<contracts[i]+32)return 0;
@@ -151,12 +153,12 @@ static int ios_native_fex_diagnostics_layout_read(const unsigned char *image,siz
                 size_t target=page+(relocation&0xfff);
                 if(!kind)continue;
                 if(!ios_native_span(target,kind==10?8:4,size))return 0;
-                for(i=0;i<3;i++)if(target<contracts[i]+32&&contracts[i]+24<target+(kind==10?8:4))return 0;
+                for(i=0;i<MADEIRA_FEX_DIAGNOSTIC_SPANS;i++)if(target<contracts[i]+32&&contracts[i]+24<target+(kind==10?8:4))return 0;
             }
             at+=block;
         }
     }
-    for(i=0;i<3;i++){
+    for(i=0;i<MADEIRA_FEX_DIAGNOSTIC_SPANS;i++){
         layout->slots[i]=contracts[i]+24;layout->payloads[i]=payloads[i];
         layout->values[i]=rx+(uintptr_t)delta+payloads[i];
     }
@@ -169,7 +171,7 @@ static int ios_native_fex_diagnostics_bind(unsigned char *image,size_t size,uint
     struct ios_native_fex_diagnostics_layout layout;
     unsigned i;
     if(!unpublished||!ios_native_fex_diagnostics_layout_read(image,size,source,rx,delta,&layout))return 0;
-    for(i=0;i<3;i++)memcpy(image+layout.slots[i],&layout.values[i],8);
+    for(i=0;i<MADEIRA_FEX_DIAGNOSTIC_SPANS;i++)memcpy(image+layout.slots[i],&layout.values[i],8);
     return 1;
 }
 
@@ -177,13 +179,13 @@ static int ios_native_fex_diagnostics_copy(unsigned char *image,size_t size,uint
     uintptr_t rx,intptr_t delta,size_t offset,const void *input,size_t bytes)
 {
     struct ios_native_fex_diagnostics_layout layout;
-    size_t contracts[3],n=0,i,j,at,end;
+    size_t contracts[MADEIRA_FEX_DIAGNOSTIC_SPANS],n=0,i,j,at,end;
     const unsigned char *src=input;
     uintptr_t current;
     if(!image||!ios_native_span(offset,bytes,size)||(bytes&&!input)||(uintptr_t)image>UINTPTR_MAX-size||
        !ios_native_fex_diagnostics_layout_read(image,size,source,rx,delta,&layout))return 0;
     if(!bytes)return 1;
-    for(i=0;i<3;i++){
+    for(i=0;i<MADEIRA_FEX_DIAGNOSTIC_SPANS;i++){
         memcpy(&current,image+layout.slots[i],8);
         if(current==layout.values[i])contracts[n++]=layout.slots[i]-24;
     }

@@ -9,6 +9,10 @@ extern void madeira_diag_image(void *,void *);
 extern uintptr_t madeira_diag_telemetry_address(unsigned,unsigned);
 extern void madeira_diag_stsetl(uint64_t,uintptr_t);
 extern void madeira_diag_ir_old(void),madeira_diag_ir_bound(void);
+extern uintptr_t madeira_diag_history_frame(unsigned),madeira_diag_history_address(void);
+extern void madeira_diag_history_old(unsigned,uint64_t,uint64_t),madeira_diag_history_bound(unsigned,uint64_t,uint64_t);
+static uintptr_t ios_write_alias(uintptr_t);
+static int ios_alias_write_is_trapped(uintptr_t);
 static int diag_read_code(uint64_t,uint32_t *);
 static int diag_target_valid(uintptr_t,uint32_t);
 static void diag_record_fault(uint32_t);
@@ -24,11 +28,12 @@ static uint64_t diag_families[MADEIRA_STORE_FAMILIES];
 static unsigned diag_case,diag_ready,diag_start;
 static uintptr_t telemetry_targets[2];
 struct diag_code_region {uintptr_t base;size_t size;};
-static struct diag_code_region diag_code_regions[3];
+static struct diag_code_region diag_code_regions[5];
 static void diag_validate_code_regions(void) {
-  const uintptr_t functions[]={(uintptr_t)madeira_diag_stsetl,(uintptr_t)madeira_diag_ir_old,(uintptr_t)madeira_diag_ir_bound};
+  const uintptr_t functions[]={(uintptr_t)madeira_diag_stsetl,(uintptr_t)madeira_diag_ir_old,(uintptr_t)madeira_diag_ir_bound,
+                              (uintptr_t)madeira_diag_history_old,(uintptr_t)madeira_diag_history_bound};
   Dl_info wanted;assert(dladdr((void *)functions[0],&wanted));
-  for(unsigned i=0;i<3;i++){
+  for(unsigned i=0;i<5;i++){
     Dl_info actual;assert(dladdr((void *)functions[i],&actual)&&actual.dli_fbase==wanted.dli_fbase);
     mach_vm_address_t address=functions[i];mach_vm_size_t span=0;vm_region_basic_info_data_64_t info;
     mach_msg_type_number_t count=VM_REGION_BASIC_INFO_COUNT_64;mach_port_t object=MACH_PORT_NULL;
@@ -41,7 +46,7 @@ static void diag_validate_code_regions(void) {
 }
 static int diag_read_code(uint64_t pc,uint32_t *out) {
   if(pc&3)return 0;
-  for(unsigned i=0;i<3;i++)if(inside(pc,4,diag_code_regions[i].base,diag_code_regions[i].size)){
+  for(unsigned i=0;i<5;i++)if(inside(pc,4,diag_code_regions[i].base,diag_code_regions[i].size)){
     mach_vm_size_t got=0;
     return mach_vm_read_overwrite(mach_task_self(),pc,4,(mach_vm_address_t)out,&got)==KERN_SUCCESS&&got==4;
   }
@@ -51,9 +56,16 @@ static int diag_target_valid(uintptr_t address,uint32_t instruction) {
   if(address&7)return 0;
   if(!diag_case)return instruction==0xf860303fu&&
     (address==(uintptr_t)active.rx+FEX_DIAG_TELEMETRY+12*8||address==(uintptr_t)active.rx+FEX_DIAG_TELEMETRY+15*8);
+  if(diag_case==2)return (instruction&0xffc00000u)==0xf9000000u&&
+    inside(address,8,(uintptr_t)active.rx+FEX_DIAG_HISTORY,192);
   return (instruction>>30)==3&&madeira_jit_store_family(instruction)==MADEIRA_STORE_EXCLUSIVE&&
          address==(uintptr_t)active.rx+FEX_DIAG_IRTOPO;
 }
+static uintptr_t ios_write_alias(uintptr_t address) {
+  if(!inside(address,1,(uintptr_t)active.rx+FEX_DIAG_HISTORY,192))return 0;
+  return (uintptr_t)active.rw+address-(uintptr_t)active.rx;
+}
+static int ios_alias_write_is_trapped(uintptr_t address) {return !ios_write_alias(address);}
 static void diag_record_fault(uint32_t instruction) {
   unsigned family=madeira_jit_store_family(instruction);assert(family<MADEIRA_STORE_FAMILIES);
   __atomic_fetch_add(&diag_families[family],1,__ATOMIC_RELAXED);
@@ -79,19 +91,29 @@ static void *diagnostic_worker_run(void *argument){
   uint64_t start=clock_ns(CLOCK_THREAD_CPUTIME_ID);
   for(unsigned i=0;i<DIAG_ROUNDS;i++){
     if(!diag_case)madeira_diag_stsetl(1,telemetry_targets[worker->index&1]);
-    else if(worker->bound)madeira_diag_ir_bound();else madeira_diag_ir_old();
+    else if(diag_case==1){if(worker->bound)madeira_diag_ir_bound();else madeira_diag_ir_old();}
+    else{
+      uint64_t crsp=i%7?UINT64_C(0x10000)+worker->index*0x1000+(i%5)*0x40:0;
+      uint64_t rip=UINT64_C(0x140000000)+worker->index*0x1000+i*4;
+      if(worker->bound)madeira_diag_history_bound(worker->index,crsp,rip);
+      else madeira_diag_history_old(worker->index,crsp,rip);
+    }
   }
   __atomic_add_fetch(&worker_cpu_ns,clock_ns(CLOCK_THREAD_CPUTIME_ID)-start,__ATOMIC_RELAXED);return NULL;
 }
 static int diagnostic_mutable_byte(size_t at){
-  if(diag_case)return at>=FEX_DIAG_IRTOPO&&at<FEX_DIAG_IRTOPO+8;
+  if(diag_case==2)return at>=FEX_DIAG_HISTORY&&at<FEX_DIAG_HISTORY+192;
+  if(diag_case==1)return at>=FEX_DIAG_IRTOPO&&at<FEX_DIAG_IRTOPO+8;
   return (at>=FEX_DIAG_TELEMETRY+12*8&&at<FEX_DIAG_TELEMETRY+13*8)||
          (at>=FEX_DIAG_TELEMETRY+15*8&&at<FEX_DIAG_TELEMETRY+16*8);
 }
 static void diagnostic_phase(unsigned operation,unsigned bound){
+  static unsigned char original_history[192];
+  unsigned worker_count=operation==2?4:DIAG_THREADS;
   diag_case=operation;active=diagnostic_map_image();diagnostic_pe_fixture(active.rw);
   madeira_diag_image(active.rx,active.rw);
   if(bound)assert(ios_native_fex_diagnostics_bind(active.rw,active.size,UINT64_C(0x500000000),(uintptr_t)active.rx,(intptr_t)alias_distance,1));
+  assert(madeira_diag_history_address()==(uintptr_t)(bound?active.rw:active.rx)+FEX_DIAG_HISTORY);
   for(unsigned i=0;i<2;i++){
     unsigned index=i?15:12;
     telemetry_targets[i]=madeira_diag_telemetry_address(bound,index);
@@ -101,32 +123,45 @@ static void diagnostic_phase(unsigned operation,unsigned bound){
   memset(diag_families,0,sizeof(diag_families));worker_cpu_ns=0;diag_ready=diag_start=0;
   uint64_t faults_before=fault_count,handler_before=server_cpu_ns(),start=clock_ns(CLOCK_MONOTONIC);
   pthread_t threads[DIAG_THREADS];struct diagnostic_worker workers[DIAG_THREADS];
-  for(unsigned i=0;i<DIAG_THREADS;i++){
+  for(unsigned i=0;i<worker_count;i++){
     workers[i]=(struct diagnostic_worker){i,bound};assert(!pthread_create(&threads[i],NULL,diagnostic_worker_run,&workers[i]));
   }
-  while(__atomic_load_n(&diag_ready,__ATOMIC_ACQUIRE)!=DIAG_THREADS)sched_yield();
+  while(__atomic_load_n(&diag_ready,__ATOMIC_ACQUIRE)!=worker_count)sched_yield();
   __atomic_store_n(&diag_start,1,__ATOMIC_RELEASE);
-  for(unsigned i=0;i<DIAG_THREADS;i++)assert(!pthread_join(threads[i],NULL));
+  for(unsigned i=0;i<worker_count;i++)assert(!pthread_join(threads[i],NULL));
   uint64_t wall=clock_ns(CLOCK_MONOTONIC)-start,handler=server_cpu_ns()-handler_before,faults=fault_count-faults_before;
   assert(!phase_failures);
   if(!operation){
     assert(*(uint64_t*)(active.rx+FEX_DIAG_TELEMETRY+12*8)==1&&*(uint64_t*)(active.rx+FEX_DIAG_TELEMETRY+15*8)==1);
-  }else assert(*(uint64_t*)(active.rx+FEX_DIAG_IRTOPO)==DIAG_THREADS*DIAG_ROUNDS);
+  }else if(operation==1)assert(*(uint64_t*)(active.rx+FEX_DIAG_IRTOPO)==worker_count*DIAG_ROUNDS);
+  else{
+    const uint64_t *history=(const void *)(active.rx+FEX_DIAG_HISTORY);
+    for(unsigned i=0;i<worker_count;i++){
+      unsigned slot=(madeira_diag_history_frame(i)>>6)&3;
+      assert(history[slot]==madeira_diag_history_frame(i));
+      assert(history[4+slot]==UINT64_C(0x10000)+i*0x1000);
+      assert(history[8+slot]==UINT64_C(0x10100)+i*0x1000);
+      assert(history[12+slot]==0&&history[16+slot]==DIAG_ROUNDS);
+      assert(history[20+slot]==UINT64_C(0x140000000)+i*0x1000+(DIAG_ROUNDS-1)*4);
+    }
+    if(bound)assert(!memcmp(original_history,history,192));else memcpy(original_history,history,192);
+  }
   for(size_t i=0;i<active.size;i++)if(!diagnostic_mutable_byte(i))assert(active.rx[i]==before[i]);
-  unsigned expected=operation?MADEIRA_STORE_EXCLUSIVE:MADEIRA_STORE_LSE;
+  unsigned expected=operation==2?MADEIRA_STORE_GPR:operation?MADEIRA_STORE_EXCLUSIVE:MADEIRA_STORE_LSE;
   if(bound){assert(!faults);for(unsigned i=0;i<MADEIRA_STORE_FAMILIES;i++)assert(!diag_families[i]);}
   else{
-    if(operation)assert(faults>=DIAG_THREADS*DIAG_ROUNDS);else assert(faults==DIAG_THREADS*DIAG_ROUNDS);
+    if(operation==2)assert(faults>=worker_count*DIAG_ROUNDS*4);
+    else if(operation)assert(faults>=worker_count*DIAG_ROUNDS);else assert(faults==worker_count*DIAG_ROUNDS);
     assert(diag_families[expected]==faults);
     for(unsigned i=0;i<MADEIRA_STORE_FAMILIES;i++)if(i!=expected)assert(!diag_families[i]);
   }
   check_protection(active.rx,PROT_READ|PROT_EXEC,PROT_WRITE);check_protection(active.rw,PROT_READ|PROT_WRITE,PROT_EXEC);
   printf("[fex-native-diagnostics-throughput] operation=%s mode=%s workers=%u events=%u mach-store-faults=%" PRIu64
-         " lse=%" PRIu64 " exclusive=%" PRIu64 " wall-ns=%" PRIu64 " worker-cpu-ns=%" PRIu64 " handler-cpu-ns=%" PRIu64
+         " lse=%" PRIu64 " exclusive=%" PRIu64 " gpr=%" PRIu64 " wall-ns=%" PRIu64 " worker-cpu-ns=%" PRIu64 " handler-cpu-ns=%" PRIu64
          " payload=exact neighbors=unchanged RX=nonwritable RW=nonexecutable\n",
-         operation?"actual-source-IRTopoNoteChecked":"captured-STSETL-source-selected-flags12-15",
-         bound?"production-private-writer":"original-production-emulation",DIAG_THREADS,DIAG_THREADS*DIAG_ROUNDS,
-         faults,diag_families[MADEIRA_STORE_LSE],diag_families[MADEIRA_STORE_EXCLUSIVE],wall,worker_cpu_ns,handler);
+         operation==2?"actual-source-CompileBlock-callret-history":operation?"actual-source-IRTopoNoteChecked":"captured-STSETL-source-selected-flags12-15",
+         bound?"production-private-writer":"original-production-emulation",worker_count,worker_count*DIAG_ROUNDS,
+         faults,diag_families[MADEIRA_STORE_LSE],diag_families[MADEIRA_STORE_EXCLUSIVE],diag_families[MADEIRA_STORE_GPR],wall,worker_cpu_ns,handler);
   assert(!munmap(active.reserved,active.reservation));memset(&active,0,sizeof(active));
 }
 int main(void){
@@ -135,12 +170,12 @@ int main(void){
   assert(mach_port_insert_right(mach_task_self(),exception_port,exception_port,MACH_MSG_TYPE_MAKE_SEND)==KERN_SUCCESS);
   pthread_t server;assert(!pthread_create(&server,NULL,exception_server,NULL));
   while(!__atomic_load_n(&server_thread_port,__ATOMIC_ACQUIRE))sched_yield();
-  for(unsigned operation=0;operation<2;operation++){diagnostic_phase(operation,0);diagnostic_phase(operation,1);}
+  for(unsigned operation=0;operation<3;operation++){diagnostic_phase(operation,0);diagnostic_phase(operation,1);}
   mach_msg_header_t stop={0};stop.msgh_bits=MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND,0);stop.msgh_size=sizeof(stop);
   stop.msgh_remote_port=exception_port;stop.msgh_id=1;
   assert(mach_msg(&stop,MACH_SEND_MSG,sizeof(stop),0,MACH_PORT_NULL,MACH_MSG_TIMEOUT_NONE,MACH_PORT_NULL)==KERN_SUCCESS);
   assert(!pthread_join(server,NULL));mach_port_deallocate(mach_task_self(),server_thread_port);
   assert(mach_port_deallocate(mach_task_self(),exception_port)==KERN_SUCCESS);
   assert(mach_port_mod_refs(mach_task_self(),exception_port,MACH_PORT_RIGHT_RECEIVE,-1)==KERN_SUCCESS);
-  puts("PASS real Mach FEX diagnostic producer fixture: captured telemetry STSETL and actual staged IR source preserve flags/counts; bound phases zero faults");return 0;
+  puts("PASS real Mach FEX diagnostic producer fixture: captured telemetry STSETL, actual staged IR and CompileBlock history preserve complete payloads; bound phases zero faults");return 0;
 }

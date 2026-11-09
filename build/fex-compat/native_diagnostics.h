@@ -22,11 +22,13 @@ static_assert(sizeof(MadeiraFEXNativeWriteContract) == 32);
 constexpr uint64_t MadeiraFEXTelemetryTag = UINT64_C(0x31544d584546574d);
 constexpr uint64_t MadeiraFEXIRTopoTag = UINT64_C(0x315249584546574d);
 constexpr uint64_t MadeiraFEXCompileTag = UINT64_C(0x314243584546574d);
+constexpr uint64_t MadeiraFEXHistoryTag = UINT64_C(0x314852584546574d);
 
 extern "C" {
 extern MadeiraFEXNativeWriteContract MadeiraFEXTelemetryWriteContract;
 extern MadeiraFEXNativeWriteContract MadeiraFEXIRTopoWriteContract;
 extern MadeiraFEXNativeWriteContract MadeiraFEXCompileWriteContract;
+extern MadeiraFEXNativeWriteContract MadeiraFEXHistoryWriteContract;
 }
 
 template<typename T>
@@ -36,6 +38,20 @@ inline T& MadeiraFEXNativeWriter(MadeiraFEXNativeWriteContract& contract, T& can
 }
 
 namespace MadeiraFEXDiagnostics {
+/* Preserve the existing four-slot diagnostic history, including its volatile
+ * accesses and collision behavior. This is image-owned DATA, not thread TLS
+ * or guest state. Only its native writer address changes after loader binding.
+ */
+struct CallRetHistoryState {
+  volatile uint64_t key[4] {0,0,0,0};
+  volatile uint64_t crsp_min[4] {UINT64_MAX,UINT64_MAX,UINT64_MAX,UINT64_MAX};
+  volatile uint64_t crsp_max[4] {0,0,0,0};
+  volatile uint64_t crsp_last[4] {0,0,0,0};
+  volatile uint64_t count[4] {0,0,0,0};
+  volatile uint64_t last_rip[4] {0,0,0,0};
+};
+static_assert(sizeof(CallRetHistoryState) == 192 && alignof(CallRetHistoryState) == 8);
+
 struct CompileState {
   std::atomic<uint64_t> total {0};
   std::atomic<uint64_t> real_compiles {0};

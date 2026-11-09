@@ -51,7 +51,8 @@ def fex_fixture(backend='arm64ec'):
     for index,(name,tag,length,payload) in enumerate((
         (b'MadeiraFEXTelemetryWriteContract',0x31544d584546574d,136,0x2300),
         (b'MadeiraFEXIRTopoWriteContract',0x315249584546574d,32,0x2400),
-        (b'MadeiraFEXCompileWriteContract',0x314243584546574d,48,0x2500))):
+        (b'MadeiraFEXCompileWriteContract',0x314243584546574d,48,0x2500),
+        (b'MadeiraFEXHistoryWriteContract',0x314852584546574d,192,0x2600))):
         contract=0x2100+32*index
         names.append(name);targets.append(contract)
         put('<QIIQQ',raw(contract),tag,length,8,0x180000000+payload,0)

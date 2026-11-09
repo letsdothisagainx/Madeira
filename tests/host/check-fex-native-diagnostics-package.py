@@ -21,6 +21,7 @@ for backend in ('wow64', 'arm64ec'):
     original, meta = fixtures.fex_fixture(backend)
     found = checker.fex_diagnostics_contracts(original)
     assert found == meta['diagnostics']
+    assert found[b'MadeiraFEXHistoryWriteContract'][2] == 192
     checker.fex_cpu(bytes(original), backend)
     raw, opt = meta['raw'], meta['opt']
 

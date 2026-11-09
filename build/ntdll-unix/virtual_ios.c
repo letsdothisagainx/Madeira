@@ -4611,7 +4611,7 @@ static void ios_jit_bind_native_counter_writer(void *source, void *rw, void *rx,
                 (intptr_t)((uintptr_t)rw-(uintptr_t)rx),1);
         if (bound) __sync_synchronize();
         if (__atomic_fetch_add(&reports,1,__ATOMIC_RELAXED)<64)
-            dprintf(2,"[fex-native-diagnostics-v1] module=%s spans=3 action=%s "
+            dprintf(2,"[fex-native-diagnostics-v1] module=%s spans=4 action=%s "
                       "phase=private-copy telemetry=preserved atomics=native rx-protection=unchanged\n",
                     ios_pe_module_name(source,size),bound?"bound":"contract-unavailable");
         return;

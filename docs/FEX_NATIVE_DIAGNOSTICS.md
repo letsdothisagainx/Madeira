@@ -105,3 +105,55 @@ rates for these exact producers under a comparable workload, preserved Steam
 IPC/service/game launch, and continued CS2 menu/frame progress. Per-thread
 history stores, real allocator synchronization, memory pressure, and Valve's
 secure-session result remain separate concerns.
+
+## Four-slot call-return history follow-up
+
+The capture from source `8bd3785c7f4a422ffdb20033510db46ea0fdcd52` ends with
+37,209,939 timed store faults and 178,906 ms of cumulative handler time. Its
+independent family census classifies 37,209,941 events: 23,411,472 GPR,
+12,257,104 exclusive, 1,515,781 LSE, 6,400 release, 19,179 pair, and 5 swap.
+The timing sample explicitly reports two dropped events. These cumulative
+costs do not establish the application's elapsed time or frame-rate cost.
+
+The 37 complete million-event epochs contain 1,724,144 overflow events across
+epochs 1, 5, 8, 11, and 12. Every family total remains exact. Only two tracked
+keys per family are printed, so individual site sums are lower bounds even
+when an epoch has no overflow. A key contains the target page; the target byte
+address and its RVA are first-event metadata.
+
+[Inspection run 42692961205](https://github.com/letsdothisagainx/Madeira/actions/runs/42692961205)
+reads the actual IPA from build run `42591313733`, checks its embedded source,
+and proves all captured hot instructions against the packaged CPU bytes.
+The native SHA-256 values are
+`598846e092516fce6bfc089326db30efccc1b92b199c31e5b4987ecfc9ba86d6`
+for ARM64EC and
+`89813f94c8e697a3e725d6a451535fcd8dee75f055436747f586785a9fd264ad`
+for WoW64.
+
+In PID `034c`, ARM64EC image `0x3dd270000`, generation 477, maps through PEB
+`0x10a1e8000`; its owner-lease record is 31. The reported generation cookies
+remain unchanged for the following sites. COFF symbols and instruction bytes
+identify their first targets as element 1 of the existing diagnostic arrays:
+
+| Native PC RVA / instruction | First target RVA / object | Reported-site lower bound |
+| --- | --- | ---: |
+| `147fc` / `STR X25,[X11,#0xb8]` | `3bd348` / `g_madeira_thr_key[1]` | 3,117,351 |
+| `14808` / `STR X20,[X11,#0xf8]` | `3bd388` / `g_madeira_thr_last_rip[1]` | 2,465,577 |
+| `14814` / `STR X12,[X11,#0x118]` | `3bd3a8` / `g_madeira_thr_count[1]` | 1,353,427 |
+
+These are native 64-bit diagnostic DATA stores on every block dispatch, not
+guest self-modifying code. The native-data planner rejects their dynamic
+array-address calculation. A fourth explicit private contract now contains
+only the six four-entry call-return-history arrays, exactly 192 bytes. The
+producer and summary reader select its retained RW alias once per block;
+the original volatile accesses, operation order, hash, collision behavior,
+zero-SP handling, and minimum initialization are preserved. The descriptor
+is bound before publication and survives the existing DATA-refresh path.
+No allocator, mapping owner, process lease, protection, or pool changes.
+
+The hot ntdll exclusive target at ARM64EC DATA RVA `3ccf88` is instead
+`InvalidationTracker+0x30`, genuine synchronization, and is excluded. WoW64
+RVA `102e20` targets `IosWowSyscallC::Declined`, a different diagnostic atomic
+path, and is also outside this history correction. Peak footprint of 6049 MB
+remains an independent issue. Apple Mach validation and a comparable device
+capture are required before claiming a measured runtime improvement.
