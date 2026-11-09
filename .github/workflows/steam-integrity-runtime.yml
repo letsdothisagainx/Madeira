@@ -1,10 +1,10 @@
-name: Verify Steam content integrity runtime
+name: Prove final b6 Steam content integrity runtime
 
 on:
   workflow_dispatch:
   workflow_call:
   push:
-    branches: [main, 'codex/pr-build-*', codex/validate-cs2-integrity-runtime-4b41]
+    branches: [main, 'codex/pr-build-*', codex/validate-cs2-integrity-runtime-4b41, 'codex/prove-p0-b6edc4d-20261109-mw9wg6pj']
     paths: &integrity-paths
       - app/Madeira/SwiftSteam/**
       - app/Madeira/SteamIntegrityDiagnostics.swift
@@ -48,6 +48,10 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Assert all production sources and tests match final b6 candidate
+        run: |
+          git rev-parse HEAD
+          git diff --exit-code b6edc4d7bdd4329b79887b463439061b5ec8b33c -- . ':(exclude).github/workflows/steam-integrity-runtime.yml'
       - uses: actions/setup-python@v5
         with:
           python-version: '3.14'
