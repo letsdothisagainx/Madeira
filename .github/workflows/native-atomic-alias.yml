@@ -7,6 +7,10 @@ on:
       - build/ntdll-unix/native_atomic*.h
       - build/ntdll-unix/native_data_alias.h
       - build/ntdll-unix/native_srw_alias.h
+      - build/ntdll-unix/native_fex_diagnostics_alias.h
+      - build/fex-compat/native-diagnostics.patch
+      - build/fex-compat/native_diagnostics.h
+      - tests/host/*fex*native*diagnostics*
       - tests/host/*native*srw*
       - build/ntdll-unix/native_counter*.h
       - build/wine-pe/build-ntdll.sh
@@ -30,6 +34,10 @@ on:
       - build/ntdll-unix/native_atomic*.h
       - build/ntdll-unix/native_data_alias.h
       - build/ntdll-unix/native_srw_alias.h
+      - build/ntdll-unix/native_fex_diagnostics_alias.h
+      - build/fex-compat/native-diagnostics.patch
+      - build/fex-compat/native_diagnostics.h
+      - tests/host/*fex*native*diagnostics*
       - tests/host/*native*srw*
       - build/ntdll-unix/native_counter*.h
       - build/wine-pe/build-ntdll.sh
@@ -58,8 +66,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Load pinned Wine counter producer source
-        run: git submodule update --init --depth 1 wine
+      - name: Load pinned Wine and FEX counter producer source
+        run: git submodule update --init --depth 1 wine FEX
       - name: Prove native address lowering and exact packaged image invariants
         run: |
           python3 tests/host/check-native-data-alias.py
@@ -89,6 +97,10 @@ jobs:
         run: |
           set -o pipefail
           python3 tests/host/check-native-srw-history-performance.py --require-arm64-darwin | tee native-srw-throughput.txt
+      - name: Measure captured FEX telemetry and IR counters with real Mach faults
+        run: |
+          set -o pipefail
+          python3 tests/host/check-fex-native-diagnostics-performance.py --require-arm64-darwin | tee native-fex-diagnostics-throughput.txt
       - name: Measure production QPC counter writer with real Mach faults
         if: always()
         run: |
@@ -110,5 +122,6 @@ jobs:
             native-counter-call-throughput.txt
             conditional-exclusive-hardware.txt
             native-srw-throughput.txt
+            native-fex-diagnostics-throughput.txt
           if-no-files-found: ignore
           retention-days: 14

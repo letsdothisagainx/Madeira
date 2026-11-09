@@ -10,6 +10,9 @@ on:
       - app/Madeira/ContentView.swift
       - build/ntdll-unix/virtual_ios.c
       - build/ntdll-unix/process_ios.c
+      - build/ntdll-unix/native_fex_diagnostics_alias.h
+      - tests/host/*fex*native*diagnostics*
+      - tests/host/check-fex-cb-summary.py
       - tests/host/check-dep-process-isolation.py
       - tests/host/check-directx-fixed-image.py
       - tests/host/check-fex-subfloor-domain.py
@@ -48,6 +51,9 @@ on:
       - app/Madeira/ContentView.swift
       - build/ntdll-unix/virtual_ios.c
       - build/ntdll-unix/process_ios.c
+      - build/ntdll-unix/native_fex_diagnostics_alias.h
+      - tests/host/*fex*native*diagnostics*
+      - tests/host/check-fex-cb-summary.py
       - tests/host/check-dep-process-isolation.py
       - tests/host/check-directx-fixed-image.py
       - tests/host/check-fex-subfloor-domain.py
@@ -104,6 +110,9 @@ jobs:
           python3 tests/host/check-fex-owner-heap-pressure.py
           python3 tests/host/check-fex-owner-allocator-config.py
           python3 tests/host/check-fex-arm64ec-startup.py
+          python3 tests/host/check-fex-cb-summary.py
+          python3 tests/host/check-fex-native-diagnostics-alias.py
+          python3 tests/host/check-fex-native-diagnostics-package.py
           python3 tests/host/check-fex-pe-build.py
           python3 tests/host/check-rpmalloc-thread-reuse.py
           python3 tests/host/check-directx-fixed-image.py

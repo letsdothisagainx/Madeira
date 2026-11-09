@@ -125,6 +125,12 @@ done
 python3 "$ROOT/tools/check-io-abi-package.py" \
   --staged "$ROOT/app/Madeira/aarch64-windows/wow64.dll" --app "$APP" --ipa "$DIST/Madeira.ipa"
 
+python3 "$ROOT/tools/check-system-programs.py" \
+  --root "$ROOT/app/Madeira" --source-root "$ROOT/wine" --app "$APP" --ipa "$DIST/Madeira.ipa"
+python3 "$ROOT/tools/check-trust-diagnostics-package.py" \
+  --root "$ROOT/app/Madeira" --source-root "$ROOT/wine" --repo-root "$ROOT" \
+  --app "$APP" --ipa "$DIST/Madeira.ipa"
+
 python3 "$ROOT/tools/check-htmlipc-image.py" \
   --staged "$ROOT/app/Madeira/arm64ec-windows/madeira-htmlipc-bridge.dll" \
   --manifest "$ROOT/app/Madeira/arm64ec-windows/madeira-htmlipc-bridge.manifest.json" \

@@ -37,6 +37,8 @@ bash "$ROOT/tools/check-prefix-template.sh" "$ROOT/app/Madeira/prefix-template.t
 "$ROOT/tools/build/build-wine.sh"
 "$ROOT/tools/build/build-wow64-io.sh"
 "$ROOT/tools/build/build-scm-rpc.sh"
+"$ROOT/build/wine-pe/build-system-programs.sh"
+"$ROOT/build/wine-pe/build-trust-diagnostics.sh"
 "$ROOT/tools/build/build-fex-ios.sh"
 "$ROOT/tools/build/build-fex-pe-compat.sh"
 "$ROOT/build/rppairing-ios/build.sh"
