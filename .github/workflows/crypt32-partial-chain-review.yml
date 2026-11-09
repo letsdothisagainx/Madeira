@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 125hz
+# Madeira Converter Exception: see LICENSE-EXCEPTION.md
+name: Review only Crypt32 partial-chain production function
+on:
+  push:
+    branches: ['codex/review-partial-chain-b6-20261109-mw9xaqlj']
+permissions:
+  contents: read
+jobs:
+  production-policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Confirm frozen production source and tests outside four review files
+        run: |
+          git diff --exit-code b6edc4d7bdd4329b79887b463439061b5ec8b33c -- . ':(exclude)build/crypto-unix/partial-chain-policy-review.patch' ':(exclude)tests/host/check-crypt32-partial-chain-review.py' ':(exclude)docs/CRYPT32_PARTIAL_CHAIN_REVIEW.md' ':(exclude).github/workflows/crypt32-partial-chain-review.yml'
+      - name: Read exact pinned Wine policy source without modifying it
+        run: git submodule update --init --depth 1 wine
+      - name: Execute baseline false acceptance and candidate policy matrix with ASAN and UBSAN
+        run: python3 tests/host/check-crypt32-partial-chain-review.py
