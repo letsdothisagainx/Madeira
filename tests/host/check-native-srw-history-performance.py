@@ -89,7 +89,7 @@ static int baseline_emulate(uint32_t insn,uintptr_t fault_pc,uintptr_t fault_add
     # Match the captured Wine LL/SC producer rather than benchmarking Apple's
     # default LSE lowering. Assert the actual generated bodies, not CPU names.
     compiler = [os.environ.get('CC', 'clang'), '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror', '-pthread',
-                '-mcpu=generic', '-march=armv8-a', '-mno-outline-atomics',
+                '-Wno-unused-function', '-mcpu=generic', '-march=armv8-a', '-mno-outline-atomics',
                 '-I', str(work), '-I', str(ROOT / 'build/ntdll-unix'), '-I', str(ROOT / 'tests/host')]
     source_path = str(ROOT / 'tests/host/native-srw-history-performance.c')
     assembly_path = work / 'srw-history.s'
