@@ -19,20 +19,34 @@ static int ios_alias_write_is_trapped(uintptr_t address);
 enum { SRW_THREADS=8,SRW_ROUNDS=400 };
 static unsigned srw_ready,srw_start;
 
+struct srw_code_region { uintptr_t base; size_t size; };
+static struct srw_code_region srw_code_regions[2];
+static void srw_validate_code_regions(void) {
+    const uintptr_t functions[]={(uintptr_t)srw_note_original,(uintptr_t)srw_note_bound};
+    Dl_info wanted;assert(dladdr((void *)functions[0],&wanted));
+    for(unsigned i=0;i<2;i++) {
+        Dl_info actual;assert(dladdr((void *)functions[i],&actual)&&actual.dli_fbase==wanted.dli_fbase);
+        mach_vm_address_t address=functions[i];mach_vm_size_t span=0;vm_region_basic_info_data_64_t info;
+        mach_msg_type_number_t count=VM_REGION_BASIC_INFO_COUNT_64;mach_port_t object=MACH_PORT_NULL;
+        kern_return_t status=mach_vm_region(mach_task_self(),&address,&span,VM_REGION_BASIC_INFO_64,
+                                           (vm_region_info_t)&info,&count,&object);
+        if(object)mach_port_deallocate(mach_task_self(),object);
+        assert(status==KERN_SUCCESS&&address<=functions[i]&&functions[i]-address<span&&
+               (info.protection&(VM_PROT_READ|VM_PROT_EXECUTE))==(VM_PROT_READ|VM_PROT_EXECUTE)&&
+               !(info.protection&VM_PROT_WRITE));
+        srw_code_regions[i]=(struct srw_code_region){(uintptr_t)address,(size_t)span};
+    }
+}
 static int srw_read_code(uint64_t pc,uint32_t *out) {
-    Dl_info wanted,actual;
-    if((pc&3)||!dladdr((void *)(uintptr_t)srw_note_original,&wanted)||
-       !dladdr((void *)(uintptr_t)pc,&actual)||wanted.dli_fbase!=actual.dli_fbase)return 0;
-    mach_vm_address_t address=pc;mach_vm_size_t span=0;vm_region_basic_info_data_64_t info;
-    mach_msg_type_number_t count=VM_REGION_BASIC_INFO_COUNT_64;mach_port_t object=MACH_PORT_NULL;
-    kern_return_t status=mach_vm_region(mach_task_self(),&address,&span,VM_REGION_BASIC_INFO_64,
-                                       (vm_region_info_t)&info,&count,&object);
-    if(object)mach_port_deallocate(mach_task_self(),object);
-    if(status!=KERN_SUCCESS||address>pc||pc-address>span||4>span-(pc-address)||
-       (info.protection&(VM_PROT_READ|VM_PROT_EXECUTE))!=(VM_PROT_READ|VM_PROT_EXECUTE)||
-       (info.protection&VM_PROT_WRITE))return 0;
-    mach_vm_size_t got=0;
-    return mach_vm_read_overwrite(mach_task_self(),pc,4,(mach_vm_address_t)out,&got)==KERN_SUCCESS&&got==4;
+    if(pc&3)return 0;
+    /* The test executable is pinned and immutable for the process lifetime.
+     * Cache its verified identity before timing. Keep the production helper's
+     * per-instruction Mach read, without extra symbol/region queries. */
+    for(unsigned i=0;i<2;i++)if(inside(pc,4,srw_code_regions[i].base,srw_code_regions[i].size)) {
+        mach_vm_size_t got=0;
+        return mach_vm_read_overwrite(mach_task_self(),pc,4,(mach_vm_address_t)out,&got)==KERN_SUCCESS&&got==4;
+    }
+    return 0;
 }
 static int srw_target_valid(uintptr_t address,uint32_t instruction) {
     size_t width=(size_t)1u<<(instruction>>30);
@@ -115,6 +129,7 @@ static void srw_phase(unsigned bound) {
     assert(!munmap(active.reserved,active.reservation));memset(&active,0,sizeof(active));srw_source_rx=NULL;
 }
 int main(void) {
+    srw_validate_code_regions();
     assert(mach_port_allocate(mach_task_self(),MACH_PORT_RIGHT_RECEIVE,&exception_port)==KERN_SUCCESS);
     assert(mach_port_insert_right(mach_task_self(),exception_port,exception_port,MACH_MSG_TYPE_MAKE_SEND)==KERN_SUCCESS);
     pthread_t server;assert(!pthread_create(&server,NULL,exception_server,NULL));
