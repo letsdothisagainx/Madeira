@@ -13,7 +13,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-          fetch-depth: 2
+          fetch-depth: 8
       - name: Install isolated Wine 9 and ordinary PE fixture compiler
         run: |
           sudo dpkg --add-architecture i386
@@ -46,8 +46,12 @@ jobs:
           assert hashlib.sha256(source_bytes).hexdigest() == '89b71215a2e0b032ad7186770bba556bfd496a52414014c8f9ef76607b204f96'
 
           probe = r'''
+          #ifndef UNICODE
           #define UNICODE
+          #endif
+          #ifndef _UNICODE
           #define _UNICODE
+          #endif
           #include <windows.h>
           #include <wintrust.h>
           #include <softpub.h>
