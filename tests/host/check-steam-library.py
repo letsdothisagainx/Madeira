@@ -701,6 +701,13 @@ func packageBuffer(apps: [UInt32], depots: [UInt32]) -> Data {
 
 
 #if !INTEGRITY_BASELINE
+final class AuditReadGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var calls = 0
+    private let maximum: Int
+    init(_ maximum: Int) { self.maximum = maximum }
+    func open() -> Bool { lock.lock(); defer { lock.unlock() }; calls += 1; return calls <= maximum }
+}
 func integrityAuditUnits(_ fx: [String: Any]) throws {
     let root = URL(fileURLWithPath: fx["tmp"] as! String).appendingPathComponent("audit")
     let apps = root.appendingPathComponent("steamapps")
@@ -745,7 +752,9 @@ func integrityAuditUnits(_ fx: [String: Any]) throws {
     require(find("game/bin/win64/engine2.dll").state == "cache-hash-match" &&
             find("game/bin/win64/engine2.dll").certificate == "table-out-of-file", "an intact depot hash is not misrepresented as a valid embedded signature")
     require(find("game/csgo/pak01_dir.vpk").state == "cache-hash-match" &&
-            find("game/csgo/pak01_dir.vpk").certificate == "not-pe", "a VPK is not incorrectly diagnosed as an unsigned PE")
+            find("game/csgo/pak01_dir.vpk").certificate == "not-pe" &&
+            find("game/csgo/pak01_dir.vpk").packageSignature == "section-present-unverified", "a directory VPK reports bounded signature-section presence without asserting trust")
+    require(find("game/core/pak01_dir.vpk").packageSignature == "section-out-of-file", "truncated directory VPK signature metadata is identified independently of content hash")
     let logs = report.lines.joined(separator: "\n")
     require(!logs.contains(root.path) && !logs.contains("private-token-and-account") && !logs.contains("must not read") &&
             logs.contains("authentication=not-revalidated") && logs.contains("trust=unmeasured"), "bounded audit output exposes no private paths/content or fabricated trust verdict")
@@ -757,9 +766,19 @@ func integrityAuditUnits(_ fx: [String: Any]) throws {
             !bounded.findings.contains { $0.state == "cache-hash-match" }, "byte-limited files remain explicitly unmeasured")
     var one = limits; one.maxFiles = 1
     require(SteamContentIntegrity.auditCS2(steamApps: apps, installURL: game, limits: one).findings.count == 1, "audit honors the file-count bound")
+    let idleStop = SteamContentIntegrity.auditCS2(steamApps: apps, installURL: game, limits: limits, shouldContinue: { false })
+    require(idleStop.state == "stopped-unmeasured" && idleStop.bytes == 0 && idleStop.findings.isEmpty,
+            "an active session prevents even the initial diagnostic read")
+    let gate = AuditReadGate(12)
+    let midReadStop = SteamContentIntegrity.auditCS2(steamApps: apps, installURL: game, limits: limits, shouldContinue: { gate.open() })
+    require(midReadStop.state == "stopped-unmeasured" && midReadStop.bytes < UInt64(hexData(files["game/bin/win64/cs2.exe"]!).count) &&
+            !midReadStop.findings.contains { $0.state == "cache-hash-match" }, "session activation interrupts bounded reads without claiming a completed hash")
     try fm.moveItem(at: apps.appendingPathComponent("depotcache/7301_88.manifest"), to: apps.appendingPathComponent("depotcache/7301_89.manifest"))
     let wrongGID = SteamContentIntegrity.auditCS2(steamApps: apps, installURL: game, limits: limits)
     require(wrongGID.references == 0 && !wrongGID.findings.contains { $0.state == "cache-hash-match" }, "a different installed build's reference is never substituted")
+    require(wrongGID.findings.first { $0.relative == "game/bin/win64/cs2.exe" }?.certificate == "table-present-unverified" &&
+            wrongGID.findings.first { $0.relative == "game/csgo/pak01_dir.vpk" }?.packageSignature == "section-present-unverified",
+            "missing hash reference still permits bounded container metadata without a content or trust claim")
     try put("depotcache/7301_88.manifest", Data([1, 2, 3, 4]), root: apps)
     require(SteamContentIntegrity.auditCS2(steamApps: apps, installURL: game, limits: limits).references == 0, "a truncated cache header becomes unmeasured instead of trapping")
     try fm.removeItem(at: apps.appendingPathComponent("depotcache/7301_88.manifest"))
@@ -1252,7 +1271,7 @@ try:
     dead, flaky, good = ContentServer('dead', state), ContentServer('flaky', state), ContentServer('good', state)
     servers = [dead, flaky, good]
     for server in servers: serve(server)
-    audit_pe = bytearray(0x210)
+    audit_pe = bytearray((1 << 20) + 0x210)
     audit_pe[:2] = b'MZ'
     struct.pack_into('<I', audit_pe, 0x3c, 0x80)
     audit_pe[0x80:0x84] = b'PE\0\0'
@@ -1261,9 +1280,12 @@ try:
     struct.pack_into('<I', audit_pe, 0x98 + 108, 16)
     struct.pack_into('<II', audit_pe, 0x98 + 112 + 32, 0x200, 16)
     struct.pack_into('<IHH', audit_pe, 0x200, 16, 0x200, 2)
-    audit_pe[0x208:] = b'FIXTURE!'
+    audit_pe[0x208:0x210] = b'FIXTURE!'
     truncated_pe = bytearray(audit_pe)
-    struct.pack_into('<I', truncated_pe, 0x98 + 112 + 36, 32)
+    struct.pack_into('<I', truncated_pe, 0x98 + 112 + 36, len(truncated_pe))
+    vpk_signature = struct.pack('<I', 3) + b'KEY' + struct.pack('<I', 4) + b'SIG1'
+    audit_vpk = struct.pack('<7I', 0x55aa1234, 2, 3, 0, 0, 0, len(vpk_signature)) + bytes(3) + vpk_signature
+    truncated_vpk = struct.pack('<7I', 0x55aa1234, 2, 3, 0, 0, 0, 100) + bytes(3)
     audit_entries = [
         dict(name='game/bin/win64/cs2.exe', data=bytes(audit_pe)),
         dict(name='game/bin/win64/engine2.dll', data=bytes(truncated_pe)),
@@ -1271,7 +1293,8 @@ try:
         dict(name='game/bin/win64/steam_api64.dll', data=b'expected'),
         dict(name='game/csgo/bin/win64/client.dll', data=b'REAL-CLIENT'),
         dict(name='game/csgo/bin/win64/server.dll', data=b'REAL-SERVER'),
-        dict(name='game/csgo/pak01_dir.vpk', data=b'owned-vpk-fixture')]
+        dict(name='game/csgo/pak01_dir.vpk', data=audit_vpk),
+        dict(name='game/core/pak01_dir.vpk', data=truncated_vpk)]
     audit_depot = Depot(7301, KEY_MAIN, audit_entries, encrypt_names=False)
     audit_files = {e['name']: e['data'].hex() for e in audit_entries if e['name'] not in
                    ('game/csgo/bin/win64/server.dll', 'game/bin/win64/steam_api64.dll')}

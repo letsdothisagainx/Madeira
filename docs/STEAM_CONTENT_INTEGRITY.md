@@ -30,7 +30,10 @@ only). Absent whole-file hashes remain unknown.
 the exact depot GIDs in the installed AppID 730 record and checks a fixed list
 of critical game-relative names against available cached manifests. It does not
 substitute a newer manifest. The default bound is 11 candidate files, 384 MiB
-hashed, and six seconds, with further unmeasured files reported explicitly.
+hashed, and a six-second deadline checked between reads, with further unmeasured
+files reported explicitly. A `shouldContinue` session gate is also checked
+between reads; if Steam/Wine begins, the audit stops without a completed-hash
+claim. It runs off the main actor and never gates launching Steam.
 It never resizes, writes, deletes, repairs, downloads, or changes completion
 state. It does not read arbitrary mod/account files, follow symlinks, or export
 absolute paths, raw digests, account identifiers or content.
@@ -40,8 +43,11 @@ Encrypted names without a depot key, absent references, customized executables,
 concurrent modifications, I/O errors and budget limits remain unmeasured. A
 `cache-hash-match` describes only comparison with that cached reference.
 The PE certificate result describes security-directory bounds and presence;
-it never means cryptographic signature validation succeeded. VPK files are not
-incorrectly tested as PE images. All exported findings state
+it never means cryptographic signature validation succeeded. These bounded
+container checks can still report metadata when no matching manifest hash is
+available. The two fixed directory VPK names get a separate v2 signature-section
+bounds/presence check, not PE checks or RSA validation. No numbered VPK archive
+is diagnosed as unsigned. All exported findings state
 `trust=unmeasured`; none asserts VAC eligibility.
 
 `tests/host/check-steam-library.py` compiles the production Swift downloader,

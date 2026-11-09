@@ -15,23 +15,24 @@ import Glibc
 /// by a hash comparison, and it cannot decide Steam authentication or VAC.
 /// No game, registry, manifest, prefix or journal is ever written here.
 enum SteamContentIntegrity {
-    struct Limits {
+    struct Limits: Sendable {
         var maxFiles = 16
         var maxBytes: UInt64 = 384 << 20
         var maxSeconds: TimeInterval = 6
     }
 
-    struct Finding {
+    struct Finding: Sendable {
         let relative: String       // only a literal from criticalPaths below
         let state: String
         let bytes: UInt64
         let certificate: String
+        var packageSignature = "not-vpk"
         var line: String {
-            "[steam-content-audit-v1] app=730 relative=\(relative) state=\(state) bytes=\(bytes) certificate=\(certificate) trust=unmeasured"
+            "[steam-content-audit-v1] app=730 relative=\(relative) state=\(state) bytes=\(bytes) certificate=\(certificate) vpk-signature=\(packageSignature) trust=unmeasured"
         }
     }
 
-    struct Report {
+    struct Report: Sendable {
         var state = "unmeasured"
         var depots = 0
         var references = 0
@@ -57,16 +58,19 @@ enum SteamContentIntegrity {
 
     /// Run off the main actor while no install/repair is writing the tree.
     /// Absent/encrypted/malformed references and budget limits remain explicit
-    /// unknowns. It does not download or silently repair a current install.
-    static func auditCS2(steamApps: URL, installURL: URL, limits: Limits = Limits()) -> Report {
+    /// unknowns. A session gate is checked between reads so a scheduled idle
+    /// diagnostic stops when Steam/Wine begins. It never delays their launch.
+    static func auditCS2(steamApps: URL, installURL: URL, limits: Limits = Limits(),
+                         shouldContinue: @Sendable () -> Bool = { true }) -> Report {
         var result = Report()
         let start = ProcessInfo.processInfo.systemUptime
+        guard shouldContinue() else { result.state = "stopped-unmeasured"; return result }
         guard limits.maxFiles > 0, limits.maxFiles <= 64, limits.maxBytes > 0,
               limits.maxSeconds.isFinite, limits.maxSeconds > 0,
-              let record = readBounded(root: steamApps, relative: "appmanifest_730.acf", maximum: 4 << 20),
+              let record = readBounded(root: steamApps, relative: "appmanifest_730.acf", maximum: 4 << 20, shouldContinue: shouldContinue),
               var parser = try? SteamKeyValues(record), let tree = try? parser.read(),
               let app = tree["AppState"], app["appid"]?.string == "730" else {
-            result.state = "install-record-unavailable"; return result
+            result.state = shouldContinue() ? "install-record-unavailable" : "stopped-unmeasured"; return result
         }
         let installed = (app["InstalledDepots"]?.fields ?? [:]).compactMap { name, entry -> (UInt32, UInt64)? in
             guard let depot = UInt32(name), let text = entry["manifest"]?.string, let gid = UInt64(text), gid > 0 else { return nil }
@@ -79,11 +83,11 @@ enum SteamContentIntegrity {
         let roots = [steamApps.appendingPathComponent("depotcache", isDirectory: true),
                      steamApps.deletingLastPathComponent().appendingPathComponent("depotcache", isDirectory: true)]
         for (depot, gid) in installed {
-            guard ProcessInfo.processInfo.systemUptime - start < limits.maxSeconds else { break }
+            guard shouldContinue(), ProcessInfo.processInfo.systemUptime - start < limits.maxSeconds else { break }
             let name = "\(depot)_\(gid).manifest"
             var payload: Data?
             for cache in roots {
-                if let data = readBounded(root: cache, relative: name, maximum: 16 << 20) { payload = data; break }
+                if let data = readBounded(root: cache, relative: name, maximum: 16 << 20, shouldContinue: shouldContinue) { payload = data; break }
             }
             guard let payload, let manifest = try? DepotManifest.parse(depotID: depot, manifestGID: gid, data: payload) else { continue }
             result.references += 1
@@ -95,50 +99,70 @@ enum SteamContentIntegrity {
                 } else { entries[name] = file }
             }
         }
+        guard shouldContinue() else { result.state = "stopped-unmeasured"; return result }
         let rootFD = open(installURL.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
         guard rootFD >= 0 else { result.state = "install-tree-unavailable"; return result }
         defer { close(rootFD) }
         result.state = "bounded-comparison"
         for relative in criticalPaths.prefix(limits.maxFiles) {
+            guard shouldContinue() else {
+                result.state = "stopped-unmeasured"
+                result.findings.append(Finding(relative: relative, state: "stopped-unmeasured", bytes: 0, certificate: "unmeasured")); continue
+            }
             if ProcessInfo.processInfo.systemUptime - start >= limits.maxSeconds {
                 result.findings.append(Finding(relative: relative, state: "time-budget-unmeasured", bytes: 0, certificate: "unmeasured")); continue
             }
+            // Container presence/bounds can be measured without a hash
+            // reference. It never supplies the missing expected content or
+            // establishes cryptographic signature validity.
+            let fd = openRelative(rootFD, relative)
+            defer { if fd >= 0 { close(fd) } }
+            var before = stat()
+            let readable = fd >= 0 && fstat(fd, &before) == 0 && before.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG) && before.st_size >= 0
+            var certificate = readable && (relative.hasSuffix(".dll") || relative.hasSuffix(".exe"))
+                ? peCertificate(fd, size: UInt64(before.st_size), shouldContinue: shouldContinue) : "unmeasured"
+            var package = readable && relative.hasSuffix("_dir.vpk")
+                ? vpkSignature(fd, size: UInt64(before.st_size), shouldContinue: shouldContinue) : "not-vpk"
+            var metadataAfter = stat()
+            if readable && (fstat(fd, &metadataAfter) != 0 || !unchanged(before, metadataAfter)) {
+                certificate = "changed-unmeasured"; package = "changed-unmeasured"
+            }
+            guard shouldContinue() else {
+                result.state = "stopped-unmeasured"
+                result.findings.append(Finding(relative: relative, state: "stopped-unmeasured", bytes: 0, certificate: "unmeasured")); continue
+            }
+            func finding(_ state: String, _ bytes: UInt64 = 0) -> Finding {
+                Finding(relative: relative, state: state, bytes: bytes,
+                        certificate: relative.hasSuffix(".vpk") ? "not-pe" : certificate, packageSignature: package)
+            }
             guard !conflicting.contains(relative), let file = entries[relative] else {
-                result.findings.append(Finding(relative: relative, state: conflicting.contains(relative) ? "reference-conflict" : "reference-unavailable", bytes: 0, certificate: "unmeasured")); continue
+                result.findings.append(finding(conflicting.contains(relative) ? "reference-conflict" : "reference-unavailable")); continue
             }
             // Valve customizes CustomExecutable files per user; a depot hash
             // is not a valid expected installed hash for these files.
             guard file.flags & DepotManifest.customExecutableFlag == 0 else {
-                result.findings.append(Finding(relative: relative, state: "steam-customized-unmeasured", bytes: 0, certificate: "unmeasured")); continue
+                result.findings.append(finding("steam-customized-unmeasured")); continue
             }
             guard let expected = file.contentSHA1, expected.count == Int(CC_SHA1_DIGEST_LENGTH) else {
-                result.findings.append(Finding(relative: relative, state: "file-hash-unavailable", bytes: 0, certificate: "unmeasured")); continue
+                result.findings.append(finding("file-hash-unavailable")); continue
             }
             guard file.size <= limits.maxBytes - min(result.bytes, limits.maxBytes) else {
-                result.findings.append(Finding(relative: relative, state: "byte-budget-unmeasured", bytes: 0, certificate: "unmeasured")); continue
+                result.findings.append(finding("byte-budget-unmeasured")); continue
             }
-            let fd = openRelative(rootFD, relative)
-            guard fd >= 0 else {
-                result.findings.append(Finding(relative: relative, state: "file-unavailable", bytes: 0, certificate: "unmeasured")); continue
-            }
-            defer { close(fd) }
-            var before = stat()
-            guard fstat(fd, &before) == 0, before.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG), before.st_size >= 0 else {
-                result.findings.append(Finding(relative: relative, state: "file-unavailable", bytes: 0, certificate: "unmeasured")); continue
-            }
-            let certificate = relative.hasSuffix(".dll") || relative.hasSuffix(".exe") ? peCertificate(fd, size: UInt64(before.st_size)) : "not-pe"
+            guard readable else { result.findings.append(finding("file-unavailable")); continue }
             guard UInt64(before.st_size) == file.size else {
-                result.findings.append(Finding(relative: relative, state: "size-mismatch", bytes: 0, certificate: certificate)); continue
+                result.findings.append(finding("size-mismatch")); continue
             }
-            let hashed = hash(fd, size: file.size, deadline: start + limits.maxSeconds)
+            let hashed = hash(fd, size: file.size, deadline: start + limits.maxSeconds, shouldContinue: shouldContinue)
             result.bytes += hashed.bytes
             var after = stat()
             let stable = fstat(fd, &after) == 0 && unchanged(before, after)
             let state: String
-            if !stable { state = "changed-during-read" }
+            if !shouldContinue() { state = "stopped-unmeasured"; result.state = state }
+            else if !stable { state = "changed-during-read" }
             else if let digest = hashed.digest { state = digest == expected ? "cache-hash-match" : "cache-hash-mismatch" }
             else { state = "read-incomplete-unmeasured" }
-            result.findings.append(Finding(relative: relative, state: state, bytes: hashed.bytes, certificate: certificate))
+            result.findings.append(finding(state, hashed.bytes))
         }
         return result
     }
@@ -180,7 +204,7 @@ enum SteamContentIntegrity {
         return current
     }
 
-    private static func readBounded(root: URL, relative: String, maximum: Int) -> Data? {
+    private static func readBounded(root: URL, relative: String, maximum: Int, shouldContinue: () -> Bool) -> Data? {
         let rootFD = open(root.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
         guard rootFD >= 0 else { return nil }
         defer { close(rootFD) }
@@ -191,9 +215,15 @@ enum SteamContentIntegrity {
         guard fstat(fd, &before) == 0, before.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG),
               before.st_size >= 0, before.st_size <= off_t(maximum) else { return nil }
         var data = Data(count: Int(before.st_size))
-        let count = data.withUnsafeMutableBytes { pread(fd, $0.baseAddress, $0.count, 0) }
+        var offset = 0
+        while offset < data.count {
+            guard shouldContinue() else { return nil }
+            let count = data.withUnsafeMutableBytes { pread(fd, $0.baseAddress! + offset, min(1 << 20, $0.count - offset), off_t(offset)) }
+            guard count > 0 else { return nil }
+            offset += count
+        }
         var after = stat()
-        guard count == data.count, fstat(fd, &after) == 0, unchanged(before, after) else { return nil }
+        guard fstat(fd, &after) == 0, unchanged(before, after) else { return nil }
         return data
     }
 
@@ -208,13 +238,13 @@ enum SteamContentIntegrity {
         #endif
     }
 
-    private static func hash(_ fd: Int32, size: UInt64, deadline: TimeInterval) -> (digest: Data?, bytes: UInt64) {
+    private static func hash(_ fd: Int32, size: UInt64, deadline: TimeInterval, shouldContinue: () -> Bool) -> (digest: Data?, bytes: UInt64) {
         var context = CC_SHA1_CTX()
         CC_SHA1_Init(&context)
         var bytes: UInt64 = 0
         var buffer = [UInt8](repeating: 0, count: 1 << 20)
         while bytes < size {
-            guard ProcessInfo.processInfo.systemUptime < deadline else { return (nil, bytes) }
+            guard shouldContinue(), ProcessInfo.processInfo.systemUptime < deadline else { return (nil, bytes) }
             let wanted = Int(min(UInt64(buffer.count), size - bytes))
             let got = buffer.withUnsafeMutableBytes { pread(fd, $0.baseAddress, wanted, off_t(bytes)) }
             guard got > 0 else { return (nil, bytes) }
@@ -228,9 +258,9 @@ enum SteamContentIntegrity {
 
     /// PE security-directory bounds/presence only, not certificate validation.
     /// The directory address is a FILE OFFSET, never an image RVA.
-    private static func peCertificate(_ fd: Int32, size: UInt64) -> String {
+    private static func peCertificate(_ fd: Int32, size: UInt64, shouldContinue: () -> Bool) -> String {
         func read(_ offset: UInt64, _ count: Int) -> Data? {
-            guard offset <= size, UInt64(count) <= size - offset else { return nil }
+            guard shouldContinue(), offset <= size, UInt64(count) <= size - offset else { return nil }
             var bytes = Data(count: count)
             let got = bytes.withUnsafeMutableBytes { pread(fd, $0.baseAddress, count, off_t(offset)) }
             return got == count ? bytes : nil
@@ -247,8 +277,12 @@ enum SteamContentIntegrity {
         let offset = UInt64(u32(optional, dirStart + 32)), length = UInt64(u32(optional, dirStart + 36))
         if offset == 0 && length == 0 { return "absent" }
         guard offset > 0, offset % 8 == 0, length >= 8, offset <= size, length <= size - offset else { return "table-out-of-file" }
+        guard length <= 1 << 20 else { return "table-limit-unmeasured" }
         var cursor: UInt64 = 0
+        var records = 0
         while cursor < length {
+            records += 1
+            guard shouldContinue(), records <= 32 else { return "table-limit-unmeasured" }
             guard length - cursor >= 8, let header = read(offset + cursor, 8) else { return "table-invalid" }
             let record = UInt64(u32(header, 0))
             guard record > 8, record <= length - cursor, u16(header, 4) == 0x200, u16(header, 6) == 2 else { return "table-invalid" }
@@ -257,5 +291,35 @@ enum SteamContentIntegrity {
             cursor += rounded
         }
         return "table-present-unverified"
+    }
+
+    /// Only directory VPK v2 has this structured signature section. The
+    /// public key and signature bytes are not exported or trusted here.
+    private static func vpkSignature(_ fd: Int32, size: UInt64, shouldContinue: () -> Bool) -> String {
+        func read(_ offset: UInt64, _ count: Int) -> Data? {
+            guard shouldContinue(), offset <= size, UInt64(count) <= size - offset else { return nil }
+            var bytes = Data(count: count)
+            let got = bytes.withUnsafeMutableBytes { pread(fd, $0.baseAddress, count, off_t(offset)) }
+            return got == count ? bytes : nil
+        }
+        func u32(_ data: Data, _ offset: Int) -> UInt32 {
+            UInt32(data[offset]) | UInt32(data[offset + 1]) << 8 |
+                UInt32(data[offset + 2]) << 16 | UInt32(data[offset + 3]) << 24
+        }
+        guard let first = read(0, 12), u32(first, 0) == 0x55aa1234 else { return "header-invalid" }
+        if u32(first, 4) == 1 { return "v1-section-unavailable" }
+        guard u32(first, 4) == 2, let header = read(0, 28) else { return "version-unavailable" }
+        let signatureStart = UInt64(28) + UInt64(u32(header, 8)) + UInt64(u32(header, 12)) +
+            UInt64(u32(header, 16)) + UInt64(u32(header, 20))
+        let length = UInt64(u32(header, 24))
+        guard signatureStart <= size, length <= size - signatureStart else { return "section-out-of-file" }
+        if length == 0 { return "absent" }
+        guard length >= 8, let keyHeader = read(signatureStart, 4) else { return "section-invalid" }
+        let keyBytes = UInt64(u32(keyHeader, 0))
+        guard keyBytes > 0, keyBytes <= 16384, keyBytes <= length - 8,
+              let signatureHeader = read(signatureStart + 4 + keyBytes, 4) else { return "section-invalid" }
+        let signatureBytes = UInt64(u32(signatureHeader, 0))
+        guard signatureBytes > 0, signatureBytes <= 16384, 8 + keyBytes + signatureBytes == length else { return "section-invalid" }
+        return "section-present-unverified"
     }
 }
