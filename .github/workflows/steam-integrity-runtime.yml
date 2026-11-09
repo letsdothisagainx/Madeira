@@ -19,12 +19,12 @@ jobs:
         run: |
           set -o pipefail
           {
-            python3 tests/host/check-hardware-input.py
-            python3 tests/host/check-pointer-geometry.py
-            python3 tests/host/check-pointer-capture.py
-            python3 tests/host/check-clipboard-paste.py
-            python3 tests/host/check-control-presets.py
-            python3 tests/host/check-pad-output.py
+            python3 tests/host/check-hardware-input.py || exit "$?"
+            python3 tests/host/check-pointer-geometry.py || exit "$?"
+            python3 tests/host/check-pointer-capture.py || exit "$?"
+            python3 tests/host/check-clipboard-paste.py || exit "$?"
+            python3 tests/host/check-control-presets.py || exit "$?"
+            python3 tests/host/check-pad-output.py || exit "$?"
           } | tee input-preservation.txt
       - uses: actions/upload-artifact@v4
         if: always()
