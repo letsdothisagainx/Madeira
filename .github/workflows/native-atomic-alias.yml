@@ -32,3 +32,10 @@ jobs:
           path: native-srw-throughput.txt
           if-no-files-found: ignore
           retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: native-srw-assembly
+          path: ${{ runner.temp }}/madeira-srw-history-diagnostics/srw-history.s
+          if-no-files-found: ignore
+          retention-days: 14
