@@ -4,6 +4,9 @@
 
 import Foundation
 import CommonCrypto
+#if canImport(Security)
+import Security
+#endif
 #if canImport(Darwin)
 import Darwin
 #else
@@ -27,8 +30,13 @@ enum SteamContentIntegrity {
         let bytes: UInt64
         let certificate: String
         var packageSignature = "not-vpk"
+        var packageDetails = ""
+        var currentSHA1 = "unmeasured"
+        var referenceSHA1 = "unavailable"
         var line: String {
-            "[steam-content-audit-v1] app=730 relative=\(relative) state=\(state) bytes=\(bytes) certificate=\(certificate) vpk-signature=\(packageSignature) trust=unmeasured"
+            let extra = relative.hasSuffix("_dir.vpk")
+                ? " \(packageDetails) current-sha1=\(currentSHA1) reference-sha1=\(referenceSHA1) hash-source=\(currentSHA1 == "unmeasured" ? "unmeasured" : "current-file-read")" : ""
+            return "[steam-content-audit-v1] app=730 relative=\(relative) state=\(state) bytes=\(bytes) certificate=\(certificate) vpk-signature=\(packageSignature)\(extra) trust=unmeasured"
         }
     }
 
@@ -121,19 +129,26 @@ enum SteamContentIntegrity {
             let readable = fd >= 0 && fstat(fd, &before) == 0 && before.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG) && before.st_size >= 0
             var certificate = readable && (relative.hasSuffix(".dll") || relative.hasSuffix(".exe"))
                 ? peCertificate(fd, size: UInt64(before.st_size), shouldContinue: shouldContinue) : "unmeasured"
+            let available = limits.maxBytes - min(result.bytes, limits.maxBytes)
+            let reserveSHA1 = readable ? min(UInt64(before.st_size), available) : 0
             var package = readable && relative.hasSuffix("_dir.vpk")
-                ? vpkSignature(fd, size: UInt64(before.st_size), shouldContinue: shouldContinue) : "not-vpk"
+                ? vpkSignature(fd, size: UInt64(before.st_size), byteBudget: available - reserveSHA1,
+                               deadline: start + limits.maxSeconds, shouldContinue: shouldContinue) : VPKObservation()
+            result.bytes += package.readBytes
             var metadataAfter = stat()
             if readable && (fstat(fd, &metadataAfter) != 0 || !unchanged(before, metadataAfter)) {
-                certificate = "changed-unmeasured"; package = "changed-unmeasured"
+                certificate = "changed-unmeasured"; package.changed()
             }
             guard shouldContinue() else {
                 result.state = "stopped-unmeasured"
                 result.findings.append(Finding(relative: relative, state: "stopped-unmeasured", bytes: 0, certificate: "unmeasured")); continue
             }
-            func finding(_ state: String, _ bytes: UInt64 = 0) -> Finding {
-                Finding(relative: relative, state: state, bytes: bytes,
-                        certificate: relative.hasSuffix(".vpk") ? "not-pe" : certificate, packageSignature: package)
+            func finding(_ state: String, _ bytes: UInt64 = 0, _ current: Data? = nil, _ reference: Data? = nil) -> Finding {
+                func hex(_ data: Data?, unknown: String) -> String { data.map { $0.map { String(format: "%02x", $0) }.joined() } ?? unknown }
+                return Finding(relative: relative, state: state, bytes: bytes,
+                               certificate: relative.hasSuffix(".vpk") ? "not-pe" : certificate,
+                               packageSignature: package.state, packageDetails: package.fields,
+                               currentSHA1: hex(current, unknown: "unmeasured"), referenceSHA1: hex(reference, unknown: "unavailable"))
             }
             guard !conflicting.contains(relative), let file = entries[relative] else {
                 result.findings.append(finding(conflicting.contains(relative) ? "reference-conflict" : "reference-unavailable")); continue
@@ -159,10 +174,10 @@ enum SteamContentIntegrity {
             let stable = fstat(fd, &after) == 0 && unchanged(before, after)
             let state: String
             if !shouldContinue() { state = "stopped-unmeasured"; result.state = state }
-            else if !stable { state = "changed-during-read" }
+            else if !stable { state = "changed-during-read"; package.changed() }
             else if let digest = hashed.digest { state = digest == expected ? "cache-hash-match" : "cache-hash-mismatch" }
             else { state = "read-incomplete-unmeasured" }
-            result.findings.append(finding(state, hashed.bytes))
+            result.findings.append(finding(state, hashed.bytes, stable && shouldContinue() ? hashed.digest : nil, expected))
         }
         return result
     }
@@ -293,11 +308,52 @@ enum SteamContentIntegrity {
         return "table-present-unverified"
     }
 
-    /// Only directory VPK v2 has this structured signature section. The
-    /// public key and signature bytes are not exported or trusted here.
-    private static func vpkSignature(_ fd: Int32, size: UInt64, shouldContinue: () -> Bool) -> String {
+    /// Bounded container observations, never a Valve-key or VAC verdict.
+    private struct VPKObservation {
+        var state = "not-vpk"
+        var reason = "not-vpk"
+        var format = "unknown"
+        var version: UInt32?
+        var type: UInt32?
+        var reserved: UInt32?
+        var offset: UInt64?
+        var declared: UInt64?
+        var keyBytes: UInt64?
+        var signatureBytes: UInt64?
+        var trailerBytes: UInt64?
+        var treeBytes: UInt64?
+        var tableOffset: UInt64?
+        var tableBytes: UInt64?
+        var otherOffset: UInt64?
+        var otherBytes: UInt64?
+        var treeMD5 = "unmeasured"
+        var tableMD5 = "unmeasured"
+        var wholeMD5 = "unmeasured"
+        var crypto = "unmeasured"
+        var readBytes: UInt64 = 0
+        var fields: String {
+            func n<T>(_ value: T?) -> String { value.map { String(describing: $0) } ?? "unmeasured" }
+            return "vpk-format=\(format) vpk-version=\(n(version)) vpk-type=\(n(type)) vpk-reserved=\(n(reserved)) vpk-offset=\(n(offset)) vpk-declared=\(n(declared)) vpk-key-bytes=\(n(keyBytes)) vpk-signature-bytes=\(n(signatureBytes)) vpk-trailing-bytes=\(n(trailerBytes)) vpk-tree-bytes=\(n(treeBytes)) vpk-table-offset=\(n(tableOffset)) vpk-table-bytes=\(n(tableBytes)) vpk-other-offset=\(n(otherOffset)) vpk-other-bytes=\(n(otherBytes)) vpk-reason=\(reason) vpk-tree-md5=\(treeMD5) vpk-table-md5=\(tableMD5) vpk-whole-md5=\(wholeMD5) vpk-crypto=\(crypto) vpk-extra-read-bytes=\(readBytes) key-provenance=embedded-untrusted archive-payloads=not-read vac=unclaimed"
+        }
+        mutating func changed() {
+            state = "changed-unmeasured"; reason = "changed-during-read"
+            treeMD5 = "unmeasured"; tableMD5 = "unmeasured"; wholeMD5 = "unmeasured"; crypto = "unmeasured"
+        }
+    }
+
+    /// The modern descriptor's declared size is 20 bytes. Its key and
+    /// signature follow that descriptor OUTSIDE the declared section size.
+    /// Layout/preimages: pinned ValvePak 037f25e Package.Read/Verify.cs; see
+    /// docs/STEAM_VPK_SIGNATURE_DIAGNOSTICS.md. No embedded key is trusted.
+    private static func vpkSignature(_ fd: Int32, size: UInt64, byteBudget: UInt64,
+                                     deadline: TimeInterval, shouldContinue: () -> Bool) -> VPKObservation {
+        var observation = VPKObservation()
+        func finish(_ state: String, _ reason: String) -> VPKObservation {
+            observation.state = state; observation.reason = reason; return observation
+        }
         func read(_ offset: UInt64, _ count: Int) -> Data? {
-            guard shouldContinue(), offset <= size, UInt64(count) <= size - offset else { return nil }
+            guard shouldContinue(), ProcessInfo.processInfo.systemUptime < deadline,
+                  offset <= size, count >= 0, UInt64(count) <= size - offset else { return nil }
             var bytes = Data(count: count)
             let got = bytes.withUnsafeMutableBytes { pread(fd, $0.baseAddress, count, off_t(offset)) }
             return got == count ? bytes : nil
@@ -306,20 +362,183 @@ enum SteamContentIntegrity {
             UInt32(data[offset]) | UInt32(data[offset + 1]) << 8 |
                 UInt32(data[offset + 2]) << 16 | UInt32(data[offset + 3]) << 24
         }
-        guard let first = read(0, 12), u32(first, 0) == 0x55aa1234 else { return "header-invalid" }
-        if u32(first, 4) == 1 { return "v1-section-unavailable" }
-        guard u32(first, 4) == 2, let header = read(0, 28) else { return "version-unavailable" }
-        let signatureStart = UInt64(28) + UInt64(u32(header, 8)) + UInt64(u32(header, 12)) +
-            UInt64(u32(header, 16)) + UInt64(u32(header, 20))
-        let length = UInt64(u32(header, 24))
-        guard signatureStart <= size, length <= size - signatureStart else { return "section-out-of-file" }
-        if length == 0 { return "absent" }
-        guard length >= 8, let keyHeader = read(signatureStart, 4) else { return "section-invalid" }
-        let keyBytes = UInt64(u32(keyHeader, 0))
-        guard keyBytes > 0, keyBytes <= 16384, keyBytes <= length - 8,
-              let signatureHeader = read(signatureStart + 4 + keyBytes, 4) else { return "section-invalid" }
-        let signatureBytes = UInt64(u32(signatureHeader, 0))
-        guard signatureBytes > 0, signatureBytes <= 16384, 8 + keyBytes + signatureBytes == length else { return "section-invalid" }
-        return "section-present-unverified"
+        guard let first = read(0, 12) else { return finish("header-unmeasured", "header-unreadable") }
+        observation.version = u32(first, 4)
+        guard u32(first, 0) == 0x55aa1234 else { return finish("header-invalid", "header-magic") }
+        if observation.version == 1 { return finish("v1-section-unavailable", "v1-no-signature-section") }
+        guard observation.version == 2 else { return finish("format-unsupported-unmeasured", "version-unsupported") }
+        guard let header = read(0, 28) else { return finish("header-unmeasured", "v2-header-unreadable") }
+        let treeSize = UInt64(u32(header, 8)), dataSize = UInt64(u32(header, 12))
+        let tableSize = UInt64(u32(header, 16)), otherSize = UInt64(u32(header, 20))
+        let tableOffset = UInt64(28) + treeSize + dataSize
+        let otherOffset = tableOffset + tableSize
+        let signatureStart = otherOffset + otherSize
+        let declared = UInt64(u32(header, 24))
+        observation.offset = signatureStart; observation.declared = declared
+        observation.treeBytes = treeSize; observation.tableOffset = tableOffset; observation.tableBytes = tableSize
+        observation.otherOffset = otherOffset; observation.otherBytes = otherSize
+        guard signatureStart <= size, declared <= size - signatureStart else { return finish("section-out-of-file", "declared-section-bounds") }
+        if declared == 0 { return finish("absent", "no-signature-section") }
+        guard declared >= 4, let firstWord = read(signatureStart, 4) else { return finish("section-invalid", "length-field-unreadable") }
+        let marker = u32(firstWord, 0)
+        var keyOffset: UInt64, signatureOffset: UInt64, keyLength: UInt64, signatureLength: UInt64
+        if marker == 0x55aa1234 {
+            observation.format = "descriptor20"
+            guard declared == 20 else { return finish("format-unsupported-unmeasured", "descriptor-size-unsupported") }
+            guard let descriptor = read(signatureStart, 20) else { return finish("section-invalid", "descriptor-truncated") }
+            observation.type = u32(descriptor, 4); observation.reserved = u32(descriptor, 16)
+            keyLength = UInt64(u32(descriptor, 8)); signatureLength = UInt64(u32(descriptor, 12))
+            observation.keyBytes = keyLength; observation.signatureBytes = signatureLength
+            guard keyLength < 0x80000000, signatureLength < 0x80000000 else { return finish("section-invalid", "negative-length") }
+            // Only type 1's descriptor/preimage is independently exercised by
+            // the signed CS2 reference. Unknown/reserved forms stay unknown.
+            guard observation.type == 1 else { return finish("format-unsupported-unmeasured", "descriptor-type-unsupported") }
+            guard observation.reserved == 0 else { return finish("format-unsupported-unmeasured", "reserved-unsupported") }
+            keyOffset = signatureStart + 20
+            guard keyLength <= size - keyOffset else { return finish("section-out-of-file", "descriptor-key-truncated") }
+            signatureOffset = keyOffset + keyLength
+            guard signatureLength <= size - signatureOffset else { return finish("section-out-of-file", "descriptor-signature-truncated") }
+        } else {
+            observation.format = "legacy-inline"; observation.type = 0
+            keyLength = UInt64(marker); observation.keyBytes = keyLength
+            guard keyLength < 0x80000000 else { return finish("section-invalid", "negative-length") }
+            guard declared >= 8, keyLength <= declared - 8 else { return finish("section-invalid", "legacy-key-bounds") }
+            keyOffset = signatureStart + 4
+            guard let lengthWord = read(keyOffset + keyLength, 4) else { return finish("section-invalid", "legacy-signature-length-unreadable") }
+            signatureLength = UInt64(u32(lengthWord, 0)); observation.signatureBytes = signatureLength
+            guard signatureLength < 0x80000000 else { return finish("section-invalid", "negative-length") }
+            guard 8 + keyLength + signatureLength == declared else { return finish("section-invalid", "legacy-payload-bounds") }
+            signatureOffset = keyOffset + keyLength + 4
+        }
+        let end = signatureOffset + signatureLength
+        observation.trailerBytes = size - end
+        guard end == size else { return finish("format-unsupported-unmeasured", "trailing-bytes-unsupported") }
+        guard keyLength <= 16384, signatureLength <= 16384 else { return finish("length-limit-unmeasured", "audit-key-signature-limit") }
+        let unsigned = keyLength == 0 && signatureLength == 0
+        guard unsigned || (keyLength > 0 && signatureLength > 0) else { return finish("section-incomplete-unmeasured", "unpaired-key-signature") }
+        observation.state = unsigned ? "absent" : "section-present-unverified"
+        observation.reason = unsigned ? "descriptor-without-signature" : "bounded-known-layout"
+
+        // No numbered archive payloads are read. These are the three hashes
+        // stored in the directory file's OtherMD5 block, from current bytes.
+        guard otherSize >= 48, let expected = read(otherOffset, 48) else {
+            observation.crypto = "checksum-preimage-unavailable"; return observation
+        }
+        let md5Cost = treeSize + tableSize + otherOffset + 32
+        let shaCost: UInt64 = observation.format == "legacy-inline" && !unsigned ? signatureStart : 0
+        guard md5Cost <= byteBudget, shaCost <= byteBudget - md5Cost else {
+            observation.crypto = "byte-budget-unmeasured"; return observation
+        }
+        func digest(_ offset: UInt64, _ length: UInt64, sha256: Bool = false) -> Data? {
+            let result = hashRange(fd, offset: offset, size: length, sha256: sha256,
+                                   deadline: deadline, shouldContinue: shouldContinue)
+            observation.readBytes += result.bytes
+            return result.digest
+        }
+        guard let tree = digest(28, treeSize), let table = digest(tableOffset, tableSize),
+              let whole = digest(0, otherOffset + 32) else {
+            observation.crypto = "read-incomplete-unmeasured"; return observation
+        }
+        observation.treeMD5 = tree == expected.subdata(in: 0..<16) ? "match" : "mismatch"
+        observation.tableMD5 = table == expected.subdata(in: 16..<32) ? "match" : "mismatch"
+        observation.wholeMD5 = whole == expected.subdata(in: 32..<48) ? "match" : "mismatch"
+        if unsigned { observation.crypto = "absent"; return observation }
+        let signedDigest: Data
+        if observation.format == "descriptor20" {
+            guard observation.wholeMD5 == "match" else { observation.crypto = "preimage-checksum-mismatch"; return observation }
+            var bytes = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
+            whole.withUnsafeBytes { _ = CC_SHA256($0.baseAddress, CC_LONG(whole.count), &bytes) }
+            signedDigest = Data(bytes)
+        } else {
+            guard let value = digest(0, signatureStart, sha256: true) else { observation.crypto = "read-incomplete-unmeasured"; return observation }
+            signedDigest = value
+        }
+        guard shouldContinue(), ProcessInfo.processInfo.systemUptime < deadline,
+              let key = read(keyOffset, Int(keyLength)), let signature = read(signatureOffset, Int(signatureLength)) else {
+            observation.crypto = "read-incomplete-unmeasured"; return observation
+        }
+        observation.crypto = rsaConsistency(spki: key, signature: signature, digest: signedDigest)
+        return observation
+    }
+
+    private static func hashRange(_ fd: Int32, offset: UInt64, size: UInt64, sha256: Bool,
+                                  deadline: TimeInterval, shouldContinue: () -> Bool) -> (digest: Data?, bytes: UInt64) {
+        var md5 = CC_MD5_CTX(), sha = CC_SHA256_CTX()
+        if sha256 { CC_SHA256_Init(&sha) } else { CC_MD5_Init(&md5) }
+        var bytes: UInt64 = 0
+        var buffer = [UInt8](repeating: 0, count: 1 << 20)
+        while bytes < size {
+            guard shouldContinue(), ProcessInfo.processInfo.systemUptime < deadline else { return (nil, bytes) }
+            let wanted = Int(min(UInt64(buffer.count), size - bytes))
+            let got = buffer.withUnsafeMutableBytes { pread(fd, $0.baseAddress, wanted, off_t(offset + bytes)) }
+            guard got > 0 else { return (nil, bytes) }
+            buffer.withUnsafeBytes {
+                if sha256 { _ = CC_SHA256_Update(&sha, $0.baseAddress, CC_LONG(got)) }
+                else { _ = CC_MD5_Update(&md5, $0.baseAddress, CC_LONG(got)) }
+            }
+            bytes += UInt64(got)
+        }
+        var digest = [UInt8](repeating: 0, count: sha256 ? Int(CC_SHA256_DIGEST_LENGTH) : Int(CC_MD5_DIGEST_LENGTH))
+        if sha256 { CC_SHA256_Final(&digest, &sha) } else { CC_MD5_Final(&digest, &md5) }
+        return (Data(digest), bytes)
+    }
+
+    /// Extract only an RSA SubjectPublicKeyInfo's PKCS#1 public-key object.
+    /// SecKey's RSA external representation is PKCS#1, not the SPKI wrapper.
+    private static func rsaPKCS1(_ data: Data) -> Data? {
+        let bytes = [UInt8](data)
+        func item(_ position: inout Int, _ end: Int, _ tag: UInt8) -> Range<Int>? {
+            guard position + 2 <= end, bytes[position] == tag else { return nil }
+            position += 1
+            let first = Int(bytes[position]); position += 1
+            var length = first
+            if first & 0x80 != 0 {
+                let count = first & 0x7f
+                guard count > 0, count <= 4, count <= end - position, bytes[position] != 0 else { return nil }
+                length = 0
+                for _ in 0..<count { length = length << 8 | Int(bytes[position]); position += 1 }
+                guard length >= 128 else { return nil }
+            }
+            guard length <= end - position else { return nil }
+            let range = position..<(position + length); position += length; return range
+        }
+        var position = 0
+        guard let sequence = item(&position, bytes.count, 0x30), position == bytes.count else { return nil }
+        var inside = sequence.lowerBound
+        guard let algorithm = item(&inside, sequence.upperBound, 0x30) else { return nil }
+        let rsaOID: [UInt8] = [0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01]
+        let algorithmBytes = Array(bytes[algorithm])
+        guard algorithmBytes == rsaOID || algorithmBytes == rsaOID + [0x05, 0] else { return nil }
+        guard let bits = item(&inside, sequence.upperBound, 0x03), inside == sequence.upperBound,
+              bits.count > 1, bytes[bits.lowerBound] == 0 else { return nil }
+        let start = bits.lowerBound + 1
+        var key = start
+        guard let integers = item(&key, bits.upperBound, 0x30), key == bits.upperBound else { return nil }
+        var integer = integers.lowerBound
+        guard let modulus = item(&integer, integers.upperBound, 0x02), !modulus.isEmpty,
+              let exponent = item(&integer, integers.upperBound, 0x02), !exponent.isEmpty,
+              integer == integers.upperBound, bytes[modulus.lowerBound] & 0x80 == 0,
+              bytes[exponent.lowerBound] & 0x80 == 0 else { return nil }
+        for value in [modulus, exponent] {
+            if value.count > 1 && bytes[value.lowerBound] == 0 && bytes[value.lowerBound + 1] & 0x80 == 0 { return nil }
+            guard bytes[value].contains(where: { $0 != 0 }) else { return nil }
+        }
+        return Data(bytes[start..<bits.upperBound])
+    }
+
+    private static func rsaConsistency(spki: Data, signature: Data, digest: Data) -> String {
+        guard let pkcs1 = rsaPKCS1(spki) else { return "key-format-unmeasured" }
+        #if canImport(Security)
+        let attributes: [String: Any] = [kSecAttrKeyType as String: kSecAttrKeyTypeRSA, kSecAttrKeyClass as String: kSecAttrKeyClassPublic]
+        var error: Unmanaged<CFError>?
+        defer { error?.release() }
+        guard let key = SecKeyCreateWithData(pkcs1 as CFData, attributes as CFDictionary, &error) else { return "key-import-unmeasured" }
+        let algorithm = SecKeyAlgorithm.rsaSignatureDigestPKCS1v15SHA256
+        guard SecKeyIsAlgorithmSupported(key, .verify, algorithm) else { return "algorithm-unavailable" }
+        return SecKeyVerifySignature(key, algorithm, digest as CFData, signature as CFData, &error)
+            ? "consistent-embedded-key" : "mismatch-embedded-key"
+        #else
+        return "platform-api-unavailable"
+        #endif
     }
 }

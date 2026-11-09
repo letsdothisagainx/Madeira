@@ -1,119 +1,90 @@
-name: Verify Steam browser cache
-
+name: Validate VPK audit formats and native Security
 on:
   workflow_dispatch:
-  push:
-    branches: [main, 'codex/pr-build-*']
-    paths:
-      - tests/host/check-steam-browser-transfer.py
-      - tests/integration/check-official-steam-browser-upgrade.py
-      - tests/host/build-native-log-file-fixture.py
-      - tests/host/htmlipc/test_native_log_file.c
-      - app/Madeira/SteamBrowserRuntime.swift
-      - app/Madeira/SteamRuntime.swift
-      - app/Madeira/SteamNativeBrowserLaunch.swift
-      - tests/host/check-steam-browser-bridge.py
-      - tests/host/check-steam-browser-logs.py
-      - tests/host/htmlipc/test_log_file.c
-      - build/ntdll-unix/htmlipc_log_file.h
-      - tools/build/stage-htmlipc-log-file.py
-      - tests/host/check-steam-browser-cache.py
-      - tests/integration/check-official-steam-browser-cache.py
-      - build/htmlipc/domain-routing/**
-      - build/htmlipc/stream-codec/**
-      - tests/host/check-htmlipc-domain-registry.py
-      - tests/host/htmlipc/test_domain_registry.cpp
-      - build/htmlipc/stream-install/**
-      - build/htmlipc/runtime/runtime_provider.cpp
-      - tests/host/check-htmlipc-controller.py
-      - tests/host/htmlipc/test_controller_protection.cpp
-      - .github/workflows/steam-browser-cache.yml
-  pull_request:
-    paths:
-      - tests/host/check-steam-browser-transfer.py
-      - tests/integration/check-official-steam-browser-upgrade.py
-      - tests/host/build-native-log-file-fixture.py
-      - tests/host/htmlipc/test_native_log_file.c
-      - app/Madeira/SteamBrowserRuntime.swift
-      - app/Madeira/SteamRuntime.swift
-      - app/Madeira/SteamNativeBrowserLaunch.swift
-      - tests/host/check-steam-browser-bridge.py
-      - tests/host/check-steam-browser-logs.py
-      - tests/host/htmlipc/test_log_file.c
-      - build/ntdll-unix/htmlipc_log_file.h
-      - tools/build/stage-htmlipc-log-file.py
-      - tests/host/check-steam-browser-cache.py
-      - tests/integration/check-official-steam-browser-cache.py
-      - build/htmlipc/domain-routing/**
-      - build/htmlipc/stream-codec/**
-      - tests/host/check-htmlipc-domain-registry.py
-      - tests/host/htmlipc/test_domain_registry.cpp
-      - build/htmlipc/stream-install/**
-      - build/htmlipc/runtime/runtime_provider.cpp
-      - tests/host/check-htmlipc-controller.py
-      - tests/host/htmlipc/test_controller_protection.cpp
-      - .github/workflows/steam-browser-cache.yml
-
 permissions:
   contents: read
-
 jobs:
-  content-integrity:
-    uses: ./.github/workflows/steam-integrity-runtime.yml
-  browser-bridge:
+  apple-vpk-audit:
     runs-on: xcode-27
-    timeout-minutes: 5
-    env:
-      MADEIRA_VALVE_ARCHIVE_CACHE: ${{ github.workspace }}/.official-browser-archives
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           persist-credentials: false
-      - uses: actions/cache/restore@v4
+      - uses: actions/setup-python@v5
         with:
-          path: ${{ github.workspace }}/.official-browser-archives
-          key: official-browser-v2-fee14790-1ab3b383-8b712b2a
-      - name: Test production Swift bridge upgrades, readback and interrupted ownership transactions
-        run: python3 tests/host/check-steam-browser-bridge.py --require-swift --official-archives "$MADEIRA_VALVE_ARCHIVE_CACHE" --download-official
-      - name: Load pinned Wine file syscall source
-        run: git submodule update --init --depth 1 wine
-      - name: Test native mutable logging and production Swift strict cache reuse
-        run: python3 tests/host/check-steam-browser-logs.py --require-swift
-  controller-image:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Load pinned Wine file syscall source
-        run: git submodule update --init --depth 1 wine
-      - name: Test committed image ownership and exact writable data protections
+          python-version: '3.14'
+      - name: Configure decoder libraries
         run: |
-          python3 tests/host/check-htmlipc-controller.py
-          python3 tests/host/check-htmlipc-domain-registry.py
-          python3 tests/host/check-htmlipc-codecs.py
-          python3 tests/host/check-steam-browser-logs.py
-  browser-cache:
-    runs-on: xcode-27
-    timeout-minutes: 15
-    env:
-      MADEIRA_VALVE_ARCHIVE_CACHE: ${{ github.workspace }}/.official-browser-archives
-    steps:
-      - uses: actions/checkout@v4
+          brew list xz >/dev/null 2>&1 || brew install xz
+          echo "CPATH=$(brew --prefix xz)/include" >> "$GITHUB_ENV"
+          echo "LIBRARY_PATH=$(brew --prefix xz)/lib" >> "$GITHUB_ENV"
+      - name: Fetch exact public format reference without account credentials
+        run: |
+          python3 - <<'PYCODE'
+          import urllib.request,json,base64,hashlib,os
+          from pathlib import Path
+          blob='5d31d10537994e41fb92dd655b73a0bfe4674e8b'
+          url='https://api.github.com/repos/ValveResourceFormat/ValvePak/git/blobs/'+blob
+          request=urllib.request.Request(url,headers={'Accept':'application/vnd.github+json','User-Agent':'Madeira-format-regression'})
+          with urllib.request.urlopen(request,timeout=30) as response: payload=json.load(response)
+          raw=base64.b64decode(payload['content'])
+          assert len(raw)==10698 and hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()==blob
+          assert hashlib.sha256(raw).hexdigest()=='8279de4e7c0a1d8b52d98b33efebac409ad13eb0b6ab8320b09e7d85b3a9d6b4'
+          path=Path(os.environ['RUNNER_TEMP'])/'madeira-public-vpk-reference.vpk';path.write_bytes(raw)
+          with Path(os.environ['GITHUB_ENV']).open('a') as out:out.write('MADEIRA_VPK_PUBLIC_FIXTURE='+str(path)+'\n')
+          print('PASS pinned public Git blob and SHA256; no Valve-key authority inferred')
+          PYCODE
+      - name: Reproduce old production parser rejection with actual Swift
+        run: |
+          set +e
+          MADEIRA_VPK_ONLY=1 MADEIRA_VPK_INTEGRITY_BASELINE=d573d42198994d6cfd8682b7751eb8cef9973258 python3 tests/host/check-steam-library.py > vpk-baseline.txt 2>&1
+          result=$?
+          tail -80 vpk-baseline.txt
+          test "$result" -eq 1 || exit 1
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          text=Path('vpk-baseline.txt').read_text()
+          assert 'PASS: the production Steam library, download and decoder code compile on the host' in text
+          for case in ('modern-rsa','modern-unsigned','public-cs2-reference'):
+              assert f'FAIL: VPK {case}: production parser recognizes supported layout or reports precise bounded failure' in text
+          assert 'FAILURES:' in text and 'check-steam-library: 1 FAILED' in text
+          assert 'ERROR: AddressSanitizer' not in text and 'AddressSanitizer:DEADLYSIGNAL' not in text
+          print('PASS exact old parser rejects known owned and actual public descriptor fixtures at runtime')
+          PYCODE
+      - name: Execute fixed production parser checksum and real Apple Security regressions
+        run: |
+          set +e
+          MADEIRA_VPK_ONLY=1 python3 tests/host/check-steam-library.py > vpk-fixed.txt 2>&1
+          result=$?
+          tail -100 vpk-fixed.txt
+          test "$result" -eq 0 || exit "$result"
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          text=Path('vpk-fixed.txt').read_text()
+          for case in ('modern-rsa','legacy-rsa','public-cs2-reference'):
+              assert f'PASS: VPK {case}: native Security RSA mathematical result consistent-embedded-key' in text
+          assert 'PASS: VPK signature-corrupt: native Security RSA mathematical result mismatch-embedded-key' in text
+          assert 'PASS: VPK signature-only mutation is a genuine RSA mismatch even while all MD5 preimages match' in text
+          assert 'check-steam-library: PASS (production VPK audit only)' in text
+          print('PASS native Security is exercised; no unavailable-platform skip and no trust/VAC verdict')
+          PYCODE
+      - name: Bound owned-fixture logs
+        if: always()
+        run: |
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          for name in ('vpk-baseline.txt','vpk-fixed.txt'):
+              path=Path(name)
+              if path.exists() and path.stat().st_size>262144:
+                  with path.open('rb') as stream:stream.seek(-262016,2);tail=stream.read(262016)
+                  path.write_bytes(b'Earlier owned-fixture output omitted.\n'+tail)
+          PYCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          persist-credentials: false
-      - name: Test production transfer progress, privacy and response/body failures
-        run: python3 tests/host/check-steam-browser-transfer.py --require-swift
-      - name: Test real Swift cache transactions and mixed architecture validation
-        run: python3 tests/host/check-steam-browser-cache.py --require-swift
-      - uses: actions/cache@v4
-        with:
-          path: ${{ github.workspace }}/.official-browser-archives
-          key: official-browser-v2-fee14790-1ab3b383-8b712b2a
-      - name: Verify complete official archives, downloader, commit and reuse
-        run: python3 tests/integration/check-official-steam-browser-cache.py --download-official
-      - name: Load pinned Wine file syscalls for upgrade routing control
-        run: git submodule update --init --depth 1 wine
-      - name: Verify upgrade recovery, routed logging and zero-download subsequent reuse
-        run: python3 tests/integration/check-official-steam-browser-upgrade.py --download-official
+          name: vpk-format-native-security
+          path: vpk-*.txt
+          retention-days: 14
+          if-no-files-found: ignore

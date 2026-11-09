@@ -369,6 +369,70 @@ def shared_depot():
     return Depot(9003, KEY_SHARED, [dict(name='shared/lib.dat', data=data(30000, 6), chunks=[('zip', 30000)])])
 
 
+def vpk_cases(directory):
+    """Owned RSA fixtures for the production reader; public file is optional and pinned."""
+    key = directory / 'vpk-owned-rsa.pem'
+    subprocess.run(['openssl', 'genrsa', '-out', str(key), '2048'], check=True, capture_output=True)
+    public = subprocess.check_output(['openssl', 'rsa', '-in', str(key), '-pubout', '-outform', 'DER'], stderr=subprocess.DEVNULL)
+    def sign(message):
+        return subprocess.run(['openssl', 'dgst', '-sha256', '-sign', str(key)], input=message, check=True, capture_output=True).stdout
+    tree, embedded, table = bytes(3), b'owned-fixture-content', bytes(28)
+    def make(modern=True, unsigned=False):
+        declared = 20 if modern else 8 + len(public) + 256
+        header = struct.pack('<7I', 0x55aa1234, 2, len(tree), len(embedded), len(table), 48, declared)
+        prefix = header + tree + embedded + table + hashlib.md5(tree).digest() + hashlib.md5(table).digest()
+        whole = hashlib.md5(prefix).digest(); signed = prefix + whole
+        if modern:
+            signature = b'' if unsigned else sign(whole)
+            key_bytes = b'' if unsigned else public
+            return signed + struct.pack('<5I', 0x55aa1234, 1, len(key_bytes), len(signature), 0) + key_bytes + signature
+        signature = sign(signed)
+        return signed + struct.pack('<I', len(public)) + public + struct.pack('<I', len(signature)) + signature
+    modern, legacy, unsigned = make(), make(modern=False), make(unsigned=True)
+    offset = 28 + len(tree) + len(embedded) + len(table) + 48
+    def mutate(blob, position, value):
+        result = bytearray(blob); struct.pack_into('<I', result, position, value); return bytes(result)
+    def flip(blob, position):
+        result = bytearray(blob); result[position] ^= 1; return bytes(result)
+    known = 'vpk-tree-md5=match vpk-table-md5=match vpk-whole-md5=match'
+    result = []
+    def add(name, data, state='section-present-unverified', fields='', crypto=None):
+        item=dict(name=name,data=data.hex(),state=state,fields=fields)
+        if crypto is not None:item['crypto']=crypto
+        result.append(item)
+    add('modern-rsa', modern, fields='vpk-format=descriptor20 vpk-version=2 vpk-type=1 vpk-declared=20 vpk-reserved=0 vpk-trailing-bytes=0 '+known, crypto='consistent-embedded-key')
+    add('legacy-rsa', legacy, fields='vpk-format=legacy-inline vpk-type=0 '+known, crypto='consistent-embedded-key')
+    add('modern-unsigned', unsigned, 'absent', fields='vpk-reason=descriptor-without-signature '+known, crypto='absent')
+    add('signature-corrupt', flip(modern,len(modern)-1), fields=known, crypto='mismatch-embedded-key')
+    add('tree-corrupt', flip(modern,28), fields='vpk-tree-md5=mismatch vpk-table-md5=match vpk-whole-md5=mismatch', crypto='preimage-checksum-mismatch')
+    add('table-corrupt', flip(modern,28+len(tree)+len(embedded)), fields='vpk-tree-md5=match vpk-table-md5=mismatch vpk-whole-md5=mismatch', crypto='preimage-checksum-mismatch')
+    add('stored-whole-corrupt', flip(modern,offset-1), fields='vpk-whole-md5=mismatch', crypto='preimage-checksum-mismatch')
+    add('unknown-type', mutate(modern,offset+4,7), 'format-unsupported-unmeasured', fields='vpk-reason=descriptor-type-unsupported')
+    add('descriptor-type0-unproven', mutate(modern,offset+4,0), 'format-unsupported-unmeasured', fields='vpk-reason=descriptor-type-unsupported')
+    add('reserved-unknown', mutate(modern,offset+16,1), 'format-unsupported-unmeasured', fields='vpk-reason=reserved-unsupported')
+    add('negative-key', mutate(modern,offset+8,0xffffffff), 'section-invalid', fields='vpk-reason=negative-length')
+    add('negative-signature', mutate(modern,offset+12,0xffffffff), 'section-invalid', fields='vpk-reason=negative-length')
+    add('truncated-key', modern[:offset+21], 'section-out-of-file', fields='vpk-reason=descriptor-key-truncated')
+    add('truncated-signature', modern[:-1], 'section-out-of-file', fields='vpk-reason=descriptor-signature-truncated')
+    add('truncated-descriptor', modern[:offset+10], 'section-out-of-file', fields='vpk-reason=declared-section-bounds')
+    add('descriptor-wrong-size', mutate(modern,24,24), 'format-unsupported-unmeasured', fields='vpk-reason=descriptor-size-unsupported')
+    add('trailing-unknown', modern+b'unknown', 'format-unsupported-unmeasured', fields='vpk-reason=trailing-bytes-unsupported vpk-trailing-bytes=7')
+    add('unpaired-payload', mutate(modern[:offset+20]+bytes(256),offset+8,0), 'section-incomplete-unmeasured', fields='vpk-reason=unpaired-key-signature')
+    add('bad-spki', flip(modern,offset+20), fields=known, crypto='key-format-unmeasured')
+    add('unsupported-version', mutate(modern,4,3), 'format-unsupported-unmeasured', fields='vpk-reason=version-unsupported')
+    add('v1', struct.pack('<3I',0x55aa1234,1,0), 'v1-section-unavailable', fields='vpk-version=1')
+    huge_key = bytes(16385)
+    large = modern[:offset] + struct.pack('<5I',0x55aa1234,1,len(huge_key),1,0) + huge_key + bytes(1)
+    add('policy-size-limit', large, 'length-limit-unmeasured', fields='vpk-reason=audit-key-signature-limit')
+    path=os.environ.get('MADEIRA_VPK_PUBLIC_FIXTURE')
+    if path:
+        raw=Path(path).read_bytes()
+        assert hashlib.sha256(raw).hexdigest()=='8279de4e7c0a1d8b52d98b33efebac409ad13eb0b6ab8320b09e7d85b3a9d6b4', 'pinned public fixture SHA256'
+        add('public-cs2-reference', raw, fields='vpk-format=descriptor20 vpk-type=1 vpk-key-bytes=550 vpk-signature-bytes=512 '+known, crypto='consistent-embedded-key')
+    key.unlink()
+    return result
+
+
 # Known vectors for the decoders (independent of the depot above).
 VEC_PLAIN = data(50000, 7)
 VEC = {kind: steam_encrypt(KEY_MAIN, container(kind, VEC_PLAIN)).hex() for kind in ['zstd', 'lzma', 'zip']}
@@ -464,7 +528,10 @@ CRYPTO_H = r'''
 #include <stddef.h>
 #include <stdint.h>
 #include <openssl/sha.h>
+#include <openssl/md5.h>
 typedef SHA_CTX CC_SHA1_CTX;
+typedef MD5_CTX CC_MD5_CTX;
+typedef SHA256_CTX CC_SHA256_CTX;
 typedef uint32_t CCOperation;
 typedef uint32_t CCAlgorithm;
 typedef uint32_t CCOptions;
@@ -476,6 +543,8 @@ enum { kCCOptionPKCS7Padding = 1, kCCOptionECBMode = 2 };
 enum { kCCSuccess = 0, kCCParamError = -4300, kCCBufferTooSmall = -4301, kCCDecodeError = -4304 };
 enum { kCCBlockSizeAES128 = 16 };
 #define CC_SHA1_DIGEST_LENGTH 20
+#define CC_MD5_DIGEST_LENGTH 16
+#define CC_SHA256_DIGEST_LENGTH 32
 CCCryptorStatus CCCrypt(CCOperation op, CCAlgorithm alg, CCOptions options, const void *key, size_t keyLength,
                         const void *iv, const void *dataIn, size_t dataInLength, void *dataOut,
                         size_t dataOutAvailable, size_t *dataOutMoved);
@@ -483,6 +552,13 @@ unsigned char *CC_SHA1(const void *data, CC_LONG len, unsigned char *md);
 int CC_SHA1_Init(CC_SHA1_CTX *ctx);
 int CC_SHA1_Update(CC_SHA1_CTX *ctx, const void *data, CC_LONG len);
 int CC_SHA1_Final(unsigned char *md, CC_SHA1_CTX *ctx);
+int CC_MD5_Init(CC_MD5_CTX *ctx);
+int CC_MD5_Update(CC_MD5_CTX *ctx, const void *data, CC_LONG len);
+int CC_MD5_Final(unsigned char *md, CC_MD5_CTX *ctx);
+int CC_SHA256_Init(CC_SHA256_CTX *ctx);
+int CC_SHA256_Update(CC_SHA256_CTX *ctx, const void *data, CC_LONG len);
+int CC_SHA256_Final(unsigned char *md, CC_SHA256_CTX *ctx);
+unsigned char *CC_SHA256(const void *data, CC_LONG len, unsigned char *md);
 #endif
 '''
 CRYPTO_C = r'''
@@ -512,6 +588,13 @@ unsigned char *CC_SHA1(const void *data, CC_LONG len, unsigned char *md) { retur
 int CC_SHA1_Init(CC_SHA1_CTX *ctx) { return SHA1_Init(ctx); }
 int CC_SHA1_Update(CC_SHA1_CTX *ctx, const void *data, CC_LONG len) { return SHA1_Update(ctx, data, len); }
 int CC_SHA1_Final(unsigned char *md, CC_SHA1_CTX *ctx) { return SHA1_Final(md, ctx); }
+int CC_MD5_Init(CC_MD5_CTX *ctx) { return MD5_Init(ctx); }
+int CC_MD5_Update(CC_MD5_CTX *ctx, const void *data, CC_LONG len) { return MD5_Update(ctx, data, len); }
+int CC_MD5_Final(unsigned char *md, CC_MD5_CTX *ctx) { return MD5_Final(md, ctx); }
+int CC_SHA256_Init(CC_SHA256_CTX *ctx) { return SHA256_Init(ctx); }
+int CC_SHA256_Update(CC_SHA256_CTX *ctx, const void *data, CC_LONG len) { return SHA256_Update(ctx, data, len); }
+int CC_SHA256_Final(unsigned char *md, CC_SHA256_CTX *ctx) { return SHA256_Final(md, ctx); }
+unsigned char *CC_SHA256(const void *data, CC_LONG len, unsigned char *md) { return SHA256(data, len, md); }
 '''
 COMPRESSION_H = r'''
 #ifndef compression_shim_h
@@ -708,6 +791,71 @@ final class AuditReadGate: @unchecked Sendable {
     init(_ maximum: Int) { self.maximum = maximum }
     func open() -> Bool { lock.lock(); defer { lock.unlock() }; calls += 1; return calls <= maximum }
 }
+func vpkFormatUnits(_ fx: [String: Any]) throws {
+    let root = URL(fileURLWithPath: fx["tmp"] as! String).appendingPathComponent("vpk-audit")
+    let apps = root.appendingPathComponent("steamapps"), game = root.appendingPathComponent("game")
+    let relative = "game/csgo/pak01_dir.vpk", fm = FileManager.default
+    func put(_ url: URL, _ data: Data) throws {
+        try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: url)
+    }
+    try put(apps.appendingPathComponent("appmanifest_730.acf"), Data(#""AppState" { "appid" "730" "InstalledDepots" { "7301" { "manifest" "88" } } }"#.utf8))
+    func sha1(_ data: Data) -> Data {
+        var digest = [UInt8](repeating: 0, count: 20)
+        data.withUnsafeBytes { _ = CC_SHA1($0.baseAddress, CC_LONG(data.count), &digest) }
+        return Data(digest)
+    }
+    func inspect(_ data: Data, reference: Data? = nil, limits: SteamContentIntegrity.Limits? = nil) throws -> SteamContentIntegrity.Finding {
+        try put(game.appendingPathComponent(relative), data)
+        var file = ProtobufEncoder(); file.writeString(fieldNumber: 1, value: relative)
+        file.writeUInt64(fieldNumber: 2, value: UInt64(data.count)); file.writeBytes(fieldNumber: 5, value: sha1(reference ?? data))
+        var payload = ProtobufEncoder(); payload.writeSubmessage(fieldNumber: 1, value: file.data)
+        try put(apps.appendingPathComponent("depotcache/7301_88.manifest"), payload.data)
+        var normal = SteamContentIntegrity.Limits(); normal.maxSeconds = 30
+        return SteamContentIntegrity.auditCS2(steamApps: apps, installURL: game, limits: limits ?? normal)
+            .findings.first { $0.relative == relative }!
+    }
+    let cases = fx["vpkCases"] as! [[String: String]]
+    for test in cases {
+        let name = test["name"]!, data = hexData(test["data"]!)
+        let result = try inspect(data)
+        require(result.state == "cache-hash-match", "VPK \(name): fresh whole-file SHA1 matches the exact supplied cache reference independently of signature format")
+        require(result.packageSignature == test["state"]!, "VPK \(name): production parser recognizes supported layout or reports precise bounded failure")
+        #if !VPK_BASELINE
+        for token in (test["fields"] ?? "").split(separator: " ") {
+            require(result.packageDetails.split(separator: " ").contains(token), "VPK \(name): metadata \(token)")
+        }
+        let expected = sha1(data).map { String(format: "%02x", $0) }.joined()
+        require(result.currentSHA1 == expected && result.referenceSHA1 == expected && result.line.contains("hash-source=current-file-read"), "VPK \(name): actual current-byte SHA1 is recomputed and distinguished from reference provenance")
+        if let crypto = test["crypto"] {
+            #if canImport(Security)
+            require(result.packageDetails.contains("vpk-crypto=\(crypto)"), "VPK \(name): native Security RSA mathematical result \(crypto)")
+            #else
+            if crypto == "consistent-embedded-key" || crypto == "mismatch-embedded-key" {
+                require(result.packageDetails.contains("vpk-crypto=platform-api-unavailable"), "VPK \(name): unavailable native crypto remains unmeasured")
+            } else { require(result.packageDetails.contains("vpk-crypto=\(crypto)"), "VPK \(name): bounded checksum/preimage result") }
+            #endif
+        }
+        require(result.line.contains("key-provenance=embedded-untrusted") && result.line.contains("trust=unmeasured") && result.line.contains("vac=unclaimed") && result.line.contains("archive-payloads=not-read"), "VPK \(name): mathematical consistency never becomes Valve-key trust or a VAC verdict")
+        #endif
+    }
+    #if !VPK_BASELINE
+    let valid = hexData(cases.first { $0["name"] == "modern-rsa" }!["data"]!)
+    let first = try inspect(valid)
+    var changed = valid; changed[changed.count - 1] ^= 1
+    let second = try inspect(changed, reference: valid)
+    require(first.state == "cache-hash-match" && second.state == "cache-hash-mismatch" && first.currentSHA1 != second.currentSHA1,
+            "VPK same-size mutation after first audit is re-read and changes current SHA1 without adopting the cached expected hash")
+    #if canImport(Security)
+    require(second.packageDetails.contains("vpk-crypto=mismatch-embedded-key"), "VPK signature-only mutation is a genuine RSA mismatch even while all MD5 preimages match")
+    #endif
+    var budget = SteamContentIntegrity.Limits(); budget.maxBytes = UInt64(valid.count); budget.maxSeconds = 30
+    let bounded = try inspect(valid, limits: budget)
+    require(bounded.state == "cache-hash-match" && bounded.packageDetails.contains("vpk-crypto=byte-budget-unmeasured") &&
+            bounded.packageDetails.contains("vpk-extra-read-bytes=0"), "VPK checksum/crypto passes cannot consume the bytes reserved for the bounded current-file SHA1 read")
+    #endif
+}
+
 func integrityAuditUnits(_ fx: [String: Any]) throws {
     let root = URL(fileURLWithPath: fx["tmp"] as! String).appendingPathComponent("audit")
     let apps = root.appendingPathComponent("steamapps")
@@ -797,6 +945,7 @@ func integrityAuditUnits(_ fx: [String: Any]) throws {
 @MainActor func units(_ fx: [String: Any]) async throws {
     #if !INTEGRITY_BASELINE
     try integrityAuditUnits(fx)
+    try vpkFormatUnits(fx)
     #endif
     // ---- protobuf: hostile input throws instead of trapping
     var big = ProtobufDecoder(Data([0x0a, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01]))
@@ -1140,7 +1289,12 @@ func integrityAuditUnits(_ fx: [String: Any]) throws {
         guard args.count >= 3, let raw = FileManager.default.contents(atPath: args[2]),
               let fx = try? JSONSerialization.jsonObject(with: raw) as? [String: Any] else { print("FAIL: fixture"); exit(2) }
         do {
-            if args[1] == "units" { try await units(fx) } else { try await install(fx, phase: args[1]) }
+            if args[1] == "units" { try await units(fx) }
+            else if args[1] == "vpk" {
+                #if !INTEGRITY_BASELINE
+                try vpkFormatUnits(fx)
+                #endif
+            } else { try await install(fx, phase: args[1]) }
         } catch {
             print("FAIL: \(args[1]) threw \(error)"); failures += 1
         }
@@ -1162,6 +1316,7 @@ dock_body = (dock[dock.index('enum MadeiraDock {'):dock.index('    @MainActor pr
              dock[dock.index("    /// The host's environment for one launch."):])
 # URLSession lives in FoundationNetworking on Linux; the production file imports Foundation only.
 baseline_revision = os.environ.get('MADEIRA_STEAM_INTEGRITY_BASELINE')
+vpk_baseline_revision = os.environ.get('MADEIRA_VPK_INTEGRITY_BASELINE')
 if baseline_revision:
     downloader = subprocess.run(['git', 'show', f'{baseline_revision}:app/Madeira/SwiftSteam/Content/DepotDownloader.swift'], cwd=root, check=True, capture_output=True, text=True).stdout
 downloader_host = downloader.replace('import Foundation\n', 'import Foundation\n#if canImport(FoundationNetworking)\nimport FoundationNetworking\n#endif\n', 1)
@@ -1224,12 +1379,16 @@ try:
                   steam / 'Library/SteamAppInfo.swift', steam / 'Library/SteamLibraryFetcher.swift',
                   steam / 'Install/AppManifestWriter.swift', app / 'SteamInstall.swift', app / 'SteamKeyValues.swift', app / 'ExternalStorage.swift']
     if not baseline_revision:
-        production.append(steam / 'Content/SteamContentIntegrity.swift')
+        audit_source = steam / 'Content/SteamContentIntegrity.swift'
+        if vpk_baseline_revision:
+            audit_source = work / 'baseline-audit.swift'
+            audit_source.write_text(subprocess.run(['git', 'show', f'{vpk_baseline_revision}:app/Madeira/SwiftSteam/Content/SteamContentIntegrity.swift'], cwd=root, check=True, capture_output=True, text=True).stdout)
+        production.append(audit_source)
     exe = work / 'check'
     build = subprocess.run([SWIFTC, '-parse-as-library', '-swift-version', '5', '-sanitize=address', '-g', '-o', str(exe),
                             '-import-objc-header', str(work / 'decoders.h'),
                             str(work / 'stubs.swift'), str(work / 'checks.swift'), str(work / 'dock.swift'), str(work / 'owned.swift'),
-                            str(work / 'downloader.swift')] + (['-D', 'INTEGRITY_BASELINE'] if baseline_revision else []) + modules + [str(x) for x in production] + objects +
+                            str(work / 'downloader.swift')] + (['-D', 'INTEGRITY_BASELINE'] if baseline_revision else []) + (['-D', 'VPK_BASELINE'] if vpk_baseline_revision else []) + modules + [str(x) for x in production] + objects +
                            ([] if native else ['-Xlinker', '-lcrypto']) + ['-Xlinker', '-llzma', '-Xlinker', '-lz'], capture_output=True, text=True)
     require(build.returncode == 0, 'the production Steam library, download and decoder code compile on the host')
     if build.returncode:
@@ -1302,8 +1461,12 @@ try:
                    hosts=[dead.url, flaky.url, good.url], requestCode=state.request_code, auth=state.auth,
                    gid1=gid1, gid2=gid2, gidShared=gid_shared, tmp=str(work / 'root'),
                    auditManifest=audit_depot.payload().hex(), auditFiles=audit_files,
-                   auditClientSHA1=hashlib.sha1(b'REAL-CLIENT').hexdigest())
+                   auditClientSHA1=hashlib.sha1(b'REAL-CLIENT').hexdigest(), vpkCases=vpk_cases(work))
 
+    if os.environ.get('MADEIRA_VPK_ONLY') == '1':
+        run('vpk', fixture)
+        print(f'check-steam-library: {failures} FAILED' if failures else 'check-steam-library: PASS (production VPK audit only)')
+        sys.exit(1 if failures else 0)
     run('units', fixture)
 
     # ---- an install that is interrupted: chunks were finished, no install record yet
