@@ -157,3 +157,55 @@ RVA `102e20` targets `IosWowSyscallC::Declined`, a different diagnostic atomic
 path, and is also outside this history correction. Peak footprint of 6049 MB
 remains an independent issue. Apple Mach validation and a comparable device
 capture are required before claiming a measured runtime improvement.
+
+## Remaining ARM64EC invalidation lock
+
+The subsequent `4a70400f02a6892cbef430fd2be4b5c5d309bc4f` device capture
+reports all four diagnostic spans bound. The former history sites do not
+appear in its top-two site reports. This establishes activity of the binding
+and a bounded change in attribution; the captures have different durations
+and workloads, so their cumulative fault totals are not a performance ratio.
+
+The new capture's 22 complete million-event epochs contain exactly 14,653,101
+exclusive faults, 5,783,111 GPR stores, and 1,537,262 LSE operations. Seven
+epochs overflow, totaling 1,703,925 events. Its final independent census is
+22,777,864 classified events; the timing sample covers 22,777,862 events and
+159,343 ms of cumulative handler CPU, with two dropped events.
+
+[Exact installed-image inspection](https://github.com/letsdothisagainx/Madeira/actions/runs/42717965667)
+checks the IPA from build run `42697773488`, including its source stamp and
+every captured hot opcode. ARM64EC SHA-256 is
+`27515adff80a7370ff636e650d6cde762da92d69243f229a859b91e74f5c26b7`.
+In PID `034c`, the private tracker is DATA RVA `3ccf98`; its internal native
+lock and reader state account for these reported-site lower bounds:
+
+| Native producer | First target / object | Reported-site lower bound |
+| --- | --- | ---: |
+| ntdll `69d20`, 32-bit exclusive store | `3ccfc8`, tracker `+0x30` | 1,136,557 |
+| ntdll `69ca8`, 16-bit exclusive store | `3ccfc8`, tracker `+0x30` | 749,689 |
+| libc++ `1b94a4` / `1b9538`, 32-bit stores in `lock_shared` / `unlock_shared` | `3ccfe0`, tracker `+0x48` | 1,020,427 combined |
+
+`QueryExecutableRange` takes this real shared mutex while querying the
+executable interval lists. The correction constructs only ARM64EC's tracker
+once in the existing native owner heap, using the existing checked factory.
+The global owner pointer remains empty throughout construction; all callers
+then use that single ordinary RW object address. Shared and exclusive locks,
+interval checks, nested-notification guards, and atomic ordering remain intact.
+No loader alias contract, DATA-refresh exception, protection change, or pool
+increase is added. Duplicate initialization fails before changing CRT/context
+state; allocation failure returns `STATUS_NO_MEMORY`. Existing termination
+guards protect destructor-triggered callbacks, and the tracker still dies
+before its context. WoW64 retains its original storage because its teardown
+notification path needs separate analysis.
+
+The owned production-source regression executes the actual tracker class,
+interval lists, constructor, notification and query bodies. It reproduces a
+protected canonical query fault, then checks heap publication, constructor
+reentry, OOM, duplicate/termination refusal, real shared/exclusive exclusion,
+4,000 concurrent queries, separate owners, and teardown before context death.
+The final-package gate requires a versioned, initialized eight-byte ARM64EC
+DATA capability and rejects the previous CPU, forwards, executable/unaligned
+targets, wrong values, and truncated capability bytes. The four diagnostic
+contracts remain unchanged. A new device capture is needed to measure the
+remaining lock-site rate after this placement correction; no whole-game
+latency or frame-rate improvement is claimed.

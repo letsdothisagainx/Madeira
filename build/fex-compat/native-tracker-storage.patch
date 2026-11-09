@@ -1,0 +1,60 @@
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -200,12 +200,21 @@
+   bool InLockedRWXRead {};
+ };
+ 
++/* Source-built DATA capability: the private tracker is constructed once in
++ * the native owner heap; its real locks and interval checks remain enabled. */
++extern "C" {
++uint64_t IosInvalidationHeapABIV1 = 0x4d49480100000001ull;
++}
++
+ namespace {
+ fextl::unique_ptr<FEXCore::Context::Context> CTX;
+ fextl::unique_ptr<FEX::DummyHandlers::DummySignalDelegator> SignalDelegator;
+ fextl::unique_ptr<Exception::ECSyscallHandler> SyscallHandler;
+ fextl::unique_ptr<FEX::Windows::StatAlloc> StatAllocHandler;
+-std::optional<FEX::Windows::InvalidationTracker> InvalidationTracker;
++/* The tracker contains real native mutexes. Keep its complete lifetime at
++ * one ordinary RW owner-heap address, as for CTX and the other private peers.
++ * The pointer stays empty throughout construction and is never replaced live. */
++fextl::unique_ptr<FEX::Windows::InvalidationTracker> InvalidationTracker;
+ /* iOS-Madeira: set by ProcessTerm when the process starts exiting
+  * (NtTerminateProcess(0)). The DLLs detached after this module still free
+  * and protect memory, and by then this module's own detach may have torn
+@@ -959,6 +968,10 @@
+ #endif
+ 
+ NTSTATUS ProcessInit() {
++  /* The loader serializes first process initialization. A repeated call
++   * must not replace CTX or the published tracker while readers use it. */
++  if (ProcessTerminating.load(std::memory_order_relaxed)) return STATUS_PROCESS_IS_TERMINATING;
++  if (CTX || InvalidationTracker) return STATUS_INVALID_DEVICE_STATE;
+   /* iOS-Madeira: DualMap::WriteOffset (RX→RW alias distance) is set below,
+    * after InitCRTProcess() populates the environment, and BEFORE InitCore().
+    * It is read from MADEIRA_JIT_WRITE_OFFSET rather than hardcoded, because
+@@ -1234,7 +1247,13 @@
+     LogMan::Msg::IFmt("FEX: smc-store-fastpath-v1 madeira-bcd enabled={}", IosSmcFastPath);
+   }
+ #endif
+-  InvalidationTracker.emplace(*CTX, Threads);
++  InvalidationTracker = fextl::try_make_unique<FEX::Windows::InvalidationTracker>(*CTX, Threads);
++  if (!InvalidationTracker) {
++    LogMan::Msg::EFmt("[fex-tracker-heap-v1] ARM64EC tracker allocation failed; process initialization returns STATUS_NO_MEMORY");
++    return STATUS_NO_MEMORY;
++  }
++  LogMan::Msg::IFmt("[fex-tracker-heap-v1] ARM64EC tracker={} bytes={} storage=owner-heap mutexes=native",
++                    static_cast<void*>(InvalidationTracker.get()), sizeof(FEX::Windows::InvalidationTracker));
+   {
+     // MADEIRA: hot SMC pages (InvalidationTracker::EnableHotSMCPages). MADEIRA_SMC_HOT_PAGE: unset = 64 write
+     // faults within a second, 0 = off (every write to a code page invalidates it), N = threshold.
+--- a/Source/Windows/ARM64EC/libarm64ecfex_ios.def
++++ b/Source/Windows/ARM64EC/libarm64ecfex_ios.def
+@@ -53,3 +53,6 @@
+   MadeiraFEXIRTopoWriteContract DATA
+   MadeiraFEXCompileWriteContract DATA
+   MadeiraFEXHistoryWriteContract DATA
++
++; ARM64EC native tracker uses one owner-heap address for its full lifetime.
++  IosInvalidationHeapABIV1 DATA

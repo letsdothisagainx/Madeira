@@ -39,9 +39,10 @@ def fex_fixture(backend='arm64ec'):
     names=[b'ios_fex_band_base',b'ios_fex_band_end']
     targets=[0x2000,0x2008]
     if backend=='arm64ec':
-        names += [b'BTCpu64FlushInstructionCache',b'BTCpu64NotifyMemoryDirty',b'BTCpu64IosAddAliasMapping',b'IosSubfloorProtocolV1']
-        targets += [0x3000,0x3004,0x3008,0x2010]
+        names += [b'BTCpu64FlushInstructionCache',b'BTCpu64NotifyMemoryDirty',b'BTCpu64IosAddAliasMapping',b'IosSubfloorProtocolV1',b'IosInvalidationHeapABIV1']
+        targets += [0x3000,0x3004,0x3008,0x2010,0x2018]
         put('<Q',raw(0x2010),0x4d53460100000001)
+        put('<Q',raw(0x2018),0x4d49480100000001)
         put('<II',opt+112+80,0x1300,208)
         put('<I',raw(0x1300),208);put('<Q',raw(0x1300)+200,0x180001400)
         put('<III',raw(0x1400),1,0x1420,1);put('<II',raw(0x1420),0x3001,0x1000)
@@ -137,6 +138,19 @@ def run():
     bad(lambda b:b.__delitem__(slice(cap_raw+4,None)),'truncated file-backed DATA bytes')
     bad(lambda b:struct.pack_into('<I',b,data_section+16,0x10),'zero-fill rather than file-backed capability',
         'IosSubfloorProtocolV1 requires eight file-backed bytes')
+    tracker=b'IosInvalidationHeapABIV1';tracker_slot=meta['slots'][tracker];tracker_raw=meta['raw'](0x2018)
+    bad(lambda b:b.__setitem__(meta['strings'][tracker],ord('x')),'stale CPU without tracker heap placement',
+        'FEX compatibility exports missing')
+    bad(lambda b:struct.pack_into('<Q',b,tracker_raw,0),'wrong tracker heap ABI',
+        'IosInvalidationHeapABIV1')
+    bad(lambda b:struct.pack_into('<I',b,tracker_slot,0x1100),'forwarded tracker heap capability',
+        'export is forwarded')
+    bad(lambda b:struct.pack_into('<I',b,tracker_slot,0x3000),'executable tracker heap capability',
+        'aligned private writable non-executable DATA')
+    bad(lambda b:struct.pack_into('<I',b,tracker_slot,0x2019),'unaligned tracker heap capability',
+        'aligned private writable non-executable DATA')
+    bad(lambda b:struct.pack_into('<I',b,data_section+16,0x1c),'truncated tracker heap capability',
+        'IosInvalidationHeapABIV1 requires eight file-backed bytes')
     for name in (b'ios_fex_band_base',b'ios_fex_band_end'):
         for rva in (0x2001,0x3000,0x4000,0xfffffff8):
             bad(lambda b,name=name,rva=rva:struct.pack_into('<I',b,meta['slots'][name],rva),
