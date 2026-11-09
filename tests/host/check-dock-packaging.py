@@ -9,6 +9,7 @@ import tempfile
 import zipfile
 import struct
 import plistlib
+import shutil
 root = Path(__file__).resolve().parents[2]
 entry = (root/'tools/build-ipa.sh').read_text()
 assert entry.index('"$ROOT/tools/build/setup-llvm-mingw.sh"') < entry.index('"$ROOT/build/madeira-dock/build.sh"') < entry.index('"$ROOT/tools/build/package-ipa.sh"')
@@ -65,58 +66,38 @@ with tempfile.TemporaryDirectory() as temp:
     scm.extend(b'[scm-pipe-wait-v1]')
     scm_path = t/'app/Madeira/aarch64-windows/services.exe'
     scm_path.write_bytes(scm)
-    cpu = bytearray(0x700)
-    cpu[:0x98] = wow[:0x98]
-    struct.pack_into('<H', cpu, 0x86, 2)  # writable DATA and native RX code
-    struct.pack_into('<H', cpu, 0x94, 240)
-    struct.pack_into('<H', cpu, 0x98, 0x20b)
-    struct.pack_into('<II', cpu, 0x98 + 56, 0x2000, 0x200)
-    struct.pack_into('<I', cpu, 0x98 + 108, 16)
-    struct.pack_into('<II', cpu, 0x98 + 112, 0x1000, 0x100)
-    cpu[0x188:0x190] = b'.data\0\0\0'
-    struct.pack_into('<IIII', cpu, 0x190, 0x400, 0x1000, 0x400, 0x200)
-    struct.pack_into('<I', cpu, 0x188 + 36, 0xc0000040)
-    cpu[0x1b0:0x1b8] = b'.text\0\0\0'
-    struct.pack_into('<IIII', cpu, 0x1b8, 0x100, 0x1400, 0x100, 0x600)
-    struct.pack_into('<I', cpu, 0x1b0 + 36, 0x60000020)
-    struct.pack_into('<IIHHIIIIIII', cpu, 0x200, 0, 0, 0, 0, 0, 1, 4, 4, 0x1040, 0x1050, 0x1060)
-    struct.pack_into('<IIII', cpu, 0x240, 0x1200, 0x1208, 0x1400, 0x1404)
-    struct.pack_into('<IIII', cpu, 0x250, 0x1080, 0x10a0, 0x10c0, 0x10e8)
-    struct.pack_into('<HHHH', cpu, 0x260, 0, 1, 2, 3)
-    for offset, name in [(0x280, b'ios_fex_band_base\0'), (0x2a0, b'ios_fex_band_end\0'),
-                         (0x2c0, b'MadeiraBTCpuIosReleaseThreadHolds\0'), (0x2e8, b'MadeiraBTCpuIosRetireThread\0')]:
-        cpu[offset:offset + len(name)] = name
-    cpu.extend(b'MadeiraBTCpuThreadInit[fex-thread-init-v1]MadeiraBTCpuWriteMemory[fex-guest-write-v1][fex-first-use-v1][fex-blocklist-v1][fex-hold-release-v1][fex-thread-retire-v1]')
-    shared = b'[fex-core-init-v1][fex-ir-pool-v1][fex-owner-allocator-v1]'
-    cpu.extend(shared)
+    # Reuse the full package fixture: actual private diagnostic descriptors,
+    # valid zero-fill payload bounds, real arena exports and hybrid metadata.
+    # These bytes prove packaging gates, not executable Wine/FEX behavior.
+    cpu, cpu_meta = package_fixture.fex_fixture('wow64')
     (t/'app/Madeira/aarch64-windows/xtajit.dll').write_bytes(cpu)
-    # ARM64EC keeps its own exports and hybrid metadata, without acquiring
-    # WoW64-only TLS/hold exports. This is a packaging fixture, not executable FEX.
-    ec_cpu = bytearray(cpu[:0x700])
-    struct.pack_into('<H', ec_cpu, 0x84, 0x8664)
-    struct.pack_into('<Q', ec_cpu, 0x98 + 24, 0x180000000)
-    struct.pack_into('<II', ec_cpu, 0x98 + 112 + 80, 0x1180, 208)
-    ec_cpu[0x240:0x600] = bytes(0x3c0)
-    struct.pack_into('<IIHHIIIIIII', ec_cpu, 0x200, 0, 0, 0, 0, 0, 1, 6, 6, 0x1040, 0x1060, 0x1080)
-    struct.pack_into('<IIIIII', ec_cpu, 0x240, 0x13a0, 0x13a8, 0x1400, 0x1404, 0x1408, 0x13b0)
-    struct.pack_into('<IIIIII', ec_cpu, 0x260, 0x10a0, 0x10c0, 0x10e0, 0x1100, 0x1120, 0x1140)
-    struct.pack_into('<HHHHHH', ec_cpu, 0x280, 0, 1, 2, 3, 4, 5)
-    for offset, name in [(0x2a0, b'ios_fex_band_base'), (0x2c0, b'ios_fex_band_end'),
-                         (0x2e0, b'BTCpu64FlushInstructionCache'), (0x300, b'BTCpu64NotifyMemoryDirty'),
-                         (0x320, b'BTCpu64IosAddAliasMapping'), (0x340,b'IosSubfloorProtocolV1')]:
-        ec_cpu[offset:offset + len(name) + 1] = name + b'\0'
-    struct.pack_into('<I', ec_cpu, 0x380, 208)
-    struct.pack_into('<Q', ec_cpu, 0x380 + 200, 0x180001260)
-    struct.pack_into('<III', ec_cpu, 0x460, 1, 0x1270, 1)
-    struct.pack_into('<II', ec_cpu, 0x470, 0x1401, 0x100)
-    struct.pack_into('<Q', ec_cpu, 0x5b0, 0x4d53460100000001)
-    ec_cpu.extend(shared)
+    ec_cpu, ec_meta = package_fixture.fex_fixture('arm64ec')
     ec_cpu_path = t/'app/Madeira/arm64ec-windows/xtajit64.dll'
     ec_cpu_path.write_bytes(ec_cpu)
     guest = bytearray(wow)
     struct.pack_into('<H',guest,0x84,0x14c)
     guest.extend(b'[wpm-call-v1][steam-arch-v1]')
     (t/'app/Madeira/i386-windows/kernelbase.dll').write_bytes(guest)
+    # Compose real provenance fixtures without replacing the independently
+    # validated ntdll/FEX/HTMLIPC images above. Every final gate remains active.
+    registration_spec=importlib.util.spec_from_file_location('dock_registration_fixture',root/'tests/host/check-native-registration-tools.py')
+    registration=importlib.util.module_from_spec(registration_spec);registration_spec.loader.exec_module(registration)
+    registration_stage,registration_source,_,_=registration.fixture_tree(t/'registration-fixture')
+    shutil.copytree(registration_source,t/'wine',dirs_exist_ok=True)
+    for farm in registration.CHECKER.FARMS:
+        for resource in ('regsvr32.exe','rundll32.exe','user32.dll','ole32.dll','kernelbase.dll'):
+            shutil.copyfile(registration_stage/farm/resource,t/'app/Madeira'/farm/resource)
+    guest=(t/'app/Madeira/i386-windows/kernelbase.dll').read_bytes()+b'[wpm-call-v1][steam-arch-v1]'
+    (t/'app/Madeira/i386-windows/kernelbase.dll').write_bytes(guest)
+    shutil.copyfile(registration_stage/registration.CHECKER.MANIFEST,t/'app/Madeira'/registration.CHECKER.MANIFEST)
+    trust_spec=importlib.util.spec_from_file_location('dock_trust_fixture',root/'tests/host/check-trust-diagnostics-package.py')
+    trust=importlib.util.module_from_spec(trust_spec);trust_spec.loader.exec_module(trust)
+    trust_stage,trust_source,trust_recipes,_,_=trust.fixture_tree(t/'trust-fixture')
+    shutil.copytree(trust_source,t/'wine',dirs_exist_ok=True)
+    shutil.copytree(trust_recipes,t,dirs_exist_ok=True)
+    for farm in trust.CHECKER.FARMS:
+        shutil.copyfile(trust_stage/farm/'wintrust.dll',t/'app/Madeira'/farm/'wintrust.dll')
+    shutil.copyfile(trust_stage/trust.CHECKER.MANIFEST,t/'app/Madeira'/trust.CHECKER.MANIFEST)
     (t/'tools').mkdir(exist_ok=True)
     (t/'tools/check-io-abi-package.py').write_text((root/'tools/check-io-abi-package.py').read_text())
     bodies = {
@@ -130,12 +111,22 @@ cp "$ROOT/app/Madeira/aarch64-windows/wow64.dll" "$ROOT/app/Madeira/aarch64-wind
 cp "$ROOT/app/Madeira/aarch64-windows/services.exe" "$TEST_APP/aarch64-windows/"
 cp "$ROOT/app/Madeira/aarch64-windows/ntdll.dll" "$TEST_APP/aarch64-windows/"
 cp "$ROOT/app/Madeira/arm64ec-windows/ntdll.dll" "$TEST_APP/arm64ec-windows/"
+for farm in aarch64-windows arm64ec-windows i386-windows; do
+  for resource in regsvr32.exe rundll32.exe user32.dll ole32.dll kernelbase.dll wintrust.dll; do
+    cp "$ROOT/app/Madeira/$farm/$resource" "$TEST_APP/$farm/"
+  done
+done
+cp "$ROOT/app/Madeira/arm64ec-windows/madeira-system-programs.json" "$TEST_APP/arm64ec-windows/"
+cp "$ROOT/app/Madeira/arm64ec-windows/madeira-trust-diagnostics.json" "$TEST_APP/arm64ec-windows/"
+if [ "${STALE_REGISTRATION_TOOL:-}" = 1 ]; then printf 'stale registration program' > "$TEST_APP/arm64ec-windows/regsvr32.exe"; fi
+if [ "${STALE_TRUST_OBSERVER:-}" = 1 ]; then printf 'stale trust observer' > "$TEST_APP/arm64ec-windows/wintrust.dll"; fi
 if [ "${STALE_NATIVE_NTDLL:-}" = 1 ]; then printf 'old ntdll' > "$TEST_APP/arm64ec-windows/ntdll.dll"; fi
 if [ "${STALE_SCM:-}" = 1 ]; then printf 'old SCM' > "$TEST_APP/aarch64-windows/services.exe"; fi
 printf '[native-group-retire-v1][wow-placement-v1][wow-native-export-v1][fex-callback-v2][child-native-dll-v1][process-wow64-v1][child-native-ntdll-v1][guest-trap-context-v1][surface-expose-v1][steam-client-update-v1][alias-prot-compat][image-alias-retire-v1][swp-context-v1][alias-prot-v2][fex-exit-v1][native-thread-cancel-v1][io-abi] v2 native-owned IOSB scopes active[wow-write][guest32-symbols][guest32-cxx-first-v1][cef-atexit-v1][steam-handoff-v1]_madeira_child_server_exited[fex-owner-v1] pre-crt[fex-owner-v1] retired[fex-owner-census-v2][hold-release-v2][deliver-hold-v2][native-window-retire-v1]_winios_native_window_create_winios_native_window_retire[guest32-fault-v1][steam-progress-v1]_winios_ui_progress_snapshot[srv-poll-drop-v1]poll-slots-highwater=' > "$TEST_APP/Madeira.debug.dylib"
 printf '[cef-image-owner-v1][guest-breakpoint64-v1]' >> "$TEST_APP/Madeira.debug.dylib"
 if [ "${STALE_SUBFLOOR_CONTRACT:-}" != 1 ]; then printf '[subfloor-contract-v1]' >> "$TEST_APP/Madeira.debug.dylib"; fi
 if [ "${STALE_NATIVE_SRW_ALIAS:-}" != 1 ]; then printf '[native-srw-alias-v1]' >> "$TEST_APP/Madeira.debug.dylib"; fi
+if [ "${STALE_FEX_NATIVE_DIAGNOSTICS:-}" != 1 ]; then printf '[fex-native-diagnostics-v1]' >> "$TEST_APP/Madeira.debug.dylib"; fi
 if [ "${STALE_POOL_GROWTH:-}" != 1 ]; then printf '[pool-code-growth]' >> "$TEST_APP/Madeira.debug.dylib"; fi
 if [ "${STALE_CEF_IMAGE:-}" = 1 ]; then
   sed 's/\\[cef-image-owner-v1\\]//g' "$TEST_APP/Madeira.debug.dylib" > "$TEST_APP/native.stale"
@@ -178,6 +169,11 @@ done
     def run(extra=None):
         return subprocess.run(['bash',str(package)],env=dict(env,**(extra or {})),capture_output=True,text=True)
     result=run(); assert result.returncode == 0, result.stdout+result.stderr
+    result=run({'STALE_REGISTRATION_TOOL':'1'})
+    assert result.returncode and 'stale app system program' in result.stderr,result.stderr
+    result=run({'STALE_TRUST_OBSERVER':'1'})
+    assert result.returncode and 'stale app trust observer' in result.stderr,result.stderr
+    print('PASS stale native registration utility and trust observer fail their actual final provenance/package gates')
     result=run({'STALE_SUBFLOOR_CONTRACT':'1'})
     assert result.returncode and 'stale native fixed-image subfloor protocol consumer' in result.stderr, result.stderr
     result=run({'STALE_NATIVE_SRW_ALIAS':'1'})
@@ -192,7 +188,7 @@ done
     assert result.returncode and 'native SRW history contents differ from source ABI' in result.stderr, result.stderr
     native_ntdll_path.write_bytes(complete_ntdll)
     print('PASS missing native subfloor consumer, stale ntdll copies and invalid private history contracts fail actual final packaging')
-    invalid_ec=bytearray(ec_cpu);struct.pack_into('<Q',invalid_ec,0x5b0,0)
+    invalid_ec=bytearray(ec_cpu);struct.pack_into('<Q',invalid_ec,ec_meta['raw'](0x2010),0)
     ec_cpu_path.write_bytes(invalid_ec)
     result=run()
     assert result.returncode and 'FEX DATA capability value differs from source ABI' in result.stderr, result.stderr
@@ -205,7 +201,7 @@ done
         result=run()
         assert result.returncode and 'stale arm64ec FEX shared protection' in result.stderr, result.stderr
     ec_cpu_path.write_bytes(ec_cpu)
-    invalid_ec = bytearray(ec_cpu); struct.pack_into('<Q', invalid_ec, 0x380 + 200, 0)
+    invalid_ec = bytearray(ec_cpu); struct.pack_into('<Q', invalid_ec, ec_meta['raw'](0x1300) + 200, 0)
     ec_cpu_path.write_bytes(invalid_ec)
     result=run()
     assert result.returncode and 'CHPE metadata missing' in result.stderr, result.stderr
@@ -283,29 +279,39 @@ done
     scm_path.write_bytes(scm)
     print('PASS stale, wrong-architecture and stale-bundle SCM producers fail final IPA validation')
     invalid_cpu = bytearray(cpu)
-    invalid_cpu[0x280] = ord('x')
+    invalid_cpu[cpu_meta['strings'][b'ios_fex_band_base']] = ord('x')
     (t/'app/Madeira/aarch64-windows/xtajit.dll').write_bytes(invalid_cpu)
     result=run()
     assert result.returncode and 'FEX compatibility exports missing' in result.stderr, result.stderr
     invalid_cpu = bytearray(cpu)
-    struct.pack_into('<I', invalid_cpu, 0x188 + 36, 0xe0000040)
+    struct.pack_into('<I', invalid_cpu, cpu_meta['sections']['.data'] + 36, 0xe0000040)
     (t/'app/Madeira/aarch64-windows/xtajit.dll').write_bytes(invalid_cpu)
     result=run()
     assert result.returncode and 'writable non-executable DATA' in result.stderr, result.stderr
-    struct.pack_into('<I', invalid_cpu, 0x188 + 36, 0xd0000040)
+    struct.pack_into('<I', invalid_cpu, cpu_meta['sections']['.data'] + 36, 0xd0000040)
     (t/'app/Madeira/aarch64-windows/xtajit.dll').write_bytes(invalid_cpu)
     result=run()
     assert result.returncode and 'private writable non-executable DATA' in result.stderr, result.stderr
     (t/'app/Madeira/aarch64-windows/xtajit.dll').write_bytes(cpu)
     print('PASS missing or executable FEX arena DATA exports fail final IPA validation')
-    for export, message in [(0x1200, 'native RX function'), (0x10c0, 'export is forwarded')]:
+    invalid_cpu=bytearray(cpu)
+    contract=cpu_meta['diagnostics'][b'MadeiraFEXTelemetryWriteContract'][0]
+    struct.pack_into('<Q',invalid_cpu,cpu_meta['raw'](contract),0)
+    (t/'app/Madeira/aarch64-windows/xtajit.dll').write_bytes(invalid_cpu)
+    result=run()
+    assert result.returncode and 'differs from source ABI' in result.stderr,result.stderr
+    (t/'app/Madeira/aarch64-windows/xtajit.dll').write_bytes(cpu)
+    result=run({'STALE_FEX_NATIVE_DIAGNOSTICS':'1'})
+    assert result.returncode and 'stale native private FEX diagnostic writer binder' in result.stderr,result.stderr
+    print('PASS stale FEX private source ABI and native writer consumer fail final IPA validation')
+    for export, message in [(0x2000, 'native RX function'), (0x1100, 'export is forwarded')]:
         invalid_cpu = bytearray(cpu)
-        struct.pack_into('<I', invalid_cpu, 0x248, export)
+        struct.pack_into('<I', invalid_cpu, cpu_meta['slots'][b'MadeiraBTCpuIosReleaseThreadHolds'], export)
         (t/'app/Madeira/aarch64-windows/xtajit.dll').write_bytes(invalid_cpu)
         result=run()
         assert result.returncode and message in result.stderr, result.stderr
     invalid_cpu = bytearray(cpu)
-    struct.pack_into('<I', invalid_cpu, 0x1b0 + 36, 0xe0000020)
+    struct.pack_into('<I', invalid_cpu, cpu_meta['sections']['.text'] + 36, 0xe0000020)
     (t/'app/Madeira/aarch64-windows/xtajit.dll').write_bytes(invalid_cpu)
     result=run()
     assert result.returncode and 'native RX function' in result.stderr, result.stderr

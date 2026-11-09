@@ -1,65 +1,73 @@
-name: Early real FEX native diagnostic writer validation
+name: Actual two FEX CPU PE diagnostic contracts
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  apple-fex-native-diagnostics:
+  actual-fex-pe:
     runs-on: xcode-27
-    timeout-minutes: 15
-    env:
-      CC: clang
-      CXX: clang++
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
+          submodules: recursive
           persist-credentials: false
-      - name: Load exact pinned FEX and Wine sources
-        run: |
-          git submodule update --init --depth 1 FEX wine
-          git -C FEX submodule update --init --depth 1 External/fmt External/rpmalloc
-      - name: Prove production diagnostic contracts and failing-before estimator
-        run: |
-          set -o pipefail
-          python3 tests/host/check-fex-native-diagnostics-alias.py | tee fex-native-contract.txt
-          python3 tests/host/check-fex-native-diagnostics-package.py | tee fex-native-package.txt
-          python3 tests/host/check-fex-subfloor-package.py
-          python3 tests/host/check-fex-cb-summary.py | tee fex-cb-summary.txt
-          python3 tests/host/check-scm-rpc-sync.py
-      - name: Preserve existing SRW and alias atomics
-        run: |
-          python3 tests/host/check-native-counter-alias.py
-          python3 tests/host/check-native-counter-stage.py
-          python3 tests/host/check-native-srw-alias.py
-          python3 tests/host/check-native-srw-history.py
-          python3 tests/host/check-jit-alias-exclusive.py
-          python3 tests/host/check-jit-alias-exclusive-add.py
-          python3 tests/host/check-jit-alias-exclusive-conditional.py
-          python3 tests/host/check-jit-alias-exclusive-compare.py
-          python3 tests/host/check-jit-alias-str-immediate.py
-      - name: Execute captured FEX telemetry and actual IR producer through real Mach faults
+      - id: sdk
+        run: bash tools/build/ci-input-key.sh
+      - id: pins
+        run: echo "fex=$(git rev-parse HEAD:FEX)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          key: mingw-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/build/setup-llvm-mingw.sh') }}
+          path: toolchains/llvm-mingw-*
+      - uses: actions/cache@v4
+        with:
+          key: plan19-${{ steps.sdk.outputs.key }}-fex-pe-${{ steps.pins.outputs.fex }}-${{ hashFiles('build/fex-compat/**', 'build/fex-wow64/build.sh', 'build/fex-arm64ec/build.sh', 'tools/build/stage-fex-compat.py', 'tools/build/build-fex-pe-compat.sh', 'tools/build/build-fex-wow64-compat.sh', 'tools/build/build-fex-arm64ec-compat.sh', 'tools/build/setup-llvm-mingw.sh', 'tools/check-io-abi-package.py', 'tools/check-fex-subfloor-atomics.py') }}
+          path: |
+            FEX/build-wow64
+            FEX/build-arm64ec
+      - name: Install the pinned native Windows toolchain
+        run: bash tools/build/setup-llvm-mingw.sh
+      - name: Compile both real Windows CPU modules through one production overlay transaction
         run: |
           set -o pipefail
-          python3 tests/host/check-fex-native-diagnostics-performance.py --require-arm64-darwin | tee fex-native-throughput.txt
-      - name: Retest source-built SRW producer hardware
+          bash tools/build/build-fex-pe-compat.sh both 2>&1 | tee fex-pe-build.txt
+      - name: Inspect actual built private exports and protections
+        run: |
+          python3 - <<'PY_PROOF'
+          import hashlib,json,runpy,struct,subprocess
+          from pathlib import Path
+          root=Path.cwd();proof=runpy.run_path(str(root/'tools/check-io-abi-package.py'))
+          results=[]
+          for backend,folder,name in (('wow64','aarch64-windows','xtajit.dll'),('arm64ec','arm64ec-windows','xtajit64.dll')):
+              data=(root/'app/Madeira'/folder/name).read_bytes();proof['fex_cpu'](data,backend)
+              contracts=proof['fex_diagnostics_contracts'](data)
+              pe=struct.unpack_from('<I',data,60)[0];opt=pe+24;table=opt+struct.unpack_from('<H',data,pe+20)[0]
+              spans=[]
+              for i in range(struct.unpack_from('<H',data,pe+6)[0]):
+                  at=table+i*40;size,rva,rawbytes,raw=struct.unpack_from('<IIII',data,at+8);flags=struct.unpack_from('<I',data,at+36)[0]
+                  spans.append((rva,max(size,rawbytes),flags))
+              rows=[]
+              for export,(contract,payload,length) in contracts.items():
+                  flags=next(flags for rva,span,flags in spans if rva<=payload and payload+length<=rva+span)
+                  rows.append(dict(export=export.decode(),contract_rva=hex(contract),payload_rva=hex(payload),payload_bytes=length,section_flags=hex(flags),writer_initializer='NULL',writer_relocation='none',private_RW_DATA=True))
+              item=dict(backend=backend,machine=hex(struct.unpack_from('<H',data,pe+4)[0]),sha256=hashlib.sha256(data).hexdigest(),file_bytes=len(data),image_bytes=struct.unpack_from('<I',data,opt+56)[0],contracts=rows)
+              results.append(item);print(json.dumps(item,sort_keys=True))
+          Path('fex-native-pe-proof.json').write_text(json.dumps(dict(source='48332f0a0d293f7d0ba122dbe9a0d7503420f3aa',FEX=subprocess.check_output(['git','-C','FEX','rev-parse','HEAD'],text=True).strip(),modules=results),indent=2)+'\n')
+          PY_PROOF
+      - name: Verify pinned FEX inputs are restored
         if: always()
-        run: |
-          set -o pipefail
-          python3 tests/host/check-native-srw-history-performance.py --require-arm64-darwin | tee native-srw-throughput.txt
-      - name: Verify pinned inputs remain untouched
-        if: always()
-        run: |
-          git -C FEX diff --exit-code
-          git -C wine diff --exit-code
+        run: git -C FEX diff --exit-code
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: fex-native-diagnostics-evidence
+          name: fex-native-pe-proof
           path: |
-            fex-native-contract.txt
-            fex-native-package.txt
-            fex-cb-summary.txt
-            fex-native-throughput.txt
-            native-srw-throughput.txt
-          if-no-files-found: ignore
+            fex-pe-build.txt
+            fex-native-pe-proof.json
+            app/Madeira/aarch64-windows/xtajit.dll
+            app/Madeira/arm64ec-windows/xtajit64.dll
+            FEX/build-wow64/Bin/libwow64fex.dll
+            FEX/build-arm64ec/Bin/libarm64ecfex.dll
+          if-no-files-found: warn
           retention-days: 14

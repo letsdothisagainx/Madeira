@@ -41,7 +41,7 @@ struct SteamDownloadProgress: Equatable, Sendable {
 /// Behaviour:
 /// - All manifests are fetched first, so progress covers the whole install.
 /// - Completed chunks are journaled per depot manifest; a cancelled, failed or
-///   interrupted install resumes without re-fetching them.
+///   interrupted install rechecks their bytes before resuming without a fetch.
 /// - Files are sized to their manifest length, so an update that shrinks a
 ///   file cannot leave stale trailing bytes.
 /// - Chunk writes happen on the download tasks with pwrite, never on the
@@ -159,7 +159,7 @@ final class DepotDownloader {
         state.doneBytes = prepared.doneBytes
         state.phase = .downloading
         report(state)
-        SteamLog.event("[steam-depot] install begin app=\(app.appID) depots=\(plans.count) files=\(prepared.fileCount) resume=\(prepared.doneBytes > 0 ? 1 : 0)")
+        SteamLog.event("[steam-depot] install begin app=\(app.appID) depots=\(plans.count) files=\(prepared.fileCount) resume=\(prepared.journalCandidates > 0 ? 1 : 0)")
 
         let remaining = prepared.remainingUncompressed
         if remaining > 0 {
@@ -313,6 +313,7 @@ final class DepotDownloader {
         var totalUncompressed: UInt64 = 0
         var remainingUncompressed: UInt64 = 0
         var fileCount = 0
+        var journalCandidates = 0
     }
 
     private nonisolated static func prepare(plans: [DepotPlan], installURL: URL, journalDir: URL) throws -> Prepared {
@@ -356,12 +357,13 @@ final class DepotDownloader {
                 for (chunkIndex, chunk) in file.chunks.enumerated() {
                     let item = WorkItem(file: fileIndex, chunk: chunkIndex)
                     result.totalBytes += UInt64(chunk.compressedSize)
-                    if done.contains(item.key) {
-                        result.doneBytes += UInt64(chunk.compressedSize)
-                    } else {
-                        pending.append(item)
-                        pendingBytes += UInt64(chunk.uncompressedSize)
-                    }
+                    // A journal records a previous write, not the current
+                    // bytes. Truncation, external edits and an interrupted
+                    // write must go through the same manifest SHA-1 check as
+                    // other existing chunks before counting as complete.
+                    if done.contains(item.key) { result.journalCandidates += 1 }
+                    pending.append(item)
+                    pendingBytes += UInt64(chunk.uncompressedSize)
                 }
                 // Space already allocated to an existing file is reused; only
                 // its growth needs new space (sparse new files need all of it).
@@ -373,6 +375,9 @@ final class DepotDownloader {
             result.existing.append(existing)
             result.pending.append(pending)
             result.journals.append(journalURL)
+        }
+        if result.journalCandidates > 0 {
+            SteamLog.event("[steam-depot] resume recheck-chunks=\(result.journalCandidates) journal-trusted=0")
         }
         return result
     }
@@ -505,7 +510,7 @@ final class DepotDownloader {
                 let data = try ContentDecryptor.processChunk(encryptedData: encrypted, depotKey: plan.key,
                                                              expectedCRC: chunk.crc,
                                                              expectedSize: Int(chunk.uncompressedSize))
-                guard data.count == Int(chunk.uncompressedSize) else { throw SteamError.checksumMismatch }
+                try verifyChunk(data, against: chunk)
                 try write(data, to: path, offset: chunk.offset)
                 plan.health.recordSuccess(host)
                 return
@@ -520,6 +525,18 @@ final class DepotDownloader {
             }
         }
         throw lastError
+    }
+
+    /// Adler-32 detects transmission mistakes but cannot establish the chunk
+    /// named by the authenticated manifest. Check size and its actual SHA-1
+    /// before any write or completion-journal entry.
+    nonisolated static func verifyChunk(_ data: Data, against chunk: DepotManifest.ChunkEntry) throws {
+        guard data.count == Int(chunk.uncompressedSize), chunk.sha.count == Int(CC_SHA1_DIGEST_LENGTH) else {
+            throw SteamError.checksumMismatch
+        }
+        var digest = [UInt8](repeating: 0, count: Int(CC_SHA1_DIGEST_LENGTH))
+        data.withUnsafeBytes { _ = CC_SHA1($0.baseAddress, CC_LONG(data.count), &digest) }
+        guard Data(digest) == chunk.sha else { throw SteamError.checksumMismatch }
     }
 
     private nonisolated static func failureReason(_ error: Error) -> String {

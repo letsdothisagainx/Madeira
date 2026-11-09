@@ -2581,6 +2581,16 @@ struct ContentView: View {
                 SteamStartupClock.shared.mark(.requested) { logStore.log($0) }
                 var launch = entry
                 launch.relativePath = try NativeSteamPlay.prepare(game, drive: MadeiraDock.drive)
+                if appID == 730 {
+                    let steamApps = MadeiraDock.drive.appendingPathComponent(game.library, isDirectory: true)
+                    let install = steamApps.appendingPathComponent("common", isDirectory: true)
+                        .appendingPathComponent(game.installDir, isDirectory: true)
+                    SteamIntegrityDiagnostics.shared.schedule(appID: appID,
+                        idle: { wine_process_is_running() == 0 && wineserver_is_running() == 0 },
+                        work: { idle in SteamContentIntegrity.auditCS2(steamApps: steamApps, installURL: install,
+                                                                      shouldContinue: idle).lines },
+                        log: { LogStore.shared.log($0) })
+                }
                 SteamStartupClock.shared.mark(.launcherReady) { logStore.log($0) }
                 launch.steamAppID = nil; launch.steamStart = nil; launch.arguments = ""; launch.desktop = false
                 launch.workingDirectory = "C:\\"
@@ -2852,6 +2862,9 @@ struct ContentView: View {
 
             // Reassert the immutable selected paths after profile environment,
             // before JIT/server startup. Both later cfg loops honor these locks.
+            SteamIntegrityDiagnostics.configureEnvironment(nativeSteam: nativeSteamClient, appID: profile?.steamAppID,
+                get: { getenv($0).map { String(cString: $0) } },
+                set: { _ = setenv($0, $1, 1) }, unset: { _ = unsetenv($0) })
             do {
                 try SteamNativeBrowserLaunchFiles.export(native: nativeSteamClient, prepared: nativeSteamBrowser,
                     get: { getenv($0).map { String(cString: $0) } },

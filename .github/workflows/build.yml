@@ -336,10 +336,11 @@ jobs:
             app/Madeira/legal/LICENSES-rppairing-crates.txt
       - uses: actions/cache@v4
         with:
-          key: plan19-${{ steps.sdk.outputs.key }}-wine-host-${{ steps.pins.outputs.wine }}-${{ hashFiles('tools/build/build-wine.sh', 'tools/build/setup-llvm-mingw.sh') }}
+          key: plan19-${{ steps.sdk.outputs.key }}-wine-host-${{ steps.pins.outputs.wine }}-${{ hashFiles('tools/build/build-wine.sh', 'tools/build/setup-llvm-mingw.sh', 'build/wine-pe/**', 'tools/build/stage-process-lookup.py', 'tools/build/stage-trust-diagnostics.py', 'tools/check-system-programs.py', 'tools/check-trust-diagnostics-*.py') }}
           path: |
             wine/build-macos
             wine/build-arm64ec
+            wine/build-i386
       # Cache objects, never skip the shared staging/configure/build/package gates.
       - uses: actions/cache@v4
         with:

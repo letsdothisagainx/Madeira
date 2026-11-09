@@ -77,6 +77,22 @@ recovery. It distinguishes actual staged getter/IR producer execution from
 execution of the exact captured generated `STSETL` instruction. Fixture CPU
 costs and zero-fault alias writes are not an iPhone FPS or startup-time claim.
 
+Apple ARM64 validation run `42557493889`, job `128966369056`, passed the new
+contracts, package negatives, estimator races/concurrency, historical atomic
+recoveries, and actual Mach tests. For eight threads and 3,200 operations:
+
+| Producer fixture | Original Mach faults | Bound Mach faults | Original / bound handler CPU |
+| --- | ---: | ---: | ---: |
+| Captured `STSETL` with production-selected telemetry addresses | 3,200 | 0 | 24.385 / 0 ms |
+| Actual staged `IRTopoNoteChecked` | 22,500, including genuine exclusive retries | 0 | 227.720 / 0 ms |
+
+Both phases preserve exact flags/counts and neighboring bytes; RX stays
+nonwritable and RW stays nonexecutable. Wall time includes thread startup and
+the fixture, so it is not a pure instruction-throughput comparison. The
+separate unsanitized sampler test performs 524,288 native RW dispatches in
+3.929 ms with one thread and 24.243 ms with eight threads. Its contending
+estimator skips samples instead of waiting; authoritative counts remain exact.
+
 On-device validation must show both FEX modules binding their contracts, lower
 rates for these exact producers under a comparable workload, preserved Steam
 IPC/service/game launch, and continued CS2 menu/frame progress. Per-thread

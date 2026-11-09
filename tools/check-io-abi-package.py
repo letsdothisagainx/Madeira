@@ -273,6 +273,7 @@ def check(staged, app, ipa):
     assert b'[pool-code-growth]' in native, 'stale native executable-pool growth budget'
     assert b'[subfloor-contract-v1]' in native, 'stale native fixed-image subfloor protocol consumer'
     assert b'[native-srw-alias-v1]' in native, 'stale native private SRW writer binder'
+    assert b'[fex-native-diagnostics-v1]' in native, 'stale native private FEX diagnostic writer binder'
     assert b'[hold-release-v2]' in native and b'[deliver-hold-v2]' in native, 'native FEX hold-release boundary missing'
     assert b'[native-window-retire-v1]' in native, 'native dead-window layer cleanup missing'
     assert b'_winios_native_window_create' in native and b'_winios_native_window_retire' in native, 'native window lifecycle bridge missing'
