@@ -60,8 +60,34 @@ enum SteamGameDiagnostics {
         }
         return line
     }
+    /// The old loader row contains a speculative comment. Match its exact
+    /// producer grammar, but retain only the actual Wine result, not that
+    /// comment's proposed cause. The prefix identifies a TID, never a PID.
+    private static func serviceLoader(_ line: String) -> [String: String]? {
+        let introducer = ":err:module:load_dll [dll-missing] rev=ml336 #"
+        guard let marker = line.range(of: introducer) else { return nil }
+        let tid = String(line[..<marker.lowerBound])
+        guard matches(tid, "[0-9a-fA-F]{4,8}") else { return nil }
+        let remainder = line[marker.upperBound...]
+        guard let space = remainder.firstIndex(of: " ") else { return nil }
+        let occurrence = String(remainder[..<space])
+        guard matches(occurrence, "[1-9][0-9]?"), number(occurrence, maximum: 60) else { return nil }
+        let detail = String(remainder[remainder.index(after: space)...])
+        let suffix = " -- if the webhelper dies right after this, it is the delay-load Chromium kills the process over"
+        let location: String, status: String
+        if detail == #"L"C:\\Program Files (x86)\\Steam\\bin\\steamservice.dll" status=c000007b"# + suffix {
+            location = "steam-bin"; status = "c000007b"
+        } else if detail == #"L"steamservice.dll" status=c0000135"# + suffix {
+            location = "bare"; status = "c0000135"
+        } else { return nil }
+        return ["tid": tid.lowercased(), "pid": "unmeasured", "status": status,
+                "dll": "steamservice.dll", "location": location, "occurrence": occurrence,
+                "evidence": "wine-loader-result"]
+    }
     static func decode(_ line: String) -> (String, [String: String])? {
-        guard let p = payload(line), p.first == "[", let end = p.range(of: "] "),
+        guard let p = payload(line) else { return nil }
+        if let result = serviceLoader(p) { return ("steam-service-loader-v1", result) }
+        guard p.first == "[", let end = p.range(of: "] "),
               var f = fields(String(p[end.upperBound...])) else { return nil }
         let tag = String(p[p.index(after: p.startIndex)..<end.lowerBound])
         switch tag {

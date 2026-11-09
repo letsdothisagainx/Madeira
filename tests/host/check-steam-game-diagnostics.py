@@ -58,6 +58,15 @@ let retirement = "[startup-timeline-v1] event=owner-quiesced-status-unobserved p
 assert(SteamGameDiagnostics.decode(retirement) != nil)
 let trust = "033c:err:wintrust:WinVerifyTrust [trust-result-v1] pid=828 action=00aac56b-cd44-11d0-8cc2-00c04fc295ee choice=1 kind=file state=0 result=800b0100 error=0 path=drive name=cs2.exe limit=64-per-process-module"
 assert(SteamGameDiagnostics.decode(trust) != nil)
+// Exact captured loader rows: prefix is a TID, never a process identity.
+let loaderFull = #"00b0:err:module:load_dll [dll-missing] rev=ml336 #3 L"C:\\Program Files (x86)\\Steam\\bin\\steamservice.dll" status=c000007b -- if the webhelper dies right after this, it is the delay-load Chromium kills the process over"#
+let loaderBare = #"00b0:err:module:load_dll [dll-missing] rev=ml336 #5 L"steamservice.dll" status=c0000135 -- if the webhelper dies right after this, it is the delay-load Chromium kills the process over"#
+let loaderFields = SteamGameDiagnostics.decode(loaderFull)!.1
+assert(loaderFields["tid"] == "00b0" && loaderFields["pid"] == "unmeasured")
+assert(loaderFields["status"] == "c000007b" && loaderFields["dll"] == "steamservice.dll" && loaderFields["location"] == "steam-bin")
+assert(loaderFields["evidence"] == "wine-loader-result")
+assert(SteamGameDiagnostics.decode(loaderBare)?.1["status"] == "c0000135")
+assert(SteamGameDiagnostics.decode(loaderBare)?.1["location"] == "bare")
 let vpk = "[steam-content-audit-v1] app=730 relative=game/csgo/pak01_dir.vpk state=cache-hash-match bytes=7713879 certificate=not-pe vpk-signature=section-present-unverified vpk-format=descriptor20 vpk-version=2 vpk-type=1 vpk-reserved=0 vpk-offset=7713123 vpk-declared=20 vpk-key-bytes=294 vpk-signature-bytes=256 vpk-trailing-bytes=0 vpk-tree-bytes=300 vpk-table-offset=328 vpk-table-bytes=28 vpk-other-offset=356 vpk-other-bytes=48 vpk-reason=bounded-known-layout vpk-tree-md5=match vpk-table-md5=match vpk-whole-md5=match vpk-crypto=consistent-embedded-key vpk-extra-read-bytes=1000 key-provenance=embedded-untrusted archive-payloads=not-read vac=unclaimed current-sha1=" + String(repeating: "b", count: 40) + " reference-sha1=" + String(repeating: "c", count: 40) + " hash-source=current-file-read trust=unmeasured"
 assert(SteamGameDiagnostics.decode(vpk) != nil)
 let flags = "[cs2-launch-flags-v1] pid=033c tid=0340 steam=1 condebug=1 joy=1 insecure=0 allow-third-party=0 argument-count=3 unknown-count=0 known-sequence=0,1,2 parse-complete=1 coverage=accepted-process-params"
@@ -77,6 +86,13 @@ assert(SteamGameDiagnostics.decode(flags.replacingOccurrences(of: "joy=1", with:
 assert(SteamGameDiagnostics.decode(module.replacingOccurrences(of: "sequence=1", with: "sequence=00")) == nil)
 let secrets = ["OPAQUE_SENTINEL_TICKET_6a9c", "PRIVATE_SENTINEL_KEY_7b2d", "76561198000000000", "203.0.113.42", "private@example.org", "/private/var/mobile/SECRET_PATH"]
 let bad = [
+    loaderFull + " private=" + secrets[0], loaderBare + " " + secrets[0], "prefix " + loaderFull,
+    loaderFull.replacingOccurrences(of: "Program Files (x86)", with: secrets[5]),
+    loaderBare.replacingOccurrences(of: "steamservice.dll", with: secrets[0] + ".dll"),
+    loaderFull.replacingOccurrences(of: "status=c000007b", with: "status=c0000017"),
+    loaderFull.replacingOccurrences(of: "#3 ", with: "#61 "),
+    loaderFull.replacingOccurrences(of: "rev=ml336", with: "rev=ml337"),
+    loaderFull.replacingOccurrences(of: "delay-load Chromium", with: "delay-load " + secrets[0]),
     flags + " ticket=" + secrets[0], module + " token=" + secrets[0],
     module.replacingOccurrences(of: "game/bin/win64/cs2.exe", with: secrets[5]),
     systemModule.replacingOccurrences(of: "system32/wintrust.dll", with: "system32/" + secrets[0]),
@@ -106,7 +122,7 @@ assert(unknownTrustFields["name"] == "redacted-unlisted")
 assert(unknownTrustFields["result"] == "800b0100" && unknownTrustFields["choice"] == "1")
 assert(!String(describing: unknownTrustFields).contains(secrets[0]))
 assert(SteamGameDiagnostics.decode(unknownTrust + " private=" + secrets[1]) == nil)
-put("madeira-log.txt", "[00:00:01.001] [INFO] [build] v0.1.3 (4) source=" + String(repeating: "a", count: 40) + "\n" + content + "\n" + service + "\n" + session + "\n" + unknownTrust + "\n" + bad.joined(separator: "\n") + "\n[session-log] Steam game cs2.exe: logs/cs2.exe-2026-11-09_00-03-55.txt\n")
+put("madeira-log.txt", "[00:00:01.001] [INFO] [build] v0.1.3 (4) source=" + String(repeating: "a", count: 40) + "\n" + content + "\n" + service + "\n" + session + "\n" + unknownTrust + "\n" + loaderFull + "\n" + loaderBare + "\n" + bad.joined(separator: "\n") + "\n[session-log] Steam game cs2.exe: logs/cs2.exe-2026-11-09_00-03-55.txt\n")
 try! fm.createDirectory(at: root.appendingPathComponent("logs"), withIntermediateDirectories: true)
 try! fm.linkItem(at: root.appendingPathComponent("madeira-log.txt"), to: root.appendingPathComponent("logs/cs2.exe-2026-11-09_00-03-55.txt"))
 let steam = "wine/drive_c/Program Files (x86)/Steam/"
@@ -115,7 +131,7 @@ let signatureWarningHelp = signatureWarning + " Please verify your launch option
 put(steam + "steamapps/common/Counter-Strike Global Offensive/game/csgo/console.log",
     "VAC was unable to verify your game session.\n" + signatureWarning + "\n" + signatureWarningHelp + "\n" +
     signatureWarning + " " + secrets[0] + "\n" + signatureWarningHelp + " private=" + secrets[1] + "\nprefix " + signatureWarning + "\nVAC " + secrets[0] + "\nSteamAPI " + secrets[1] + "\n" + secrets.joined(separator: " ") + "\n")
-put(steam + "logs/console_log.txt", session + "\n" + String(repeating: "X", count: 5000) + service + "\n")
+put(steam + "logs/console_log.txt", session + "\n" + loaderFull + "\n" + loaderBare + "\n" + String(repeating: "X", count: 5000) + service + "\n")
 let outside = root.deletingLastPathComponent().appendingPathComponent("outside-console.txt")
 try! Data(("[steam-service] result=999\n" + secrets[0]).utf8).write(to: outside)
 try! fm.createSymbolicLink(at: root.appendingPathComponent(steam + "logs/connection_log.txt"), withDestinationURL: outside)
@@ -163,7 +179,12 @@ assert(manifest["moduleObservations"] as? String == "no-observed-dedicated-event
 assert(sources.contains { $0["source"] as? String == "cs2-session-alias" && $0["state"] as? String == "same-file-as-earlier-source" })
 assert(sources.contains { $0["source"] as? String == "steam-connection" && $0["state"] as? String == "unavailable-or-not-owned-regular-file" })
 let events = try! JSONSerialization.jsonObject(with: entries[1].data) as! [[String: Any]]
-assert(events.count == 7)
+assert(events.count == 9)
+let loaderEvents = events.filter { $0["record"] as? String == "steam-service-loader-v1" }
+assert(loaderEvents.count == 2 && loaderEvents.allSatisfy { $0["source"] as? String == "madeira-session" })
+assert(Set(loaderEvents.compactMap { ($0["fields"] as? [String: String])?["status"] }) == Set(["c000007b", "c0000135"]))
+assert(loaderEvents.allSatisfy { ($0["fields"] as? [String: String])?["pid"] == "unmeasured" && ($0["fields"] as? [String: String])?["tid"] == "00b0" })
+assert(!text.contains("delay-load Chromium kills"), "speculative loader comment was exported")
 assert(events.filter { ($0["fields"] as? [String: String])?["event"] == "vac-signature-warning-message" }.count == 2)
 assert(!text.contains(signatureWarning), "raw warning body was exported instead of a fixed event")
 assert(events.contains { ($0["fields"] as? [String: String])?["name"] == "redacted-unlisted" && ($0["fields"] as? [String: String])?["result"] == "800b0100" })
