@@ -209,6 +209,7 @@ final class PadKeyboardMouse {
         case .none, .joystickWASD, .joystickArrows, .pad:
             break                                              // sticks are handled by sector; pad actions are XInput's
         }
+        if down { CS2VACMarkers.shared.noteInput(.controller) }
     }
 
     // ---- stick arithmetic, the same sectors as the touch key sticks ----

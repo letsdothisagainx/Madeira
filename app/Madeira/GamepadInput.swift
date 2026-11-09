@@ -233,6 +233,8 @@ final class GamepadInput: @unchecked Sendable {
     /// as a new controller before the old one left (see refreshControllers).
     static let slot0Reconnect: Bool = flag("MADEIRA_XINPUT_SLOT0_RECONNECT")  // 0: a reconnected player 1 stays in the slot it landed in (slot 0 left empty)
     private var touchState = TouchGamepadState()
+    // Diagnostic edge state only; never used to publish/change a pad packet.
+    private var vacMarkerPressed = [Bool](repeating: false, count: 4)
     @MainActor private var observers: [NSObjectProtocol] = []
     @MainActor private var started = false
 
@@ -384,6 +386,7 @@ final class GamepadInput: @unchecked Sendable {
             }
             let hid = i == 0 && hidActive
             guard pad != nil || touchConnected else {
+                vacMarkerPressed[i] = false
                 winios_gamepad_set_state(Int32(i), nil)
                 clearBattery(i)
                 if hid { winios_hidpad_set_state(nil) }
@@ -453,12 +456,16 @@ final class GamepadInput: @unchecked Sendable {
                 state.left_trigger = merged.lt; state.right_trigger = merged.rt
                 state.lx = merged.lx; state.ly = merged.ly; state.rx = merged.rx; state.ry = merged.ry
             }
+            let markerPressed = state.buttons != 0 || state.left_trigger != 0 || state.right_trigger != 0
+            let markerDown = markerPressed && !vacMarkerPressed[i]
+            vacMarkerPressed[i] = markerPressed
             if hid {
                 publishHID(state, live: hidLive, pad: pad)
                 // One controller, one API: player 1 is not also an XInput pad,
                 // as a DualSense on Windows is not (MADEIRA_HIDPAD_XINPUT=1 keeps both).
                 if !hidKeepsXInput {
                     winios_gamepad_set_state(Int32(i), nil)
+                    if markerDown { CS2VACMarkers.shared.noteInput(.controller) }
                     continue
                 }
             }
@@ -479,6 +486,7 @@ final class GamepadInput: @unchecked Sendable {
             }
             publishBattery(i, pad: pad)
             winios_gamepad_set_state(Int32(i), &state)
+            if markerDown { CS2VACMarkers.shared.noteInput(.controller) }
         }
     }
 

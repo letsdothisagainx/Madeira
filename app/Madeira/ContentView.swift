@@ -563,6 +563,7 @@ final class MetalBackedView: UIView {
     private func postSurfacePointer(_ x: Int32, _ y: Int32, _ flags: UInt32, data: UInt32 = 0) {
         guard let event = HardwareInput.shared.surfacePointerEvent(x: x, y: y, flags: flags, data: data) else { return }
         winios_pointer(event.x, event.y, event.flags, event.data)
+        if event.flags & 0x00aa != 0 { CS2VACMarkers.shared.noteInput(.touch) }
     }
 
     private func postSurfaceTouchDown(_ x: Int32, _ y: Int32) {
@@ -570,6 +571,7 @@ final class MetalBackedView: UIView {
             postSurfacePointer(x, y, F_MOVE | F_LDOWN | F_ABS)
         } else {
             winios_post_touch_down(x, y)
+            CS2VACMarkers.shared.noteInput(.touch)
         }
     }
 
@@ -4873,6 +4875,7 @@ struct TouchControlButton: View {
         case .pad:
             break     // TouchPadSurface owns pad presses and cancellation.
         }
+        if down { CS2VACMarkers.shared.noteInput(.touch) }
     }
 }
 

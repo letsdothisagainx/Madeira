@@ -251,6 +251,14 @@ final class LogStore: ObservableObject {
 
     /// Called from tail-file callback (background queue) or C callback.
     private func handleRawLine(_ raw: String) {
+        // This passive context observation uses the existing closed decoder,
+        // only for the native launch tag. It never infers game readiness or
+        // changes the launched process/Steam identity.
+        if raw.contains("[cs2-launch-flags-v1] "),
+           let (tag, fields) = SteamGameDiagnostics.decode(raw), tag == "cs2-launch-flags-v1",
+           let pid = fields["pid"] {
+            CS2VACMarkers.shared.observeProcess(pid: pid)
+        }
         JITPoolMeter.note(raw)   // the overlay's JIT memory, also while the live log is hidden
         stateLock.lock(); let suppressed = displaySuppressed; stateLock.unlock()
         if suppressed { return }

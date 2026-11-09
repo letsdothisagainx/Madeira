@@ -1181,6 +1181,7 @@ final class HardwareInput: ObservableObject {
         let edges = keysPosted.update(keys.wanted(focused: keyboardFocused).subtracting(deferredCommands))
         for vk in edges.up { winios_post_key(vk, 0) }
         for vk in edges.down { winios_post_key(vk, 1) }
+        if !edges.down.isEmpty { CS2VACMarkers.shared.noteInput(.keyboard) }
     }
 
     /// Read only in response to an explicit paste gesture, never on a timer.
@@ -1603,6 +1604,7 @@ final class HardwareInput: ObservableObject {
         let edges = buttonsPosted.update(gameButtons)
         for b in edges.up { let e = b.event(down: false); winios_pointer(0, 0, e.flags, e.data) }
         for b in edges.down { let e = b.event(down: true); winios_pointer(0, 0, e.flags, e.data) }
+        if !edges.down.isEmpty { CS2VACMarkers.shared.noteInput(.pointer) }
     }
 
     /// Reached from the mouse queue (GCMouse scroll) and from main (UIKit,

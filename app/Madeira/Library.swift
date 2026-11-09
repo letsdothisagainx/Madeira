@@ -1323,6 +1323,7 @@ final class LibraryModel: ObservableObject {
     /// Dock start): it is neither added to the library nor stamped as played.
     /// `dock`: the game a Madeira Dock start launches (DockStartScreen).
     func begin(_ entry: LibraryEntry, remember: Bool = true, dock: DockGame? = nil) {
+        CS2VACMarkers.shared.begin(appID: entry.steamAppID ?? dock?.id)
         wine_exit_status_reset()
         JITPoolMeter.reset(); smallPoolNoted = false
         quitRequested = false
@@ -1522,6 +1523,7 @@ final class LibraryModel: ObservableObject {
         }
     }
     private func finish() {
+        CS2VACMarkers.shared.finish()
         if sawProcess, let next = steamRunRequest() { restartNotice = next }
         else if sawProcess, let report = exitReport() { error = report }
         timer?.invalidate(); timer = nil
@@ -3025,9 +3027,10 @@ struct LibraryView: View {
                 JITSettingsSection()
             }
             if settingsShow("signing", "expires", "refresh", "Apple", "sign-in", "7 days") { SigningSettingsSection() }
-            if settingsShow("diagnostics", "extended logging", "logging", "log", "Steam", "CS2") {
+            if settingsShow("diagnostics", "extended logging", "logging", "log", "Steam", "CS2", "VAC") {
                 Section {
                     Toggle("Extended logging", isOn: $input.diagnostics)
+                    CS2VACDiagnosticActions()
                     SteamGameDiagnosticsExportButton()
                 } header: { Text("Diagnostics") }
             }
@@ -5166,6 +5169,12 @@ struct LibraryHUD: View {
                     }
                 }
                 Button("Keyboard", systemImage: "keyboard") { model.menu = false; LibraryKeyboard.show() }
+                if model.activeEntry?.steamAppID == 730 || CS2VACMarkers.shared.isCS2Context {
+                    Divider()
+                    Text("CS2 diagnostics").font(.headline)
+                    CS2VACDiagnosticActions()
+                    SteamGameDiagnosticsExportButton()
+                }
                 Divider()
                 FPSChoice(mode: Binding(get: { model.fpsMode }, set: { model.setFPS($0) }))
                 // Saved to the game with the rest of the session's profile.
