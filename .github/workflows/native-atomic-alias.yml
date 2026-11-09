@@ -20,6 +20,10 @@ jobs:
           brew list xz >/dev/null 2>&1 || brew install xz
           echo "CPATH=$(brew --prefix xz)/include" >> "$GITHUB_ENV"
           echo "LIBRARY_PATH=$(brew --prefix xz)/lib" >> "$GITHUB_ENV"
+      - name: Execute non-gating native launch integration
+        run: |
+          set -o pipefail
+          python3 tests/host/check-steam-integrity-launch.py --require-swift | tee content-launch.txt
       - name: Reproduce both real baseline integrity failures
         run: |
           set +e
