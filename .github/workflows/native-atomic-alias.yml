@@ -9,6 +9,8 @@ on:
       - build/ntdll-unix/native_srw_alias.h
       - build/ntdll-unix/native_fex_diagnostics_alias.h
       - build/fex-compat/native-diagnostics.patch
+      - build/fex-compat/native-tracker-storage.patch
+      - tests/host/check-fex-invalidation-storage.py
       - build/fex-compat/native_diagnostics.h
       - tests/host/*fex*native*diagnostics*
       - tests/host/*native*srw*
@@ -36,6 +38,8 @@ on:
       - build/ntdll-unix/native_srw_alias.h
       - build/ntdll-unix/native_fex_diagnostics_alias.h
       - build/fex-compat/native-diagnostics.patch
+      - build/fex-compat/native-tracker-storage.patch
+      - tests/host/check-fex-invalidation-storage.py
       - build/fex-compat/native_diagnostics.h
       - tests/host/*fex*native*diagnostics*
       - tests/host/*native*srw*
@@ -101,6 +105,7 @@ jobs:
         run: |
           set -o pipefail
           python3 tests/host/check-fex-native-history.py
+          python3 tests/host/check-fex-invalidation-storage.py
           python3 tests/host/check-fex-native-diagnostics-performance.py --require-arm64-darwin | tee native-fex-diagnostics-throughput.txt
       - name: Measure production QPC counter writer with real Mach faults
         if: always()

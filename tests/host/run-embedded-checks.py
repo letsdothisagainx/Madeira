@@ -52,6 +52,7 @@ commands = [
     ['python3', 'tests/host/check-fex-native-diagnostics-alias.py'],
     ['python3', 'tests/host/check-fex-native-diagnostics-package.py'],
     ['python3', 'tests/host/check-fex-native-history.py'],
+    ['python3', 'tests/host/check-fex-invalidation-storage.py'],
     ['python3', 'tests/host/check-fex-native-diagnostics-performance.py', '--require-arm64-darwin'],
     ['python3', 'tests/host/check-fex-pe-build.py'],
     ['python3', 'tests/host/check-jit-alias-write-fault.py'],

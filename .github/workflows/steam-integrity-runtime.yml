@@ -24,6 +24,10 @@ on:
       - build/crypto-unix/crypt32_unixlib_ios.c
       - tests/host/check-crypt32-root-fd.py
       - app/Madeira/GuestDisplay.swift
+      - app/Madeira/GraphicsPixelProbe.swift
+      - tests/host/check-graphics-probe-launch.py
+      - build/steam-service/**
+      - tests/host/check-steam-service*.py
       - app/Madeira/SteamRuntime.swift
       - app/Madeira/SteamGames.swift
       - tests/host/check-frontend.py
@@ -72,6 +76,10 @@ jobs:
           SWIFTC="$(command -v swiftc)" python3 tests/host/check-onboarding.py
       - name: Load pinned Wine list definitions for the production certificate reader
         run: git submodule update --init --depth 1 wine
+      - name: Validate owned graphics probe staging and complete service records
+        run: |
+          python3 tests/host/check-graphics-probe-launch.py --require-swift
+          python3 tests/host/check-steam-service.py
       - name: Reproduce old crypto descriptor reuse and validate exact ownership
         run: |
           python3 tests/host/check-crypt32-root-fd.py --baseline 4711d1235dd8ccaa84556a7257127d266b57e20b --expect-baseline-reuse-failure

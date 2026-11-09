@@ -38,6 +38,7 @@ on:
       - tools/check-io-abi-package.py
       - tools/build/stage-fex-compat.py
       - tests/host/check-fex-owner-heap-pressure.py
+      - tests/host/check-fex-invalidation-storage.py
       - tests/host/check-fex-owner-allocator-config.py
       - tests/host/check-fex-arm64ec-startup.py
       - tests/host/check-fex-pe-build.py
@@ -79,6 +80,7 @@ on:
       - tools/check-io-abi-package.py
       - tools/build/stage-fex-compat.py
       - tests/host/check-fex-owner-heap-pressure.py
+      - tests/host/check-fex-invalidation-storage.py
       - tests/host/check-fex-owner-allocator-config.py
       - tests/host/check-fex-arm64ec-startup.py
       - tests/host/check-fex-pe-build.py
@@ -114,6 +116,7 @@ jobs:
           python3 tests/host/check-fex-native-diagnostics-alias.py
           python3 tests/host/check-fex-native-diagnostics-package.py
           python3 tests/host/check-fex-native-history.py
+          python3 tests/host/check-fex-invalidation-storage.py
           python3 tests/host/check-fex-pe-build.py
           python3 tests/host/check-rpmalloc-thread-reuse.py
           python3 tests/host/check-directx-fixed-image.py
