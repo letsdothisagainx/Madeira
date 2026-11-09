@@ -23,13 +23,19 @@ jobs:
       - name: Fetch exact public format reference without account credentials
         run: |
           python3 - <<'PYCODE'
-          import urllib.request,json,base64,hashlib,os
+          import urllib.request,urllib.error,json,base64,hashlib,os
           from pathlib import Path
           blob='5d31d10537994e41fb92dd655b73a0bfe4674e8b'
           url='https://api.github.com/repos/ValveResourceFormat/ValvePak/git/blobs/'+blob
           request=urllib.request.Request(url,headers={'Accept':'application/vnd.github+json','User-Agent':'Madeira-format-regression'})
-          with urllib.request.urlopen(request,timeout=30) as response: payload=json.load(response)
-          raw=base64.b64decode(payload['content'])
+          try:
+              with urllib.request.urlopen(request,timeout=30) as response: payload=json.load(response)
+              raw=base64.b64decode(payload['content'])
+          except urllib.error.HTTPError as error:
+              if error.code not in (403,429): raise
+              raw_url='https://raw.githubusercontent.com/ValveResourceFormat/ValvePak/037f25ef5ad3a4f1804d0715d16ee2bd78bd652a/ValvePak/ValvePak.Test/Files/cs2_new_signature_actually_signed.vpk'
+              with urllib.request.urlopen(raw_url,timeout=30) as response: raw=response.read(10699)
+              print('Public API rate-limited; exact pinned raw-file fallback will undergo identical blob/SHA256 verification')
           assert len(raw)==10698 and hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()==blob
           assert hashlib.sha256(raw).hexdigest()=='8279de4e7c0a1d8b52d98b33efebac409ad13eb0b6ab8320b09e7d85b3a9d6b4'
           path=Path(os.environ['RUNNER_TEMP'])/'madeira-public-vpk-reference.vpk';path.write_bytes(raw)
