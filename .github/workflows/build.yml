@@ -350,7 +350,7 @@ jobs:
             FEX/build-arm64ec
       - uses: actions/cache@v4
         with:
-          key: plan19-${{ steps.sdk.outputs.graphics }}-dxmt-ios-${{ steps.pins.outputs.dxmt }}-${{ steps.pins.outputs.wine }}-${{ hashFiles('build/dxmt-ios/build.sh', 'build/dxmt-ios/graphics_diagnostics.h', 'tools/build/stage-dxmt-diagnostics.py', 'tools/build/build-dxmt-ios.sh', 'tools/build/build-shader-headers.sh', 'tools/build/build-llvm-ios.sh', 'build/madeira-d3d12/deps.sh', 'madeira-d3d12/src/**', 'madeira-d3d12/tests/native/**', 'madeira-d3d12/third_party/**', 'app/Madeira/d3d12/**') }}
+          key: plan19-${{ steps.sdk.outputs.graphics }}-dxmt-ios-${{ steps.pins.outputs.dxmt }}-${{ steps.pins.outputs.wine }}-${{ hashFiles('build/dxmt-ios/build.sh', 'build/dxmt-ios/graphics_diagnostics.h', 'build/dxmt-ios/metal_lifecycle.h', 'build/dxmt-ios/metal_submission_gate.h', 'tools/build/stage-dxmt-lifecycle.py', 'tools/build/stage-dxmt-diagnostics.py', 'tools/build/build-dxmt-ios.sh', 'tools/build/build-shader-headers.sh', 'tools/build/build-llvm-ios.sh', 'build/madeira-d3d12/deps.sh', 'madeira-d3d12/src/**', 'madeira-d3d12/tests/native/**', 'madeira-d3d12/third_party/**', 'app/Madeira/d3d12/**') }}
           path: |
             app/Madeira/libdxmt_combined.a
             build/dxmt-ios/shader-headers
@@ -419,7 +419,7 @@ jobs:
                          b'[alias-exclusive-loop]', b'[alias-str-immediate]', b'access=independent-images-v1',
                          b'[alias-exclusive-add]', b'[native-srw-alias-v1]', b'[startup-app-v1]',
                          b'[startup-timeline-v1]', b'[steam-session-v1]', b'[metal-resource-v1]',
-                         b'[metal-api-v1]', b'[metal-progress-v1]'):
+                         b'[metal-api-v1]', b'[metal-progress-v1]', b'[metal-lifecycle-v1]'):
               assert marker in image, 'missing native diagnostic: ' + repr(marker)
           assert b'SEGV LOOP FATAL' not in image, 'legacy fault-skipping path is still bundled'
           print('PASS native attach/UI/I/O/guard/process-isolation diagnostics included in IPA')

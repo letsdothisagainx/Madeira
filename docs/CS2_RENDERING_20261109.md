@@ -88,3 +88,57 @@ The actual D3D11 GPU readbacks have **not been executed in this Linux
 workspace**. The iPhone result and staged Objective-C compilation against the
 iPhoneOS SDK remain required device/Apple-CI evidence. Host checks print that
 distinction explicitly.
+
+## Follow-up capture DB9C3F84, candidate 4a70400
+
+The later log has no `[d3d11-pixels]` execution record. It does demonstrate
+failed GPU work: frame 301 reports `MTLCommandBufferErrorDomain` code 7,
+`BackgroundExecutionNotPermitted`; frames 848–850 repeat the same native error.
+This identifies submission while iOS denies background GPU execution. It does
+not establish that every missing game graphic came from those failures, and
+no shader/BC format root cause was demonstrated. Native BC remains supported.
+
+The owned native submission correction holds encoded command buffers while
+the UIKit application is inactive and submits them after activation. Normal
+Wine/encoding producers sleep on a condition, preserving their work and queue
+backpressure. A UIKit-main submission uses a retained deferred entry instead
+of waiting for an activation callback on its own run loop. A FIFO preserves
+submission order across these entries. The UIKit state setter never waits on
+that condition or on GPU completion; its mutex covers native commit calls, so
+an already-entered commit can briefly hold it. All Metal statuses, errors,
+events and completion callbacks remain native results. Already submitted work
+is not retried or reported as successful after a native error.
+
+The main-thread deferred path is not used by the production DXMT D3D11 encoder,
+which submits from Wine/encoding workers. It is not a facility for a UIKit
+caller to synchronously wait for GPU work while inactive. Asynchronous work
+can resume only after UIKit delivers activation. Commit-request wall timing
+includes any lifecycle pause; `[metal-progress-v1] event=command-submit-request`
+therefore identifies a request rather than completed native submission.
+
+The production FIFO policy passed ASan/UBSan tests for paused work, mixed
+worker/deferred ordering, cancellation cleanup, 8,000 exact-once submissions
+and 10,000 lifecycle transitions. This tests admission, not emulated GPU
+completion. Actual iPhone background/foreground validation remains required.
+
+The monitor is 800×450 in this capture, while SDL's window is already 640 wide
+before Metal setup (`{80,0,720,450}`), and the requested layer and acquired
+drawable are 640×450. No Metal downsize was found. Original DXGI arguments and
+the initial client rectangle are absent, so explicit application sizing versus
+earlier window geometry remains unproven; no forced resize/upscale is applied.
+
+## Normal-library pixel test access
+
+Settings → Diagnostics → **Run D3D11 pixel test** now enables JIT through the
+normal flow and starts the bundled probe as a transient Library session. Close
+Wine first and restart after any previous session when the one-session rule
+applies. The action copies only the owned bundled executable into a newly
+created `drive_c/madeira-graphics-probe-<UUID>/` directory. It never adopts an
+existing directory or replaces a prefix file, and does not save a Library entry,
+change the game profile or override the renderer. The small owned stage is
+retained; no unowned directory is deleted during cleanup.
+
+The probe checks DXMT identity itself. Its actual `[d3d11-pixels]` log is the
+result; staging/compilation success is not a GPU pass. Share the Madeira log
+after the test and restart before returning to a game. This removes the need
+to switch to the developer interface to run the same 113 readbacks.

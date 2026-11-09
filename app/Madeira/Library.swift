@@ -2820,6 +2820,7 @@ struct LibraryView: View {
     @ObservedObject private var liquidMetal = LiquidMetalSetting.shared
     var play: (LibraryEntry) -> Void
     var verifySteamFiles: (LibraryEntry) -> Void = { _ in }
+    var runGraphicsPixelProbe: () -> Void = {}
     var enableJIT: () -> Void
     @ObservedObject private var jitState = LibraryJITState.shared
     /// Madeira Dock's start, for Settings › Steam (Onboarding.swift).
@@ -3017,11 +3018,15 @@ struct LibraryView: View {
                 JITSettingsSection()
             }
             if settingsShow("signing", "expires", "refresh", "Apple", "sign-in", "7 days") { SigningSettingsSection() }
-            if settingsShow("diagnostics", "extended logging", "logging", "log", "Steam", "CS2", "VAC") {
+            if settingsShow("diagnostics", "graphics", "pixel", "DX11", "extended logging", "logging", "log", "Steam", "CS2", "VAC") {
                 Section {
                     Toggle("Extended logging", isOn: $input.diagnostics)
                     CS2VACDiagnosticActions()
                     SteamGameDiagnosticsExportButton()
+                    Button("Run D3D11 pixel test", systemImage: "checkmark.rectangle") { runGraphicsPixelProbe() }
+                        .disabled(model.current != nil || model.preparing != nil || jit.busy)
+                    Text("Checks known pixels through DXMT. Close Wine first; results appear in the Madeira log. Restart before returning to a game.")
+                        .font(.caption).foregroundStyle(.secondary)
                 } header: { Text("Diagnostics") }
             }
             if settingsShow("pointer", "mouse", "cursor", "touch", "trackpad", "sensitivity") {

@@ -1320,7 +1320,7 @@ struct ContentView: View {
                     sessionBody
                         .navigationBarHidden(true)
                 } else if library.enabled {
-                    LibraryView(play: launchLibraryEntry, verifySteamFiles: verifySteamFiles, enableJIT: enableJIT,
+                    LibraryView(play: launchLibraryEntry, verifySteamFiles: verifySteamFiles, runGraphicsPixelProbe: runGraphicsPixelProbe, enableJIT: enableJIT,
                                 startDock: { startDock($0, compactPool: $1) })
                 } else {
                     developerBody
@@ -1371,11 +1371,19 @@ struct ContentView: View {
                     Button("Cancel", role: .cancel) { library.cloudNotice = nil; library.cloudRetry = nil }
                 }
             } message: { Text(library.cloudNotice?.message ?? "") }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
+                madeira_metal_set_active(0)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+                madeira_metal_set_active(0)
+            }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+                madeira_metal_set_active(1)
                 library.refreshFlag()
                 if library.enabled && library.current == nil { MetalHostView.shared.isHidden = true }
             }
             .onAppear {
+                madeira_metal_set_active(UIApplication.shared.applicationState == .active ? 1 : 0)
                 jit_install_trap_handler()
                 entitlements = EntitlementStatus.check()
                 logEntitlementStatus()
@@ -2614,6 +2622,32 @@ struct ContentView: View {
         // continues from here once it is on.
         guard jitReadyForLaunch(inLibrary: true, entry: entry.id, then: { startLibraryEntry(entry) }) else { return }
         startLibraryEntry(entry)
+    }
+
+    /// The owned offscreen probe uses the ordinary Library session, without
+    /// persisting a game entry, replacing files or changing renderer settings.
+    private func runGraphicsPixelProbe() {
+        guard !steamBrowserLaunch.busy, !SteamBrowserRuntime.busy, nativeSteamPreparationIdle() else {
+            library.error = "Close Wine and wait for file operations to finish before running the graphics test."; return
+        }
+        if LibraryModel.sessionsThisRun > 0, MadeiraConfig.flag("MADEIRA_ONE_SESSION_PER_RUN") {
+            library.restartNotice = LibraryModel.restartMessage; return
+        }
+        guard jitReadyForLaunch(inLibrary: true, then: { runGraphicsPixelProbe() }) else { return }
+        do {
+            guard let root = Bundle.main.resourceURL else { throw GraphicsPixelProbe.Failure.unavailable }
+            let relative = try GraphicsPixelProbe.stage(
+                executable: root.appendingPathComponent("arm64ec-windows/" + GraphicsPixelProbe.filename),
+                drive: LibraryModel.drive)
+            var entry = LibraryEntry(title: "D3D11 pixel test", relativePath: relative, bits: 64)
+            entry.resolution = "800x450"; entry.liveLogs = true
+            entry.graphicsAPI = "Direct3D 11"
+            logStore.log("[graphics-pixel-probe-v1] action=requested backend=DXMT-required results=d3d11-pixels game-files=untouched")
+            startLibraryEntry(entry, remember: false)
+        } catch {
+            library.error = "The graphics test could not be prepared. Check the Madeira log."
+            logStore.log("[graphics-pixel-probe-v1] action=prepare-failed result=no-launch", level: .error)
+        }
     }
 
     /// The explicit Library action requests Valve's real verification, without

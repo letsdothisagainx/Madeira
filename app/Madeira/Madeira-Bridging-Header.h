@@ -83,3 +83,6 @@ int madeira_d3d12_canary_run_log(const char *fixture_dir, const char *dylib_path
  * what was applied, for the [hwinput] log. */
 void madeira_phone_pointer_setup(void);
 const char *madeira_phone_pointer_status(void);
+
+// DXMT submits GPU work only while the UIKit application is active.
+void madeira_metal_set_active(int active);

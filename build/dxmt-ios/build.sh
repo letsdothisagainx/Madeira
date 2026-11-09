@@ -197,8 +197,12 @@ fi
 echo "=== winemetal unix (Objective-C) ==="
 python3 "$REPO_ROOT/tools/build/stage-dxmt-diagnostics.py" \
     --source "$DXMT_SRC/winemetal/unix/winemetal_unix.c" \
-    --output "$BUILD_DIR/staged/winemetal_unix.c" \
+    --output "$BUILD_DIR/staged/winemetal_diagnostics.c" \
     --header "$BUILD_DIR/graphics_diagnostics.h"
+python3 "$REPO_ROOT/tools/build/stage-dxmt-lifecycle.py" \
+    --source "$BUILD_DIR/staged/winemetal_diagnostics.c" \
+    --output "$BUILD_DIR/staged/winemetal_unix.c" \
+    --headers "$BUILD_DIR"
 compile_objc "$BUILD_DIR/staged/winemetal_unix.c" winemetal_unix
 compile_objc "$DXMT_SRC/winemetal/unix/cache.c"          cache
 
