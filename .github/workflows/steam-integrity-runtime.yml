@@ -23,6 +23,11 @@ on:
       - tests/host/check-cs2-vac-markers.py
       - build/crypto-unix/crypt32_unixlib_ios.c
       - tests/host/check-crypt32-root-fd.py
+      - app/Madeira/GuestDisplay.swift
+      - app/Madeira/SteamRuntime.swift
+      - app/Madeira/SteamGames.swift
+      - tests/host/check-frontend.py
+      - tests/host/check-native-steam-play.py
       - .github/workflows/steam-integrity-runtime.yml
   pull_request:
     paths: *integrity-paths
@@ -60,6 +65,11 @@ jobs:
         run: python3 tests/host/check-cs2-observation.py
       - name: Execute bounded VAC user and input timestamps with Swift and ASan
         run: python3 tests/host/check-cs2-vac-markers.py --require-swift
+      - name: Execute production display policy and genuine Steam verification scripts
+        run: |
+          python3 tests/host/check-frontend.py
+          python3 tests/host/check-native-steam-play.py
+          SWIFTC="$(command -v swiftc)" python3 tests/host/check-onboarding.py
       - name: Load pinned Wine list definitions for the production certificate reader
         run: git submodule update --init --depth 1 wine
       - name: Reproduce old crypto descriptor reuse and validate exact ownership

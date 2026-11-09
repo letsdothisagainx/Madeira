@@ -2,7 +2,7 @@ name: Verify native atomic alias execution
 on:
   workflow_dispatch:
   push:
-    branches: [main, 'codex/pr-build-*']
+    branches: [main, 'codex/pr-build-*', codex/validate-cs2-integrity-runtime-4b41]
     paths:
       - build/ntdll-unix/native_atomic*.h
       - build/ntdll-unix/native_data_alias.h
@@ -100,6 +100,7 @@ jobs:
       - name: Measure captured FEX telemetry and IR counters with real Mach faults
         run: |
           set -o pipefail
+          python3 tests/host/check-fex-native-history.py
           python3 tests/host/check-fex-native-diagnostics-performance.py --require-arm64-darwin | tee native-fex-diagnostics-throughput.txt
       - name: Measure production QPC counter writer with real Mach faults
         if: always()

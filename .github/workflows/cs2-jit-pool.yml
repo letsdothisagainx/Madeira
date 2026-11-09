@@ -113,6 +113,7 @@ jobs:
           python3 tests/host/check-fex-cb-summary.py
           python3 tests/host/check-fex-native-diagnostics-alias.py
           python3 tests/host/check-fex-native-diagnostics-package.py
+          python3 tests/host/check-fex-native-history.py
           python3 tests/host/check-fex-pe-build.py
           python3 tests/host/check-rpmalloc-thread-reuse.py
           python3 tests/host/check-directx-fixed-image.py
