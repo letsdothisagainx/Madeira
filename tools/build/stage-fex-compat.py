@@ -23,12 +23,15 @@ FILES = ('Source/Windows/WOW64/Module.cpp', 'FEXCore/include/FEXCore/Utils/Alloc
          'FEXCore/Source/Interface/Context/Context.h',
          'FEXCore/include/FEXCore/Utils/WritePriorityMutex.h',
          'FEXCore/Source/Utils/Allocator.cpp',
+         'FEXCore/include/FEXCore/Utils/Telemetry.h',
+         'FEXCore/Source/Utils/Telemetry.cpp',
+         'FEXCore/Source/Interface/IR/IRTopologyCheck.h',
          'Source/Windows/WOW64/CMakeLists.txt',
          'Source/Windows/WOW64/libwow64fex.def')
 PATCH = ROOT / 'build/fex-compat/thread-init.patch'
 PATCHES = ('thread-init.patch', 'guest-write.patch', 'compiler-startup.patch', 'ir-pool-failure.patch',
            'arena-exports.patch', 'lookup-blocklist.patch', 'hold-release.patch', 'thread-retire.patch',
-           'subfloor-domain.patch')
+           'subfloor-domain.patch', 'native-diagnostics.patch')
 ARM64EC_FILES = ('Source/Windows/ARM64EC/Module.cpp', 'Source/Windows/ARM64EC/libarm64ecfex_ios.def',
                  'Source/Windows/ARM64EC/IosJitAlias.cpp', 'Source/Windows/ARM64EC/CMakeLists.txt')
 
@@ -44,6 +47,7 @@ def digest(path):
 
 
 def stage(destination, source, backend='wow64'):
+    destination = destination.resolve()
     files = files_for(backend)
     for name in files:
         target = destination / name
@@ -58,8 +62,12 @@ def stage(destination, source, backend='wow64'):
         paths = [line[6:] for line in patch.read_text().splitlines() if line.startswith('+++ b/')]
         if not any(path in files for path in paths):
             continue
-        subprocess.run(['git', '-C', str(destination), 'apply', *includes, '--check', str(patch)], check=True)
-        subprocess.run(['git', '-C', str(destination), 'apply', *includes, str(patch)], check=True)
+        # A stage may live inside another Git worktree. Without an explicit
+        # work tree, git prefixes --include paths with that outer repository's
+        # subdirectory and can silently skip every hunk while returning zero.
+        command = ['git', '-C', str(destination), '--work-tree=' + str(destination), 'apply']
+        subprocess.run([*command, *includes, '--check', str(patch)], check=True)
+        subprocess.run([*command, *includes, str(patch)], check=True)
 
 
 def apply(state, source, backend='wow64'):

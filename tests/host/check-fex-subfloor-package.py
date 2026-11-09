@@ -47,6 +47,18 @@ def fex_fixture(backend='arm64ec'):
         put('<III',raw(0x1400),1,0x1420,1);put('<II',raw(0x1420),0x3001,0x1000)
     else:
         names += [b'MadeiraBTCpuIosReleaseThreadHolds',b'MadeiraBTCpuIosRetireThread'];targets += [0x3000,0x3004]
+    diagnostics = {}
+    for index,(name,tag,length,payload) in enumerate((
+        (b'MadeiraFEXTelemetryWriteContract',0x31544d584546574d,136,0x2300),
+        (b'MadeiraFEXIRTopoWriteContract',0x315249584546574d,32,0x2400),
+        (b'MadeiraFEXCompileWriteContract',0x314243584546574d,48,0x2500))):
+        contract=0x2100+32*index
+        names.append(name);targets.append(contract)
+        put('<QIIQQ',raw(contract),tag,length,8,0x180000000+payload,0)
+        diagnostics[name]=(contract,payload,length)
+    module=b'libarm64ecfex.dll\0' if backend=='arm64ec' else b'libwow64fex.dll\0'
+    data[raw(0x17c0):raw(0x17c0)+len(module)]=module
+    put('<I',raw(0x1000)+12,0x17c0)
     put('<IIIII',raw(0x1000)+20,len(names),len(names),0x1040,0x1080,0x10c0)
     cursor=0x1100;slots={};strings={}
     for index,(name,target) in enumerate(zip(names,targets)):
@@ -56,7 +68,7 @@ def fex_fixture(backend='arm64ec'):
     markers=b'[fex-core-init-v1][fex-ir-pool-v1][fex-owner-allocator-v1]'
     if backend=='wow64':markers+=b'MadeiraBTCpuThreadInit[fex-thread-init-v1]MadeiraBTCpuWriteMemory[fex-guest-write-v1][fex-first-use-v1][fex-blocklist-v1][fex-hold-release-v1][fex-thread-retire-v1]'
     data[raw(0x1800):raw(0x1800)+len(markers)]=markers
-    return data,{'pe':pe,'opt':opt,'raw':raw,'sections':sections,'slots':slots,'strings':strings}
+    return data,{'pe':pe,'opt':opt,'raw':raw,'sections':sections,'slots':slots,'strings':strings,'diagnostics':diagnostics}
 
 
 def ntdll_fixture(machine):

@@ -1,0 +1,195 @@
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -13,6 +13,7 @@
+ #include <Windows/include/wine/debug.h>
+ #endif
+ #include <cstdint>
++#include MADEIRA_FEX_NATIVE_DIAGNOSTICS_HEADER
+ #ifdef ZYDIS_DISASSEMBLER
+ #include <Zydis/Zydis.h>
+ #endif
+@@ -124,8 +125,15 @@
+ #endif
+ 
+ /* iOS-Madeira 2026-05-18 low-noise CompileBlock instrumentation counters. */
+-static volatile uint64_t g_cb_total = 0;
+-static volatile uint64_t g_cb_real_compiles = 0;
++static MadeiraFEXDiagnostics::CompileState MadeiraFEXCompileStorage;
++extern "C" {
++MadeiraFEXNativeWriteContract MadeiraFEXCompileWriteContract = {
++  MadeiraFEXCompileTag, sizeof(MadeiraFEXCompileStorage), alignof(decltype(MadeiraFEXCompileStorage)),
++  &MadeiraFEXCompileStorage, 0};
++}
++static MadeiraFEXDiagnostics::CompileState& MadeiraFEXCompileStats() {
++  return MadeiraFEXNativeWriter(MadeiraFEXCompileWriteContract, MadeiraFEXCompileStorage);
++}
+ 
+ #if defined(FEX_IOS_HOST) && defined(_WIN32)
+ /* iOS-Madeira ml460 (#75): pool-tail sweeper, implemented by the ARM64EC
+@@ -1992,21 +2000,14 @@
+    * proves we actually compile (see below at LookupCache fallthrough).
+    * Boyer-Moore-style 1-slot hot-RIP estimator. Summary every 16K calls. */
+   {
+-    static volatile uint64_t g_cb_last_summary_total = 0;
+-    static volatile uint64_t g_cb_hot_rip = 0;
+-    static volatile uint64_t g_cb_hot_rip_count = 0;
+-    if (GuestRIP == g_cb_hot_rip) {
+-      __sync_add_and_fetch(&g_cb_hot_rip_count, 1);
+-    } else if (g_cb_hot_rip_count == 0) {
+-      g_cb_hot_rip = GuestRIP;
+-      __sync_add_and_fetch(&g_cb_hot_rip_count, 1);
+-    } else {
+-      __sync_sub_and_fetch(&g_cb_hot_rip_count, 1);
+-    }
+-    uint64_t total = __sync_add_and_fetch(&g_cb_total, 1);
+-    if ((total - g_cb_last_summary_total) >= 16384) {
+-      g_cb_last_summary_total = total;
+-      uint64_t reals = g_cb_real_compiles;
++    auto& statistics = MadeiraFEXCompileStats();
++    const uint64_t total = MadeiraFEXDiagnostics::RecordDispatch(statistics, GuestRIP);
++    if (MadeiraFEXDiagnostics::SummaryDue(total)) {
++      /* A concurrent later dispatch can finish compiling before this report.
++       * Bound the real-count snapshot to this unique dispatch ticket so the
++       * diagnostic cache-hit subtraction cannot wrap either. */
++      uint64_t reals = statistics.real_compiles.load(std::memory_order_relaxed);
++      if (reals > total) reals = total;
+       /* iOS-Madeira 2026-07-03 perf hunt: also print the JIT-visible L1
+        * lookup fields. The emitted dispatcher L1 probe reads
+        * State.L1Pointer/L1Mask; the measured ~15K CompileBlock calls per
+@@ -2017,12 +2018,14 @@
+        * silently misses every time — no crash, pure 60us tax per lookup. */
+       auto* T = Frame ? Frame->Thread : nullptr;
+       LogMan::Msg::EFmt("[CB_SUMMARY] total={} real_compiles={} cache_hits={} "
+-                        "hit_rate={}%  hottest_rip≈0x{:x} repeats~{} "
++                        "hit_rate={}%  candidate_rip≈0x{:x} candidate_balance={} sample_skips={} "
+                         "L1ptr=0x{:x} L1mask=0x{:x} cacheL1=0x{:x}",
+                         total, reals,
+                         total - reals,
+                         (total > 0) ? (100 * (total - reals) / total) : 0,
+-                        g_cb_hot_rip, g_cb_hot_rip_count,
++                        statistics.hot_rip.load(std::memory_order_relaxed),
++                        statistics.hot_balance.load(std::memory_order_relaxed),
++                        statistics.sample_skips.load(std::memory_order_relaxed),
+                         Frame ? Frame->State.L1Pointer : 0,
+                         Frame ? Frame->State.L1Mask : 0,
+                         (T && T->LookupCache) ? T->LookupCache->GetL1Pointer() : 0);
+@@ -2225,7 +2228,7 @@
+ #endif
+ 
+   // iOS-Madeira: cache miss reached — count as true compile.
+-  __sync_add_and_fetch(&g_cb_real_compiles, 1);
++  MadeiraFEXDiagnostics::RecordCompile(MadeiraFEXCompileStats());
+ 
+   // Accumulate a JIT count now, as even if another thread raced us, it should count as a compile.
+   FEXCORE_PROFILE_INSTANT_INCREMENT(Thread, AccumulatedJITCount, 1);
+--- a/FEXCore/include/FEXCore/Utils/Telemetry.h
++++ b/FEXCore/include/FEXCore/Utils/Telemetry.h
+@@ -5,6 +5,7 @@
+ #include <FEXCore/fextl/string.h>
+ 
+ #include <array>
++#include MADEIRA_FEX_NATIVE_DIAGNOSTICS_HEADER
+ #include <atomic>
+ #include <stdint.h>
+ 
+@@ -40,7 +41,8 @@
+ // One must be careful with placing these in the hot path of code execution
+ // It can be fairly costly, especially in the static version where it puts barriers in the code
+ inline Value& GetTelemetryValue(TelemetryType Type) {
+-  return FEXCore::Telemetry::TelemetryValues[Type];
++  auto& Values = MadeiraFEXNativeWriter(MadeiraFEXTelemetryWriteContract, FEXCore::Telemetry::TelemetryValues);
++  return Values[Type];
+ }
+ 
+ FEX_DEFAULT_VISIBILITY void Initialize();
+@@ -51,17 +53,17 @@
+ // These are typically 3-4 instructions depending on what you're doing
+ #define FEXCORE_TELEMETRY_SET(Type, Value)                                      \
+   do {                                                                          \
+-    auto& Name = FEXCore::Telemetry::TelemetryValues[FEXCore::Telemetry::Type]; \
++    auto& Name = FEXCore::Telemetry::GetTelemetryValue(FEXCore::Telemetry::Type); \
+     Name = Value;                                                               \
+   } while (0)
+ #define FEXCORE_TELEMETRY_OR(Type, Value)                                       \
+   do {                                                                          \
+-    auto& Name = FEXCore::Telemetry::TelemetryValues[FEXCore::Telemetry::Type]; \
++    auto& Name = FEXCore::Telemetry::GetTelemetryValue(FEXCore::Telemetry::Type); \
+     Name |= Value;                                                              \
+   } while (0)
+ #define FEXCORE_TELEMETRY_INC(Type, Value)                                      \
+   do {                                                                          \
+-    auto& Name = FEXCore::Telemetry::TelemetryValues[FEXCore::Telemetry::Type]; \
++    auto& Name = FEXCore::Telemetry::GetTelemetryValue(FEXCore::Telemetry::Type); \
+     Name++;                                                                     \
+   } while (0)
+ 
+--- a/FEXCore/Source/Utils/Telemetry.cpp
++++ b/FEXCore/Source/Utils/Telemetry.cpp
+@@ -17,6 +17,11 @@
+ namespace FEXCore::Telemetry {
+ #ifndef FEX_DISABLE_TELEMETRY
+ std::array<Value, FEXCore::Telemetry::TelemetryType::TYPE_LAST> TelemetryValues = {{}};
++static_assert(sizeof(TelemetryValues) == 136 && alignof(decltype(TelemetryValues)) == 8);
++extern "C" {
++MadeiraFEXNativeWriteContract MadeiraFEXTelemetryWriteContract = {
++  MadeiraFEXTelemetryTag, sizeof(TelemetryValues), alignof(decltype(TelemetryValues)), &TelemetryValues, 0};
++}
+ const std::array<std::string_view, FEXCore::Telemetry::TelemetryType::TYPE_LAST> TelemetryNames {
+   "64byte Split Locks",
+   "16byte Split atomics",
+--- a/FEXCore/Source/Interface/IR/IRTopologyCheck.h
++++ b/FEXCore/Source/Interface/IR/IRTopologyCheck.h
+@@ -51,6 +51,7 @@
+ #include <FEXCore/Utils/LogManager.h>
+ 
+ #include <atomic>
++#include MADEIRA_FEX_NATIVE_DIAGNOSTICS_HEADER
+ #include <cstdint>
+ 
+ namespace FEXCore::IR {
+@@ -288,10 +289,19 @@
+ // Census. ml599's ZERO [ir-topo] lines were ambiguous -- no corruption, or the
+ // checks never ran? A probe whose silence cannot be interpreted is not a probe.
+ // These make "nothing fired" mean something.
+-inline std::atomic<uint64_t> IRTopoChecked {0};
+-inline std::atomic<uint64_t> IRTopoTripped {0};
+-inline std::atomic<uint64_t> IRTopoRepaired {0};
+-inline std::atomic<uint64_t> IRTopoDeclined {0};
++inline MadeiraFEXDiagnostics::IRTopoState MadeiraFEXIRTopoStorage;
++extern "C" {
++inline MadeiraFEXNativeWriteContract MadeiraFEXIRTopoWriteContract = {
++  MadeiraFEXIRTopoTag, sizeof(MadeiraFEXIRTopoStorage), alignof(decltype(MadeiraFEXIRTopoStorage)),
++  &MadeiraFEXIRTopoStorage, 0};
++}
++inline MadeiraFEXDiagnostics::IRTopoState& MadeiraFEXIRTopoStats() {
++  return MadeiraFEXNativeWriter(MadeiraFEXIRTopoWriteContract, MadeiraFEXIRTopoStorage);
++}
++#define IRTopoChecked (MadeiraFEXIRTopoStats().checked)
++#define IRTopoTripped (MadeiraFEXIRTopoStats().tripped)
++#define IRTopoRepaired (MadeiraFEXIRTopoStats().repaired)
++#define IRTopoDeclined (MadeiraFEXIRTopoStats().declined)
+ 
+ enum class IRTopoAction {
+   Proceed, // chain is (now) sound: the caller's backward walk will terminate
+--- a/Source/Windows/WOW64/libwow64fex.def
++++ b/Source/Windows/WOW64/libwow64fex.def
+@@ -34,3 +34,8 @@
+ ; BTCpu64IosSetMonoBridge) is deliberately NOT listed here. It only exists in an iOS-host build, and
+ ; a DEF entry for a symbol that does not exist is a link error - so it is exported with
+ ; __declspec(dllexport) from IosMonoBridge.cpp instead, under the same #ifdef as its implementation.
++
++; Explicit private native diagnostic writer contracts, bound before publication.
++  MadeiraFEXTelemetryWriteContract DATA
++  MadeiraFEXIRTopoWriteContract DATA
++  MadeiraFEXCompileWriteContract DATA
+--- a/Source/Windows/ARM64EC/libarm64ecfex_ios.def
++++ b/Source/Windows/ARM64EC/libarm64ecfex_ios.def
+@@ -47,3 +47,8 @@
+   IosXpFex DATA
+   ; madeira-bcd: guest branch history v1
+   IosGuestBranchTraceLayout DATA
++
++; Explicit private native diagnostic writer contracts, bound before publication.
++  MadeiraFEXTelemetryWriteContract DATA
++  MadeiraFEXIRTopoWriteContract DATA
++  MadeiraFEXCompileWriteContract DATA

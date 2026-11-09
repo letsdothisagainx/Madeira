@@ -120,6 +120,108 @@ def producer(data):
     assert PRODUCER in data, 'stale WoW64 IOSB producer'
 
 
+def fex_diagnostics_contracts(data):
+    """Prove exact private writer descriptors in the packaged native CPU.
+
+    Payloads may be legitimate zero-fill DATA. Tags, lengths and canonical
+    payload pointers must exist in file bytes; each private writer starts NULL
+    and has no relocation which could reset it after loader binding.
+    """
+    data = bytes(data)
+    required = {
+        b'MadeiraFEXTelemetryWriteContract': (0x31544d584546574d, 136),
+        b'MadeiraFEXIRTopoWriteContract': (0x315249584546574d, 32),
+        b'MadeiraFEXCompileWriteContract': (0x314243584546574d, 48),
+    }
+    pe = struct.unpack_from('<I', data, 0x3c)[0]
+    assert data[:2] == b'MZ' and data[pe:pe + 4] == b'PE\0\0', 'invalid diagnostics PE'
+    optional = pe + 24
+    assert struct.unpack_from('<H', data, optional)[0] == 0x20b, 'native diagnostics require PE32+'
+    count = struct.unpack_from('<H', data, pe + 6)[0]
+    table = optional + struct.unpack_from('<H', data, pe + 20)[0]
+    image_size = struct.unpack_from('<I', data, optional + 56)[0]
+    preferred = struct.unpack_from('<Q', data, optional + 24)[0]
+    assert 0 < count <= 96 and table + 40 * count <= len(data), 'invalid diagnostics section table'
+    sections = []
+    for i in range(count):
+        entry = table + 40 * i
+        size, rva, raw_bytes, raw = struct.unpack_from('<IIII', data, entry + 8)
+        span = max(size, raw_bytes)
+        assert span and rva <= image_size and span <= image_size - rva, 'diagnostics section outside image'
+        assert raw <= len(data) and raw_bytes <= len(data) - raw, 'diagnostics section outside file'
+        assert not any(rva < a + n and a < rva + span for a, n, _, _, _ in sections), 'diagnostics sections overlap'
+        sections.append((rva, span, raw, raw_bytes, struct.unpack_from('<I', data, entry + 36)[0]))
+
+    def offset(rva, size):
+        for start, _, raw, raw_size, _ in sections:
+            if start <= rva and rva - start <= raw_size and size <= raw_size - (rva - start):
+                return raw + rva - start
+        raise AssertionError('diagnostics descriptor/metadata must be file-backed')
+
+    def private_data(rva, size):
+        return not rva & 7 and any(start <= rva and rva - start <= span and size <= span - (rva - start)
+                                  and flags & 0xf2000000 == 0xc0000000
+                                  for start, span, _, _, flags in sections)
+
+    directory, directory_bytes = struct.unpack_from('<II', data, optional + 112)
+    assert directory and directory_bytes >= 40, 'native diagnostics exports missing'
+    fields = struct.unpack_from('<IIHHIIIIIII', data, offset(directory, 40))
+    function_count, name_count, functions, names, ordinals = fields[6:]
+    assert 0 < name_count <= function_count <= 65536, 'invalid native diagnostics exports'
+    module_rva = fields[4]
+    module_at = offset(module_rva, 1)
+    module_end = data.find(b'\0', module_at, module_at + 64)
+    assert module_end >= module_at, 'unterminated native CPU module name'
+    offset(module_rva, module_end - module_at + 1)
+    assert data[module_at:module_end].lower() in (b'libarm64ecfex.dll', b'xtajit64.dll', b'libwow64fex.dll', b'xtajit.dll'), 'foreign native diagnostics module'
+    found = {}
+    spans = []
+    writers = []
+    for i in range(name_count):
+        name_rva = struct.unpack_from('<I', data, offset(names + 4 * i, 4))[0]
+        at = offset(name_rva, 1)
+        end = data.find(b'\0', at, at + 64)
+        assert end >= at, 'unterminated diagnostics export name'
+        offset(name_rva, end - at + 1)
+        name = data[at:end]
+        if name not in required:
+            continue
+        assert name not in found, 'duplicate native diagnostic contract'
+        ordinal = struct.unpack_from('<H', data, offset(ordinals + 2 * i, 2))[0]
+        assert ordinal < function_count, 'invalid native diagnostic ordinal'
+        contract = struct.unpack_from('<I', data, offset(functions + 4 * ordinal, 4))[0]
+        assert not directory <= contract < directory + directory_bytes, 'forwarded native diagnostic contract'
+        assert private_data(contract, 32), 'native diagnostic contract must be private non-executable RW DATA'
+        tag, length, alignment, canonical, writer = struct.unpack_from('<QIIQQ', data, offset(contract, 32))
+        assert (tag, length) == required[name] and alignment == 8, 'native diagnostic descriptor differs from source ABI'
+        assert writer == 0, 'native diagnostic writer must be NULL in package'
+        assert canonical >= preferred, 'foreign native diagnostic payload pointer'
+        payload = canonical - preferred
+        assert private_data(payload, length), 'native diagnostic payload must be wholly private non-executable RW DATA'
+        found[name] = (contract, payload, length)
+        spans.extend(((contract, 32), (payload, length)))
+        writers.append(contract + 24)
+    assert set(found) == set(required), 'stale native CPU missing private diagnostic contracts'
+    for i, (start, size) in enumerate(spans):
+        assert not any(start < other + length and other < start + size for other, length in spans[:i]), 'native diagnostic spans overlap'
+    relocations, relocation_bytes = struct.unpack_from('<II', data, optional + 112 + 5 * 8)
+    at, end = relocations, relocations + relocation_bytes
+    while at < end:
+        assert end - at >= 8, 'truncated diagnostic relocation block'
+        page, block = struct.unpack_from('<II', data, offset(at, 8))
+        assert block >= 8 and not block & 1 and block <= end - at, 'invalid diagnostic relocation block'
+        for item in range(at + 8, at + block, 2):
+            entry = struct.unpack_from('<H', data, offset(item, 2))[0]
+            kind, target = entry >> 12, page + (entry & 0xfff)
+            if not kind:
+                continue
+            width = 8 if kind == 10 else 4
+            assert target <= image_size and width <= image_size - target, 'native diagnostic relocation outside image'
+            assert not any(target < writer + 8 and writer < target + width for writer in writers), 'native diagnostic writer has a loader relocation'
+        at += block
+    return found
+
+
 def fex_cpu(data, backend):
     """The shared allocator/IR protections apply to both Windows PE backends.
 
@@ -147,6 +249,7 @@ def fex_cpu(data, backend):
     fex_arena_exports(data, require_hold_release=backend == 'wow64', code_exports=code_exports,
                       require_hybrid=backend == 'arm64ec',
                       data_exports={b'IosSubfloorProtocolV1': 0x4d53460100000001} if backend == 'arm64ec' else None)
+    fex_diagnostics_contracts(data)
 
 
 def native_ntdll_contract(path, machine):

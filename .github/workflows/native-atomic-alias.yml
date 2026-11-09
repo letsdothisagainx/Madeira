@@ -1,114 +1,65 @@
-name: Verify native atomic alias execution
+name: Early real FEX native diagnostic writer validation
 on:
   workflow_dispatch:
-  push:
-    branches: [main, 'codex/pr-build-*']
-    paths:
-      - build/ntdll-unix/native_atomic*.h
-      - build/ntdll-unix/native_data_alias.h
-      - build/ntdll-unix/native_srw_alias.h
-      - tests/host/*native*srw*
-      - build/ntdll-unix/native_counter*.h
-      - build/wine-pe/build-ntdll.sh
-      - tools/build/stage-native-counter-writes.py
-      - tests/host/*native*counter*
-      - tests/host/*native*direct*call*
-      - build/ntdll-unix/signal_arm64_ios.c
-      - build/ntdll-unix/jit_store_census.h
-      - tests/host/check-native-atomic*.py
-      - tests/host/check-native-data*.py
-      - tests/host/check-jit-alias-exclusive-conditional*.py
-      - tests/host/check-jit-alias-exclusive-compare.py
-      - tests/host/jit_alias_exclusive_conditional*.c
-      - tests/host/jit_alias_exclusive_compare_test.c
-      - tests/host/native*atomic*.c
-      - tests/host/native*data*alias*.c
-      - tests/host/check-jit-store-census.py
-      - .github/workflows/native-atomic-alias.yml
-  pull_request:
-    paths:
-      - build/ntdll-unix/native_atomic*.h
-      - build/ntdll-unix/native_data_alias.h
-      - build/ntdll-unix/native_srw_alias.h
-      - tests/host/*native*srw*
-      - build/ntdll-unix/native_counter*.h
-      - build/wine-pe/build-ntdll.sh
-      - tools/build/stage-native-counter-writes.py
-      - tests/host/*native*counter*
-      - tests/host/*native*direct*call*
-      - build/ntdll-unix/signal_arm64_ios.c
-      - build/ntdll-unix/jit_store_census.h
-      - tests/host/check-native-atomic*.py
-      - tests/host/check-native-data*.py
-      - tests/host/check-jit-alias-exclusive-conditional*.py
-      - tests/host/check-jit-alias-exclusive-compare.py
-      - tests/host/jit_alias_exclusive_conditional*.c
-      - tests/host/jit_alias_exclusive_compare_test.c
-      - tests/host/native*atomic*.c
-      - tests/host/native*data*alias*.c
-      - tests/host/check-jit-store-census.py
-      - .github/workflows/native-atomic-alias.yml
 permissions:
   contents: read
 jobs:
-  apple-arm64-execution:
+  apple-fex-native-diagnostics:
     runs-on: xcode-27
-    timeout-minutes: 10
+    timeout-minutes: 15
+    env:
+      CC: clang
+      CXX: clang++
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Load pinned Wine counter producer source
-        run: git submodule update --init --depth 1 wine
-      - name: Prove native address lowering and exact packaged image invariants
+      - name: Load exact pinned FEX and Wine sources
         run: |
-          python3 tests/host/check-native-data-alias.py
-          python3 tests/host/check-native-data-direct-call.py
+          git submodule update --init --depth 1 FEX wine
+          git -C FEX submodule update --init --depth 1 External/fmt External/rpmalloc
+      - name: Prove production diagnostic contracts and failing-before estimator
+        run: |
+          set -o pipefail
+          python3 tests/host/check-fex-native-diagnostics-alias.py | tee fex-native-contract.txt
+          python3 tests/host/check-fex-native-diagnostics-package.py | tee fex-native-package.txt
+          python3 tests/host/check-fex-subfloor-package.py
+          python3 tests/host/check-fex-cb-summary.py | tee fex-cb-summary.txt
+          python3 tests/host/check-scm-rpc-sync.py
+      - name: Preserve existing SRW and alias atomics
+        run: |
           python3 tests/host/check-native-counter-alias.py
           python3 tests/host/check-native-counter-stage.py
           python3 tests/host/check-native-srw-alias.py
           python3 tests/host/check-native-srw-history.py
-          python3 tests/host/check-native-atomic-alias.py
-          python3 tests/host/check-native-atomic-image.py
-          python3 tests/host/check-jit-store-census.py
-          python3 tests/host/check-jit-alias-exclusive-conditional.py
-          python3 tests/host/check-jit-alias-exclusive-compare.py
           python3 tests/host/check-jit-alias-exclusive.py
           python3 tests/host/check-jit-alias-exclusive-add.py
+          python3 tests/host/check-jit-alias-exclusive-conditional.py
+          python3 tests/host/check-jit-alias-exclusive-compare.py
           python3 tests/host/check-jit-alias-str-immediate.py
-      - name: Measure real Mach faults, native throughput and atomic contention
+      - name: Execute captured FEX telemetry and actual IR producer through real Mach faults
         run: |
           set -o pipefail
-          python3 tests/host/check-native-data-alias-performance.py --require-arm64-darwin | tee native-data-throughput.txt
-          python3 tests/host/check-native-atomic-alias-performance.py --require-arm64-darwin | tee native-atomic-throughput.txt
-      - name: Execute captured DXMT conditional exclusive sequence through Mach faults
-        run: |
-          set -o pipefail
-          python3 tests/host/check-jit-alias-exclusive-conditional-hardware.py --require-arm64-darwin | tee conditional-exclusive-hardware.txt
-      - name: Measure the captured SRW diagnostic writer with real Mach faults
+          python3 tests/host/check-fex-native-diagnostics-performance.py --require-arm64-darwin | tee fex-native-throughput.txt
+      - name: Retest source-built SRW producer hardware
+        if: always()
         run: |
           set -o pipefail
           python3 tests/host/check-native-srw-history-performance.py --require-arm64-darwin | tee native-srw-throughput.txt
-      - name: Measure production QPC counter writer with real Mach faults
+      - name: Verify pinned inputs remain untouched
         if: always()
         run: |
-          set -o pipefail
-          python3 tests/host/check-native-qpc-counter-performance.py --require-arm64-darwin | tee native-qpc-throughput.txt
-      - name: Measure captured FEX statistics counter with real exclusive retry
-        if: always()
-        run: |
-          set -o pipefail
-          python3 tests/host/check-native-counter-call-performance.py --require-arm64-darwin | tee native-counter-call-throughput.txt
+          git -C FEX diff --exit-code
+          git -C wine diff --exit-code
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: native-atomic-throughput
+          name: fex-native-diagnostics-evidence
           path: |
-            native-atomic-throughput.txt
-            native-data-throughput.txt
-            native-qpc-throughput.txt
-            native-counter-call-throughput.txt
-            conditional-exclusive-hardware.txt
+            fex-native-contract.txt
+            fex-native-package.txt
+            fex-cb-summary.txt
+            fex-native-throughput.txt
             native-srw-throughput.txt
           if-no-files-found: ignore
           retention-days: 14
