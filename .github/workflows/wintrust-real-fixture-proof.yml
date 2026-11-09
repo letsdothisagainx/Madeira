@@ -74,6 +74,9 @@ jobs:
                   LONG status, closed;
                   DWORD error, close_error;
                   unsigned state;
+                  wchar_t chain[11] = L"unmeasured";
+                  CRYPT_PROVIDER_DATA *provider;
+                  CRYPT_PROVIDER_SGNR *signer;
                   if (swprintf(relative, MAX_PATH, L"fixture%u-%ls.exe", bits, names[fixture]) < 0 ||
                       !GetFullPathNameW(relative, MAX_PATH, path, NULL)) return 2;
                   file.cbStruct = sizeof(file);
@@ -89,13 +92,17 @@ jobs:
                   status = WinVerifyTrust(NULL, &action, &data);
                   error = GetLastError();
                   state = data.hWVTStateData != NULL;
+                  provider = WTHelperProvDataFromStateData(data.hWVTStateData);
+                  signer = provider ? WTHelperGetProvSignerFromChain(provider, 0, FALSE, 0) : NULL;
+                  if (signer && signer->pChainContext)
+                      swprintf(chain, 11, L"%08lx", (unsigned long)signer->pChainContext->TrustStatus.dwErrorStatus);
                   data.dwStateAction = WTD_STATEACTION_CLOSE;
                   SetLastError(0x23456789);
                   closed = WinVerifyTrust(NULL, &action, &data);
                   close_error = GetLastError();
-                  wprintf(L"TRUST_PROOF bits=%u fixture=%ls mode=%ls status=%08lx last-error=%08lx state-created=%u close-status=%08lx close-last-error=%08lx\n",
+                  wprintf(L"TRUST_PROOF bits=%u fixture=%ls mode=%ls status=%08lx last-error=%08lx state-created=%u chain-errors=%ls close-status=%08lx close-last-error=%08lx\n",
                       bits, names[fixture], hash_only ? L"hash-only" : L"generic", (unsigned long)status,
-                      (unsigned long)error, state, (unsigned long)closed, (unsigned long)close_error);
+                      (unsigned long)error, state, chain, (unsigned long)closed, (unsigned long)close_error);
               }
               return 0;
           }
@@ -177,9 +184,9 @@ jobs:
                   report['probeExit'] = run.returncode
                   report['wineStderrBytes'] = len(run.stderr)
                   for raw in run.stdout.decode('ascii', errors='strict').splitlines():
-                      matched = re.fullmatch(r'TRUST_PROOF bits=(32|64) fixture=(original|tampered|unsigned|truncated) mode=(generic|hash-only) status=([0-9a-f]{8}) last-error=([0-9a-f]{8}) state-created=([01]) close-status=([0-9a-f]{8}) close-last-error=([0-9a-f]{8})', raw)
+                      matched = re.fullmatch(r'TRUST_PROOF bits=(32|64) fixture=(original|tampered|unsigned|truncated) mode=(generic|hash-only) status=([0-9a-f]{8}) last-error=([0-9a-f]{8}) state-created=([01]) chain-errors=([0-9a-f]{8}|unmeasured) close-status=([0-9a-f]{8}) close-last-error=([0-9a-f]{8})', raw)
                       assert matched, 'unexpected probe output'
-                      keys = ['bits', 'fixture', 'mode', 'status', 'lastError', 'stateCreated', 'closeStatus', 'closeLastError']
+                      keys = ['bits', 'fixture', 'mode', 'status', 'lastError', 'stateCreated', 'chainErrors', 'closeStatus', 'closeLastError']
                       record = dict(zip(keys, matched.groups()))
                       report['results'].append(record)
                       print(raw, flush=True)
