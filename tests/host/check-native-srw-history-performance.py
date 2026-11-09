@@ -110,7 +110,27 @@ static int baseline_emulate(uint32_t insn,uintptr_t fault_pc,uintptr_t fault_add
             store = re.search(r'\bstlxr\s+w([0-9]+),\s*w[0-9]+,\s*\[x' + load[2] + r'\]', body)
             assert store and re.search(r'\bcbnz\s+w' + store[1] + r',', body), name + ' must retain real 32-bit exclusive status/retry'
             assert re.search(r'\bstr\s+x[0-9]+,\s*\[x[0-9]+', body), name + ' must retain its pointer history store'
-            assert re.search(r'\bstr\s+w[0-9]+,\s*\[x[0-9]+,\s*#8\]', body), name + ' must retain its tid/mode history store'
+            immediate_tid = re.search(r'\bstr\s+w[0-9]+,\s*\[x[0-9]+,\s*#8\]', body)
+            indexed_tid = False
+            # Apple generic code folds the fixture's A100/A108 into separate
+            # MOV W offset registers. Validate the observed common-base pair,
+            # exact +8 field relationship and unmodified offset registers.
+            if not immediate_tid:
+                header = (work / 'production-srw-producer.h').read_text()
+                ring_offset = int(re.search(r'#define SRW_RING_OFFSET (0x[0-9a-f]+)u', header)[1], 16)
+                pointer_stores = list(re.finditer(r'\bstr\s+x[0-9]+,\s*\[x([0-9]+),\s*x([0-9]+)\]', body))
+                tid_stores = list(re.finditer(r'\bstr\s+w[0-9]+,\s*\[x([0-9]+),\s*x([0-9]+)\]', body))
+                def constant_before(store, register, expected):
+                    matches = list(re.finditer(r'(?m)^\s*mov\s+w' + register + r',\s*#([0-9]+)\b[^\n]*', body[:store.start()]))
+                    if not matches or int(matches[-1][1]) != expected:
+                        return False
+                    tail = body[matches[-1].end():store.start()]
+                    return not re.search(r'(?m)^\s*[a-z0-9]+\s+[wx]' + register + r'\s*,|^\s*(?:bl|blr|b\.[a-z]+|cbn?z|tbn?z)\s', tail)
+                indexed_tid = any(a[1] == b[1] and
+                                  constant_before(a, a[2], ring_offset) and
+                                  constant_before(b, b[2], ring_offset + 8)
+                                  for a in pointer_stores for b in tid_stores)
+            assert immediate_tid or indexed_tid, name + ' must retain the observed pointer/tid stores at exact +8 fields'
             assert not re.search(r'\b(?:ldadd|swp|cas)[a-z]*\s', body), 'captured-family benchmark must not use LSE instead'
     except AssertionError:
         # Preserve the actual compiler output before changing any contract.

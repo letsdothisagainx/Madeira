@@ -4,10 +4,13 @@
 #define _DARWIN_C_SOURCE
 #include <stdint.h>
 #include <dlfcn.h>
+#include "jit_store_census.h"
 static int srw_read_code(uint64_t pc,uint32_t *out);
+static void srw_record_fault(uint32_t instruction);
 static int srw_target_valid(uintptr_t address,uint32_t instruction);
 static uintptr_t ios_write_alias(uintptr_t address);
 static int ios_alias_write_is_trapped(uintptr_t address);
+#define MADEIRA_PERF_RECORD_FAULT(insn) srw_record_fault(insn)
 #define MADEIRA_PERF_CODE_READ(pc,out) srw_read_code(pc,out)
 #define MADEIRA_PERF_TARGET_VALID(address) srw_target_valid(address,insn)
 #define main madeira_atomic_fixture_unexecuted_srw_entry
@@ -18,6 +21,13 @@ static int ios_alias_write_is_trapped(uintptr_t address);
 
 enum { SRW_THREADS=8,SRW_ROUNDS=400 };
 static unsigned srw_ready,srw_start;
+static uint64_t srw_families[MADEIRA_STORE_FAMILIES],srw_gpr_widths[4];
+static void srw_record_fault(uint32_t instruction) {
+    unsigned family=madeira_jit_store_family(instruction);
+    assert(family<MADEIRA_STORE_FAMILIES);
+    __atomic_fetch_add(&srw_families[family],1,__ATOMIC_RELAXED);
+    if(family==MADEIRA_STORE_GPR)__atomic_fetch_add(&srw_gpr_widths[instruction>>30],1,__ATOMIC_RELAXED);
+}
 
 struct srw_code_region { uintptr_t base; size_t size; };
 static struct srw_code_region srw_code_regions[2];
@@ -51,8 +61,11 @@ static int srw_read_code(uint64_t pc,uint32_t *out) {
 static int srw_target_valid(uintptr_t address,uint32_t instruction) {
     size_t width=(size_t)1u<<(instruction>>30);
     if((width!=4&&width!=8)||(address&(width-1)))return 0;
-    return (width==4&&address==(uintptr_t)active.rx+SRW_INDEX_OFFSET)||
-           inside(address,width,(uintptr_t)active.rx+SRW_RING_OFFSET,MADEIRA_NATIVE_SRW_RING_BYTES);
+    unsigned family=madeira_jit_store_family(instruction);
+    if(family==MADEIRA_STORE_EXCLUSIVE)return width==4&&address==(uintptr_t)active.rx+SRW_INDEX_OFFSET;
+    if(family!=MADEIRA_STORE_GPR||!inside(address,width,(uintptr_t)active.rx+SRW_RING_OFFSET,MADEIRA_NATIVE_SRW_RING_BYTES))return 0;
+    uintptr_t field=(address-(uintptr_t)active.rx-SRW_RING_OFFSET)%16;
+    return (width==8&&field==0)||(width==4&&field==8);
 }
 static uintptr_t ios_write_alias(uintptr_t address) {
     return (inside(address,1,(uintptr_t)active.rx+SRW_RING_OFFSET,MADEIRA_NATIVE_SRW_RING_BYTES)||
@@ -97,6 +110,7 @@ static void srw_phase(unsigned bound) {
     }
     unsigned char before[0x4000];memcpy(before,active.rx,sizeof(before));
     worker_cpu_ns=0;srw_ready=srw_start=0;
+    memset(srw_families,0,sizeof(srw_families));memset(srw_gpr_widths,0,sizeof(srw_gpr_widths));
     uint64_t faults_before=fault_count,handler_before=server_cpu_ns(),start=clock_ns(CLOCK_MONOTONIC);
     pthread_t threads[SRW_THREADS];struct srw_worker workers[SRW_THREADS];
     for(unsigned i=0;i<SRW_THREADS;i++) {
@@ -118,14 +132,24 @@ static void srw_phase(unsigned bound) {
          * per-event pairing before wrap without inventing a stronger contract. */
         unsigned tid=ring[i].tid_mode>>2;assert(tid>=1&&tid<=SRW_THREADS);
     }
-    if(bound)assert(!faults);else assert(faults>=3*SRW_THREADS*SRW_ROUNDS);
+    if(bound) {
+        assert(!faults);
+        for(unsigned i=0;i<MADEIRA_STORE_FAMILIES;i++)assert(!srw_families[i]);
+    } else {
+        assert(faults>=3*SRW_THREADS*SRW_ROUNDS);
+        assert(srw_families[MADEIRA_STORE_EXCLUSIVE]>=SRW_THREADS*SRW_ROUNDS);
+        assert(srw_families[MADEIRA_STORE_GPR]==2*SRW_THREADS*SRW_ROUNDS);
+        assert(srw_gpr_widths[3]==SRW_THREADS*SRW_ROUNDS&&srw_gpr_widths[2]==SRW_THREADS*SRW_ROUNDS);
+        for(unsigned i=0;i<MADEIRA_STORE_FAMILIES;i++)
+            if(i!=MADEIRA_STORE_EXCLUSIVE&&i!=MADEIRA_STORE_GPR)assert(!srw_families[i]);
+    }
     check_protection(active.rx,PROT_READ|PROT_EXEC,PROT_WRITE);
     check_protection(active.rw,PROT_READ|PROT_WRITE,PROT_EXEC);
     printf("[native-srw-throughput] operation=actual-source-ios_srw_note mode=%s workers=%u events=%u "
-           "mach-store-faults=%" PRIu64 " wall-ns=%" PRIu64 " worker-cpu-ns=%" PRIu64 " handler-cpu-ns=%" PRIu64
+           "mach-store-faults=%" PRIu64 " exclusive=%" PRIu64 " gpr64=%" PRIu64 " gpr32=%" PRIu64 " wall-ns=%" PRIu64 " worker-cpu-ns=%" PRIu64 " handler-cpu-ns=%" PRIu64
            " index=exact history=preserved lock-bodies=unchanged RX=nonwritable RW=nonexecutable\n",
            bound?"production-private-writer":"original-production-emulation",SRW_THREADS,SRW_THREADS*SRW_ROUNDS,
-           faults,wall,worker_cpu_ns,handler);
+           faults,srw_families[MADEIRA_STORE_EXCLUSIVE],srw_gpr_widths[3],srw_gpr_widths[2],wall,worker_cpu_ns,handler);
     assert(!munmap(active.reserved,active.reservation));memset(&active,0,sizeof(active));srw_source_rx=NULL;
 }
 int main(void) {
