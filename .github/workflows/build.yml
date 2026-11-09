@@ -58,5 +58,35 @@ jobs:
                   command=['python3','tools/build/inspect-fex-image.py',str(out),'--context','80']
                   for rva in codes:command += ['--code-rva',hex(rva)]
                   for rva in targets:command += ['--data-rva',hex(rva)]
-                  subprocess.run(command,check=True)
+                  symbols,symbol_count=struct.unpack_from('<II',data,pe+12)
+                  if symbols and symbol_count:
+                      strings=symbols+18*symbol_count
+                      string_bytes=struct.unpack_from('<I',data,strings)[0]
+                      rows=[]
+                      i=0
+                      while i<symbol_count:
+                          at=symbols+18*i
+                          name=data[at:at+8]
+                          value,section=struct.unpack_from('<Ih',data,at+8)
+                          aux=data[at+17]
+                          if name[:4]==bytes(4):
+                              pos=struct.unpack_from('<I',name,4)[0]
+                              name=data[strings+pos:data.index(0,strings+pos,strings+string_bytes)] if 4<=pos<string_bytes else b''
+                          else:name=name.split(bytes(1))[0]
+                          if 0<section<=count:
+                              va=struct.unpack_from('<I',data,sections+40*(section-1)+12)[0]+value
+                              if b'InvalidationTracker' in name or b'IosXpFex' in name or b'ProcessTerminating' in name:
+                                  rows.append((hex(va),name.decode(errors='replace')))
+                          i+=1+aux
+                      print('OWNED_OBJECT_SYMBOLS',basename,json.dumps(sorted(rows)),flush=True)
+                      subprocess.run(command,check=True)
+                  else:
+                      from capstone import Cs,CS_ARCH_ARM64,CS_MODE_LITTLE_ENDIAN
+                      decoder=Cs(CS_ARCH_ARM64,CS_MODE_LITTLE_ENDIAN)
+                      print('COFF_UNAVAILABLE',basename,'using exact opcodes and ARM64 disassembly',flush=True)
+                      for rva in codes:
+                          start=max(0,rva-80)
+                          block=b''.join(struct.pack('<I',raw(a)) for a in range(start,rva+80,4))
+                          for insn in decoder.disasm(block,start):
+                              print(hex(insn.address),insn.bytes.hex(),insn.mnemonic,insn.op_str,flush=True)
           PY
