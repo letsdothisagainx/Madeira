@@ -247,7 +247,9 @@ final class SteamOwnedLibrary: ObservableObject {
     }
     @Published private(set) var downloads: [Int: Download] = [:]
     private var queue: [Int] = []
-    private var active: (id: Int, task: Task<Void, Never>)?
+    private var active: (id: Int, task: Task<Void, Never>)? {
+        didSet { SteamIntegrityDiagnostics.shared.setDownloadActive(active != nil) }
+    }
     /// A game session runs: downloads wait, and the Steam connection stays closed.
     private var inSession = false
     /// Includes Wine/JIT launch preparation, before a native process exists.
