@@ -8,6 +8,7 @@ from pathlib import Path
 import importlib.util
 import os
 import re
+import shlex
 import subprocess
 import tempfile
 
@@ -61,6 +62,10 @@ with tempfile.TemporaryDirectory(prefix='madeira-process-lookup-') as directory:
 #include <string.h>
 #include <pthread.h>
 #include <wchar.h>
+#ifndef __APPLE__
+/* Mirror Apple's short-wchar SDK guard in the portable regression too. */
+#pragma GCC poison wcschr swprintf
+#endif
 typedef wchar_t WCHAR;typedef unsigned long DWORD;typedef int BOOL;typedef void *HANDLE;
 #define TRUE 1
 #define FALSE 0
@@ -85,10 +90,8 @@ static void RtlFreeHeap(HANDLE heap,unsigned flags,void *p){(void)heap;(void)fla
 #define HeapAlloc RtlAllocateHeap
 static unsigned len(const WCHAR *value){unsigned n=0;while(value[n])n++;return n;}
 #define lstrlenW len
-static const WCHAR *wcschr_(const WCHAR *value,WCHAR ch){while(*value&&*value!=ch)value++;return *value==ch?value:NULL;}
-#define wcschr wcschr_
-static int swprintf_(WCHAR *out,size_t cap,const WCHAR *format,...){(void)format;va_list args;va_start(args,format);const WCHAR *a=va_arg(args,const WCHAR *),*b=va_arg(args,const WCHAR *);unsigned n=0;assert(cap>len(a)+len(b)+2);out[n++]='"';while(*a)out[n++]=*a++;out[n++]='"';while(*b)out[n++]=*b++;out[n]=0;va_end(args);return n;}
-#define swprintf swprintf_
+static const WCHAR *fixture_wide_find(const WCHAR *value,WCHAR ch){while(*value&&*value!=ch)value++;return *value==ch?value:NULL;}
+static int fixture_wide_format(WCHAR *out,size_t cap,const WCHAR *format,...){(void)format;va_list args;va_start(args,format);const WCHAR *a=va_arg(args,const WCHAR *),*b=va_arg(args,const WCHAR *);unsigned n=0;assert(cap>len(a)+len(b)+2);out[n++]='"';while(*a)out[n++]=*a++;out[n++]='"';while(*b)out[n++]=*b++;out[n]=0;va_end(args);return n;}
 static int search_mode;
 static int RtlGetExePath(const WCHAR *name,WCHAR **path){(void)name;*path=malloc(2*sizeof(WCHAR));(*path)[0]='.';(*path)[1]=0;return 0;}
 static BOOL set_ntstatus(int status){return !status;}
@@ -98,7 +101,14 @@ static HANDLE CreateFileW(const WCHAR *name,unsigned access,unsigned share,void 
 static void CloseHandle(HANDLE value){(void)value;}
 '''
     source+=(ROOT/'build/wine-pe/process_lookup_trace.h').read_text()+'\n'
-    source+=function(original,'static BOOL find_exe_file(')+'\n'+function(original,'static WCHAR *get_file_name(')+'\n'
+    production_search=function(original,'static BOOL find_exe_file(')+'\n'+function(original,'static WCHAR *get_file_name(')+'\n'
+    # The algorithms stay verbatim; bind only their host OS adapters by name.
+    # Defining aliases for libc wide identifiers is forbidden by Apple's SDK
+    # when compiling Windows-width WCHAR with -fshort-wchar.
+    for external,owned in [('wcschr','fixture_wide_find'),('swprintf','fixture_wide_format')]:
+        assert len(re.findall(r'\b'+external+r'\b',production_search))==1
+        production_search=re.sub(r'\b'+external+r'\b',owned,production_search)
+    source+=production_search
     for label,text in [('old',original),('new',changed)]:
         start=text.index('        if (!(tidy_cmdline = get_file_name(')
         end=text.index('        app_name = name;',start)+len('        app_name = name;')
@@ -127,7 +137,7 @@ int main(void){
 }
 '''
     path=temp/'check.c';path.write_text(source);exe=temp/'check'
-    subprocess.run([os.environ.get('CC','cc'),'-std=c11','-O1','-g','-Wall','-Wextra','-Werror','-fshort-wchar','-pthread',
+    subprocess.run(shlex.split(os.environ.get('CC','cc'))+['-std=c11','-O1','-g','-Wall','-Wextra','-Werror','-fshort-wchar','-pthread',
                     '-fsanitize=address,undefined','-fno-sanitize-recover=all',str(path),'-o',str(exe)],check=True)
     subprocess.run([str(exe)],check=True,timeout=30)
     print('PASS lookup staging nests inside actual IOSB/architecture overlay and restores byte-identical inputs')
