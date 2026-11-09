@@ -144,17 +144,21 @@ def stage(source):
           size_t md_available = body->src_offset <= md_length ? md_length - body->src_offset : 0;
           if (md_available > body->bytes_per_row) md_available = body->bytes_per_row;
           MTLStorageMode md_mode = [md_src storageMode];
-          const void *md_contents = (md_mode == MTLStorageModeShared || md_mode == MTLStorageModeManaged)
-                                     ? [md_src contents] : NULL;
+          int md_cpu_readable = md_mode == MTLStorageModeShared;
+#if !TARGET_OS_IOS
+          md_cpu_readable |= md_mode == MTLStorageModeManaged;
+#endif
+          const void *md_contents = md_cpu_readable ? [md_src contents] : NULL;
           uint64_t md_hash = md_graphics_prefix_hash(md_contents,
               body->src_offset <= md_length ? body->src_offset + md_available : 0,
               body->src_offset, &md_sampled);
           fprintf(stderr, "[metal-upload-v1] op=buffer-to-texture n=%llu errors=%llu mono-ns=%llu "
-                          "outcome=encode-request physical-format=%lu width=%u height=%u depth=%u "
+                          "outcome=encode-request physical-format=%lu width=%llu height=%llu depth=%llu "
                           "mip=%u slice=%u row-pitch=%u image-pitch=%u sampled=%u prefix-fnv64=%llx\n",
                   (unsigned long long)md_n, (unsigned long long)md_errors,
                   (unsigned long long)md_graphics_now_ns(), (unsigned long)[dst pixelFormat],
-                  body->size.width, body->size.height, body->size.depth, body->level, body->slice,
+                  (unsigned long long)body->size.width, (unsigned long long)body->size.height,
+                  (unsigned long long)body->size.depth, body->level, body->slice,
                   body->bytes_per_row, body->bytes_per_image, md_sampled, (unsigned long long)md_hash);
         }
       }

@@ -48,7 +48,9 @@ assert staged.count('localizedDescription') == original.count('localizedDescript
 assert 'md_graphics_prefix_hash(md_contents,' in staged
 assert 'md_available > body->bytes_per_row' in staged
 assert 'body->src_offset <= md_length' in staged
-assert '(md_mode == MTLStorageModeShared || md_mode == MTLStorageModeManaged)' in staged
+assert 'int md_cpu_readable = md_mode == MTLStorageModeShared;' in staged
+assert '#if !TARGET_OS_IOS\n          md_cpu_readable |= md_mode == MTLStorageModeManaged;\n#endif' in staged
+assert 'const void *md_contents = md_cpu_readable ? [md_src contents] : NULL;' in staged
 for corrupted in (original.replace('  info->mach_port = 0;', '  info->mach_port = 1;'), staged):
     try:
         module.stage(corrupted)
