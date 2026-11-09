@@ -1,0 +1,58 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 125hz
+# Madeira Converter Exception: see LICENSE-EXCEPTION.md
+name: Prove final Steam verification scripts through Wine
+on:
+  push:
+    branches: ['codex/verify-steam-flow-4a70400-20261109-mw9qt8aw']
+permissions:
+  contents: read
+jobs:
+  scripts:
+    runs-on: xcode-27
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Confirm source identity and generate actual Swift client scripts
+        run: |
+          git rev-parse HEAD
+          git diff --exit-code 4a70400f02a6892cbef430fd2be4b5c5d309bc4f -- app build tests tools FEX wine dxmt madeira-dock madeira-d3d12
+          python3 tests/host/check-steam-service.py
+          python3 tests/host/check-native-steam-play.py --emit-script-dir "$RUNNER_TEMP/service-scripts"
+          test -s "$RUNNER_TEMP/service-scripts/steam-client.cmd"
+          test -s "$RUNNER_TEMP/service-scripts/steam-applaunch.cmd"
+          test -s "$RUNNER_TEMP/service-scripts/steam-verify.cmd"
+          shasum -a 256 "$RUNNER_TEMP/service-scripts/"*.cmd
+      - uses: actions/upload-artifact@v4
+        with:
+          name: service-native-client-scripts
+          path: ${{ runner.temp }}/service-scripts/*.cmd
+          if-no-files-found: error
+          retention-days: 3
+  scm-integration:
+    needs: scripts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Install isolated Wine WoW64 and PE fixture compilers
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo sed -i 's@azure.archive.ubuntu.com@archive.ubuntu.com@g' /etc/apt/sources.list.d/ubuntu.sources
+          sudo apt-get update -qq -o Acquire::Retries=1 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends wine wine64 wine32:i386 gcc-mingw-w64-x86-64-posix gcc-mingw-w64-i686-posix xvfb xauth
+      - uses: actions/download-artifact@v4
+        with:
+          name: service-native-client-scripts
+          path: .service-scripts
+      - name: Confirm all three production scripts before running real Wine SCM
+        run: |
+          git diff --exit-code 4a70400f02a6892cbef430fd2be4b5c5d309bc4f -- app build tests tools FEX wine dxmt madeira-dock madeira-d3d12
+          sha256sum .service-scripts/*.cmd
+          xvfb-run -a python3 tests/integration/check-steam-service-startup.py --script-dir .service-scripts
