@@ -100,6 +100,21 @@
 #include "steam_startup_timeline.h"
 #include <pthread.h>
 #include <mach-o/dyld.h>
+#include <mach/mach_vm.h>
+#define MADEIRA_CS2_OBSERVATION_IMPLEMENTATION
+#define MADEIRA_CS2_EMIT(...) dprintf(STDERR_FILENO, __VA_ARGS__)
+#include "cs2_observation.h"
+static int ios_cs2_native_read(const void *source, void *target, size_t size)
+{
+    mach_vm_size_t copied = 0;
+    return mach_vm_read_overwrite(mach_task_self(), (mach_vm_address_t)source, size,
+               (mach_vm_address_t)target, &copied) == KERN_SUCCESS && copied == size;
+}
+#define MADEIRA_CS2_READ(source, target, size) ios_cs2_native_read(source, target, size)
+#include "cs2_observation_native.h"
+#undef MADEIRA_CS2_READ
+#undef MADEIRA_CS2_EMIT
+#undef MADEIRA_CS2_OBSERVATION_IMPLEMENTATION
 #endif
 
 WINE_DEFAULT_DEBUG_CHANNEL(module);
@@ -3465,12 +3480,16 @@ static void start_main_thread(void)
     /* The initial process also needs an immutable identity: children briefly
      * overwrite main_image_info while its existing threads keep running. */
     ios_register_proc_ident(NtCurrentTeb()->Peb, &main_image_info);
+    ios_cs2_observe_current_start(main_image_info.Machine);
     WINE_IOS_LOG("load_ntdll...");
     load_ntdll();
     WINE_IOS_LOG("load_wow64_ntdll...");
     load_wow64_ntdll( main_image_info.Machine );
     WINE_IOS_LOG("load_apiset_dll...");
     load_apiset_dll();
+    /* A second independent, nonblocking observation can recover contention
+     * at the first hook; an already recorded generation emits nothing. */
+    ios_cs2_observe_current_start(main_image_info.Machine);
     WINE_IOS_LOG("server_init_process_done...");
     server_init_process_done();
 }
@@ -4186,6 +4205,7 @@ DECLSPEC_EXPORT void wine_ios_child_main( int argc, char *argv[], int child_fd_s
             ios_register_proc_ident( child_peb, &main_image_info );
             main_image_info = session_image_info;
         }
+        ios_cs2_observe_current_start(ios_cur_image_info()->Machine);
         dprintf(STDERR_FILENO, "[Wine child] PE loaded: Machine=0x%x TransferAddress=%p ImageBase=%p\n",
                 ios_cur_image_info()->Machine, ios_cur_image_info()->TransferAddress, peb->ImageBaseAddress);
         if (!is_machine_64bit( ios_cur_image_info()->Machine ))
@@ -4369,6 +4389,7 @@ DECLSPEC_EXPORT void wine_ios_child_main( int argc, char *argv[], int child_fd_s
     /* Finalize init and enter PE code (calls signal_start_thread, never returns) */
     CHILD_STAGE( "server_init_process_done" );
     ios_startup_process_pe_entry( (unsigned)(ULONG_PTR)NtCurrentTeb()->ClientId.UniqueProcess, child_peb );
+    ios_cs2_observe_current_start(ios_cur_image_info()->Machine);
     server_init_process_done();
 
     /* Never reaches here — server_init_process_done calls signal_start_thread */

@@ -243,6 +243,28 @@ unsigned long long ios_thread_process_snapshot(void *owner, unsigned *threads, i
     return lease;
 }
 
+/* Passive loader observation: no waiting, allocation, ownership adoption or
+ * native-thread linking, including when called after an image-map operation. */
+unsigned long long ios_thread_process_try_observation_lease(void *owner, unsigned pid)
+{
+    unsigned i;
+    unsigned long long lease = 0;
+    int saved_errno = errno;
+    if (owner && pid && !pthread_mutex_trylock(&ios_thread_group_mutex))
+    {
+        for (i = 0; i < ARRAY_SIZE(ios_thread_groups); i++)
+            if (ios_thread_groups[i].owner == owner)
+            {
+                if (ios_thread_groups[i].pid == pid && !ios_thread_groups[i].exiting &&
+                    !ios_thread_groups[i].reclaimed) lease = ios_thread_groups[i].lease;
+                break;
+            }
+        pthread_mutex_unlock(&ios_thread_group_mutex);
+    }
+    errno = saved_errno;
+    return lease;
+}
+
 static int ios_thread_count_add(void *owner, int delta)
 {
     struct ios_thread_group *group;
