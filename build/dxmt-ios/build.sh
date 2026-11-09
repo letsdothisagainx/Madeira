@@ -18,7 +18,7 @@ OUT_LIB="$BUILD_DIR/libdxmt_unix.a"
 mkdir -p "$OBJ_DIR"
 
 COMMON_FLAGS="-arch arm64 -isysroot $SDK -miphoneos-version-min=18.0 -fblocks -O2"
-INCLUDES="-I$DXMT_ROOT/include -I$DXMT_ROOT/libs -I$DXMT_SRC/winemetal -I$DXMT_SRC/airconv"
+INCLUDES="-I$DXMT_ROOT/include -I$DXMT_ROOT/libs -I$DXMT_SRC/winemetal -I$DXMT_SRC/winemetal/unix -I$DXMT_SRC/airconv"
 INCLUDES_DIRECTX="-I$DXMT_ROOT/include/native/directx -I$DXMT_ROOT/include/native/windows"
 INCLUDES_SHADERS="-I$BUILD_DIR/shader-headers"
 LLVM_INCLUDES="-I$LLVM_BUILD/include -I$LLVM_SRC/include"
@@ -195,7 +195,11 @@ else
 fi
 
 echo "=== winemetal unix (Objective-C) ==="
-compile_objc "$DXMT_SRC/winemetal/unix/winemetal_unix.c" winemetal_unix
+python3 "$REPO_ROOT/tools/build/stage-dxmt-diagnostics.py" \
+    --source "$DXMT_SRC/winemetal/unix/winemetal_unix.c" \
+    --output "$BUILD_DIR/staged/winemetal_unix.c" \
+    --header "$BUILD_DIR/graphics_diagnostics.h"
+compile_objc "$BUILD_DIR/staged/winemetal_unix.c" winemetal_unix
 compile_objc "$DXMT_SRC/winemetal/unix/cache.c"          cache
 
 echo "=== airconv shader headers ==="
