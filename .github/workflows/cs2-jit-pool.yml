@@ -11,6 +11,15 @@ on:
       - build/ntdll-unix/virtual_ios.c
       - build/ntdll-unix/process_ios.c
       - tests/host/check-dep-process-isolation.py
+      - tests/host/check-directx-fixed-image.py
+      - tests/host/check-fex-subfloor-domain.py
+      - tests/host/check-fex-subfloor-package.py
+      - tests/host/check-fex-subfloor-atomics.py
+      - tools/check-fex-subfloor-atomics.py
+      - tests/host/check-steam-startup*.py
+      - tests/host/check-steam-session-trace.py
+      - build/ntdll-unix/steam_startup_timeline.h
+      - build/ntdll-unix/steam_session_trace.h
       - build/ntdll-unix/signal_arm64_ios.c
       - tests/host/check-jit-alias-*.py
       - tests/host/check-pool-*.py
@@ -40,6 +49,15 @@ on:
       - build/ntdll-unix/virtual_ios.c
       - build/ntdll-unix/process_ios.c
       - tests/host/check-dep-process-isolation.py
+      - tests/host/check-directx-fixed-image.py
+      - tests/host/check-fex-subfloor-domain.py
+      - tests/host/check-fex-subfloor-package.py
+      - tests/host/check-fex-subfloor-atomics.py
+      - tools/check-fex-subfloor-atomics.py
+      - tests/host/check-steam-startup*.py
+      - tests/host/check-steam-session-trace.py
+      - build/ntdll-unix/steam_startup_timeline.h
+      - build/ntdll-unix/steam_session_trace.h
       - build/ntdll-unix/signal_arm64_ios.c
       - tests/host/check-jit-alias-*.py
       - tests/host/check-pool-*.py
@@ -78,7 +96,8 @@ jobs:
           persist-credentials: false
       - name: Load pinned Wine and FEX declarations
         run: |
-          git submodule update --init --depth 1 wine FEX
+          git submodule update --init --depth 1 wine FEX dxmt
+          git -C dxmt submodule update --init --recursive --depth 1
           git -C FEX submodule update --init --depth 1 External/fmt External/rpmalloc
       - name: Replay FEX owner heaps and checked ARM64EC startup
         run: |
@@ -87,6 +106,13 @@ jobs:
           python3 tests/host/check-fex-arm64ec-startup.py
           python3 tests/host/check-fex-pe-build.py
           python3 tests/host/check-rpmalloc-thread-reuse.py
+          python3 tests/host/check-directx-fixed-image.py
+          python3 tests/host/check-fex-subfloor-domain.py
+          python3 tests/host/check-fex-subfloor-package.py
+          python3 tests/host/check-fex-subfloor-atomics.py
+          python3 tests/host/check-steam-startup-timeline.py
+          python3 tests/host/check-steam-session-trace.py
+          python3 tests/host/check-metal-diagnostics.py
       - name: Replay real head/tail allocations and measured startup policy
         run: |
           python3 tests/host/check-dep-process-isolation.py
@@ -116,4 +142,5 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           python3 tests/host/check-pool-startup-budget.py --require-swift
+          python3 tests/host/check-steam-startup-app-clock.py --require-swift
           python3 tests/host/check-jit-pool-meter.py
