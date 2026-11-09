@@ -310,7 +310,8 @@ class Depot:
         for f in self.files:
             name = f['name'].encode()
             shown = base64.b64encode(steam_encrypt(self.key, name + b'\0')) if self.encrypt_names else name
-            body = f_bytes(1, shown) + f_varint(2, f['size']) + f_varint(3, f['flags'])
+            body = (f_bytes(1, shown) + f_varint(2, f['size']) + f_varint(3, f['flags']) +
+                    f_bytes(4, hashlib.sha1(name).digest()) + f_bytes(5, hashlib.sha1(f['data']).digest()))
             for sha, offset, ulen, clen, crc in f['chunks']:
                 body += f_bytes(6, f_bytes(1, sha) + f_fixed32(2, crc) + f_varint(3, offset) + f_varint(4, ulen) + f_varint(5, clen))
             out += f_bytes(1, body)
@@ -462,6 +463,8 @@ CRYPTO_H = r'''
 #define cc_shim_h
 #include <stddef.h>
 #include <stdint.h>
+#include <openssl/sha.h>
+typedef SHA_CTX CC_SHA1_CTX;
 typedef uint32_t CCOperation;
 typedef uint32_t CCAlgorithm;
 typedef uint32_t CCOptions;
@@ -477,6 +480,9 @@ CCCryptorStatus CCCrypt(CCOperation op, CCAlgorithm alg, CCOptions options, cons
                         const void *iv, const void *dataIn, size_t dataInLength, void *dataOut,
                         size_t dataOutAvailable, size_t *dataOutMoved);
 unsigned char *CC_SHA1(const void *data, CC_LONG len, unsigned char *md);
+int CC_SHA1_Init(CC_SHA1_CTX *ctx);
+int CC_SHA1_Update(CC_SHA1_CTX *ctx, const void *data, CC_LONG len);
+int CC_SHA1_Final(unsigned char *md, CC_SHA1_CTX *ctx);
 #endif
 '''
 CRYPTO_C = r'''
@@ -503,6 +509,9 @@ CCCryptorStatus CCCrypt(CCOperation op, CCAlgorithm alg, CCOptions options, cons
     return kCCSuccess;
 }
 unsigned char *CC_SHA1(const void *data, CC_LONG len, unsigned char *md) { return SHA1(data, len, md); }
+int CC_SHA1_Init(CC_SHA1_CTX *ctx) { return SHA1_Init(ctx); }
+int CC_SHA1_Update(CC_SHA1_CTX *ctx, const void *data, CC_LONG len) { return SHA1_Update(ctx, data, len); }
+int CC_SHA1_Final(unsigned char *md, CC_SHA1_CTX *ctx) { return SHA1_Final(md, ctx); }
 '''
 COMPRESSION_H = r'''
 #ifndef compression_shim_h
@@ -690,7 +699,86 @@ func packageBuffer(apps: [UInt32], depots: [UInt32]) -> Data {
     return Data(pkg)
 }
 
+
+#if !INTEGRITY_BASELINE
+func integrityAuditUnits(_ fx: [String: Any]) throws {
+    let root = URL(fileURLWithPath: fx["tmp"] as! String).appendingPathComponent("audit")
+    let apps = root.appendingPathComponent("steamapps")
+    let game = apps.appendingPathComponent("common/Fixture")
+    let fm = FileManager.default
+    func put(_ relative: String, _ data: Data, root: URL) throws {
+        let file = root.appendingPathComponent(relative)
+        try fm.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: file)
+    }
+    let record = Data(#""AppState" { "appid" "730" "InstalledDepots" { "7301" { "manifest" "88" } } }"#.utf8)
+    try put("appmanifest_730.acf", record, root: apps)
+    let payload = hexData(fx["auditManifest"] as! String)
+    try put("depotcache/7301_88.manifest", payload, root: apps)
+    let files = fx["auditFiles"] as! [String: String]
+    for (path, value) in files { try put(path, hexData(value), root: game) }
+    // Case differences are normal on the Windows side of an iOS filesystem.
+    try fm.moveItem(at: game.appendingPathComponent("game/bin/win64/cs2.exe"),
+                    to: game.appendingPathComponent("game/bin/win64/CS2.EXE"))
+    let client = game.appendingPathComponent("game/csgo/bin/win64/client.dll")
+    let clientBefore = try Data(contentsOf: client)
+    var changed = clientBefore; changed[0] ^= 1; try changed.write(to: client)
+    let outside = root.appendingPathComponent("private-token-and-account")
+    try Data("must not read or report this".utf8).write(to: outside)
+    try fm.createSymbolicLink(atPath: game.appendingPathComponent("game/bin/win64/steam_api64.dll").path,
+                              withDestinationPath: outside.path)
+    let parsed = try DepotManifest.parse(depotID: 7301, manifestGID: 88, data: payload)
+    let source = parsed.files.first { $0.filename == "game/csgo/bin/win64/client.dll" }!
+    require(source.contentSHA1 == hexData(fx["auditClientSHA1"] as! String),
+            "manifest field 5 retains full-file content SHA-1 independently of filename SHA-1 field 4")
+    var limits = SteamContentIntegrity.Limits(); limits.maxSeconds = 30
+    let report = SteamContentIntegrity.auditCS2(steamApps: apps, installURL: game, limits: limits)
+    func find(_ path: String) -> SteamContentIntegrity.Finding { report.findings.first { $0.relative == path }! }
+    require(report.references == 1 && report.depots == 1 && report.state == "bounded-comparison", "audit selects the exact installed manifest GID")
+    require(find("game/bin/win64/cs2.exe").state == "cache-hash-match" &&
+            find("game/bin/win64/cs2.exe").certificate == "table-present-unverified",
+            "read-only case-insensitive file comparison distinguishes certificate presence from trust")
+    require(find("game/csgo/bin/win64/client.dll").state == "cache-hash-mismatch", "a changed installed file is reported honestly")
+    require(find("game/csgo/bin/win64/server.dll").state == "file-unavailable", "missing referenced file stays missing")
+    require(find("game/bin/win64/steam_api64.dll").state == "file-unavailable", "audit refuses a final-component symlink")
+    require(find("game/bin/win64/tier0.dll").state == "steam-customized-unmeasured", "per-account customized executable is not judged by the uncustomized depot hash")
+    require(find("game/bin/win64/engine2.dll").state == "cache-hash-match" &&
+            find("game/bin/win64/engine2.dll").certificate == "table-out-of-file", "an intact depot hash is not misrepresented as a valid embedded signature")
+    require(find("game/csgo/pak01_dir.vpk").state == "cache-hash-match" &&
+            find("game/csgo/pak01_dir.vpk").certificate == "not-pe", "a VPK is not incorrectly diagnosed as an unsigned PE")
+    let logs = report.lines.joined(separator: "\n")
+    require(!logs.contains(root.path) && !logs.contains("private-token-and-account") && !logs.contains("must not read") &&
+            logs.contains("authentication=not-revalidated") && logs.contains("trust=unmeasured"), "bounded audit output exposes no private paths/content or fabricated trust verdict")
+    let clientAfter = try Data(contentsOf: client), outsideAfter = try Data(contentsOf: outside)
+    require(clientAfter == changed && outsideAfter == Data("must not read or report this".utf8), "audit never repairs, modifies or follows installed content")
+    var budget = limits; budget.maxBytes = 1
+    let bounded = SteamContentIntegrity.auditCS2(steamApps: apps, installURL: game, limits: budget)
+    require(bounded.bytes == 0 && bounded.findings.contains { $0.state == "byte-budget-unmeasured" } &&
+            !bounded.findings.contains { $0.state == "cache-hash-match" }, "byte-limited files remain explicitly unmeasured")
+    var one = limits; one.maxFiles = 1
+    require(SteamContentIntegrity.auditCS2(steamApps: apps, installURL: game, limits: one).findings.count == 1, "audit honors the file-count bound")
+    try fm.moveItem(at: apps.appendingPathComponent("depotcache/7301_88.manifest"), to: apps.appendingPathComponent("depotcache/7301_89.manifest"))
+    let wrongGID = SteamContentIntegrity.auditCS2(steamApps: apps, installURL: game, limits: limits)
+    require(wrongGID.references == 0 && !wrongGID.findings.contains { $0.state == "cache-hash-match" }, "a different installed build's reference is never substituted")
+    try put("depotcache/7301_88.manifest", Data([1, 2, 3, 4]), root: apps)
+    require(SteamContentIntegrity.auditCS2(steamApps: apps, installURL: game, limits: limits).references == 0, "a truncated cache header becomes unmeasured instead of trapping")
+    try fm.removeItem(at: apps.appendingPathComponent("depotcache/7301_88.manifest"))
+    try fm.createSymbolicLink(atPath: apps.appendingPathComponent("depotcache/7301_88.manifest").path, withDestinationPath: outside.path)
+    require(SteamContentIntegrity.auditCS2(steamApps: apps, installURL: game, limits: limits).references == 0, "audit refuses a symlinked manifest reference")
+    // A real empty/absent content hash is unknown; malformed nonempty hashes
+    // and chunk identifiers must never be accepted as authentic metadata.
+    var invalidFile = ProtobufEncoder(); invalidFile.writeString(fieldNumber: 1, value: "file")
+    invalidFile.writeBytes(fieldNumber: 5, value: Data(repeating: 0, count: 19))
+    var invalidPayload = ProtobufEncoder(); invalidPayload.writeSubmessage(fieldNumber: 1, value: invalidFile.data)
+    do { _ = try DepotManifest.parse(depotID: 1, manifestGID: 1, data: invalidPayload.data); require(false, "short content SHA1 rejected") }
+    catch { require(true, "short content SHA1 rejected") }
+}
+#endif
+
 @MainActor func units(_ fx: [String: Any]) async throws {
+    #if !INTEGRITY_BASELINE
+    try integrityAuditUnits(fx)
+    #endif
     // ---- protobuf: hostile input throws instead of trapping
     var big = ProtobufDecoder(Data([0x0a, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01]))
     _ = try? big.readTag()
@@ -984,12 +1072,12 @@ func packageBuffer(apps: [UInt32], depots: [UInt32]) -> Data {
         print("RESULT install=ok")
     } catch {
         print("RESULT install=failed reason=\(SteamOwnedLibrary.reason(error))")
-        require(phase == "interrupt" || phase == "refused-licensed", "install failed only where the phase expects it (\(error))")
+        require(phase == "interrupt" || phase == "refused-licensed" || phase == "reject-sha", "install failed only where the phase expects it (\(error))")
         if phase == "refused-licensed" { require(error as? SteamError == .depotKeyNotFound(9004), "a refusal for a depot the account is licensed for fails the install") }
     }
     let found = MadeiraDock.games(drive: drive)
     print("RESULT listed=\(found.filter { $0.id == 9000 && $0.installed }.count)")
-    if phase != "interrupt" && phase != "refused-licensed" {
+    if phase != "interrupt" && phase != "refused-licensed" && phase != "reject-sha" {
         require(lastProgress.phase == .finishing && lastProgress.doneBytes == lastProgress.totalBytes && lastProgress.totalBytes > 0, "progress ends complete: \(lastProgress.doneBytes)/\(lastProgress.totalBytes)")
         // Keys are asked for with the app being installed; manifest codes and tokens with the app that owns the content.
         require(session.keyRequests.contains { $0.depot == 9001 && $0.app == 9000 } && session.keyRequests.contains { $0.depot == 9003 && $0.app == 9000 }, "depot keys are requested for the installed app")
@@ -1054,6 +1142,9 @@ dock_head = dock[dock.index('enum DockPerformancePolicy {'):dock.index('enum Mad
 dock_body = (dock[dock.index('enum MadeiraDock {'):dock.index('    @MainActor private static var lastReport =')] +
              dock[dock.index("    /// The host's environment for one launch."):])
 # URLSession lives in FoundationNetworking on Linux; the production file imports Foundation only.
+baseline_revision = os.environ.get('MADEIRA_STEAM_INTEGRITY_BASELINE')
+if baseline_revision:
+    downloader = subprocess.run(['git', 'show', f'{baseline_revision}:app/Madeira/SwiftSteam/Content/DepotDownloader.swift'], cwd=root, check=True, capture_output=True, text=True).stdout
 downloader_host = downloader.replace('import Foundation\n', 'import Foundation\n#if canImport(FoundationNetworking)\nimport FoundationNetworking\n#endif\n', 1)
 # Linux has no Darwin volume keys or statfs layout. Unknown capacity remains allowed.
 if sys.platform != 'darwin':
@@ -1104,16 +1195,22 @@ try:
         'var status = Status.satisfied }; var currentPath = Path(); func start(queue: DispatchQueue) {} }\n#endif\n') + dock_head + dock_body)
     (work / 'owned.swift').write_text('import Foundation\n' + owned_game + playtime_source)
     (work / 'downloader.swift').write_text(downloader_host)
+    manifest_source = steam / 'Content/DepotManifest.swift'
+    if baseline_revision:
+        manifest_source = work / 'baseline-manifest.swift'
+        manifest_source.write_text(subprocess.run(['git', 'show', f'{baseline_revision}:app/Madeira/SwiftSteam/Content/DepotManifest.swift'], cwd=root, check=True, capture_output=True, text=True).stdout)
     production = [steam / 'Proto/SteamProtoMessages.swift', steam / 'Core/SteamError.swift', steam / 'Core/SteamProtocol.swift',
                   steam / 'Core/SteamMessageCodec.swift', steam / 'Core/SteamCMSession.swift',
-                  steam / 'Content/ContentDecryptor.swift', steam / 'Content/DepotManifest.swift',
+                  steam / 'Content/ContentDecryptor.swift', manifest_source,
                   steam / 'Library/SteamAppInfo.swift', steam / 'Library/SteamLibraryFetcher.swift',
                   steam / 'Install/AppManifestWriter.swift', app / 'SteamInstall.swift', app / 'SteamKeyValues.swift', app / 'ExternalStorage.swift']
+    if not baseline_revision:
+        production.append(steam / 'Content/SteamContentIntegrity.swift')
     exe = work / 'check'
     build = subprocess.run([SWIFTC, '-parse-as-library', '-swift-version', '5', '-sanitize=address', '-g', '-o', str(exe),
                             '-import-objc-header', str(work / 'decoders.h'),
                             str(work / 'stubs.swift'), str(work / 'checks.swift'), str(work / 'dock.swift'), str(work / 'owned.swift'),
-                            str(work / 'downloader.swift')] + modules + [str(x) for x in production] + objects +
+                            str(work / 'downloader.swift')] + (['-D', 'INTEGRITY_BASELINE'] if baseline_revision else []) + modules + [str(x) for x in production] + objects +
                            ([] if native else ['-Xlinker', '-lcrypto']) + ['-Xlinker', '-llzma', '-Xlinker', '-lz'], capture_output=True, text=True)
     require(build.returncode == 0, 'the production Steam library, download and decoder code compile on the host')
     if build.returncode:
@@ -1155,9 +1252,34 @@ try:
     dead, flaky, good = ContentServer('dead', state), ContentServer('flaky', state), ContentServer('good', state)
     servers = [dead, flaky, good]
     for server in servers: serve(server)
+    audit_pe = bytearray(0x210)
+    audit_pe[:2] = b'MZ'
+    struct.pack_into('<I', audit_pe, 0x3c, 0x80)
+    audit_pe[0x80:0x84] = b'PE\0\0'
+    struct.pack_into('<H', audit_pe, 0x80 + 20, 0xf0)
+    struct.pack_into('<H', audit_pe, 0x98, 0x20b)
+    struct.pack_into('<I', audit_pe, 0x98 + 108, 16)
+    struct.pack_into('<II', audit_pe, 0x98 + 112 + 32, 0x200, 16)
+    struct.pack_into('<IHH', audit_pe, 0x200, 16, 0x200, 2)
+    audit_pe[0x208:] = b'FIXTURE!'
+    truncated_pe = bytearray(audit_pe)
+    struct.pack_into('<I', truncated_pe, 0x98 + 112 + 36, 32)
+    audit_entries = [
+        dict(name='game/bin/win64/cs2.exe', data=bytes(audit_pe)),
+        dict(name='game/bin/win64/engine2.dll', data=bytes(truncated_pe)),
+        dict(name='game/bin/win64/tier0.dll', data=b'customized', flags=0x80),
+        dict(name='game/bin/win64/steam_api64.dll', data=b'expected'),
+        dict(name='game/csgo/bin/win64/client.dll', data=b'REAL-CLIENT'),
+        dict(name='game/csgo/bin/win64/server.dll', data=b'REAL-SERVER'),
+        dict(name='game/csgo/pak01_dir.vpk', data=b'owned-vpk-fixture')]
+    audit_depot = Depot(7301, KEY_MAIN, audit_entries, encrypt_names=False)
+    audit_files = {e['name']: e['data'].hex() for e in audit_entries if e['name'] not in
+                   ('game/csgo/bin/win64/server.dll', 'game/bin/win64/steam_api64.dll')}
     fixture = dict(key=KEY_MAIN.hex(), keyShared=KEY_SHARED.hex(), vectorPlain=VEC_PLAIN.hex(), vectors=VEC, rawEncrypted=RAW,
                    hosts=[dead.url, flaky.url, good.url], requestCode=state.request_code, auth=state.auth,
-                   gid1=gid1, gid2=gid2, gidShared=gid_shared, tmp=str(work / 'root'))
+                   gid1=gid1, gid2=gid2, gidShared=gid_shared, tmp=str(work / 'root'),
+                   auditManifest=audit_depot.payload().hex(), auditFiles=audit_files,
+                   auditClientSHA1=hashlib.sha1(b'REAL-CLIENT').hexdigest())
 
     run('units', fixture)
 
@@ -1182,12 +1304,32 @@ try:
             done.add(depot.files[key >> 32]['chunks'][key & 0xffffffff][0].hex())
     require(len(done) >= 1 and len(state.served_ok) >= 1, f'{len(done)} chunks journaled after {len(state.served_ok)} served')
 
-    # ---- resume: the journaled chunks are not fetched again; the install finishes
+    # ---- resume must not trust journal keys after bytes have changed.
+    damaged_sha = None
+    for journal in journals:
+        match = re.match(r'depot_(\d+)_(\d+)\.journal', journal.name)
+        depot = {9001: version1, 9003: shared}[int(match.group(1))]
+        for line in journal.read_text().split():
+            key = int(line, 16)
+            entry = depot.files[key >> 32]
+            sha, offset, length, _, _ = entry['chunks'][key & 0xffffffff]
+            wanted = entry['name'].replace('\\', '/').lower()
+            file = next((p for p in folder.rglob('*') if p.is_file() and str(p.relative_to(folder)).lower() == wanted), None)
+            if file is not None and length:
+                with file.open('r+b') as stream:
+                    stream.seek(offset)
+                    stream.write(bytes([entry['data'][offset] ^ 0xff]))
+                damaged_sha = sha.hex()
+                break
+        if damaged_sha: break
+    require(damaged_sha is not None, 'a genuinely journaled completed chunk is changed on disk before resume')
+
+    # ---- resume: matching journaled bytes are reused; changed bytes are fetched.
     state.limit = None
     state.reset_counters()
     result = run('resume', fixture)
     require(result.get('install') == 'ok' and result.get('listed') == '1', "the install finishes and Madeira Dock's own scanner lists the game as installed")
-    require(not (set(state.chunk_requests) & done), 'chunks finished before the interruption are not fetched again')
+    require((set(state.chunk_requests) & done) == {damaged_sha}, 'resuming rehashes journal candidates: only the changed completed chunk is fetched again')
     evil_sha = hashlib.sha1(EVIL).hexdigest()
     require(evil_sha not in state.chunk_requests, 'a manifest path that escapes the install folder is never downloaded')
     expected1 = {'bin/game.bin': GAME_BIN, 'data/Assets.dat': ASSETS, 'empty.txt': b'', 'docs/Readme.TXT': README, 'docs/notes.txt': NOTES,
@@ -1246,6 +1388,23 @@ try:
     result = run('refused-licensed', other)
     require(result.get('install') == 'failed' and result.get('listed') == '0' and
             not list((work / 'root2').rglob('appmanifest_*.acf')), 'a refused licensed depot fails the install without a record')
+    # ---- identical length and Adler-32, but different manifest SHA-1.
+    # A CRC-only download accepts B@DD under the authenticated ABCD chunk ID.
+    require(adler(b'ABCD') == adler(b'B@DD') and hashlib.sha1(b'ABCD').digest() != hashlib.sha1(b'B@DD').digest(),
+            'the negative fixture has an actual Adler collision with different SHA-1')
+    bad_depot = Depot(9001, KEY_MAIN, [dict(name='signature-check.bin', data=b'ABCD', chunks=[('zip', 4)])])
+    collision_sha = hashlib.sha1(b'ABCD').hexdigest()
+    bad_depot.chunks[collision_sha] = steam_encrypt(KEY_MAIN, container('zip', b'B@DD'))
+    state.manifests[(9001, gid1)] = bad_depot.manifest_zip()[0]
+    state.depots[9001] = bad_depot
+    state.reset_counters()
+    collision_root = work / 'collision-root'
+    result = run('reject-sha', dict(fixture, tmp=str(collision_root), hosts=[good.url]))
+    collision_file = collision_root / 'drive_c/Program Files (x86)/Steam/steamapps/common/Fixture Game/signature-check.bin'
+    require(result.get('install') == 'failed' and not list(collision_root.rglob('appmanifest_*.acf')),
+            'a different SHA-1 fails the authentic downloader without publishing an installed record')
+    require(collision_file.exists() and collision_file.read_bytes() == bytes(4),
+            'rejected chunk bytes never reach the game file, even when size and Adler match')
 finally:
     for server in servers:
         server.shutdown(); server.server_close()

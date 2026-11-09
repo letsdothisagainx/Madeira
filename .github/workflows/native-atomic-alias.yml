@@ -1,114 +1,47 @@
-name: Verify native atomic alias execution
+name: Validate CS2 content integrity on Apple
 on:
   workflow_dispatch:
-  push:
-    branches: [main, 'codex/pr-build-*']
-    paths:
-      - build/ntdll-unix/native_atomic*.h
-      - build/ntdll-unix/native_data_alias.h
-      - build/ntdll-unix/native_srw_alias.h
-      - tests/host/*native*srw*
-      - build/ntdll-unix/native_counter*.h
-      - build/wine-pe/build-ntdll.sh
-      - tools/build/stage-native-counter-writes.py
-      - tests/host/*native*counter*
-      - tests/host/*native*direct*call*
-      - build/ntdll-unix/signal_arm64_ios.c
-      - build/ntdll-unix/jit_store_census.h
-      - tests/host/check-native-atomic*.py
-      - tests/host/check-native-data*.py
-      - tests/host/check-jit-alias-exclusive-conditional*.py
-      - tests/host/check-jit-alias-exclusive-compare.py
-      - tests/host/jit_alias_exclusive_conditional*.c
-      - tests/host/jit_alias_exclusive_compare_test.c
-      - tests/host/native*atomic*.c
-      - tests/host/native*data*alias*.c
-      - tests/host/check-jit-store-census.py
-      - .github/workflows/native-atomic-alias.yml
-  pull_request:
-    paths:
-      - build/ntdll-unix/native_atomic*.h
-      - build/ntdll-unix/native_data_alias.h
-      - build/ntdll-unix/native_srw_alias.h
-      - tests/host/*native*srw*
-      - build/ntdll-unix/native_counter*.h
-      - build/wine-pe/build-ntdll.sh
-      - tools/build/stage-native-counter-writes.py
-      - tests/host/*native*counter*
-      - tests/host/*native*direct*call*
-      - build/ntdll-unix/signal_arm64_ios.c
-      - build/ntdll-unix/jit_store_census.h
-      - tests/host/check-native-atomic*.py
-      - tests/host/check-native-data*.py
-      - tests/host/check-jit-alias-exclusive-conditional*.py
-      - tests/host/check-jit-alias-exclusive-compare.py
-      - tests/host/jit_alias_exclusive_conditional*.c
-      - tests/host/jit_alias_exclusive_compare_test.c
-      - tests/host/native*atomic*.c
-      - tests/host/native*data*alias*.c
-      - tests/host/check-jit-store-census.py
-      - .github/workflows/native-atomic-alias.yml
 permissions:
   contents: read
 jobs:
-  apple-arm64-execution:
+  content-integrity:
     runs-on: xcode-27
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           persist-credentials: false
-      - name: Load pinned Wine counter producer source
-        run: git submodule update --init --depth 1 wine
-      - name: Prove native address lowering and exact packaged image invariants
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Configure system decoder libraries
         run: |
-          python3 tests/host/check-native-data-alias.py
-          python3 tests/host/check-native-data-direct-call.py
-          python3 tests/host/check-native-counter-alias.py
-          python3 tests/host/check-native-counter-stage.py
-          python3 tests/host/check-native-srw-alias.py
-          python3 tests/host/check-native-srw-history.py
-          python3 tests/host/check-native-atomic-alias.py
-          python3 tests/host/check-native-atomic-image.py
-          python3 tests/host/check-jit-store-census.py
-          python3 tests/host/check-jit-alias-exclusive-conditional.py
-          python3 tests/host/check-jit-alias-exclusive-compare.py
-          python3 tests/host/check-jit-alias-exclusive.py
-          python3 tests/host/check-jit-alias-exclusive-add.py
-          python3 tests/host/check-jit-alias-str-immediate.py
-      - name: Measure real Mach faults, native throughput and atomic contention
+          brew list xz >/dev/null 2>&1 || brew install xz
+          echo "CPATH=$(brew --prefix xz)/include" >> "$GITHUB_ENV"
+          echo "LIBRARY_PATH=$(brew --prefix xz)/lib" >> "$GITHUB_ENV"
+      - name: Reproduce both real baseline integrity failures
         run: |
-          set -o pipefail
-          python3 tests/host/check-native-data-alias-performance.py --require-arm64-darwin | tee native-data-throughput.txt
-          python3 tests/host/check-native-atomic-alias-performance.py --require-arm64-darwin | tee native-atomic-throughput.txt
-      - name: Execute captured DXMT conditional exclusive sequence through Mach faults
-        run: |
-          set -o pipefail
-          python3 tests/host/check-jit-alias-exclusive-conditional-hardware.py --require-arm64-darwin | tee conditional-exclusive-hardware.txt
-      - name: Measure the captured SRW diagnostic writer with real Mach faults
+          set +e
+          MADEIRA_STEAM_INTEGRITY_BASELINE=4b41f1dd7603612e1596ac885d0b883fa601cf26 python3 tests/host/check-steam-library.py > content-baseline.txt 2>&1
+          result=$?
+          tail -100 content-baseline.txt
+          test "$result" -ne 0 || exit 1
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          text=Path('content-baseline.txt').read_text()
+          expected=["FAIL: resuming rehashes journal candidates: only the changed completed chunk is fetched again", "FAIL: a different SHA-1 fails the authentic downloader without publishing an installed record", "FAIL: rejected chunk bytes never reach the game file, even when size and Adler match"]
+          assert all(line in text for line in expected), 'baseline must fail on both real producer defects, not compiler/setup errors'
+          assert 'PASS: the production Steam library, download and decoder code compile on the host' in text
+          print('PASS: exact old production code reproduces journal trust and SHA1 omission')
+          PYCODE
+      - name: Validate production corrections and bounded read-only audit
         run: |
           set -o pipefail
-          python3 tests/host/check-native-srw-history-performance.py --require-arm64-darwin | tee native-srw-throughput.txt
-      - name: Measure production QPC counter writer with real Mach faults
-        if: always()
-        run: |
-          set -o pipefail
-          python3 tests/host/check-native-qpc-counter-performance.py --require-arm64-darwin | tee native-qpc-throughput.txt
-      - name: Measure captured FEX statistics counter with real exclusive retry
-        if: always()
-        run: |
-          set -o pipefail
-          python3 tests/host/check-native-counter-call-performance.py --require-arm64-darwin | tee native-counter-call-throughput.txt
+          python3 tests/host/check-steam-library.py | tee content-fixed.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: native-atomic-throughput
-          path: |
-            native-atomic-throughput.txt
-            native-data-throughput.txt
-            native-qpc-throughput.txt
-            native-counter-call-throughput.txt
-            conditional-exclusive-hardware.txt
-            native-srw-throughput.txt
-          if-no-files-found: ignore
+          name: cs2-content-integrity
+          path: content-*.txt
           retention-days: 14

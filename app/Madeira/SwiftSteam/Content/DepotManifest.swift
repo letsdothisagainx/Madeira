@@ -24,6 +24,9 @@ struct DepotManifest {
         let size: UInt64
         let flags: UInt32
         var chunks: [ChunkEntry]
+        /// ContentManifestPayload.FileMapping.sha_content (field 5), not
+        /// sha_filename (field 4). Absence is unknown, never a verified file.
+        var contentSHA1: Data? = nil
 
         var isDirectory: Bool { flags & 0x40 != 0 }
     }
@@ -58,6 +61,7 @@ struct DepotManifest {
         if data.first == 0x0A {
             payload = data
         } else {
+            guard data.count >= 8 else { throw SteamError.manifestFetchFailed("Manifest header is incomplete") }
             let len = data.count >= 8
                 ? Int(data[4..<8].withUnsafeBytes { UInt32(littleEndian: $0.loadUnaligned(as: UInt32.self)) })
                 : 0
@@ -85,12 +89,13 @@ struct DepotManifest {
         //   Field 1: filename (string)
         //   Field 2: size (uint64)
         //   Field 3: flags (uint32)
+        //   Field 5: sha_content (bytes, SHA-1 of the complete file)
         //   Field 6 (repeated): ContentManifestPayload.FileMapping.ChunkData
         //     Field 1: sha (bytes, 20)
         //     Field 2: crc (fixed32)
         //     Field 3: offset (uint64)
-        //     Field 4: cb_compressed (uint32)
-        //     Field 5: cb_original (uint32)
+        //     Field 4: cb_original (uint32)
+        //     Field 5: cb_compressed (uint32)
 
         var decoder = ProtobufDecoder(data)
         var totalUncompressed: UInt64 = 0
@@ -101,7 +106,9 @@ struct DepotManifest {
             case 1: // FileMapping
                 let fileData = try decoder.readBytes()
                 if let entry = try parseFileEntry(from: fileData, depotKey: depotKey) {
-                    totalUncompressed += entry.size
+                    let (size, sizeOverflow) = totalUncompressed.addingReportingOverflow(entry.size)
+                    guard !sizeOverflow else { throw SteamError.manifestFetchFailed("Manifest file sizes overflow") }
+                    totalUncompressed = size
                     for chunk in entry.chunks {
                         totalCompressed += UInt64(chunk.compressedSize)
                     }
@@ -125,7 +132,10 @@ struct DepotManifest {
             SteamLog.trace("filename decrypt failed (\(why))")
             return name
         }
-        guard let depotKey else { return fail("no key") }
+        // A read-only cached-manifest inspection may intentionally have no
+        // account/depot key. Retain the supplied name without logging one
+        // failure for every file; encrypted names then remain unmeasured.
+        guard let depotKey else { return name }
         guard let cipher = Data(base64Encoded: stripped, options: .ignoreUnknownCharacters),
               cipher.count > 16 else { return fail("b64") }
         guard let plain = try? ContentDecryptor.decryptChunk(encryptedData: cipher, depotKey: depotKey) else { return fail("aes") }
@@ -145,12 +155,19 @@ struct DepotManifest {
         var size: UInt64 = 0
         var flags: UInt32 = 0
         var chunks: [ChunkEntry] = []
+        var contentSHA1: Data?
 
         while let tag = try decoder.readTag() {
             switch tag.fieldNumber {
             case 1: filename = try decoder.readString()
             case 2: size = try decoder.readVarint()
-            case 3: flags = UInt32(try decoder.readVarint())
+            case 3:
+                guard let value = UInt32(exactly: try decoder.readVarint()) else { throw SteamError.invalidMessage }
+                flags = value
+            case 5:
+                let digest = try decoder.readBytes()
+                guard digest.isEmpty || digest.count == 20 else { throw SteamError.manifestFetchFailed("Invalid file SHA-1 length") }
+                contentSHA1 = digest.isEmpty ? nil : digest
             case 6: // ChunkData
                 let chunkData = try decoder.readBytes()
                 if let chunk = try parseChunkEntry(from: chunkData) {
@@ -166,7 +183,7 @@ struct DepotManifest {
         // Normalize path separators (Steam uses backslashes)
         let normalizedFilename = decoded.replacingOccurrences(of: "\\", with: "/")
 
-        return FileEntry(filename: normalizedFilename, size: size, flags: flags, chunks: chunks)
+        return FileEntry(filename: normalizedFilename, size: size, flags: flags, chunks: chunks, contentSHA1: contentSHA1)
     }
 
     private static func parseChunkEntry(from data: Data) throws -> ChunkEntry? {
@@ -182,13 +199,17 @@ struct DepotManifest {
             case 1: sha = try decoder.readBytes()
             case 2: crc = try decoder.readFixed32()
             case 3: offset = try decoder.readVarint()
-            case 4: uncompressedSize = UInt32(try decoder.readVarint()) // cb_original
-            case 5: compressedSize = UInt32(try decoder.readVarint())   // cb_compressed
+            case 4:
+                guard let value = UInt32(exactly: try decoder.readVarint()) else { throw SteamError.invalidMessage }
+                uncompressedSize = value // cb_original
+            case 5:
+                guard let value = UInt32(exactly: try decoder.readVarint()) else { throw SteamError.invalidMessage }
+                compressedSize = value // cb_compressed
             default: try decoder.skip(wireType: tag.wireType)
             }
         }
 
-        guard !sha.isEmpty else { return nil }
+        guard sha.count == 20 else { throw SteamError.manifestFetchFailed("Invalid chunk SHA-1 length") }
 
         return ChunkEntry(
             sha: sha,
