@@ -102,7 +102,7 @@ for name in archive.namelist():
       rva=sections[section-1][1]+value;decoded=label.decode(errors='replace')
       if data_range[0]<=rva<data_range[1] or 'TelemetryValues' in decoded:selected.append((hex(rva),decoded))
      i+=1+aux
-   print('COFF-DATA-SYMBOLS',json.dumps(selected[:240]));assert len(selected)<=240
+   print('COFF-DATA-SYMBOLS',len(selected),json.dumps(selected[:1024]));assert len(selected)<=1024
    config_rva,config_size=struct.unpack_from('<II',data,dirs+80)
    if config_rva and config_size>=208:
     metadata_va=struct.unpack('<Q',at(config_rva+200,8))[0]
