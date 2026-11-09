@@ -184,6 +184,9 @@ enum SteamGameDiagnostics {
         // arbitrary console text, server addresses, tickets or account names.
         switch line {
         case "VAC was unable to verify your game session.": return "vac-session-unverified-message"
+        case "Some of your game files have been detected to have no signatures or invalid signatures. You will not be allowed to join VAC secure servers.",
+             "Some of your game files have been detected to have no signatures or invalid signatures. You will not be allowed to join VAC secure servers. Please verify your launch options, check correctness of your game installation, restart the game and try again.":
+            return "vac-signature-warning-message"
         case "SteamAPI_Init() failed": return "api-initialization-failed-message"
         case "SteamAPI_Init(): SteamAPI_IsSteamRunning() did not locate a running instance of Steam.": return "steam-client-unavailable-message"
         default: return nil

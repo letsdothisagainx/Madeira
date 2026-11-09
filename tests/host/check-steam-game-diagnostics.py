@@ -110,8 +110,11 @@ put("madeira-log.txt", "[00:00:01.001] [INFO] [build] v0.1.3 (4) source=" + Stri
 try! fm.createDirectory(at: root.appendingPathComponent("logs"), withIntermediateDirectories: true)
 try! fm.linkItem(at: root.appendingPathComponent("madeira-log.txt"), to: root.appendingPathComponent("logs/cs2.exe-2026-11-09_00-03-55.txt"))
 let steam = "wine/drive_c/Program Files (x86)/Steam/"
+let signatureWarning = "Some of your game files have been detected to have no signatures or invalid signatures. You will not be allowed to join VAC secure servers."
+let signatureWarningHelp = signatureWarning + " Please verify your launch options, check correctness of your game installation, restart the game and try again."
 put(steam + "steamapps/common/Counter-Strike Global Offensive/game/csgo/console.log",
-    "VAC was unable to verify your game session.\nVAC " + secrets[0] + "\nSteamAPI " + secrets[1] + "\n" + secrets.joined(separator: " ") + "\n")
+    "VAC was unable to verify your game session.\n" + signatureWarning + "\n" + signatureWarningHelp + "\n" +
+    signatureWarning + " " + secrets[0] + "\n" + signatureWarningHelp + " private=" + secrets[1] + "\nprefix " + signatureWarning + "\nVAC " + secrets[0] + "\nSteamAPI " + secrets[1] + "\n" + secrets.joined(separator: " ") + "\n")
 put(steam + "logs/console_log.txt", session + "\n" + String(repeating: "X", count: 5000) + service + "\n")
 let outside = root.deletingLastPathComponent().appendingPathComponent("outside-console.txt")
 try! Data(("[steam-service] result=999\n" + secrets[0]).utf8).write(to: outside)
@@ -160,7 +163,9 @@ assert(manifest["moduleObservations"] as? String == "no-observed-dedicated-event
 assert(sources.contains { $0["source"] as? String == "cs2-session-alias" && $0["state"] as? String == "same-file-as-earlier-source" })
 assert(sources.contains { $0["source"] as? String == "steam-connection" && $0["state"] as? String == "unavailable-or-not-owned-regular-file" })
 let events = try! JSONSerialization.jsonObject(with: entries[1].data) as! [[String: Any]]
-assert(events.count == 5)
+assert(events.count == 7)
+assert(events.filter { ($0["fields"] as? [String: String])?["event"] == "vac-signature-warning-message" }.count == 2)
+assert(!text.contains(signatureWarning), "raw warning body was exported instead of a fixed event")
 assert(events.contains { ($0["fields"] as? [String: String])?["name"] == "redacted-unlisted" && ($0["fields"] as? [String: String])?["result"] == "800b0100" })
 assert(!events.contains { $0["source"] as? String == "steam-console" }, "raw console impersonated a structured native producer")
 assert(events.contains { ($0["fields"] as? [String: String])?["event"] == "vac-session-unverified-message" })
