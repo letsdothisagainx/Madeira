@@ -15,6 +15,7 @@ FILES = ('Source/Windows/WOW64/Module.cpp', 'FEXCore/include/FEXCore/Utils/Alloc
          'FEXCore/Source/Interface/IR/IntrusiveIRList.h',
          'FEXCore/Source/Interface/IR/IREmitter.h',
          'FEXCore/Source/Interface/Core/Frontend.h',
+         'FEXCore/Source/Interface/Core/Frontend.cpp',
          'FEXCore/Source/Interface/Core/Core.cpp',
          'FEXCore/Source/Interface/Core/JIT/JIT.cpp',
          'FEXCore/Source/Interface/Core/LookupCache.cpp',

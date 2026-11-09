@@ -29,7 +29,7 @@ def function(source,signature):
     raise AssertionError(signature)
 
 
-def compiled_source(alias,module,capable):
+def compiled_source(alias,module,capable,frontend_source=None):
     alias_prefix=alias[alias.index('struct IosAliasEntry {'):alias.index('\nextern "C" {\n\n// ml357:')]
     floor_mark='static constexpr uint64_t kIosSubfloorDefaultFloor' if capable else 'static constexpr uint64_t kIosSubfloorFloor'
     table=alias[alias.index(floor_mark):alias.index('/* ======================= end ml951 SUB-FLOOR WINDOWS')]
@@ -38,7 +38,7 @@ def compiled_source(alias,module,capable):
     query=function(module,'  FEXCore::HLE::ExecutableRangeInfo QueryGuestExecutableRange(').replace(' override','')
     protect=function(module,'  void MarkGuestExecutableRange(').replace(' override','')
     notify=function(module,'void NotifyUnmapViewOfSection(')
-    frontend=(ROOT/'FEX/FEXCore/Source/Interface/Core/Frontend.cpp').read_text()
+    frontend=frontend_source if frontend_source is not None else (ROOT/'FEX/FEXCore/Source/Interface/Core/Frontend.cpp').read_text()
     adjust_start=frontend.index('const Decoder::DecodeStream Decoder::AdjustAddrForSpecialRegion(')
     adjust=frontend[adjust_start:frontend.index('\n}',adjust_start)+2]  # both #ifdef return arms must remain intact
     peek=function(frontend,'std::optional<uint8_t> Decoder::PeekByte(')
@@ -329,13 +329,13 @@ int test_real_bytes(uint8_t *backing,size_t bytes,uint64_t floor) {
     IR ordinary;ordinary.Begin(floor+0x100000);assert(!ordinary.IosXl.On&&ordinary.IosXlate(low+0x100)==low+0x100);
     module.MarkGuestExecutableRange(nullptr,low+0x100,size);
     assert(tracker.protected_ranges.size()==2);
-    assert(tracker.protected_ranges[0]==std::make_pair(real+0x100,size-0x100));
-    assert(tracker.protected_ranges[1]==std::make_pair(low+size,0x100ull));
+    assert((tracker.protected_ranges[0]==std::pair<uint64_t,uint64_t>(real+0x100,size-0x100)));
+    assert((tracker.protected_ranges[1]==std::pair<uint64_t,uint64_t>(low+size,0x100ull)));
     Invalidator invalidator;invalidator.invalidate(real+0x100,8);
-    assert(invalidator.CTX.code.size()==2&&invalidator.CTX.code[0]==std::make_pair(real+0x100,8ull));
-    assert(invalidator.CTX.code[1]==std::make_pair(low+0x100,8ull)&&invalidator.CTX.thread_code.size()==4);
+    assert((invalidator.CTX.code.size()==2&&invalidator.CTX.code[0]==std::pair<uint64_t,uint64_t>(real+0x100,8ull)));
+    assert((invalidator.CTX.code[1]==std::pair<uint64_t,uint64_t>(low+0x100,8ull)&&invalidator.CTX.thread_code.size()==4));
     Invalidator low_writer;low_writer.invalidate(low+0x100,8);
-    assert(low_writer.CTX.code.size()==2&&low_writer.CTX.code[1]==std::make_pair(real+0x100,8ull));
+    assert((low_writer.CTX.code.size()==2&&low_writer.CTX.code[1]==std::pair<uint64_t,uint64_t>(real+0x100,8ull)));
     // A patch of the actual instruction byte invalidates both cached names;
     // the actual frontend then fetches the new backing byte at the same RIP.
     Invalidator patch;patch.CTX.cached={{low,0x48},{real,0x48}};
@@ -360,8 +360,8 @@ int test_unmap_lifetime(uint8_t *backing) {
     assert(!ThreadCreationMutex.held&&tracker.ranges.size()==1);cpu_area.active=true;
     NotifyUnmapViewOfSection(reinterpret_cast<void*>(low),false,0);
     assert(ThreadCreationMutex.held==1&&image_unmaps==1&&unmap_invalidation.CTX.code.size()==2);
-    assert(unmap_invalidation.CTX.code[0]==std::make_pair(real,size));
-    assert(unmap_invalidation.CTX.code[1]==std::make_pair(low,size));
+    assert((unmap_invalidation.CTX.code[0]==std::pair<uint64_t,uint64_t>(real,size)));
+    assert((unmap_invalidation.CTX.code[1]==std::pair<uint64_t,uint64_t>(low,size)));
     assert(IosSubfloorToReal(low)==real); // Retirement may not precede paired invalidation.
     NotifyUnmapViewOfSection(reinterpret_cast<void*>(low),true,int32_t(0xc0000018u));
     assert(!ThreadCreationMutex.held&&IosSubfloorToReal(low)==real);
@@ -431,9 +431,9 @@ int test_legacy_control(uint64_t floor) {
     assert(IosSubfloorToReal(low)==low&&IosJitTranslate(low)==real);
     tracker.ranges={{real,0x10000,false}};
     assert(module.QueryGuestExecutableRange(nullptr,low).Size==0);
-    Decoder decoder;
-    auto stream=decoder.AdjustAddrForSpecialRegion(reinterpret_cast<const uint8_t*>(low),low,low);
-    assert(reinterpret_cast<uint64_t>(stream.AdjustedInstStream)==low);
+    // The old executable query already refuses this address. Do not invoke
+    // its decoder on an intentionally unmapped logical pointer: that is beyond
+    // the first failure and its old pointer arithmetic itself is undefined.
     assert(floor>low);return 1;
 #endif
 }
@@ -474,7 +474,7 @@ struct Backend {
 int main(int argc,char **argv) {
     assert(argc==4);constexpr uint64_t floor=0x1044f8000ull;
     Backend legacy(argv[1]);assert(legacy.legacy(floor));
-    puts("PASS unchanged production control:4GiB preferred address entered ordinary branch-alias table, executable query missed and frontend byte source remained unmappedlogicalRIP");
+    puts("PASS unchanged production control:4GiB preferred address entered ordinary branch-alias table, executable query missed before instruction decoding (no unmapped pointer math invoked)");
     Backend ownerA(argv[2]),ownerB(argv[3]);
     assert(ownerA.capability()==0x4d53460100000001ull&&ownerB.capability()==ownerA.capability());
     assert(ownerA.configure(floor)&&ownerA.contracts(floor));
@@ -498,10 +498,12 @@ with tempfile.TemporaryDirectory(prefix='madeira-fex-subfloor-domain-') as folde
     subprocess.run(['python3',str(ROOT/'tools/build/stage-fex-compat.py'),'stage',str(staged),'--backend','arm64ec'],check=True)
     new_alias=(staged/'Source/Windows/ARM64EC/IosJitAlias.cpp').read_text()
     new_module=(staged/'Source/Windows/ARM64EC/Module.cpp').read_text()
+    new_frontend=(staged/'FEXCore/Source/Interface/Core/Frontend.cpp').read_text()
+    assert 'reinterpret_cast<uintptr_t>(_InstStream) - EntryPoint + RIP' in new_frontend
     old_alias=(ROOT/'FEX/Source/Windows/ARM64EC/IosJitAlias.cpp').read_text()
     old_module=(ROOT/'FEX/Source/Windows/ARM64EC/Module.cpp').read_text()
     assert re.search(r'^\s+IosSubfloorProtocolV1 DATA$',(staged/'Source/Windows/ARM64EC/libarm64ecfex_ios.def').read_text(),re.M)
-    sources=[compiled_source(old_alias,old_module,False),compiled_source(new_alias,new_module,True),compiled_source(new_alias,new_module,True)]
+    sources=[compiled_source(old_alias,old_module,False),compiled_source(new_alias,new_module,True,new_frontend),compiled_source(new_alias,new_module,True,new_frontend)]
     cxx=os.environ.get('CXX','c++');common=['-std=c++20','-O1','-g','-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-unused-function','-fsanitize=address,undefined','-fno-sanitize-recover=all']
     libraries=[]
     for index,text in enumerate(sources):

@@ -244,3 +244,18 @@
  target_include_directories(arm64ecfex PRIVATE
    "${CMAKE_SOURCE_DIR}/Source/Windows/include/"
    "${CMAKE_SOURCE_DIR}/Source/"
+--- a/FEXCore/Source/Interface/Core/Frontend.cpp
++++ b/FEXCore/Source/Interface/Core/Frontend.cpp
+@@ -1453,7 +1453,11 @@
+         LogMan::Msg::EFmt("[iOS-subfloor-decode] ml954 reading block bytes from backing: guest RIP={:#x} -> {:#x}", RIP, RealRIP);
+       }
+       return DecodeStream {
+-        .InstStream = _InstStream - EntryPoint + RIP,
++        // This is a logical guest address, not a pointer into a host object.
++        // Pointer subtraction can form NULL at EntryPoint before RIP is added.
++        // Keep both address domains as integers until the final tagged pointer.
++        .InstStream = reinterpret_cast<const uint8_t*>(
++          reinterpret_cast<uintptr_t>(_InstStream) - EntryPoint + RIP),
+         .AdjustedInstStream = reinterpret_cast<const uint8_t*>(RealRIP),
+       };
+     }

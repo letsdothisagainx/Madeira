@@ -198,7 +198,10 @@ static void shared_app_origin(void)
     assert(!ios_startup_app_origin("18446744073709551616",UINT64_MAX));
     assert(!ios_startup_app_origin("000000000000000000001",2000000000ULL));
     reset();at(5000);assert(!setenv("MADEIRA_STARTUP_T0_NS","1000000000",1));
-    ios_startup_timeline_begin();assert(strstr(output,"source=app-launch clock=monotonic t-ms=5000"));
+    ios_startup_timeline_begin();assert(strstr(output,"source=app-launch clock=monotonic t-ms=5000 mono-ns=6000000000"));
+    /* Metal's absolute monotonic anchor can now be related to this native
+     * t-ms origin without wall-clock timestamps or private metadata. */
+    assert(6000000000ULL-5000ULL*1000000ULL==ios_startup_origin);
     assert(!setenv("MADEIRA_STARTUP_T0_NS","6000000000",1));at(6000);
     uint32_t token=request("cs2.exe","",1,6000);assert(token);
     assert(strstr(output,"phase=cs2 attempt=1 creator=0001 pid=0000 t-ms=6000"));

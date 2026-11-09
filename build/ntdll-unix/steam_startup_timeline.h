@@ -119,8 +119,8 @@ static void ios_startup_epoch_locked(uint64_t now,const char *source)
         uint64_t app=ios_startup_app_origin(getenv("MADEIRA_STARTUP_T0_NS"),now);
         ios_startup_started=1;ios_startup_origin=app?app:now;
         ++ios_startup_events;
-        dprintf(2,"[startup-timeline-v1] event=origin source=%s clock=monotonic t-ms=%" PRIu64 " intervals=overlap-allowed cpu-time=unmeasured\n",
-                app?"app-launch":source,(uint64_t)((now-ios_startup_origin)/1000000ULL));
+        dprintf(2,"[startup-timeline-v1] event=origin source=%s clock=monotonic t-ms=%" PRIu64 " mono-ns=%" PRIu64 " intervals=overlap-allowed cpu-time=unmeasured\n",
+                app?"app-launch":source,(uint64_t)((now-ios_startup_origin)/1000000ULL),now);
     }
 }
 static void ios_startup_emit_locked(const struct ios_startup_process *p,const char *event,
