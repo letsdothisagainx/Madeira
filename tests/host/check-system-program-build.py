@@ -19,6 +19,9 @@ fixture=importlib.util.module_from_spec(spec);spec.loader.exec_module(fixture)
 
 
 def setup(directory):
+    # Apple's temporary root may be /var/folders, whose physical cwd is
+    # /private/var/folders. Treat owned fixture locations by directory identity.
+    directory=directory.resolve()
     root=directory/'repo';root.mkdir()
     stage,source,unused_app,unused_ipa=fixture.fixture_tree(directory/'fixtures')
     shutil.copytree(stage,root/'app/Madeira');shutil.copytree(source,root/'wine')
@@ -43,7 +46,7 @@ def setup(directory):
     make=r'''#!/usr/bin/env python3
 import json,os,sys,shutil
 from pathlib import Path
-root=Path(os.environ['ROOT']);process=root/'wine/dlls/kernelbase/process.c'
+root=Path(os.environ['ROOT']).resolve();process=root/'wine/dlls/kernelbase/process.c'
 assert 'madeira_process_lookup_trace.h' in process.read_text()
 assert (process.parent/'madeira_process_lookup_trace.h').is_file()
 with (root/'calls.jsonl').open('a') as stream:stream.write(json.dumps(sys.argv[1:])+'\n')
@@ -70,8 +73,8 @@ shutil.copyfile(sys.argv[4],sys.argv[3])
     configure.write_text('''#!/usr/bin/env python3
 import json,os,sys
 from pathlib import Path
-root=Path(os.environ['ROOT'])
-assert Path.cwd()==root/'wine/build-i386'
+root=Path(os.environ['ROOT']).resolve()
+assert Path.cwd().resolve()==(root/'wine/build-i386').resolve()
 assert sys.argv[1:]==['--enable-archs=i386','--without-x','--without-vulkan','--without-freetype','--without-gnutls','--disable-tests','--enable-winegstreamer']
 (Path.cwd()/'Makefile').write_text('# owned configured tree\\n')
 (root/'configure-calls.json').write_text(json.dumps(sys.argv[1:]))
@@ -103,7 +106,10 @@ with tempfile.TemporaryDirectory(prefix='madeira-system-program-build-') as dire
     fixture.check(root/'app/Madeira',root/'wine')
     (root/'calls.jsonl').unlink()
     (root/'wine/build-i386/Makefile').unlink()
-    result=run(root);assert result.returncode==0,result.stdout.decode(errors='replace')
+    # Exercise the same physical/logical temporary-path distinction on Linux
+    # too, instead of waiting for another macOS runner to expose it.
+    alias=root.parent/'repo-alias';alias.symlink_to(root,target_is_directory=True)
+    result=run(alias);assert result.returncode==0,result.stdout.decode(errors='replace')
     assert (root/'configure-calls.json').is_file() and (root/'wine/build-i386/Makefile').is_file()
     assert len((root/'calls.jsonl').read_text().splitlines())==3
     assert all((root/'app/Madeira/i386-windows'/name).read_bytes()==data for name,data in i386.items())
