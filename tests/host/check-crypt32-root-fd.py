@@ -59,7 +59,10 @@ typedef const char *LPCSTR;
 #define TRUE 1
 #define FALSE 0
 #define max(a,b) ((a) > (b) ? (a) : (b))
-#define TRACE(...) do {} while (0)
+#define debugstr_a(value) (value)
+/* Keep production trace operands referenced on Apple Clang without emitting
+ * fixture paths/certificate bodies or weakening warning checks. */
+#define TRACE(...) do { if (0) fprintf(stderr, __VA_ARGS__); } while (0)
 #define WARN(...) do {} while (0)
 #define ERR(...) do {} while (0)
 static struct { unsigned opened, fdopened, closed, fclose_calls; } counts;
