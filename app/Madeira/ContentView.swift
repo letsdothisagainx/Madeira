@@ -1320,7 +1320,7 @@ struct ContentView: View {
                     sessionBody
                         .navigationBarHidden(true)
                 } else if library.enabled {
-                    LibraryView(play: launchLibraryEntry, enableJIT: enableJIT,
+                    LibraryView(play: launchLibraryEntry, verifySteamFiles: verifySteamFiles, enableJIT: enableJIT,
                                 startDock: { startDock($0, compactPool: $1) })
                 } else {
                     developerBody
@@ -2012,14 +2012,13 @@ struct ContentView: View {
                     // menu writes it). ml1157/ml1172: otherwise the screen's own
                     // shape (ResolutionChoices), so the desktop fills a landscape
                     // screen with no bars.
-                    let (deskW, deskH) = configuredDesktopSize(default: ResolutionChoices.defaultSize())
+                    let display = GuestDisplay.sessionDefault(resolution: nil, desktopSize: MadeiraConfig.get("desktop-size"))
+                    let (deskW, deskH) = (display.w, display.h)
                     setenv("MADEIRA_EXE", "explorer.exe", 1)
                     setenv("MADEIRA_ARGS",
                            "/desktop=shell,\(deskW)x\(deskH) C:\\windows\\system32\\services.exe", 1)
                     setenv("MADEIRA_DESKTOP", "1", 1)
-                    setenv("MADEIRA_SCREEN_W", String(deskW), 1)
-                    setenv("MADEIRA_SCREEN_H", String(deskH), 1)
-                    winios_display_mode_changed(Int32(deskW), Int32(deskH))
+                    GuestDisplay.configureSessionDefault(display)
                     runWineFullSequence()
                 }
                 .buttonStyle(.borderedProminent)
@@ -2569,44 +2568,8 @@ struct ContentView: View {
         // A Steam game starts through Madeira Dock with its own launch profile (SteamGames.swift),
         // unless its Game details page chose "The game": then its own program starts below, like
         // any library game (SteamDirectStart).
-        if let appID = entry.steamAppID, entry.steamStart == NativeSteamPlay.mode {
-            guard wine_process_is_running() == 0, wineserver_is_running() == 0, library.current == nil else {
-                library.error = "Close the running Wine session before starting through the Steam client."; return
-            }
-            if LibraryModel.sessionsThisRun > 0, MadeiraConfig.flag("MADEIRA_ONE_SESSION_PER_RUN") {
-                library.restartNotice = LibraryModel.restartMessage; return
-            }
-            guard let game = MadeiraDock.games(drive: MadeiraDock.drive).first(where: { $0.id == appID && $0.installed }) else {
-                library.error = "Steam's appmanifest does not list this game as ready."; return
-            }
-            do {
-                SteamStartupClock.shared.mark(.requested) { logStore.log($0) }
-                var launch = entry
-                launch.relativePath = try NativeSteamPlay.prepare(game, drive: MadeiraDock.drive)
-                if appID == 730 {
-                    let steamApps = MadeiraDock.drive.appendingPathComponent(game.library, isDirectory: true)
-                    let install = steamApps.appendingPathComponent("common", isDirectory: true)
-                        .appendingPathComponent(game.installDir, isDirectory: true)
-                    SteamIntegrityDiagnostics.shared.schedule(appID: appID,
-                        idle: { wine_process_is_running() == 0 && wineserver_is_running() == 0 },
-                        work: { idle in SteamContentIntegrity.auditCS2(steamApps: steamApps, installURL: install,
-                                                                      shouldContinue: idle).lines },
-                        log: { LogStore.shared.log($0) })
-                }
-                SteamStartupClock.shared.mark(.launcherReady) { logStore.log($0) }
-                launch.steamAppID = nil; launch.steamStart = nil; launch.arguments = ""; launch.desktop = false
-                launch.workingDirectory = "C:\\"
-                LogStore.shared.log("[native-steam-play-v1] app=\(appID) manifest=ready install-directory=present mechanism=steam-applaunch")
-                SteamStartupClock.shared.mark(.jitGate) { logStore.log($0) }
-                guard jitReadyForLaunch(inLibrary: true, entry: entry.id, then: { launchLibraryEntry(entry) }) else { return }
-                SteamStartupClock.shared.mark(.jitReady) { logStore.log($0) }
-                // The generated command is transient, never the saved game entry.
-                startLibraryEntry(launch, remember: false, preferences: entry, nativeSteamClient: true)
-            } catch {
-                SteamStartupClock.shared.mark(.failed) { logStore.log($0) }
-                SteamStartupClock.shared.reset()
-                library.error = error.localizedDescription
-            }
+        if entry.steamAppID != nil, entry.steamStart == NativeSteamPlay.mode {
+            launchNativeSteam(entry, action: .play)
             return
         }
         if let appID = entry.steamAppID, !entry.startsSteamGameDirectly {
@@ -2641,6 +2604,59 @@ struct ContentView: View {
         // continues from here once it is on.
         guard jitReadyForLaunch(inLibrary: true, entry: entry.id, then: { startLibraryEntry(entry) }) else { return }
         startLibraryEntry(entry)
+    }
+
+    /// The explicit Library action requests Valve's real verification, without
+    /// saving the transient launcher or entering a game/Cloud launch path.
+    private func verifySteamFiles(_ entry: LibraryEntry) {
+        guard entry.steamAppID == 730 else { return }
+        launchNativeSteam(entry, action: .verifyFiles)
+    }
+
+    private func launchNativeSteam(_ entry: LibraryEntry, action: NativeSteamPlay.Action) {
+        guard !steamBrowserLaunch.busy, !SteamBrowserRuntime.busy, nativeSteamPreparationIdle() else {
+            library.error = "Close the running Wine session and wait for Steam file operations to finish."; return
+        }
+        if LibraryModel.sessionsThisRun > 0, MadeiraConfig.flag("MADEIRA_ONE_SESSION_PER_RUN") {
+            library.restartNotice = LibraryModel.restartMessage; return
+        }
+        guard let appID = entry.steamAppID,
+              let game = MadeiraDock.games(drive: MadeiraDock.drive).first(where: { $0.id == appID && $0.installed }) else {
+            library.error = "Steam's appmanifest does not list this game as ready."; return
+        }
+        do {
+            SteamStartupClock.shared.mark(.requested) { logStore.log($0) }
+            var launch = entry
+            launch.relativePath = try NativeSteamPlay.prepare(game, drive: MadeiraDock.drive, action: action)
+            if appID == 730, action == .play {
+                let steamApps = MadeiraDock.drive.appendingPathComponent(game.library, isDirectory: true)
+                let install = steamApps.appendingPathComponent("common", isDirectory: true)
+                    .appendingPathComponent(game.installDir, isDirectory: true)
+                SteamIntegrityDiagnostics.shared.schedule(appID: appID,
+                    idle: { wine_process_is_running() == 0 && wineserver_is_running() == 0 },
+                    work: { idle in SteamContentIntegrity.auditCS2(steamApps: steamApps, installURL: install,
+                                                                  shouldContinue: idle).lines },
+                    log: { LogStore.shared.log($0) })
+            }
+            SteamStartupClock.shared.mark(.launcherReady) { logStore.log($0) }
+            launch.steamAppID = nil; launch.steamStart = nil; launch.arguments = ""; launch.desktop = false
+            launch.workingDirectory = "C:\\"
+            if action == .verifyFiles {
+                launch.title = "Steam file verification"
+                LogStore.shared.log("[native-steam-verify-v1] app=\(appID) phase=requested mechanism=steam-validate result=unobserved completion=steam-ui")
+            } else {
+                LogStore.shared.log("[native-steam-play-v1] app=\(appID) manifest=ready install-directory=present mechanism=steam-applaunch")
+            }
+            SteamStartupClock.shared.mark(.jitGate) { logStore.log($0) }
+            guard jitReadyForLaunch(inLibrary: true, entry: entry.id, then: { launchNativeSteam(entry, action: action) }) else { return }
+            SteamStartupClock.shared.mark(.jitReady) { logStore.log($0) }
+            // Both actions retain the same real client/browser/service startup.
+            startLibraryEntry(launch, remember: false, preferences: entry, nativeSteamClient: true)
+        } catch {
+            SteamStartupClock.shared.mark(.failed) { logStore.log($0) }
+            SteamStartupClock.shared.reset()
+            library.error = error.localizedDescription
+        }
     }
 
     /// The rest of Play, with JIT on: checks the entry's launch profile and starts it.
@@ -2740,6 +2756,7 @@ struct ContentView: View {
     private func nativeSteamPreparationIdle() -> Bool {
         wine_process_is_running() == 0 && wineserver_is_running() == 0 &&
         library.current == nil && !SteamOwnedLibrary.shared.wineSessionActive &&
+        !SteamOwnedLibrary.shared.hasStorageWork &&
         !SteamClientUpdateModel.shared.busy
     }
 
@@ -3733,29 +3750,19 @@ struct ContentView: View {
             // is unchanged; env.MADEIRA_GDI_SHARED_SECTION = 0 in madeira.cfg, exported after
             // this, keeps the default for Dock sessions too.
             setenv("MADEIRA_GDI_SHARED_SECTION", "1", 1)
-            // ml1185: without desktop-size or a game's Resolution, this screen's shape
-            // (ml1172's default: 1408x648 on a 19.5:9 iPhone, 1152x800 on an 11-inch
-            // iPad), as every library entry defaults to; a fixed 1280x720 left bars
-            // above and below on an iPad.
-            var (width, height) = ResolutionChoices.defaultSize()
-            if let txt = MadeiraConfig.get("desktop-size") {
-                let p = txt.lowercased().split(separator: "x").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
-                if p.count == 2, p[0] >= 640, p[1] >= 360, p[0] <= 3840, p[1] <= 2160 { width = p[0]; height = p[1] }
-            }
-            // A Steam game's own Resolution (validated above) sizes its Dock desktop.
-            if let size = profile?.resolution.split(separator: "x").compactMap({ Int($0) }), size.count == 2 {
-                width = size[0]; height = size[1]
-            }
+            // A saved per-game size wins; Use app default follows desktop-size,
+            // then this screen's default. Publish exactly the desktop's size.
+            let display = profile?.sessionDisplay
+                ?? GuestDisplay.sessionDefault(resolution: nil, desktopSize: MadeiraConfig.get("desktop-size"))
+            let (width, height) = (display.w, display.h)
             setenv("MADEIRA_EXE", "explorer.exe", 1)
             setenv("MADEIRA_ARGS", MadeiraDock.launchArguments(width: width, height: height, installers: DockInstallers.script,
                                                                host: !DockInstallers.installsOnly), 1)
             setenv("MADEIRA_DESKTOP", "1", 1)
-            setenv("MADEIRA_SCREEN_W", String(width), 1)
-            setenv("MADEIRA_SCREEN_H", String(height), 1)
             // The compositor and touch mapping read the published size
             // (winios_screen_size), which a program's display-mode change moves;
             // start this session from its own desktop size, not a previous one.
-            winios_display_mode_changed(Int32(width), Int32(height))
+            GuestDisplay.configureSessionDefault(display)
             MadeiraDock.requestLaunch(compactPool: compactPool)
             if !DockInstallers.installsOnly {
                 logStore.log("[madeira-dock] starting the host for app \(game.id); Valve's client authenticates and authorizes the launch")
@@ -3847,11 +3854,9 @@ struct ContentView: View {
     }
 
     private func configuredDesktopSize(default def: (Int, Int)) -> (Int, Int) {
-        if let txt = MadeiraConfig.get("desktop-size") {
-            let p = txt.lowercased().split(separator: "x").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
-            if p.count == 2, p[0] >= 640, p[1] >= 360, p[0] <= 3840, p[1] <= 2160 { return (p[0], p[1]) }
-        }
-        return def
+        let display = GuestDisplay.sessionDefault(resolution: nil, desktopSize: MadeiraConfig.get("desktop-size"),
+                                                  defaultSize: (w: def.0, h: def.1))
+        return (display.w, display.h)
     }
 
     private func startWineserver() {

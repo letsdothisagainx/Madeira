@@ -17,7 +17,8 @@ exit report.
    starts; the same variable as a Steam game's "The game"), the services batch,
    the command line the details page shows, and which of them a Steam game
    takes, and (ml1172) the Resolution choices and default built from an iPad's
-   and a phone's screen and the one-time reset of 1408x648 entries.
+   and a phone's screen, preserved saved resolutions and reversible app-default
+   inheritance shared by launch arguments, Wine and the compositor.
 2. C: compiles the session exit hook from app/Madeira/WineProcessBridge.m and
    checks that only an NTSTATUS error of the launched program is recorded and
    that a reset clears it.
@@ -132,6 +133,40 @@ expect(env("MADEIRA_EXE") == "explorer.exe" && env("MADEIRA_DESKTOP") == "1", "d
 expect(env("MADEIRA_SCREEN_W") == "1280" && env("MADEIRA_SCREEN_H") == "720", "desktop size exported")
 expect(published == (1280, 720), "desktop size published to the display shim")
 
+// A global desktop size is an opt-in fallback, never a reason to replace a
+// saved per-entry size. Inheritance preserves that saved size for reversal.
+MadeiraConfig.values = ["desktop-size": "800x450"]
+var inheritedDesk = desk; inheritedDesk.resolution = "640x480"
+inheritedDesk.configureLaunch(); inheritedDesk.applyEnvironment()
+expect(inheritedDesk.inheritResolution == nil && inheritedDesk.effectiveResolution == "640x480"
+       && env("MADEIRA_SCREEN_W") == "640" && env("MADEIRA_SCREEN_SRC") == "knob",
+       "an existing 640x480 selection wins over desktop-size=800x450")
+expect(LogStore.shared.lines.last == "[display-shape] resolution=640x480 mode=fit source=knob profile=640x480 app-default=800x450",
+       "the display log exposes the selected size and the app fallback")
+inheritedDesk.inheritResolution = true
+inheritedDesk.configureLaunch(); inheritedDesk.applyEnvironment()
+expect(inheritedDesk.resolution == "640x480" && inheritedDesk.effectiveResolution == "800x450"
+       && inheritedDesk.launchArguments == "/desktop=shell,800x450 C:\\windows\\system32\\services.exe"
+       && env("MADEIRA_ARGS") == inheritedDesk.launchArguments
+       && env("MADEIRA_SCREEN_W") == "800" && env("MADEIRA_SCREEN_H") == "450"
+       && env("MADEIRA_SCREEN_SRC") == "desktop-size" && published == (800, 450),
+       "Use app default publishes the same 800x450 to explorer, Wine and the compositor")
+let inheritedData = try JSONEncoder().encode(inheritedDesk)
+let restoredInheritance = try JSONDecoder().decode(LibraryEntry.self, from: inheritedData)
+expect(restoredInheritance.inheritResolution == true && restoredInheritance.resolution == "640x480"
+       && restoredInheritance.effectiveResolution == "800x450", "inheritance and the retained explicit size survive saving")
+inheritedDesk.inheritResolution = nil; inheritedDesk.configureLaunch()
+expect(inheritedDesk.effectiveResolution == "640x480" && published == (640, 480), "turning inheritance off restores the saved size")
+inheritedDesk.inheritResolution = true
+MadeiraConfig.values["desktop-size"] = "960x540"; inheritedDesk.configureLaunch()
+expect(published == (960, 540) && inheritedDesk.launchArguments.contains("960x540"), "an inherited size follows later app changes")
+for invalid in ["800xx450", "800x450x", "800x450x1", "10x10", "999999999999999999999x450"] {
+    MadeiraConfig.values["desktop-size"] = invalid; inheritedDesk.configureLaunch()
+    expect(inheritedDesk.effectiveResolution == "1152x800" && published == (1152, 800)
+           && env("MADEIRA_SCREEN_SRC") == "screen", "an invalid app size falls back consistently: \(invalid)")
+}
+MadeiraConfig.values = [:]
+
 // A direct game: its Windows path and arguments; no desktop state left over.
 var game = LibraryEntry(title: "Game", relativePath: "Games/Some Game/bin/game.exe", bits: 32)
 game.arguments = "-windowed \"-name=a b\""
@@ -155,6 +190,12 @@ steamGame.steamAppID = 4242
 setenv("MADEIRA_EXE", "set-by-dock", 1); setenv("MADEIRA_STEAM_APPID", "1", 1)
 steamGame.configureLaunch()
 expect(env("MADEIRA_EXE") == "set-by-dock" && env("MADEIRA_STEAM_APPID") == nil, "Madeira Dock (the default): the profile sets nothing that starts")
+MadeiraConfig.values["desktop-size"] = "800x450"; steamGame.inheritResolution = true
+steamGame.configureLaunch()
+expect(env("MADEIRA_EXE") == "set-by-dock" && env("MADEIRA_SCREEN_W") == "800"
+       && env("MADEIRA_SCREEN_H") == "450" && env("MADEIRA_SCREEN_SRC") == "desktop-size" && published == (800, 450),
+       "a Dock profile inherits the same app size without replacing Dock's command")
+MadeiraConfig.values = [:]; steamGame.inheritResolution = nil
 // ...and "Start with: The game" starts the game's own program, with the game's own Steam identity.
 steamGame.steamStart = "game"; steamGame.steamProgram = "bin/game.exe"; steamGame.steamProgramArguments = "-dx11 \"-name=a b\""
 steamGame.steamProgramFolder = "data"
@@ -187,7 +228,7 @@ expect(env("FEX_X87REDUCEDPRECISION") == "0", "x87 off explicitly requests full 
 expect(env("MADEIRA_CPU_COUNT") == nil && env("DXMT_D9_ANISO_LIMIT") == nil, "no other engine switches are exported")
 expect(env("MADEIRA_FASTSYNC") == "auto" && env("MADEIRA_FASTSYNC_SEM") == nil,
        "no sync keys (Fastsync, the default): fastsync exported, semaphore waits left to madeira.cfg")
-expect(LogStore.shared.lines.last == "[display-shape] resolution=1280x720 mode=fit", "the profile's display shape is logged")
+expect(LogStore.shared.lines.last == "[display-shape] resolution=1280x720 mode=fit source=knob profile=1280x720 app-default=1152x800", "the profile's display shape and source are logged")
 // Fastsync's per-game switches: exported only when Settings chose Fastsync.
 MadeiraConfig.values = ["inproc-sync": "0"]
 unsetenv("MADEIRA_FASTSYNC"); unsetenv("MADEIRA_FASTSYNC_SEM"); game.applyEnvironment()
@@ -244,8 +285,12 @@ MadeiraConfig.values["env.MADEIRA_DINPUT_PAD"] = nil; unsetenv("MADEIRA_DINPUT_P
 // Library files written before the controller choices decode with none.
 let older = #"{"id":"6F9619FF-8B86-D011-B42D-00C04FC964FF","title":"Old","relativePath":"a/b.exe","bits":64,"arguments":"","resolution":"944x656","fpsMode":1,"reducedX87":false,"liveLogs":false,"performance":false,"touchControls":false}"#
 let decodedOld = try? JSONDecoder().decode(LibraryEntry.self, from: Data(older.utf8))
-expect(decodedOld != nil && decodedOld?.controllerMode == nil && decodedOld?.controllerBinds == nil && decodedOld?.padMouseVertical == nil
+expect(decodedOld != nil && decodedOld?.inheritResolution == nil && decodedOld?.resolution == "944x656"
+       && decodedOld?.controllerMode == nil && decodedOld?.controllerBinds == nil && decodedOld?.padMouseVertical == nil
        && decodedOld?.launchMode == nil, "an entry without controller or ml1163 keys decodes")
+let savedPhoneSize = try JSONDecoder().decode(LibraryEntry.self, from: Data(older.replacingOccurrences(of: "944x656", with: "1408x648").utf8))
+expect(savedPhoneSize.inheritResolution == nil && savedPhoneSize.effectiveResolution == "1408x648",
+       "a deliberate saved 1408x648 remains selected on this iPad")
 
 // Validation.
 expect((try? game.validate()) != nil, "a normal profile validates")
@@ -255,6 +300,8 @@ bad = game; bad.arguments = (0..<65).map { "a\($0)" }.joined(separator: " ")
 expect((try? bad.validate()) == nil, "more than 64 arguments refused")
 bad = game; bad.resolution = "10x10"
 expect((try? bad.validate()) == nil, "invalid size refused")
+bad = game; bad.resolution = "800xx450"
+expect((try? bad.validate()) == nil, "an extra size separator is refused instead of silently compacted")
 bad = game; bad.fpsMode = 7
 expect((try? bad.validate()) == nil, "invalid frame limit refused")
 
@@ -401,11 +448,13 @@ expect(ig[0].choices.map(\.label) == ["944×656 · light", "1152×800 · default
        "iPad 11: labels name each level")
 expect(ig.map(\.title) == ["This screen's shape", "16:9 widescreen · bars above and below", "4:3 classic · bars at the sides"],
        "iPad 11: group titles say how the PC shapes fit")
-expect(sizes(ig[1]) == ["960x540", "1280x720", "1600x900", "1920x1080", "2560x1440"] && sizes(ig[2]) == ["640x480", "800x600", "1024x768", "1280x960"],
+expect(sizes(ig[1]) == ["800x450", "960x540", "1280x720", "1600x900", "1920x1080", "2560x1440"] && sizes(ig[2]) == ["640x480", "800x600", "1024x768", "1280x960"],
        "iPad 11: the 16:9 and 4:3 sizes")
 expect(!RC.fills(1408, 648, screen: ipad) && RC.fills(1408, 648, screen: phone16), "1408x648 is a phone's shape, not an iPad's")
 expect(RC.defaultSize(for: phone16) == (1408, 648) && sizes(RC.groups(for: phone16)[0]) == ["1168x536", "1408x648", "1568x720", "2120x976", "2868x1320"],
        "iPhone 16 Pro Max: its own shape; the default stays 1408x648, its ≈720p; 720 lines for games that need them")
+expect(sizes(RC.groups(for: phone16)[1]).prefix(2).elementsEqual(["800x450", "960x540"]),
+       "the phone's shared Resolution picker offers both low-cost landscape sizes")
 expect(RC.groups(for: phone16)[0].choices[2].label == "1568×720 · 720 lines" && RC.screen720(for: phone16)! == (1568, 720)
        && RC.screen720(for: ipad) == nil && RC.screen720(for: screenOf(667, 375, 1334, 750)) == nil,
        "720 lines only where the default has fewer (a phone), in the screen's shape")
@@ -518,7 +567,8 @@ check('__attribute__((weak)) int madeira_dxmt_has_40_cap(void) {\n    return 0;'
       and 'madeira_dxmt_has_40_cap() != 0 && panelMaxFPS >= 120' in fps
       and 'ProMotionIntent.has40Cap || mode == 4' in lib, 'the 40 FPS cap is offered only with DXMT support and a 120 Hz panel')
 check('LibraryView(play: launchLibraryEntry' in content, 'ContentView shows the library when it is the chosen interface')
-check('runWineFullSequence(profile: entry)' in content and 'profile.applyEnvironment()' in content,
+check('let effectiveProfile = preferences ?? entry' in content
+      and 'runWineFullSequence(profile: effectiveProfile,' in content and 'profile.applyEnvironment()' in content,
       'library launches use the shared launch path with the profile applied')
 check('Button("Use New Interface")' in content, 'the developer interface can switch back to the library')
 loop = bridge.index('for (NSString *raw in [text componentsSeparatedByCharactersInSet:')
@@ -543,7 +593,7 @@ check('LibraryController.shared' in gamepad and 'library.ownsInput' in gamepad,
 detail = block(lib, 'struct LibraryDetail: View')
 hud = block(lib, 'struct LibraryHUD: View')
 model = block(lib, 'final class LibraryModel: ObservableObject')
-check('Picker("Resolution", selection: $entry.resolution)' in detail and 'Desktop size' not in lib,
+check('Picker("Resolution", selection: Binding(' in detail and 'Desktop size' not in lib,
       'game details: one Resolution picker for every entry (not only the Desktop)')
 check('ResolutionChoices.groups()' in detail and 'Section(group.title)' in detail and 'ResolutionChoices.extra(entry.resolution' in detail
       and 'presetResolutions' not in lib and 'MADEIRA_SCREEN_SHAPE_RESOLUTION' not in lib,
@@ -551,10 +601,14 @@ check('ResolutionChoices.groups()' in detail and 'Section(group.title)' in detai
 check('ResolutionChoices.metalFX(in: groups)' in detail and 'entry.metalFXUpscale == 1.5 || entry.resolution == shape.value' in detail
       and 'entry.resolution != metalFX?.value' in detail,
       'game details: the MetalFX 1.5× screen shape while MetalFX 1.5× is chosen (or saved), not also as "saved"')
-reset = block(model, 'private func resetPhoneResolution(')
-check('resetPhoneResolution()' in block(model, 'private init()') and 'ResolutionChoices.fills(1408, 648)' in reset
-      and 'madeira.ml1172.resolution-reset' in reset and 'guard persist(next, wait: true) else { return }' in reset,
-      'ml1172: 1408x648 entries are reset once on a screen of another shape')
+check('resetPhoneResolution' not in model and 'resolution = ResolutionChoices.defaultValue' not in block(model, 'private init()'),
+      'library startup never guesses that a saved 1408x648 selection is a stale default')
+check('Text("Use app default (' in detail and 'entry.inheritResolution = $0 == "app-default" ? true : nil' in detail
+      and 'if $0 != "app-default" { entry.resolution = $0 }' in detail,
+      'game details expose reversible app-default inheritance while retaining the explicit size')
+check('let display = profile?.sessionDisplay' in block(content, 'private func startDock(')
+      and 'GuestDisplay.configureSessionDefault(display)' in block(content, 'private func startDock('),
+      'Dock desktop arguments and monitor publication share the resolved library choice')
 check('ResolutionChoices.groups()' in block(content, 'private var resolutionPicker') and 'DesktopResolution' not in content,
       'ml1172: the developer Resolution menu shows the same choices')
 check('Picker("Aspect & scaling"' in detail and 'entry.display = $0' in detail, 'game details: Aspect & scaling')

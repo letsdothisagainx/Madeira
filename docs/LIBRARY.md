@@ -129,21 +129,26 @@ and check-frontend fails if a setting is hidden from it. A profile holds:
     is left out. On an 11-inch iPad (1180×820 points): 944×656, 1152×800,
     1728×1200, 2360×1640; on an iPhone 16 Pro Max: 1168×536, 1408×648,
     2120×976, 2868×1320;
-  - **16:9 widescreen**: 960×540, 1280×720, 1600×900, 1920×1080, 2560×1440;
+  - **16:9 widescreen**: 800×450, 960×540, 1280×720, 1600×900, 1920×1080, 2560×1440;
   - **4:3 classic**: 640×480, 800×600, 1024×768, 1280×960.
 
   Each PC group's title says whether it fills this screen or leaves bars
   above and below or at the sides (in Fit). A saved size the list lacks (chosen
-  on another device) is shown as "saved". The choice is exported as the session
-  default (`MADEIRA_SCREEN_W/H`, `MADEIRA_SCREEN_SRC=knob`), which win32u
+  on another device) is shown as "saved". **Use app default** follows
+  `desktop-size` in madeira.cfg, then this screen's default when that key is
+  absent or invalid. A selected size overrides the app default; existing
+  entries keep their exact saved size. Choosing Use app default retains that
+  size in the library file (`inheritResolution=true`) so inheritance can be
+  reversed. The resolved size is shared by explorer's desktop arguments,
+  Wine and the compositor (`MADEIRA_SCREEN_W/H`, `MADEIRA_SCREEN_SRC=knob`,
+  `desktop-size` or `screen`), which win32u
   reports for the session. A program's own display-mode change
   (ChangeDisplaySettings to a size win32u lists) resizes that monitor for the
   rest of the session and the picture follows it;
   `env.MADEIRA_VIRTUAL_MODE_SET = 0` keeps the chosen size. New entries, and
-  the Desktop entry, take the default. Upstream's fixed default, 1408×648, is
-  a 19.5:9 phone's shape; on a screen of another shape, entries saved with it
-  are reset once to the default (UserDefaults
-  `madeira.ml1172.resolution-reset`);
+  the Desktop entry, take the default. Saved sizes, including 1408×648 from
+  another device, are preserved. The former one-time 1408×648 reset was
+  removed because it also replaced deliberate choices;
 - **Aspect & scaling**: how that screen is shown. **Fit** letterboxes it,
   **Fill** covers the screen and crops, **Stretch** fills it exactly, **Aspect**
   letterboxes the shape the game actually draws (its back buffer) and **Fill

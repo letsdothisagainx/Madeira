@@ -186,6 +186,10 @@ struct LibraryEntry: Codable, Identifiable {
     /// 1280x720's pixel count (ResolutionChoices: 1408x648 on a 19.5:9 iPhone,
     /// as before, and 1152x800 on an 11-inch iPad, where a fixed 1408x648 left bars).
     var resolution = ResolutionChoices.defaultValue
+    /// Opt into desktop-size in madeira.cfg (then the device default). Nil
+    /// preserves older entries' exact saved resolution. Keep that saved value
+    /// while inheriting so the choice can be reversed without losing it.
+    var inheritResolution: Bool?
     /// How the monitor is scaled to the screen (DisplayMode raw value; nil = Fit).
     var display: String?
     /// FPS limit: 1 = 60, 3 = 30, 4 = 40, 0 = display maximum, 2 = uncapped (madeira_set_vsync_locked).
@@ -329,8 +333,14 @@ struct LibraryEntry: Codable, Identifiable {
 
     var displayMode: DisplayMode { display.flatMap(DisplayMode.init(rawValue:)) ?? .fit }
 
+    var sessionDisplay: GuestDisplay.SessionDefault {
+        GuestDisplay.sessionDefault(resolution: inheritResolution == true ? nil : resolution,
+                                    desktopSize: MadeiraConfig.get("desktop-size"))
+    }
+    var effectiveResolution: String { sessionDisplay.value }
+
     var launchArguments: String {
-        if desktop == true { return "/desktop=shell,\(resolution) C:\\windows\\system32\\services.exe" }
+        if desktop == true { return "/desktop=shell,\(effectiveResolution) C:\\windows\\system32\\services.exe" }
         return launchCommand.args
     }
 
@@ -446,7 +456,7 @@ struct LibraryEntry: Codable, Identifiable {
         if servicesScript != nil { path = servicesScriptPath; extra = ""; batch = true }
         func withExtra(_ s: String) -> String { extra.isEmpty ? s : s + " " + extra }
         if runsInDesktop {
-            return ("explorer.exe", "/desktop=shell,\(resolution) " + withExtra(batch ? "cmd /c \(quoted(path))" : quoted(path)))
+            return ("explorer.exe", "/desktop=shell,\(effectiveResolution) " + withExtra(batch ? "cmd /c \(quoted(path))" : quoted(path)))
         }
         if batch { return ("C:\\windows\\system32\\cmd.exe", withExtra("/c \(quoted(path))")) }
         return (path, programArguments)   // upstream's direct launch, arguments verbatim
@@ -498,8 +508,7 @@ struct LibraryEntry: Codable, Identifiable {
     var effectiveFPSMode: Int32 { ProMotionIntent.supportedMode(fpsMode) }
 
     func validate() throws {
-        let size = resolution.split(separator: "x").compactMap { Int($0) }
-        guard size.count == 2, (320...4096).contains(size[0]), (240...4096).contains(size[1]),
+        guard GuestDisplay.parseSize(resolution) != nil,
               (0...4).contains(fpsMode), !arguments.contains("\0"), !windowsPath.contains("\0"),
               !launchArguments.contains("\0"), !launchWindowsPath.contains("\0"),
               launchWindowsPath.utf8.count < 1024, (steamWorkingWindowsPath?.utf8.count ?? 0) < 512 else {
@@ -604,7 +613,9 @@ struct LibraryEntry: Codable, Identifiable {
         if usesLaunchOptions {
             fputs("[library] ml1163 start=\(runsInDesktop ? "desktop" : "direct") batch=\(isBatch ? 1 : 0) services=\(servicesScript != nil ? 1 : 0) cwd=\(launchDirectory)\n", stderr)
         }
-        LogStore.shared.log("[display-shape] resolution=\(resolution) mode=\(displayMode.rawValue)")
+        let display = sessionDisplay
+        let appDefault = GuestDisplay.sessionDefault(resolution: nil, desktopSize: MadeiraConfig.get("desktop-size"))
+        LogStore.shared.log("[display-shape] resolution=\(display.value) mode=\(displayMode.rawValue) source=\(display.source) profile=\(inheritResolution == true ? "app-default" : resolution) app-default=\(appDefault.value)")
     }
 
     /// What the bridge starts. Set on the main thread before the session begins.
@@ -617,7 +628,7 @@ struct LibraryEntry: Codable, Identifiable {
             // the virtual monitor follows this entry's Resolution, as below. "The game" starts
             // its own program below, like any library game.
             if !startsSteamGameDirectly {
-                GuestDisplay.configureSessionDefault(view: CGSize(width: 1280, height: 720), knob: resolution)
+                GuestDisplay.configureSessionDefault(sessionDisplay)
                 return
             }
         }
@@ -640,10 +651,8 @@ struct LibraryEntry: Codable, Identifiable {
         if desktop != true, launchDirectory != Self.folder(of: command.exe) {
             setenv("MADEIRA_WORKDIR", launchDirectory, 1)
         }
-        // Every session's virtual monitor takes this entry's Resolution
-        // (MADEIRA_SCREEN_W/H, source "knob"); for the Desktop entry it is the
-        // same size as its /desktop= argument.
-        GuestDisplay.configureSessionDefault(view: CGSize(width: 1280, height: 720), knob: resolution)
+        // The resolved Resolution sizes both Wine's monitor and /desktop=.
+        GuestDisplay.configureSessionDefault(sessionDisplay)
     }
 }
 
@@ -850,7 +859,6 @@ final class LibraryModel: ObservableObject {
                 self.error = "Library could not be opened. The original file was preserved. " + error.localizedDescription
             }
         }
-        resetPhoneResolution()
         applyRecommendations()
     }
 
@@ -865,25 +873,6 @@ final class LibraryModel: ObservableObject {
             if GameRecommendations.prepare(&next[i]) { changed = true }
         }
         if changed { persist(next) }
-    }
-
-    /// ml1172: every new entry used to get 1408x648, a 19.5:9 phone's shape.
-    /// On a screen of another shape (an iPad: a third of it black in Fit)
-    /// those entries are reset once to this device's default. Nothing tells a
-    /// deliberate 1408x648 from the old default, so a game set to it on purpose
-    /// is reset too; on a 19.5:9 iPhone nothing changes.
-    private func resetPhoneResolution() {
-        let key = "madeira.ml1172.resolution-reset"
-        guard !readOnly, !UserDefaults.standard.bool(forKey: key) else { return }
-        let phone = "1408x648"
-        let reset = ResolutionChoices.fills(1408, 648) ? 0 : entries.filter { $0.resolution == phone }.count
-        if reset > 0 {
-            var next = entries
-            for i in next.indices where next[i].resolution == phone { next[i].resolution = ResolutionChoices.defaultValue }
-            guard persist(next, wait: true) else { return }   // try again at the next start
-        }
-        UserDefaults.standard.set(true, forKey: key)
-        LogStore.shared.log("[library] ml1172 resolution default \(ResolutionChoices.defaultValue); \(reset) entries reset from \(phone)")
     }
 
     func refreshFlag() {
@@ -2830,6 +2819,7 @@ struct LibraryView: View {
     @Environment(\.colorScheme) private var colorScheme
     @ObservedObject private var liquidMetal = LiquidMetalSetting.shared
     var play: (LibraryEntry) -> Void
+    var verifySteamFiles: (LibraryEntry) -> Void = { _ in }
     var enableJIT: () -> Void
     @ObservedObject private var jitState = LibraryJITState.shared
     /// Madeira Dock's start, for Settings › Steam (Onboarding.swift).
@@ -3200,7 +3190,7 @@ struct LibraryView: View {
                 withAnimation(UIAccessibility.isReduceMotionEnabled ? nil : .easeOut(duration: 0.18)) { focused = ids[(index + delta + ids.count) % ids.count] }
             }
         }
-        .modifier(LibrarySheets(model: model, browser: $browser, selected: $selected, play: play, jit: jit))
+        .modifier(LibrarySheets(model: model, browser: $browser, selected: $selected, play: play, verifySteamFiles: verifySteamFiles, jit: jit))
         .onChange(of: scenePhase) { _, phase in if phase == .active { model.refreshFlag() } }
         .onAppear {
             if focused == nil { focused = LibraryEntry.desktopID }
@@ -3260,7 +3250,7 @@ struct LibraryView: View {
                 withAnimation(UIAccessibility.isReduceMotionEnabled ? nil : .easeOut(duration: 0.18)) { focused = ids[(index + delta + ids.count) % ids.count] }
             }
         }
-        .modifier(LibrarySheets(model: model, browser: $browser, selected: $selected, play: play, jit: jit))
+        .modifier(LibrarySheets(model: model, browser: $browser, selected: $selected, play: play, verifySteamFiles: verifySteamFiles, jit: jit))
         .onChange(of: scenePhase) { _, phase in if phase == .active { model.refreshFlag() } }
         .onAppear {
             if focused == nil { focused = LibraryEntry.desktopID }
@@ -3318,6 +3308,7 @@ private struct LibrarySheets: ViewModifier {
     @Binding var browser: Bool
     @Binding var selected: LibraryEntry?
     var play: (LibraryEntry) -> Void
+    var verifySteamFiles: (LibraryEntry) -> Void
     @ObservedObject var jit: JITCoordinator
     func body(content: Content) -> some View {
         content
@@ -3336,7 +3327,7 @@ private struct LibrarySheets: ViewModifier {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 15) {
                         if selected?.id == entry.id, model.startingJIT != entry.id { selected = nil }
                     }
-                })
+                }, verifySteamFiles: verifySteamFiles)
             }
             .onChange(of: model.current) { _, current in if current != nil { selected = nil } }
             .onChange(of: model.error) { _, error in if error != nil { selected = nil } }
@@ -3404,6 +3395,7 @@ private struct LibraryPlayStyle: ButtonStyle {
 struct LibraryDetail: View {
     @State internal var entry: LibraryEntry
     var play: (LibraryEntry) -> Void
+    var verifySteamFiles: (LibraryEntry) -> Void = { _ in }
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var model = LibraryModel.shared
     @State private var importCover = false
@@ -3559,7 +3551,9 @@ struct LibraryDetail: View {
     /// The value a page's row shows, when one setting sums it up.
     private func summary(_ page: Page) -> String? {
         switch page {
-        case .display: return entry.metalFXUpscale.map { "\(entry.resolution) · MetalFX \($0 == 2 ? "2" : "1.5")×" } ?? entry.resolution
+        case .display:
+            let size = entry.effectiveResolution + (entry.inheritResolution == true ? " · app default" : "")
+            return entry.metalFXUpscale.map { "\(size) · MetalFX \($0 == 2 ? "2" : "1.5")×" } ?? size
         case .controls: return entry.controllerMode == "keys" ? "Keyboard and mouse" : entry.controllerMode == "dinput" ? "XInput and DirectInput" : nil
         case .launch: return entry.usesLaunchOptions ? (entry.runsInDesktop ? "Wine desktop" : "Directly") : nil
         case .steam: return entry.startsSteamGameDirectly ? "The game" : (entry.steamStart == NativeSteamPlay.mode ? "Steam client" : "Madeira Dock")
@@ -3594,7 +3588,12 @@ struct LibraryDetail: View {
             // ml1172: this device's choices (ResolutionChoices), grouped.
             let groups = ResolutionChoices.groups()
             let metalFX = ResolutionChoices.metalFX(in: groups)
-            Picker("Resolution", selection: $entry.resolution) {
+            let appDefault = GuestDisplay.sessionDefault(resolution: nil, desktopSize: MadeiraConfig.get("desktop-size"))
+            Picker("Resolution", selection: Binding(get: { entry.inheritResolution == true ? "app-default" : entry.resolution }, set: {
+                entry.inheritResolution = $0 == "app-default" ? true : nil
+                if $0 != "app-default" { entry.resolution = $0 }
+            })) {
+                Text("Use app default (\(appDefault.w)×\(appDefault.h))").tag("app-default")
                 ForEach(groups, id: \.title) { group in
                     Section(group.title) {
                         ForEach(group.choices, id: \.value) { Text($0.label).tag($0.value) }
@@ -3626,6 +3625,7 @@ struct LibraryDetail: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
         } header: { Text("Display") } footer: {
+            Text("A selected size overrides the app's desktop size. Use app default follows that setting, or this screen's default when it is unset.")
             Text("MetalFX renders at the resolution above and upscales it (Direct3D 11 and 12).")
         }
     }
@@ -3769,7 +3769,7 @@ struct LibraryDetail: View {
     @ViewBuilder private var steamPage: some View {
         // A Steam game's start, update, repair and Uninstall (SteamGames.swift).
         if entry.steamAppID != nil {
-            SteamEntrySection(entry: $entry) { leaving = true; dismiss() }
+            SteamEntrySection(entry: $entry, verifyFiles: verifySteamFiles) { leaving = true; dismiss() }
             Section {
                 Text(entry.launchWindowsPath).font(.caption.monospaced()).textSelection(.enabled)
                 if entry.startsSteamGameDirectly, !entry.launchArguments.isEmpty {

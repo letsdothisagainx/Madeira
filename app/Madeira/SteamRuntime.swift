@@ -367,6 +367,7 @@ actor SteamRuntimeInstaller {
 // An explicit alternative to Dock: ask the real Windows client to launch an
 // installed App ID. Steam retains authentication, licensing and game startup.
 enum NativeSteamPlay {
+    enum Action: Equatable { case play, verifyFiles }
     static let mode = "client"
     static let script = "madeira-native-steam.cmd"
     static let clientArguments = "-no-cef-sandbox -cef-disable-gpu -console -nocrashmonitor -cef-disable-features=SegmentationPlatform,OptimizationTargetPrediction,OptimizationHints"
@@ -374,11 +375,16 @@ enum NativeSteamPlay {
     // updates and game requirements. The preparer's result is diagnostic, not a
     // replacement for Steam's own decision. Dock's separate host policy stays
     // unchanged. Callers already validate the directory and numeric App ID.
-    static func clientLaunchScript(windowsDirectory: String, appID: Int? = nil) -> String {
+    static func clientLaunchScript(windowsDirectory: String, appID: Int? = nil, action: Action = .play) -> String {
         // Source 2's supported console-file switch supplies genuine session/
         // connection diagnostics. Steam still owns the authenticated launch;
         // no trust, secure-mode or game-state option is changed.
-        let launch = appID.map { " -applaunch \($0)" + ($0 == 730 ? " -condebug" : "") } ?? ""
+        let launch = appID.map {
+            // Valve's URI handler starts its own verification action and owns
+            // its progress/result. A request never claims verification passed.
+            action == .verifyFiles ? " steam://validate/\($0)"
+                : " -applaunch \($0)" + ($0 == 730 ? " -condebug" : "")
+        } ?? ""
         return "@echo off\r\n\"C:\\windows\\system32\\madeira-steam-service.exe\" \"\(windowsDirectory)\"\r\n" +
             "if not \"%errorlevel%\"==\"0\" echo [steam-client-start-v2] service-result=%errorlevel% policy=steam-managed\r\n" +
             "cd /d \"\(windowsDirectory)\"\r\n\"\(windowsDirectory)\\steam.exe\" \(clientArguments)\(launch)\r\n" +
@@ -394,7 +400,7 @@ enum NativeSteamPlay {
             return library.caseInsensitiveCompare(game.library) == .orderedSame
         }
     }
-    static func prepare(_ game: DockGame, drive: URL) throws -> String {
+    static func prepare(_ game: DockGame, drive: URL, action: Action = .play) throws -> String {
         let fm = FileManager.default
         guard MadeiraDock.validAppID(game.id), game.installed,
               !game.library.split(separator: "/").contains(".."), MadeiraDock.validFolderName(game.installDir) else {
@@ -419,7 +425,7 @@ enum NativeSteamPlay {
             throw DockError.message("The Windows Steam client does not list this existing library folder. Add it in Steam Storage before launching; no game files were changed.")
         }
         let windows = "C:\\" + root.replacingOccurrences(of: "/", with: "\\")
-        let body = clientLaunchScript(windowsDirectory: windows, appID: game.id)
+        let body = clientLaunchScript(windowsDirectory: windows, appID: game.id, action: action)
         try body.write(to: drive.appendingPathComponent(script), atomically: true, encoding: .utf8)
         return script
     }

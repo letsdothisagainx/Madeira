@@ -94,6 +94,37 @@ enum GameSurfaceLayout {
 
 /// The session default of the guest's virtual monitor.
 enum GuestDisplay {
+    struct SessionDefault {
+        let w: Int, h: Int
+        let source: String
+        var value: String { "\(w)x\(h)" }
+    }
+
+    /// One parser for launch arguments and the size published to Wine and the
+    /// compositor. Reject missing fields rather than compacting them away.
+    static func parseSize(_ raw: String?, width: ClosedRange<Int> = 320...4096,
+                          height: ClosedRange<Int> = 240...4096) -> (w: Int, h: Int)? {
+        guard let raw else { return nil }
+        let parts = raw.lowercased().split(separator: "x", omittingEmptySubsequences: false)
+        guard parts.count == 2,
+              let w = Int(parts[0].trimmingCharacters(in: .whitespacesAndNewlines)),
+              let h = Int(parts[1].trimmingCharacters(in: .whitespacesAndNewlines)),
+              width.contains(w), height.contains(h) else { return nil }
+        return (w, h)
+    }
+
+    /// A saved per-entry choice wins. An entry that opts into the app default
+    /// follows desktop-size, then the device's default. Existing entries keep
+    /// their saved choice; a small or unusual size is not evidence of a default.
+    static func sessionDefault(resolution: String?, desktopSize: String?,
+                               defaultSize: (w: Int, h: Int) = ResolutionChoices.defaultSize()) -> SessionDefault {
+        if let size = parseSize(resolution) { return SessionDefault(w: size.w, h: size.h, source: "knob") }
+        if let size = parseSize(desktopSize, width: 640...3840, height: 360...2160) {
+            return SessionDefault(w: size.w, h: size.h, source: "desktop-size")
+        }
+        return SessionDefault(w: defaultSize.w, h: defaultSize.h, source: "screen")
+    }
+
     /// Standard modes a session default is chosen from when no size is given.
     static let standardModes: [(w: Int, h: Int)] = [
         (640, 480), (800, 600), (1024, 768), (1152, 864),
@@ -121,30 +152,20 @@ enum GuestDisplay {
                          .min { $0.w * $0.h < $1.w * $1.h }!
     }
 
-    /// Chooses the session's virtual monitor and exports it for win32u, which
+    /// Exports the resolved session's virtual monitor for win32u, which
     /// reads MADEIRA_SCREEN_W/H (and MADEIRA_SCREEN_SRC for its log line) the
-    /// first time the monitor is queried. `knob` is a "WxH" choice (a library
-    /// entry's Resolution); without a valid one the default is the standard
-    /// mode nearest the view's shape.
+    /// first time the monitor is queried. The same resolved value also sizes
+    /// explorer's desktop argument; scaling the Metal view does not select it.
     ///
     /// The size is also published to IOSDisplayShim, so a layout that already
     /// ran re-reads it (MadeiraDisplayModeChangedNotification).
     @discardableResult
-    static func configureSessionDefault(view: CGSize, knob: String?) -> (w: Int, h: Int, source: String) {
-        var mode = defaultMode(forLandscapeView: view)
-        var source = "view"
-        if let raw = knob?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
-            let parts = raw.lowercased().split(separator: "x")
-            if parts.count == 2, let w = Int(parts[0]), let h = Int(parts[1]), w > 0, h > 0 {
-                mode = (w, h)
-                source = "knob"
-            }
-        }
+    static func configureSessionDefault(_ mode: SessionDefault) -> (w: Int, h: Int, source: String) {
         setenv("MADEIRA_SCREEN_W", String(mode.w), 1)
         setenv("MADEIRA_SCREEN_H", String(mode.h), 1)
-        setenv("MADEIRA_SCREEN_SRC", source, 1)
+        setenv("MADEIRA_SCREEN_SRC", mode.source, 1)
         winios_display_mode_changed(Int32(mode.w), Int32(mode.h))
-        return (mode.w, mode.h, source)
+        return (mode.w, mode.h, mode.source)
     }
 }
 
@@ -199,7 +220,7 @@ enum ResolutionChoices {
         (944 * 656, "light"), (1280 * 720, "default"), (1920 * 1080, "≈1080p"),
     ]
     static let defaultBudget = 1
-    static let widescreen = [(960, 540), (1280, 720), (1600, 900), (1920, 1080), (2560, 1440)]
+    static let widescreen = [(800, 450), (960, 540), (1280, 720), (1600, 900), (1920, 1080), (2560, 1440)]
     static let classic = [(640, 480), (800, 600), (1024, 768), (1280, 960)]
 
     static func aspect(_ s: Screen) -> Double {

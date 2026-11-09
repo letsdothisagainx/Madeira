@@ -1,18 +1,35 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 125hz
+# Madeira Converter Exception: see LICENSE-EXCEPTION.md
 """Compile actual native-client launch preparation with real VDF parsing on macOS."""
 from pathlib import Path
 import argparse,subprocess,tempfile,os
 parser=argparse.ArgumentParser()
 parser.add_argument("--emit-script-dir", type=Path)
+parser.add_argument("--interpret", action="store_true", help="Execute the same production Swift fixture with the Swift interpreter")
 args=parser.parse_args()
 root=Path(__file__).resolve().parents[2]
 s=(root/'app/Madeira/SteamRuntime.swift').read_text();helper=s[s.index('enum NativeSteamPlay {'):]
 assert 'clientLaunchScript' in helper and 'clientArguments' in helper and '-applaunch' in helper
 assert all(x not in helper for x in ['removeItem','refreshToken','credentialsForDock','writeHandoff','DockStartProgram.apply'])
 content=(root/'app/Madeira/ContentView.swift').read_text();a=content.index('entry.steamStart == NativeSteamPlay.mode');b=content.index('if let appID = entry.steamAppID, !entry.startsSteamGameDirectly',a)
-assert 'launch.steamAppID = nil' in content[a:b] and 'NativeSteamPlay.prepare' in content[a:b]
+assert 'launchNativeSteam(entry, action: .play)' in content[a:b]
 assert 'startDock(' not in content[a:b] and 'SteamSignIn' not in content[a:b]
-if os.uname().sysname!='Darwin':
+launch=content[content.index('private func launchNativeSteam('):content.index('private func startLibraryEntry(')]
+verify=content[content.index('private func verifySteamFiles('):content.index('private func launchNativeSteam(')]
+assert 'entry.steamAppID == 730' in verify and 'launchNativeSteam(entry, action: .verifyFiles)' in verify
+assert 'launch.steamAppID = nil' in launch and 'NativeSteamPlay.prepare(game, drive: MadeiraDock.drive, action: action)' in launch
+assert 'then: { launchNativeSteam(entry, action: action) }' in launch
+assert 'startLibraryEntry(launch, remember: false, preferences: entry, nativeSteamClient: true)' in launch
+assert 'phase=requested mechanism=steam-validate result=unobserved completion=steam-ui' in launch
+assert all(x not in launch for x in ['startDock(', 'SteamSignIn', 'library.save(', 'GameRecommendations.prepare'])
+idle=content[content.index('private func nativeSteamPreparationIdle('):content.index('private func prepareNativeSteamBrowser(')]
+assert all(x in idle for x in ['wine_process_is_running() == 0', 'wineserver_is_running() == 0', 'library.current == nil', '!SteamOwnedLibrary.shared.hasStorageWork'])
+games=(root/'app/Madeira/SteamGames.swift').read_text()
+assert 'if appID == 730, installed?.installed == true' in games and 'Button { verifyFiles(entry) }' in games
+assert "Wait for Steam's result in its window" in games
+if os.uname().sysname!='Darwin' and not args.interpret:
  print('PASS native launch source scope; Swift execution runs in macOS Actions');raise SystemExit(0)
 dock=(root/'app/Madeira/MadeiraDock.swift').read_text()
 def fn(marker):
@@ -54,19 +71,31 @@ code='import Foundation\n'+game+'\nenum DockError:Error{case message(String)}\ne
   assert(body.hasSuffix("exit /b %errorlevel%\r\n"))
   let clientOnly=NativeSteamPlay.clientLaunchScript(windowsDirectory:"C:\\Program Files (x86)\\Steam")
   assert(!clientOnly.contains("-applaunch") && !clientOnly.contains("-condebug") && clientOnly.contains("policy=steam-managed"))
+  let verifyScript=try NativeSteamPlay.prepare(game,drive:drive,action:.verifyFiles)
+  let verifyBody=try String(contentsOf:drive.appendingPathComponent(verifyScript),encoding:.utf8)
+  let verifyClient=verifyBody.components(separatedBy:"\r\n").first { $0.contains("steam.exe\"") }!
+  assert(verifyClient == "\"C:\\Program Files (x86)\\Steam\\steam.exe\" \(NativeSteamPlay.clientArguments) steam://validate/730")
+  assert(!verifyBody.contains("-applaunch") && !verifyBody.contains("-condebug") && !verifyBody.contains("cs2.exe"))
+  assert(!verifyBody.contains("-insecure") && !verifyBody.contains("-novac") && !verifyBody.contains("-allow_third_party_software"))
+  assert(verifyBody.contains("madeira-steam-service.exe") && verifyBody.contains("policy=steam-managed"))
+  assert(verifyBody.hasSuffix("exit /b %errorlevel%\r\n"))
+  assert(!verifyBody.contains("verification-complete") && !verifyBody.contains("result=success"))
   if CommandLine.arguments.count==2 {
    let output=URL(fileURLWithPath:CommandLine.arguments[1],isDirectory:true)
    try fm.createDirectory(at:output,withIntermediateDirectories:true)
    try clientOnly.write(to:output.appendingPathComponent("steam-client.cmd"),atomically:true,encoding:.utf8)
    try body.write(to:output.appendingPathComponent("steam-applaunch.cmd"),atomically:true,encoding:.utf8)
+   try verifyBody.write(to:output.appendingPathComponent("steam-verify.cmd"),atomically:true,encoding:.utf8)
   }
   assert(try Data(contentsOf:manifest)==data);assert(try String(contentsOf:login,encoding:.utf8)=="auth-fixture-must-stay")
   let image=try String(contentsOf:folder.appendingPathComponent("game/bin/win64/cs2.exe"),encoding:.utf8);assert(image=="game-fixture")
+  let clientImage=try String(contentsOf:exe,encoding:.utf8);assert(clientImage=="genuine-fixture")
   try fm.removeItem(at:manifest)
   do {_=try NativeSteamPlay.prepare(game,drive:drive);assertionFailure("missing manifest must reject")}catch{}
+  do {_=try NativeSteamPlay.prepare(game,drive:drive,action:.verifyFiles);assertionFailure("verification with missing manifest must reject")}catch{}
   try data.write(to:manifest);try fm.removeItem(at:folder)
   do {_=try NativeSteamPlay.prepare(game,drive:drive);assertionFailure("missing install directory must reject")}catch{}
-  print("PASS actual native Steam launch: real appmanifest parser, numeric AppID, truthful optional service preparation, unchanged client flags plus normal applaunch; installed/auth files unchanged and missing data rejected")
+  print("PASS actual native Steam launch/verification: real appmanifest parser, exact validate URI without a game launch, optional service preparation and real client exit status; normal applaunch preserved; client/game/auth/manifest files unchanged and missing data rejected")
  }
 }
 '''
@@ -74,4 +103,10 @@ code='import Foundation\n'+game+'\nenum DockError:Error{case message(String)}\ne
 code=code.replace('assert(try Data(contentsOf:manifest)==data);assert(try String(contentsOf:login,encoding:.utf8)=="auth-fixture-must-stay")','let unchanged=try Data(contentsOf:manifest);let auth=try String(contentsOf:login,encoding:.utf8);assert(unchanged==data);assert(auth=="auth-fixture-must-stay")')
 with tempfile.TemporaryDirectory() as t:
  p=Path(t)/'check.swift';p.write_text(code);exe=Path(t)/'check'
- subprocess.run(['swiftc','-parse-as-library','-swift-version','5',str(root/'app/Madeira/SteamKeyValues.swift'),str(p),'-o',str(exe)],check=True);subprocess.run([str(exe)] + ([str(args.emit_script_dir.resolve())] if args.emit_script_dir else []),check=True)
+ output_args=[str(args.emit_script_dir.resolve())] if args.emit_script_dir else []
+ if args.interpret:
+  p.write_text((root/'app/Madeira/SteamKeyValues.swift').read_text()+'\n'+code.replace('@main struct Check','struct Check')+'\ntry Check.main()\n')
+  subprocess.run(['swift','-swift-version','5',str(p)]+output_args,check=True)
+ else:
+  subprocess.run(['swiftc','-parse-as-library','-swift-version','5',str(root/'app/Madeira/SteamKeyValues.swift'),str(p),'-o',str(exe)],check=True)
+  subprocess.run([str(exe)]+output_args,check=True)

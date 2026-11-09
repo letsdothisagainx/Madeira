@@ -93,8 +93,22 @@ static int stop(void) {
 int wmain(int argc,wchar_t **argv) {
     const wchar_t *base=wcsrchr(argv[0],L'\\');base=base?base+1:argv[0];
     if(!_wcsicmp(base,L"steam.exe")) {
-        for(int i=1;i<argc;i++)if(!wcscmp(argv[i],L"-applaunch")) {
-            if(i+1>=argc||wcscmp(argv[i+1],L"730"))return 91;
+        unsigned plays=0,verifies=0,game_args=0;
+        for(int i=1;i<argc;i++) {
+            if(!wcscmp(argv[i],L"-applaunch")) {
+                if(i+1>=argc||wcscmp(argv[i+1],L"730"))return 91;
+                ++plays;
+            }
+            if(!wcsncmp(argv[i],L"steam://validate/",17)) {
+                if(wcscmp(argv[i],L"steam://validate/730"))return 92;
+                ++verifies;
+            }
+            if(!wcscmp(argv[i],L"-condebug")||wcsstr(argv[i],L"cs2.exe"))++game_args;
+        }
+        if(verifies) {
+            if(verifies!=1||plays||game_args)return 93;
+            mark(L"C:\\Fixture\\client-verify-requested.fixture");
+            puts("[service-fixture] client-action=verify result=unobserved");
         }
         mark(L"C:\\Fixture\\client-started.fixture");puts("[service-fixture] client-entered=1 exit=43");return 43;
     }

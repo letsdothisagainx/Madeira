@@ -22,7 +22,7 @@ parser.add_argument('--script-dir', type=Path, required=True)
 args = parser.parse_args()
 for tool in ['wine', 'wineboot', 'wineserver', 'i686-w64-mingw32-gcc', 'x86_64-w64-mingw32-gcc']:
     assert shutil.which(tool), 'required integration tool unavailable: ' + tool
-for name in ['steam-client.cmd', 'steam-applaunch.cmd']:
+for name in ['steam-client.cmd', 'steam-applaunch.cmd', 'steam-verify.cmd']:
     assert (args.script_dir / name).is_file(), 'production Swift script artifact missing'
 
 WINE64 = shutil.which('wine64') or next((str(path) for path in [Path('/usr/lib/wine/wine64'), Path('/usr/lib64/wine/wine64')] if path.is_file()), None)
@@ -176,16 +176,21 @@ with tempfile.TemporaryDirectory(prefix='madeira-service-scm-') as directory:
         print('PASS real fixture updater lineage/path/held-handle witness, child exit and one SCM retry; this is not a Valve updater compatibility claim', flush=True)
         wine(control, '--setup', 'early-exit')
         client_marker = fixture / 'client-started.fixture'
-        for name in ['steam-client.cmd', 'steam-applaunch.cmd']:
+        verification_marker = fixture / 'client-verify-requested.fixture'
+        for name in ['steam-client.cmd', 'steam-applaunch.cmd', 'steam-verify.cmd']:
             client_marker.unlink(missing_ok=True)
+            verification_marker.unlink(missing_ok=True)
             script = fixture / name; shutil.copyfile(args.script_dir / name, script)
             _, output = wine('cmd.exe', '/d', '/c', 'C:\\Fixture\\' + name, expected=43)
             assert '[steam-service] result=1053' in output
             assert 'policy=steam-managed' in output
             assert '[service-fixture] client-entered=1 exit=43' in output
             assert client_marker.read_bytes() == b'isolated-test-fixture\n'
+            assert verification_marker.exists() == (name == 'steam-verify.cmd')
+            if name == 'steam-verify.cmd':
+                assert '[service-fixture] client-action=verify result=unobserved' in output
         assert all(file.read_bytes() == data for file, data in protected.items())
-        print('PASS production Swift scripts continue after truthful helper1053 to real AMD64 PE client fixture and preserve its exit43; authentication and game fixtures unchanged', flush=True)
+        print('PASS production Swift scripts continue after truthful helper1053 to real AMD64 PE client fixture and preserve its exit43; verification passes exact URI with no game launch/completion claim; authentication and game fixtures unchanged', flush=True)
     finally:
         if anchor is not None:
             try:

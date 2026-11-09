@@ -66,3 +66,48 @@ They do not prove the existing iPhone's 127 GiB installation is correct or
 incorrect, repair it without verification, or resolve the secure-server warning
 without a real failing filename/API result. The existing installation and
 Steam account remain authoritative and untouched by the diagnostic.
+
+## Verification by the genuine Steam client
+
+The later November 9 `14:49` capture still reports all 11 bounded comparisons as
+`cache-hash-match` (123,152,329 bytes), with
+`reference=installed-cache authentication=not-revalidated trust=unmeasured`.
+Both directory VPKs report matching current checksums and RSA consistency with
+their own embedded keys; numbered archive payloads are not read. No genuine
+Steam full-verification result, failing filename, or trust-verifier return is
+attached. This does not establish that the 127 GiB installation is authentic or
+corrupt, or explain the secure-server warning.
+
+Game details → Steam → **Verify files with Steam** now offers an explicit request
+for AppID 730. Close the current Wine session and finish Madeira file operations
+first. The transient launcher uses the installed, unmodified Windows Steam
+client with `steam://validate/730`, through the existing browser, JIT and service
+preparation. It does not add a game launch or alter the saved game profile.
+Steam uses its own saved sign-in, decides whether it can verify, and may download
+replacement content. Wait for the actual result in Steam's window before
+closing that session, then start the game in a later session.
+
+The retained Valve UI source registers the `validate` URI route, checks for the
+app in its library, calls `SteamClient.Apps.VerifyApp`, and polls
+`GetGameActionDetails`; the same action backs Installed Files → Verify integrity
+of game files. That UI links Valve's
+[file-verification instructions](https://help.steampowered.com/faqs/view/0C48-FCBD-DA71-93EB).
+This establishes a real client entry point, not a successful result on the
+current iPhone. Madeira logs only `phase=requested result=unobserved
+completion=steam-ui`; it never supplies a verifier result or marks the game
+verified from an exit code, timer, cached reference or running service.
+
+The capture distinguishes the service's Wine PID **004c** from its main TID
+**0050** (worker TID 0064). The service reaches SCM state 4 and maps
+SteamService.dll, CFGMGR32.dll and setupapi.dll. Separate AMD64 Steam PID 0068,
+TID 00b0 (`SteamServiceConnect`), receives `c000007b` for the service DLL path.
+The earlier official-package inspection found an I386 DLL, consistent with
+Wine's architecture rejection before import binding. The failed phone file's
+header/hash and LoadLibrary flags are still unavailable. No evidence supports
+reinstalling the running service, relaxing the architecture check, or assigning
+this failure as the warning's cause.
+
+Host JIT setup attaches a debugger and records detachment before Wine starts.
+Those host observations do not measure the guest PEB BeingDebugged byte or
+Wine debug-port/object query results at the warning. Guest debug state and its
+relevance remain unmeasured; no debugger response or security state is changed.

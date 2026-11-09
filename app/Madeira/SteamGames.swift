@@ -1274,6 +1274,7 @@ struct SteamCloudSection: View {
 /// its update, a repair of its files and Uninstall.
 struct SteamEntrySection: View {
     @Binding var entry: LibraryEntry
+    var verifyFiles: (LibraryEntry) -> Void = { _ in }
     /// The game was uninstalled: the page closes without saving.
     var uninstalled: () -> Void
     @ObservedObject private var dock = MadeiraDockModel.shared
@@ -1379,6 +1380,14 @@ struct SteamEntrySection: View {
             if downloads, download == nil {
                 Button { steam.repair(appID) } label: { Label("Repair installed files", systemImage: "arrow.triangle.2.circlepath") }
                     .disabled(!steam.signedIn)
+            }
+            if appID == 730, installed?.installed == true {
+                Button { verifyFiles(entry) } label: {
+                    Label("Verify files with Steam", systemImage: "checkmark.shield")
+                }
+                .disabled(steam.wineSessionActive || steam.hasStorageWork || SteamClientUpdateModel.shared.busy)
+                Text("Opens the Windows Steam client and requests file verification. Wait for Steam's result in its window before closing the session. Steam may download replacement files; this does not confirm secure-server eligibility.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             LabeledContent("App ID", value: String(appID))
             if let freeSpace { LabeledContent("Free space where the game is installed", value: formatBytes(freeSpace)) }

@@ -162,8 +162,8 @@ require('.exe' not in rules, 'rules key nothing on program names')
 
 # ------------------------------------------------------------------ static: Dock from the library
 start = block(content, 'private func startDock(_ game: DockGame, compactPool: Bool')
-require('LibraryView(play: launchLibraryEntry, enableJIT: enableJIT,\n                                startDock: { startDock($0, compactPool: $1) })' in content,
-        "ContentView hands Dock's start to the library")
+require('LibraryView(play: launchLibraryEntry, verifySteamFiles: verifySteamFiles, enableJIT: enableJIT,\n                                startDock: { startDock($0, compactPool: $1) })' in content,
+        "ContentView hands Dock's start and genuine Steam verification to the library")
 held = start.index('LibraryModel.sessionsThisRun > 0, MadeiraConfig.flag("MADEIRA_ONE_SESSION_PER_RUN")')
 require(held < start.index('MadeiraDock.writeHandoff('), 'a held Dock start writes no sign-in transfer')
 require('else { library.begin(.dockSession(title: game.name, width: width, height: height), remember: false, dock: game) }' in start
