@@ -2100,6 +2100,16 @@ struct ContentView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(.purple)
 
+                Button("DX11 pixel readback") {
+                    setenv("MADEIRA_EXE", "pixel-readback-x64.exe", 1)
+                    unsetenv("MADEIRA_ARGS")
+                    unsetenv("MADEIRA_DESKTOP")
+                    logStore.log("DX11 pixel readback: offscreen hardware checks; results appear as [d3d11-pixels] in the log.")
+                    runWineFullSequence()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.purple)
+
                 // madeira-d3d12 M2: an x86-64 guest driving the ARM64EC D3D12
                 // runtime. Creates device/queue/allocator/list/fence, records
                 // and closes an empty list, executes it, signals a fence and

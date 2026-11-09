@@ -45,6 +45,29 @@ with tempfile.TemporaryDirectory() as temp:
     (bridge_dir/'madeira-htmlipc-bridge.manifest.json').write_text(json.dumps(bridge_manifest))
     (t/'tools').mkdir(exist_ok=True)
     (t/'tools/check-htmlipc-image.py').write_text((root/'tools/check-htmlipc-image.py').read_text())
+    (t/'tools/check-dxmt-pixel-probe.py').write_text((root/'tools/check-dxmt-pixel-probe.py').read_text())
+    # Structural, deliberately non-executable PE fixture for the packaging
+    # gate only. The actual D3D11 probe is compiled by build-pixel-readback.sh;
+    # this synthetic import table never supplies a pixel/GPU result.
+    pixel_fixture = bytearray(0xa00)
+    pixel_fixture[:2] = b'MZ'
+    struct.pack_into('<I', pixel_fixture, 0x3c, 0x80)
+    pixel_fixture[0x80:0x84] = b'PE\0\0'
+    struct.pack_into('<HH', pixel_fixture, 0x84, 0x8664, 1)
+    struct.pack_into('<H', pixel_fixture, 0x94, 0xf0)
+    struct.pack_into('<H', pixel_fixture, 0x98, 0x20b)
+    struct.pack_into('<H', pixel_fixture, 0x98 + 68, 3)
+    struct.pack_into('<II', pixel_fixture, 0x98 + 120, 0x1000, 40)
+    struct.pack_into('<IIII', pixel_fixture, 0x188 + 8, 0x800, 0x1000, 0x800, 0x200)
+    struct.pack_into('<IIIII', pixel_fixture, 0x200, 0x1040, 0, 0, 0x1050, 0x1040)
+    struct.pack_into('<Q', pixel_fixture, 0x240, 0x1060)
+    pixel_fixture[0x250:0x25a] = b'd3d11.dll\0'
+    pixel_fixture[0x262:0x273] = b'D3D11CreateDevice\0'
+    markers = b'[d3d11-pixels]\0DXMT device identity\0GPU completion exceeded 30 seconds\0BC3-update-copy-region-tail\0readbacks=%u failures=%u\0'
+    pixel_fixture[0x2a0:0x2a0 + len(markers)] = markers
+    pixel_fixture = bytes(pixel_fixture)
+    pixel_path = bridge_dir/'pixel-readback-x64.exe'
+    pixel_path.write_bytes(pixel_fixture)
     abi=t/'build/scm-rpc/htmlipc_ready_abi.h';abi.parent.mkdir(parents=True,exist_ok=True);abi.write_bytes(htmlipc.ABI.read_bytes())
     report=t/'build/htmlipc/obj/madeira-htmlipc-bridge.build.json';report.parent.mkdir(parents=True,exist_ok=True)
     source_hashes={}
@@ -126,7 +149,11 @@ printf '[native-group-retire-v1][wow-placement-v1][wow-native-export-v1][fex-cal
 printf '[cef-image-owner-v1][guest-breakpoint64-v1]' >> "$TEST_APP/Madeira.debug.dylib"
 if [ "${STALE_SUBFLOOR_CONTRACT:-}" != 1 ]; then printf '[subfloor-contract-v1]' >> "$TEST_APP/Madeira.debug.dylib"; fi
 if [ "${STALE_NATIVE_SRW_ALIAS:-}" != 1 ]; then printf '[native-srw-alias-v1]' >> "$TEST_APP/Madeira.debug.dylib"; fi
-if [ "${STALE_FEX_NATIVE_DIAGNOSTICS:-}" != 1 ]; then printf '[fex-native-diagnostics-v1]' >> "$TEST_APP/Madeira.debug.dylib"; fi
+if [ "${STALE_FEX_NATIVE_DIAGNOSTICS:-}" != 1 ]; then
+  printf '%s' '[fex-native-diagnostics-v1] module=%s spans=4 action=%s' >> "$TEST_APP/Madeira.debug.dylib"
+else
+  printf '%s' '[fex-native-diagnostics-v1] module=%s spans=3 action=%s' >> "$TEST_APP/Madeira.debug.dylib"
+fi
 if [ "${STALE_POOL_GROWTH:-}" != 1 ]; then printf '[pool-code-growth]' >> "$TEST_APP/Madeira.debug.dylib"; fi
 if [ "${STALE_CEF_IMAGE:-}" = 1 ]; then
   sed 's/\\[cef-image-owner-v1\\]//g' "$TEST_APP/Madeira.debug.dylib" > "$TEST_APP/native.stale"
@@ -150,9 +177,10 @@ printf fixture > "$TEST_APP/prefix-template.tar.gz"
 cp "$ROOT/app/Madeira/arm64ec-windows/xtajit64.dll" "$TEST_APP/arm64ec-windows/"
 if [ "${STALE_EC_CPU:-}" = 1 ]; then printf 'old CPU' > "$TEST_APP/arm64ec-windows/xtajit64.dll"; fi
 printf fixture > "$TEST_APP/x86_64-vcruntime/vcruntime140.dll"
-for resource in dockhost.exe dock-notices.txt madeira-steam-service.exe madeira-scm-probe.exe madeira-htmlipc-bridge.dll madeira-htmlipc-bridge.manifest.json; do
+for resource in dockhost.exe dock-notices.txt madeira-steam-service.exe madeira-scm-probe.exe madeira-htmlipc-bridge.dll madeira-htmlipc-bridge.manifest.json pixel-readback-x64.exe; do
   if [ "${OMIT_RESOURCE:-}" != "$resource" ]; then cp "$ROOT/app/Madeira/arm64ec-windows/$resource" "$TEST_APP/arm64ec-windows/"; fi
 done
+if [ "${STALE_PIXEL_PROBE:-}" = 1 ]; then printf stale >> "$TEST_APP/arm64ec-windows/pixel-readback-x64.exe"; fi
 if [ "${STALE_HTMLIPC:-}" = 1 ]; then printf old-source > "$TEST_APP/arm64ec-windows/madeira-htmlipc-bridge.dll"; fi
 if [ "${STALE_SERVICE:-}" = 1 ]; then printf 'old update-handoff-v1' > "$TEST_APP/arm64ec-windows/madeira-steam-service.exe"; fi
 for resource in madeira-wow64-probe.exe madeira-wow64-module-probe.dll; do
@@ -169,6 +197,15 @@ done
     def run(extra=None):
         return subprocess.run(['bash',str(package)],env=dict(env,**(extra or {})),capture_output=True,text=True)
     result=run(); assert result.returncode == 0, result.stdout+result.stderr
+    result=run({'STALE_PIXEL_PROBE':'1'})
+    assert result.returncode and 'Xcode packaged stale DXMT pixel probe' in result.stderr,result.stderr
+    result=run({'OMIT_RESOURCE':'pixel-readback-x64.exe'})
+    assert result.returncode and 'required bundle resource missing' in result.stderr,result.stderr
+    pixel_path.write_bytes(b'')
+    result=run()
+    assert result.returncode and 'required build artifact missing' in result.stderr,result.stderr
+    pixel_path.write_bytes(pixel_fixture)
+    print('PASS exact DXMT pixel probe in final app; missing/empty/stale copies fail actual packaging gates; fixture supplies no GPU result')
     result=run({'STALE_REGISTRATION_TOOL':'1'})
     assert result.returncode and 'stale app system program' in result.stderr,result.stderr
     result=run({'STALE_TRUST_OBSERVER':'1'})

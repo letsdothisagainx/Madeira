@@ -31,13 +31,17 @@ staged = module.stage(original)
 
 assert staged != original and hashlib.sha256(producer.read_bytes()).hexdigest() == before
 for marker in ('[metal-resource-v1]', '[metal-upload-v1]', '[metal-api-v1]', '[metal-progress-v1]',
+               '[metal-geometry-v1]', 'op=layer-request', 'op=drawable-acquired', 'op=viewport0',
+               'meaning=layer-properties-not-swapchain-query',
                'meaning=encoded-not-submitted', 'meaning=gpu-completion-not-display',
-               'meaning=display-event-not-menu-validation', 'archive-lookup-only='):
+               'display-event-not-menu-validation', 'callback-without-valid-presentation-timestamp',
+               'timestamp=%s', 'archive-lookup-only='):
     assert marker in staged
 for call in ('newTextureWithDescriptor:', 'newTextureViewWithPixelFormat:', 'replaceRegion:',
              'copyFromBuffer:', 'newLibraryWithData:', 'newComputePipelineStateWithDescriptor:',
              'newRenderPipelineStateWithDescriptor:', 'newRenderPipelineStateWithMeshDescriptor:',
              'setRenderPipelineState:', 'drawPrimitives:', 'drawIndexedPrimitives:',
+             'setViewport:', 'setViewports:', 'nextDrawable]', 'layer.drawableSize = CGSizeMake(',
              'presentDrawable:', 'params->ret_error = (obj_handle_t)err;',
              'return STATUS_SUCCESS;', 'texture_upload_pitch_ok('):
     assert staged.count(call) == original.count(call), 'Metal operation/result changed: ' + call
@@ -45,6 +49,8 @@ counter = 'atomic_fetch_add_explicit(&g_madeira_draw_calls, 1, memory_order_rela
 assert staged.count(counter) == original.count(counter) == 4, 'draw counter must increment exactly once'
 assert staged.count('event=first-draw-encode') == 4
 assert staged.count('localizedDescription') == original.count('localizedDescription')
+assert 'md_graphics_diag_take(MD_GFX_PRESENTED, 0,' in staged
+assert 'md_graphics_diag_take(MD_GFX_PRESENTED, md_presented.presentedTime' not in staged
 assert 'md_graphics_prefix_hash(md_contents,' in staged
 assert 'md_available > body->bytes_per_row' in staged
 assert 'body->src_offset <= md_length' in staged
@@ -73,6 +79,12 @@ static void reset(void) {
     atomic_store(&md_graphics_counters[i].failures,0);
   }
   atomic_store(&md_graphics_lines,0);
+  for (unsigned i=0;i<MD_GEOM_COUNT;i++) {
+    atomic_store(&md_graphics_geometry[i].width,0);
+    atomic_store(&md_graphics_geometry[i].height,0);
+    atomic_store(&md_graphics_geometry[i].seen,0);
+    atomic_store(&md_graphics_geometry[i].changes,0);
+  }
 }
 static void *contend(void *argument) {
   uintptr_t role=(uintptr_t)argument;
@@ -84,8 +96,25 @@ static void *contend(void *argument) {
   }
   return (void *)(uintptr_t)emitted;
 }
+static void *geometry_contend(void *argument) {
+  uintptr_t role=(uintptr_t)argument;
+  unsigned emitted=0, change;
+  for (unsigned i=0;i<100000;i++)
+    emitted+=md_graphics_geometry_take((enum md_graphics_geometry_op)(role%MD_GEOM_COUNT),
+                                       i+role, i+role+.5, &change);
+  return (void *)(uintptr_t)emitted;
+}
 int main(void) {
   uint64_t calls, failures;
+  unsigned change;
+  assert(!md_graphics_geometry_take(MD_GEOM_COUNT,0,0,&change));
+  assert(md_graphics_geometry_take(MD_GEOM_LAYER,0,0,&change) && change==1);
+  assert(!md_graphics_geometry_take(MD_GEOM_LAYER,0,0,&change));
+  assert(md_graphics_geometry_take(MD_GEOM_LAYER,640,480,&change) && change==2);
+  assert(!md_graphics_geometry_take(MD_GEOM_LAYER,640,480,&change));
+  assert(md_graphics_geometry_take(MD_GEOM_LAYER,640.5,480,&change) && change==3);
+  assert(!md_graphics_geometry_take(MD_GEOM_LAYER,640.5,480,&change));
+  reset();
   assert(!md_graphics_diag_take(MD_GFX_OP_COUNT,1,&calls,&failures));
   for (unsigned i=1;i<=1024;i++) {
     int accepted=md_graphics_diag_take(MD_GFX_TEXTURE,0,&calls,&failures);
@@ -125,7 +154,13 @@ int main(void) {
   uint64_t observed=0;
   for (unsigned i=0;i<MD_GFX_OP_COUNT;i++) observed+=atomic_load(&md_graphics_counters[i].calls);
   assert(observed==800000);
+  total=0;
+  for (uintptr_t i=0;i<8;i++) assert(!pthread_create(&threads[i],NULL,geometry_contend,(void *)i));
+  for (unsigned i=0;i<8;i++) {void *got;assert(!pthread_join(threads[i],&got));total+=(unsigned)(uintptr_t)got;}
+  assert(total==MD_GEOM_COUNT*MD_GRAPHICS_GEOMETRY_CHANGES);
+  assert(atomic_load(&md_graphics_lines)==MD_GRAPHICS_LINE_BUDGET);
   puts("PASS native Metal diagnostic helper:256-line concurrent budget,exact counters,sparse success/failure samples,64-byte read-only bounded hashes,domain privacy,monotonic clock");
+  puts("PASS geometry helper:32-line independent concurrent budget,unchanged-size deduplication,fractional sizes preserved");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='madeira-metal-diag-') as temp:
@@ -155,4 +190,4 @@ with tempfile.TemporaryDirectory(prefix='madeira-metal-diag-') as temp:
             print(compiled.stdout)
             raise AssertionError('actual staged iOS Objective-C producer did not compile')
         print('PASS actual staged Objective-C Metal producer compiles against the iPhoneOS SDK')
-print('PASS actual DXMT staging: nil resource/view/upload/PSO boundaries and timing,draw/submit/GPU/display milestones; source immutable, API operations/returns/pitches/counting unchanged; no rendering-success claim')
+print('PASS actual DXMT staging: nil resource/view/upload/PSO boundaries and timing,draw/submit/GPU/display milestones,layer/drawable/attachment/viewport dimensions; source immutable, API operations/returns/pitches/counting unchanged; no rendering-success claim')

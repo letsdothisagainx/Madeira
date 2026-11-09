@@ -19,6 +19,7 @@ required=(
   "$ROOT/FEX/build-ios/External/cephes/libcephes_128bit.a"
   "$ROOT/app/Madeira/arm64ec-windows/madeira-scm-probe.exe"
   "$ROOT/app/Madeira/arm64ec-windows/madeira-steam-service.exe"
+  "$ROOT/app/Madeira/arm64ec-windows/pixel-readback-x64.exe"
   "$ROOT/app/Madeira/arm64ec-windows/dockhost.exe"
   "$ROOT/app/Madeira/arm64ec-windows/dock-notices.txt"
   "$ROOT/app/Madeira/arm64ec-windows/madeira-htmlipc-bridge.dll"
@@ -32,6 +33,8 @@ required=(
 for path in "${required[@]}"; do
   [[ -s "$path" ]] || { echo "ERROR: required build artifact missing: $path" >&2; exit 1; }
 done
+
+python3 "$ROOT/tools/check-dxmt-pixel-probe.py" "$ROOT/app/Madeira/arm64ec-windows/pixel-readback-x64.exe"
 
 python3 "$ROOT/tools/check-htmlipc-image.py" \
   --staged "$ROOT/app/Madeira/arm64ec-windows/madeira-htmlipc-bridge.dll" \
@@ -86,6 +89,7 @@ bundle_required=(
   "$APP/i386-windows/madeira-wow64-module-probe.dll"
   "$APP/arm64ec-windows/madeira-scm-probe.exe"
   "$APP/arm64ec-windows/madeira-steam-service.exe"
+  "$APP/arm64ec-windows/pixel-readback-x64.exe"
   "$APP/arm64ec-windows/dockhost.exe"
   "$APP/arm64ec-windows/dock-notices.txt"
   "$APP/arm64ec-windows/madeira-htmlipc-bridge.dll"
@@ -98,6 +102,11 @@ bundle_required=(
 for path in "${bundle_required[@]}"; do
   [[ -s "$path" ]] || { echo "ERROR: required bundle resource missing: $path" >&2; exit 1; }
 done
+python3 "$ROOT/tools/check-dxmt-pixel-probe.py" "$APP/arm64ec-windows/pixel-readback-x64.exe"
+cmp -s "$ROOT/app/Madeira/arm64ec-windows/pixel-readback-x64.exe" "$APP/arm64ec-windows/pixel-readback-x64.exe" || {
+  echo "ERROR: Xcode packaged stale DXMT pixel probe" >&2
+  exit 1
+}
 codesign -d --entitlements :- "$APP" 2>/dev/null | grep -q 'com.apple.security.cs.allow-jit' || {
   echo "ERROR: packaged app is missing the allow-jit entitlement" >&2
   exit 1

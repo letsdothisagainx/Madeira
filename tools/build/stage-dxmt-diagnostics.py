@@ -189,6 +189,66 @@ def stage(source):
     }
   }
 ''', before=True)
+    source = modify(source, '_MTLCommandBuffer_renderCommandEncoder', '  [descriptor release];', r'''
+  {
+    unsigned md_change;
+    id<MTLTexture> md_color = descriptor.colorAttachments[0].texture;
+    if (md_graphics_geometry_take(MD_GEOM_ATTACHMENT, [md_color width], [md_color height], &md_change))
+      fprintf(stderr, "[metal-geometry-v1] op=attachment0 change=%u mono-ns=%llu width=%lu height=%lu format=%lu "
+                      "meaning=render-pass-attachment-not-swapchain-query\n", md_change,
+              (unsigned long long)md_graphics_now_ns(), (unsigned long)[md_color width],
+              (unsigned long)[md_color height], (unsigned long)[md_color pixelFormat]);
+  }
+''', before=True)
+    # ApplyLayerProps supplies swapchain desc.Width/Height * scale_factor to
+    # this thunk. Observe both the request and actual Metal properties, without
+    # claiming to have observed the application's ResizeBuffers arguments.
+    source = modify(source, '_MetalLayer_setProps',
+                    '    layer.pixelFormat = to_metal_pixel_format(props->pixel_format);', r'''
+    {
+      unsigned md_change;
+      if (md_graphics_geometry_take(MD_GEOM_LAYER, props->drawable_width, props->drawable_height, &md_change))
+        fprintf(stderr, "[metal-geometry-v1] op=layer-request change=%u mono-ns=%llu "
+                        "requested-width=%.3f requested-height=%.3f layer-width=%.3f layer-height=%.3f "
+                        "contents-scale=%.3f meaning=layer-properties-not-swapchain-query\n", md_change,
+                (unsigned long long)md_graphics_now_ns(), props->drawable_width, props->drawable_height,
+                (double)layer.drawableSize.width, (double)layer.drawableSize.height, (double)layer.contentsScale);
+    }
+''')
+    source = modify(source, '_MetalLayer_nextDrawable', '  clock_gettime(CLOCK_MONOTONIC, &t1);', r'''
+  {
+    id<CAMetalDrawable> md_drawable = (id<CAMetalDrawable>)params->ret;
+    id<MTLTexture> md_texture = md_drawable.texture;
+    unsigned md_change;
+    if (md_graphics_geometry_take(MD_GEOM_DRAWABLE, [md_texture width], [md_texture height], &md_change))
+      fprintf(stderr, "[metal-geometry-v1] op=drawable-acquired change=%u mono-ns=%llu result=%s "
+                      "width=%lu height=%lu format=%lu meaning=drawable-texture-not-pixel-validation\n", md_change,
+              (unsigned long long)md_graphics_now_ns(), md_drawable ? "object" : "nil",
+              (unsigned long)[md_texture width], (unsigned long)[md_texture height],
+              (unsigned long)[md_texture pixelFormat]);
+  }
+''')
+    source = modify(source, '_MTLRenderCommandEncoder_encodeCommands',
+                    '      [encoder setViewports:(const MTLViewport *)body->viewports.ptr count:body->viewport_count];', r'''
+      if (body->viewport_count) {
+        const MTLViewport *md_viewport = (const MTLViewport *)body->viewports.ptr;
+        unsigned md_change;
+        if (md_graphics_geometry_take(MD_GEOM_VIEWPORT, md_viewport->width, md_viewport->height, &md_change))
+          fprintf(stderr, "[metal-geometry-v1] op=viewport0 change=%u mono-ns=%llu count=%u "
+                          "x=%.3f y=%.3f width=%.3f height=%.3f\n", md_change,
+                  (unsigned long long)md_graphics_now_ns(), (unsigned)body->viewport_count,
+                  md_viewport->originX, md_viewport->originY, md_viewport->width, md_viewport->height);
+      }
+''', before=True)
+    source = modify(source, '_MTLRenderCommandEncoder_encodeCommands', '      [encoder setViewport:u.dst];', r'''
+      {
+        unsigned md_change;
+        if (md_graphics_geometry_take(MD_GEOM_VIEWPORT, u.dst.width, u.dst.height, &md_change))
+          fprintf(stderr, "[metal-geometry-v1] op=viewport0 change=%u mono-ns=%llu count=1 "
+                          "x=%.3f y=%.3f width=%.3f height=%.3f\n", md_change,
+                  (unsigned long long)md_graphics_now_ns(), u.dst.originX, u.dst.originY, u.dst.width, u.dst.height);
+      }
+''', before=True)
     # Direct draw encoding is a milestone, not proof of GPU completion/display.
     source = modify(source, '_MTLRenderCommandEncoder_encodeCommands',
         '      atomic_fetch_add_explicit(&g_madeira_draw_calls, 1, memory_order_relaxed);', r'''
@@ -242,12 +302,17 @@ def stage(source):
     if ([md_drawable respondsToSelector:@selector(addPresentedHandler:)])
       [md_drawable addPresentedHandler:^(id<MTLDrawable> md_presented) {
         uint64_t md_calls, md_failures;
-        if (md_graphics_diag_take(MD_GFX_PRESENTED, md_presented.presentedTime <= 0.0,
+        /* A zero presentedTime supplies no valid presentation timestamp. It is
+         * not a Metal NSError or proof that the requested image was displayed. */
+        if (md_graphics_diag_take(MD_GFX_PRESENTED, 0,
                                  &md_calls, &md_failures))
           fprintf(stderr, "[metal-progress-v1] event=drawable-presented n=%llu errors=%llu "
-                          "mono-ns=%llu presented-time=%.6f meaning=display-event-not-menu-validation\n",
+                          "mono-ns=%llu presented-time=%.6f timestamp=%s meaning=%s\n",
                   (unsigned long long)md_calls, (unsigned long long)md_failures,
-                  (unsigned long long)md_graphics_now_ns(), md_presented.presentedTime);
+                  (unsigned long long)md_graphics_now_ns(), md_presented.presentedTime,
+                  md_presented.presentedTime > 0.0 ? "available" : "unavailable",
+                  md_presented.presentedTime > 0.0 ? "display-event-not-menu-validation"
+                                                  : "callback-without-valid-presentation-timestamp");
       }];
   }
 ''', before=True)
@@ -272,7 +337,7 @@ def main():
     shutil.copyfile(args.header, args.output.parent / 'graphics_diagnostics.h')
     print(json.dumps({'stage': 'metal-diagnostics-v1', 'source_sha256': hashlib.sha256(original).hexdigest(),
                       'output_sha256': hashlib.sha256(output).hexdigest(), 'semantic_changes': False,
-                      'line_budget': 256, 'upload_sample_limit': 64}))
+                      'line_budget': 256, 'geometry_line_budget': 32, 'upload_sample_limit': 64}))
 
 
 if __name__ == '__main__':
