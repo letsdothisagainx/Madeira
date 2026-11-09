@@ -97,7 +97,7 @@ static BOOL madeira_trust_enabled(void)
 /* One ordinary CAS attempt, never a retry loop. A concurrent reservation may
  * drop an observation. The counter saturates at 64, including under contention.
  * The counter is process/module data; it does not infer any trust state. */
-#if defined(__aarch64__) && defined(__clang__)
+#if (defined(__aarch64__) || defined(__arm64ec__) || defined(_M_ARM64EC)) && defined(__clang__)
 /* Use the existing supported LSE CAS family, rather than introducing a new
  * native exclusive-load/store sequence into the protected image alias. The
  * build checks the actual controlled function's COFF instructions. */

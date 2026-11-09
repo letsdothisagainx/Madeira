@@ -1,7 +1,8 @@
 # CS2 follow-up to source 4b41f1dd
 
-This change preserves the working CS2 menu, Steam service, official Chromium
-IPC, Wine prefix, game installation, input and DXMT configuration. It does not
+This change keeps the existing CS2 launch/menu path, Steam service, official
+Chromium IPC, Wine prefix, game installation, input and DXMT configuration.
+Preservation on the iPhone still needs validation. This change does not
 establish VAC eligibility or a correctly rendered practice map.
 
 ## Evidence and security boundary
@@ -37,6 +38,12 @@ It preserves LastError, verifier state and exceptions. It is enabled by default
 only for native Steam AppID 730; it can reveal an ordinary trust-API failure
 if Valve uses that API. It cannot observe a private verifier's internal reason.
 It never changes a trust decision or marks a session secure.
+The helper's native code is checked in both architectures. Actual ARM64EC
+compiler validation in run
+[42561649755](https://github.com/letsdothisagainx/Madeira/actions/runs/42561649755)
+reproduced an omitted-attributes guard and verified its correction against the
+unchanged strict check for two supported CASAL32 operations and no exclusive
+store. This build-time correction is not evidence about the game's VAC warning.
 
 The `SteamServiceConnect` load of I386 `steamservice.dll` into AMD64 Steam is a
 real architecture mismatch. The service itself reaches running state, and no
@@ -73,6 +80,14 @@ No synthetic main-menu or practice-map readiness is emitted. The first-plugin
 delay and final legitimate installer completion still require a device run.
 Only a successful official installer may establish its persistent completion
 state; no Steam registry/installscript result is fabricated or pre-marked.
+
+A separate persistence risk remains: existing farm-refresh loops can replace
+installer-created regular DLLs whose names collide with bundled files on a
+later root launch. The native-A64 route's noncolliding EC-to-system32 pass
+preserves regular files. This is not proven to cause the present delay; the
+genuine -9 result already explains a retry. Blindly preserving every regular
+system DLL could retain stale or incompatible Wine/DXMT components, so these
+ownership and architecture rules are unchanged in this correction.
 
 ## Exception overhead
 

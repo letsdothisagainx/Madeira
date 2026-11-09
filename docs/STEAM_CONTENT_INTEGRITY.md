@@ -30,8 +30,9 @@ only). Absent whole-file hashes remain unknown.
 the exact depot GIDs in the installed AppID 730 record and checks a fixed list
 of critical game-relative names against available cached manifests. It does not
 substitute a newer manifest. The default bound is 11 candidate files, 384 MiB
-hashed, and a six-second deadline checked between reads, with further unmeasured
-files reported explicitly. A `shouldContinue` session gate is also checked
+hashed, and a cooperative six-second content-hashing deadline checked between
+reads, with further unmeasured files reported explicitly. Cached-manifest parsing
+and a single filesystem operation can exceed that target. A `shouldContinue` session gate is also checked
 between reads; if Steam/Wine begins, the audit stops without a completed-hash
 claim. It runs off the main actor and never gates launching Steam.
 It never resizes, writes, deletes, repairs, downloads, or changes completion

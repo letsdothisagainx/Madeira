@@ -93,6 +93,13 @@ separate unsanitized sampler test performs 524,288 native RW dispatches in
 3.929 ms with one thread and 24.243 ms with eight threads. Its contending
 estimator skips samples instead of waiting; authoritative counts remain exact.
 
+The production two-CPU PE build also passed in Actions run
+[42561473875](https://github.com/letsdothisagainx/Madeira/actions/runs/42561473875).
+Both actual DLLs linked and passed the full package parser: all three contracts
+occupy private RW DATA, payloads are exactly 136/32/48 bytes, and each writer
+starts NULL without a relocation. The overlay was restored afterward. This
+proves the compiled producer contract, not its eventual iPhone execution.
+
 On-device validation must show both FEX modules binding their contracts, lower
 rates for these exact producers under a comparable workload, preserved Steam
 IPC/service/game launch, and continued CS2 menu/frame progress. Per-thread

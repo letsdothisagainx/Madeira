@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the actual observation wrapper and fail-closed staging/restoration."""
 import importlib.util
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -12,6 +13,18 @@ stage = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(stage)
 with tempfile.TemporaryDirectory() as directory:
     temp = Path(directory)
+    # Wine's actual ARM64EC Windows compile defines __arm64ec__ and _MSC_VER,
+    # without __aarch64__ or __GNUC__. Exercise the production preprocessor
+    # boundary directly for both spellings and the existing AArch64 target.
+    header = (ROOT / 'build/wine-pe/trust_diagnostics.h').read_text()
+    first = header.index('#if ', header.index('/* One ordinary CAS attempt'))
+    last = header.index('\nstatic void madeira_trust_metadata', first)
+    controlled = header[first:last]
+    for architecture in ('__aarch64__', '__arm64ec__', '_M_ARM64EC'):
+        preprocessed = subprocess.run([os.environ.get('CC', 'cc'), '-E', '-P', '-undef',
+            '-D__clang__=1', '-D_MSC_VER=1933', '-D' + architecture + '=1', '-x', 'c', '-'],
+            input=controlled, text=True, capture_output=True, check=True).stdout
+        assert '__attribute__((target("lse"), noinline))' in preprocessed, architecture + ' lost the native CAS producer boundary'
     binary = temp / 'trust-test'
     subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-O2', '-pthread',
                     str(ROOT / 'tests/host/trust_diagnostics_test.c'), '-o', str(binary)], check=True)
