@@ -357,6 +357,9 @@ static void ios_retire_mark(const char *s) { (void)s; }
 static int ios_jit_image_retire_enabled(void) { return 0; }
 static void ios_jit_retire_image(void *base, size_t size) { (void)base; (void)size; }
 static void ios_jit_note_image_unmapped(void *base, size_t size) { (void)base; (void)size; }
+/* No extended fixed-image mappings exist in this fixture. Their actual
+ * tombstone/lease behavior executes in check-directx-fixed-image.py. */
+void ios_subfloor_release_mapping(unsigned long long real,unsigned long long size) {(void)real;(void)size;}
 static void ios_swap_release_range(void *base, size_t size, int arg) { (void)base; (void)size; (void)arg; }
 /* This allocator fixture has no image/JIT aliases; their actual retirement
  * and physical rebinding are exercised by check-image-alias-lifetime.py. */

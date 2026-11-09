@@ -3906,7 +3906,8 @@ static void *ios_mach_exception_thread( void *arg )
              * cap it did that silently.
              *
              * Going first is safe BY CONSTRUCTION, which is the same argument
-             * the segv-side gate uses: the address is below iOS's 4GB floor, so
+             * the segv-side gate uses: the address lies in a registered window
+             * wholly below the actual kernel map floor (historically 4GiB), so
              * nothing in this task -- Wine view, FEX arena, JIT pool, W^X alias
              * or foreign mmap -- can be mapped there, and no other handler can
              * legitimately own it. An address outside every registered window
@@ -13474,20 +13475,45 @@ static int ios_emulate_unaligned_guest_access(ucontext_t *ctx, uint32_t insn, ui
  * (ios_subfloor_release_owner). */
 #define IOS_SUBFLOOR_MAX 32
 #define IOS_SUBFLOOR_FLOOR 0x100000000ull
+extern unsigned long long ios_subfloor_map_floor(void);
+extern unsigned long long ios_thread_process_lease(void *, int);
 
 struct ios_subfloor_window
 {
-    uint64_t pref_base;   /* preferred base, below the floor: what the guest uses */
-    uint64_t size;        /* SizeOfImage; 0 = free slot */
-    uint64_t real_base;   /* where the loader actually mapped it */
-    void    *owner_peb;   /* ml1205: the pseudo-process that mapped it, NULL = all */
+    _Atomic(uint64_t) pref_base; /* logical guest image base */
+    _Atomic(uint64_t) size;      /* SizeOfImage; 0 = free slot */
+    _Atomic(uint64_t) real_base; /* actual owned backing */
+    _Atomic(void *) owner_peb;   /* NULL is the existing shared system page */
+    _Atomic(unsigned long long) owner_lease;
+    _Atomic(uint64_t) generation; /* 0 during mutation/retirement */
 };
 static struct ios_subfloor_window ios_subfloor[IOS_SUBFLOOR_MAX];
-static int ios_subfloor_count;
+static _Atomic(int) ios_subfloor_count;
+static uint64_t ios_subfloor_next_generation; /* writers hold ios_subfloor_lock */
 static pthread_mutex_t ios_subfloor_lock = PTHREAD_MUTEX_INITIALIZER;
 static unsigned long long ios_subfloor_hits;
 static unsigned long long ios_subfloor_unknown;
 static unsigned long long ios_subfloor_refused;   /* ml956: backing inaccessible */
+
+/* Coordinates are read without a Wine/VM lock on the exception thread. Atomic
+ * fields avoid C data races; a unique publication generation prevents a reader
+ * from combining coordinates/ownership across retirement and slot reuse. */
+struct ios_subfloor_snapshot { uint64_t low,real,size,lease; void *owner; };
+static int ios_subfloor_read(const struct ios_subfloor_window *window,struct ios_subfloor_snapshot *out)
+{
+    uint64_t generation=window->generation;
+    if (!generation) return 0;
+    out->size=window->size;
+    out->low=window->pref_base;out->real=window->real_base;
+    out->owner=window->owner_peb;out->lease=window->owner_lease;
+    return out->size && window->generation==generation;
+}
+static void ios_subfloor_publish(struct ios_subfloor_window *window,uint64_t size)
+{
+    if (!++ios_subfloor_next_generation) ++ios_subfloor_next_generation;
+    window->size=size;
+    window->generation=ios_subfloor_next_generation;
+}
 
 void ios_register_subfloor_image( unsigned long long pref_base, unsigned long long size,
                                   unsigned long long real_base, void *owner );
@@ -13497,9 +13523,32 @@ void ios_register_subfloor_image( unsigned long long pref_base, unsigned long lo
     extern void ios_push_subfloor_window( unsigned long long, unsigned long long,
                                           unsigned long long, void * );
     int i, slot = -1;
+    uint64_t floor=ios_subfloor_map_floor();
+    unsigned long long lease=owner ? ios_thread_process_lease(owner,1) : 0;
 
-    if (!pref_base || !size || pref_base >= IOS_SUBFLOOR_FLOOR) return;
+    if (pref_base < 0x10000 || !size || pref_base >= floor || size > floor-pref_base ||
+        !real_base || real_base < floor || size > UINT64_MAX-real_base ||
+        (pref_base >= IOS_SUBFLOOR_FLOOR && (!owner || !lease))) return;
     pthread_mutex_lock( &ios_subfloor_lock );
+    if (pref_base >= IOS_SUBFLOOR_FLOOR)
+        for (i = 0; i < ios_subfloor_count; i++)
+        {
+            struct ios_subfloor_window *w=&ios_subfloor[i];
+            if (!w->size || w->owner_peb != owner) continue;
+            if (w->owner_lease && w->owner_lease != lease)
+            {
+                /* Quiescent retirement normally clears this first; a reused
+                 * PEB must never adopt the previous generation's window. */
+                w->generation=0;w->size=0;
+                continue;
+            }
+            if (pref_base < w->pref_base+w->size && w->pref_base < pref_base+size &&
+                (w->pref_base != pref_base || w->real_base != real_base || w->size != size))
+            {
+                pthread_mutex_unlock(&ios_subfloor_lock);
+                return;
+            }
+        }
     for (i = 0; i < ios_subfloor_count; i++)
     {
         if (!ios_subfloor[i].size)
@@ -13515,11 +13564,13 @@ void ios_register_subfloor_image( unsigned long long pref_base, unsigned long lo
                 dprintf( 2, "[subfloor] ml938 window %#llx RE-POINTED %#llx -> %#llx "
                          "(owner %p)\n",
                          pref_base, (unsigned long long)ios_subfloor[i].real_base, real_base, owner );
+            ios_subfloor[i].generation = 0;
             ios_subfloor[i].size = 0;
             __sync_synchronize();
             ios_subfloor[i].real_base = real_base;
+            ios_subfloor[i].owner_lease = lease;
             __sync_synchronize();
-            ios_subfloor[i].size = size;
+            ios_subfloor_publish(&ios_subfloor[i],size);
             pthread_mutex_unlock( &ios_subfloor_lock );
             /* ml951: FEX's copy must follow the re-point. */
             ios_push_subfloor_window( pref_base, real_base, size, owner );
@@ -13537,13 +13588,15 @@ void ios_register_subfloor_image( unsigned long long pref_base, unsigned long lo
         slot = ios_subfloor_count;
     }
     i = slot;
+    ios_subfloor[i].generation=0;
     ios_subfloor[i].size      = 0;
     __sync_synchronize();
     ios_subfloor[i].pref_base = pref_base;
     ios_subfloor[i].real_base = real_base;
     ios_subfloor[i].owner_peb = owner;
+    ios_subfloor[i].owner_lease = lease;
     __sync_synchronize();
-    ios_subfloor[i].size      = size;
+    ios_subfloor_publish(&ios_subfloor[i],size);
     if (i == ios_subfloor_count)
     {
         __sync_synchronize();
@@ -13555,6 +13608,60 @@ void ios_register_subfloor_image( unsigned long long pref_base, unsigned long lo
     /* ml951: FEX needs this too, so its executable-range query can answer for
      * the low window instead of refusing the entry block. */
     ios_push_subfloor_window( pref_base, real_base, size, owner );
+}
+
+/* Publish and prove the exact owned image before the loader rewrites its
+ * header.  The FEX backend is loaded later; the Unix dispatcher registration
+ * validates protocol v1 or terminates this process before its guest entry. */
+int ios_register_fixed_subfloor_image(unsigned long long low, unsigned long long size,
+                                      unsigned long long real, void *owner)
+{
+    unsigned long long lease=owner ? ios_thread_process_lease(owner,1) : 0;
+    int i, found=0;
+    if (low < IOS_SUBFLOOR_FLOOR || !owner || !lease) return 0;
+    ios_register_subfloor_image(low,size,real,owner);
+    pthread_mutex_lock(&ios_subfloor_lock);
+    for (i=0;i<ios_subfloor_count;i++)
+        if (ios_subfloor[i].pref_base==low && ios_subfloor[i].size==size &&
+            ios_subfloor[i].real_base==real && ios_subfloor[i].owner_peb==owner &&
+            ios_subfloor[i].owner_lease==lease) { found=1;break; }
+    pthread_mutex_unlock(&ios_subfloor_lock);
+    return found;
+}
+
+/* Called only on a normal Wine startup thread, not inside a fault handler.
+ * -1 means an old lease was found and must fail closed, 1 is a pending current
+ * contract, and 0 means this process does not use the extension. */
+int ios_subfloor_extended_owner(void *owner,unsigned long long lease)
+{
+    int i, found=0;
+    if (!owner) return 0;
+    pthread_mutex_lock(&ios_subfloor_lock);
+    for (i=0;i<ios_subfloor_count;i++)
+        if (ios_subfloor[i].size && ios_subfloor[i].pref_base>=IOS_SUBFLOOR_FLOOR &&
+            ios_subfloor[i].owner_peb==owner)
+        { found=(!lease || ios_subfloor[i].owner_lease!=lease) ? -1 : 1;break; }
+    pthread_mutex_unlock(&ios_subfloor_lock);
+    return found;
+}
+
+/* The new logical range loses its authority before the actual image backing
+ * is replaced. No executable memory is freed here; normal Wine/FEX unmap
+ * callbacks invalidate code and retire their own query-only entry. */
+void ios_subfloor_release_mapping(unsigned long long real,unsigned long long size)
+{
+    int i;
+    if (!real || !size || size>UINT64_MAX-real) return;
+    pthread_mutex_lock(&ios_subfloor_lock);
+    for (i=0;i<ios_subfloor_count;i++)
+    {
+        struct ios_subfloor_window *w=&ios_subfloor[i];
+        if (!w->size || w->pref_base<IOS_SUBFLOOR_FLOOR) continue;
+        if (real < w->real_base+w->size && w->real_base < real+size)
+        { w->generation=0;w->size=0; }
+    }
+    __sync_synchronize();
+    pthread_mutex_unlock(&ios_subfloor_lock);
 }
 
 /* ml1205: the pseudo-process is gone; free its windows. */
@@ -13571,6 +13678,7 @@ void ios_subfloor_release_owner( void *owner )
         dprintf( 2, "[subfloor] ml1205 window #%d %#llx -> %#llx released with its process %p\n",
                  i, (unsigned long long)ios_subfloor[i].pref_base,
                  (unsigned long long)ios_subfloor[i].real_base, owner );
+        ios_subfloor[i].generation = 0;
         ios_subfloor[i].size = 0;
         __sync_synchronize();
     }
@@ -13585,15 +13693,13 @@ int ios_subfloor_enum( int idx, unsigned long long *low, unsigned long long *rea
 int ios_subfloor_enum( int idx, unsigned long long *low, unsigned long long *real,
                        unsigned long long *size, void **owner )
 {
-    uint64_t sz;
-
+    struct ios_subfloor_snapshot view={0};
     if (idx < 0 || idx >= ios_subfloor_count) return 0;
-    sz = ios_subfloor[idx].size;       /* 0 = free slot; read first, see register */
-    __sync_synchronize();
-    if (low)   *low   = ios_subfloor[idx].pref_base;
-    if (real)  *real  = ios_subfloor[idx].real_base;
-    if (owner) *owner = ios_subfloor[idx].owner_peb;
-    if (size)  *size  = sz;
+    if (!ios_subfloor_read(&ios_subfloor[idx],&view)) view=(struct ios_subfloor_snapshot){0};
+    if (low) *low=view.low;
+    if (real) *real=view.real;
+    if (owner) *owner=view.owner;
+    if (size) *size=view.size;
     return 1;
 }
 
@@ -13601,23 +13707,33 @@ int ios_subfloor_enum( int idx, unsigned long long *low, unsigned long long *rea
  * window wins; with no known peb, the last matching window answers. */
 static uintptr_t ios_subfloor_translate( uint64_t addr, void *peb )
 {
-    int i, n = ios_subfloor_count;
-    uintptr_t any = 0;
-
-    if (addr >= IOS_SUBFLOOR_FLOOR) return 0;   /* fast reject: the common case */
-    for (i = 0; i < n; i++)
+    int i,n=ios_subfloor_count;
+    uintptr_t any=0;
+    if (addr >= ios_subfloor_map_floor()) return 0;
+    for (i=0;i<n;i++)
     {
-        uint64_t sz = ios_subfloor[i].size, lo, re;
-        void *own;
+        struct ios_subfloor_snapshot view;
+        if (!ios_subfloor_read(&ios_subfloor[i],&view) || addr<view.low || addr-view.low>=view.size) continue;
+        if (view.low>=IOS_SUBFLOOR_FLOOR && (!peb || view.owner!=peb)) continue;
+        if (!view.owner || view.owner==peb) return (uintptr_t)(view.real+(addr-view.low));
+        if (!peb) any=(uintptr_t)(view.real+(addr-view.low));
+    }
+    return any;
+}
 
-        if (!sz) continue;
-        __sync_synchronize();
-        lo = ios_subfloor[i].pref_base;
-        re = ios_subfloor[i].real_base;
-        own = ios_subfloor[i].owner_peb;
-        if (addr < lo || addr >= lo + sz) continue;
-        if (!own || own == peb) return (uintptr_t)(re + (addr - lo));
-        if (!peb) any = (uintptr_t)(re + (addr - lo));
+static uintptr_t ios_subfloor_translate_span(uint64_t addr,size_t bytes,void *peb)
+{
+    int i,n=ios_subfloor_count;
+    uintptr_t any=0;
+    if (!bytes || addr >= ios_subfloor_map_floor()) return 0;
+    for (i=0;i<n;i++)
+    {
+        struct ios_subfloor_snapshot view;
+        if (!ios_subfloor_read(&ios_subfloor[i],&view) || addr<view.low || addr-view.low>=view.size ||
+            bytes>view.size-(addr-view.low)) continue;
+        if (view.low>=IOS_SUBFLOOR_FLOOR && (!peb || view.owner!=peb)) continue;
+        if (!view.owner || view.owner==peb) return (uintptr_t)(view.real+(addr-view.low));
+        if (!peb) any=(uintptr_t)(view.real+(addr-view.low));
     }
     return any;
 }
@@ -14218,7 +14334,7 @@ static int ios_subfloor_service( ucontext_t *ctx, void *fault_addr, const char *
      * the ml966 arena, so any SUB-FLOOR address has to be offered to the
      * registry. Addresses at or above the floor still reject immediately,
      * which is the common case and keeps the general fault path cheap. */
-    if (!real && addr >= IOS_SUBFLOOR_FLOOR) return 0;
+    if (!real && addr >= ios_subfloor_map_floor()) return 0;
 
     /* ml956: read the faulting instruction through a failure-returning copy.
      * A naked deref of PC_sig here is the same self-fault hazard as the
@@ -14243,6 +14359,7 @@ static int ios_subfloor_service( ucontext_t *ctx, void *fault_addr, const char *
      * guess -- use a conservative 8-byte span for bounds checks in that case
      * and keep the accessibility probe gated on the result, as before. */
     span = cls ? bytes : 8u;
+    if (real && !(real=ios_subfloor_translate_span(addr,span,peb))) return 0;
 
     /* ml966: a low guest ALLOCATION resolves through its own registry, not the
      * ml938 image-window table. Checked here rather than in

@@ -127,6 +127,9 @@ static void ios_retire_mark(const char *s) { (void)s; }
 static int ios_jit_image_retire_enabled(void) { return 0; }
 static void ios_jit_retire_image(void *p,size_t n) { (void)p;(void)n; }
 static void ios_jit_note_image_unmapped(void *p,size_t n) { (void)p;(void)n; }
+/* No extended fixed-image mappings exist in this fixture. Their actual
+ * tombstone/lease behavior executes in check-directx-fixed-image.py. */
+void ios_subfloor_release_mapping(unsigned long long real,unsigned long long size) {(void)real;(void)size;}
 static void ios_swap_release_range(void *p,size_t n,int x) { (void)p;(void)n;(void)x; }
 static int ios_jit_anon_alias_overlaps(void *p,size_t n,uintptr_t *a,uintptr_t *b)
 { (void)p;(void)n;(void)a;(void)b;return 0; }
@@ -231,7 +234,7 @@ static void reset(void)
     ranges[1]=(struct range_entry){(void *)(arena_hi+0x1000000),(void *)UINTPTR_MAX};
     free_ranges_end=ranges+2;
     for (unsigned i=0;i<ARRAY_SIZE(owners);i++) {
-        ios_fex_owners[i]=(struct ios_fex_owner_record){owners[i].owner,NULL,owners[i].lease};
+        ios_fex_owners[i]=(struct ios_fex_owner_record){owners[i].owner,NULL,owners[i].lease,0};
         owners[i].quiescent=0;
     }
     current_owner=owners[0].owner;
@@ -359,7 +362,7 @@ int main(void)
             /* A fresh owner can use the whole unchanged arena for either
              * class: the two search directions create no fixed partition. */
             owners[1].lease++;owners[1].quiescent=0;
-            ios_fex_owners[0]=(struct ios_fex_owner_record){owners[1].owner,NULL,owners[1].lease};
+            ios_fex_owners[0]=(struct ios_fex_owner_record){owners[1].owner,NULL,owners[1].lease,0};
             assert(allocate(arena_hi-arena_lo,0x1000000,3,0)->base==(void *)arena_lo);
         }
     }

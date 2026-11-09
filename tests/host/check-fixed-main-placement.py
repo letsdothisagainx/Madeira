@@ -56,6 +56,7 @@ static const unsigned int page_size = 0x1000;
 static unsigned floor_calls, lines, fills, closes, maps;
 static char last_line[2048];
 static uintptr_t floor_value = UINT64_C(0x1021b4000);
+static _Thread_local const void *ios_subfloor_main_image_info;
 static char *ios_query_map_floor(void) { __atomic_fetch_add(&floor_calls, 1, __ATOMIC_RELAXED); errno = ERANGE; return (char *)floor_value; }
 static char basename_text[256];
 static const char *debugstr_us(const UNICODE_STRING *name)
@@ -118,6 +119,7 @@ static NTSTATUS virtual_map_image(HANDLE mapping, void **module, SIZE_T *size, H
 {
     (void)mapping; (void)low; (void)high; (void)flags; (void)machine; (void)name;
     assert(shared == (void *)7 && !builtin && !offset);
+    assert(ios_subfloor_main_image_info == info);
     maps++;
     if (NT_SUCCESS(map_status)) { *module = image; *size = image_size; info->base = (uintptr_t)image; }
     return map_status;
@@ -185,6 +187,7 @@ int main(int argc, char **argv)
     void *module = NULL; SIZE_T mapped_size = 0; SECTION_IMAGE_INFORMATION info;
     assert(virtual_map_module(NULL, &module, &mapped_size, &info, 0, 0, 0) == STATUS_IMAGE_NOT_AT_BASE);
     assert(module == image && mapped_size == image_size && maps == 1 && fills == 1 && closes == 1);
+    assert(!ios_subfloor_main_image_info);
     assert(lines == 1 && floor_calls == 1);
     assert(strstr(last_line, "pid=03d0 owner=0x500310000 image=infinst.exe"));
     assert(strstr(last_line, "map_status=40000003 machine=8664 chars=0023 preferred=0x100000000 header_base=0x100000000"));

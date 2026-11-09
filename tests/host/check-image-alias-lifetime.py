@@ -55,6 +55,9 @@ static void ios_retire_mark(const char* text){(void)text;}
 static int ios_jit_image_retire_enabled(void){return 0;}
 static void ios_jit_retire_image(void* b,size_t n){(void)b;(void)n;}
 static void ios_jit_note_image_unmapped(void* b,size_t n){(void)b;assert(n==0xf000);invalidated++;}
+/* No extended fixed-image mappings exist in this fixture. Their actual
+ * tombstone/lease behavior executes in check-directx-fixed-image.py. */
+void ios_subfloor_release_mapping(unsigned long long real,unsigned long long size) {(void)real;(void)size;}
 static void ios_swap_release_range(void* b,size_t n,int c){(void)b;(void)n;assert(!c);}
 static void set_page_vprot(void* b,size_t n,int p){(void)b;(void)n;assert(!p);}
 static void clear_arm64ec_range(void* b,size_t n){(void)b;(void)n;}

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Require matching IOSB images and rebuilt ARM64/WoW64 and ARM64EC FEX CPUs."""
 import argparse
+import importlib.util
 from pathlib import Path
 import struct
 import zipfile
@@ -9,20 +10,30 @@ PRODUCER = b'madeira-io-abi-v2'
 CONSUMER = b'[io-abi] v2 native-owned IOSB scopes active'
 
 
-def fex_arena_exports(data, require_hold_release=False, code_exports=(), require_hybrid=False):
+def fex_arena_exports(data, require_hold_release=False, code_exports=(), require_hybrid=False, data_exports=None):
     """Require real DATA/code exports, not matching strings in a stale PE."""
+    data_exports = data_exports or {}
     pe = struct.unpack_from('<I', data, 0x3c)[0]
     assert data[:2] == b'MZ' and data[pe:pe + 4] == b'PE\0\0', 'invalid FEX PE headers'
     count = struct.unpack_from('<H', data, pe + 6)[0]
     optional = pe + 24
     assert struct.unpack_from('<H', data, optional)[0] == 0x20b, 'FEX must be PE32+'
-    table = optional + struct.unpack_from('<H', data, pe + 20)[0]
+    optional_size = struct.unpack_from('<H', data, pe + 20)[0]
+    assert optional_size >= 240, 'truncated FEX optional header'
+    image_size = struct.unpack_from('<I', data, optional + 56)[0]
+    assert image_size and struct.unpack_from('<I', data, optional + 108)[0] >= 11, 'invalid FEX image/directory bounds'
+    table = optional + optional_size
     assert 0 < count <= 96, 'invalid FEX section count'
+    assert table + count * 40 <= len(data), 'truncated FEX section table'
     sections = []
     for i in range(count):
         entry = table + i * 40
         size, rva, raw_size, raw = struct.unpack_from('<IIII', data, entry + 8)
-        sections.append((rva, max(size, raw_size), raw, raw_size, struct.unpack_from('<I', data, entry + 36)[0]))
+        extent = max(size, raw_size)
+        assert extent and rva <= image_size and extent <= image_size - rva, 'FEX section outside image bounds'
+        assert raw <= len(data) and raw_size <= len(data) - raw, 'FEX section outside file bounds'
+        assert not any(rva < base + span and base < rva + extent for base, span, _, _, _ in sections), 'overlapping FEX sections'
+        sections.append((rva, extent, raw, raw_size, struct.unpack_from('<I', data, entry + 36)[0]))
 
     def offset(rva, size):
         for start, _, raw, raw_size, _ in sections:
@@ -59,6 +70,8 @@ def fex_arena_exports(data, require_hold_release=False, code_exports=(), require
     assert names <= functions <= 65536, 'invalid FEX export counts'
     required = {b'ios_fex_band_base', b'ios_fex_band_end'}
     required.update(code_exports)
+    assert not set(data_exports) & set(code_exports), 'FEX code/DATA export contracts overlap'
+    required.update(data_exports)
     hold_release = b'MadeiraBTCpuIosReleaseThreadHolds'
     if require_hold_release:
         required.update({hold_release,b'MadeiraBTCpuIosRetireThread'})
@@ -72,6 +85,7 @@ def fex_arena_exports(data, require_hold_release=False, code_exports=(), require
         name = data[start:end]
         if name not in required:
             continue
+        assert name not in found, 'duplicate FEX compatibility export'
         ordinal = struct.unpack_from('<H', data, offset(ordinals + i * 2, 2))[0]
         assert ordinal < functions, 'invalid FEX arena export ordinal'
         target = struct.unpack_from('<I', data, offset(addresses + ordinal * 4, 4))[0]
@@ -80,9 +94,14 @@ def fex_arena_exports(data, require_hold_release=False, code_exports=(), require
             assert any(base <= target and target + 4 <= base + raw_size and flags & 0x20000000 and
                        flags & 0x40000000 and not flags & 0x80000000
                        for base, _, _, raw_size, flags in sections), 'FEX hold release must be a file-backed native RX function'
+            offset(target, 4)
         else:
-            assert any(base <= target and target + 8 <= base + size and flags & 0x80000000 and not flags & 0x30000000
-                       for base, size, _, _, flags in sections), 'FEX arena export must be private writable non-executable DATA'
+            assert not target & 7 and any(base <= target and target + 8 <= base + size and
+                       flags & 0xc0000000 == 0xc0000000 and not flags & 0x32000000
+                       for base, size, _, _, flags in sections), 'FEX arena export must be aligned file-backed private writable non-executable DATA'
+            data_offset = offset(target, 8)
+            if name in data_exports:
+                assert struct.unpack_from('<Q', data, data_offset)[0] == data_exports[name], 'FEX DATA capability value differs from source ABI'
         found.add(name)
     assert found == required, 'FEX compatibility exports missing'
 
@@ -120,7 +139,17 @@ def fex_cpu(data, backend):
     for marker in (b'[fex-core-init-v1]', b'[fex-ir-pool-v1]', b'[fex-owner-allocator-v1]'):
         assert marker in data, f'stale {backend} FEX shared protection: {marker!r}'
     fex_arena_exports(data, require_hold_release=backend == 'wow64', code_exports=code_exports,
-                      require_hybrid=backend == 'arm64ec')
+                      require_hybrid=backend == 'arm64ec',
+                      data_exports={b'IosSubfloorProtocolV1': 0x4d53460100000001} if backend == 'arm64ec' else None)
+
+
+def native_ntdll_contract(path, machine):
+    """Run the same source-stage verifier on the actual app/IPA native bytes."""
+    source = Path(__file__).resolve().parent / 'build/stage-native-counter-writes.py'
+    spec = importlib.util.spec_from_file_location('madeira_native_counter_package', source)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.verify_pe(path, machine)
 
 
 def check(staged, app, ipa):
@@ -133,6 +162,8 @@ def check(staged, app, ipa):
     assert b'[fex-owner-v1] pre-crt' in native and b'[fex-owner-v1] retired' in native, 'native FEX ownership lifecycle missing'
     assert b'[fex-owner-census-v2]' in native, 'native FEX live-owner census missing'
     assert b'[pool-code-growth]' in native, 'stale native executable-pool growth budget'
+    assert b'[subfloor-contract-v1]' in native, 'stale native fixed-image subfloor protocol consumer'
+    assert b'[native-srw-alias-v1]' in native, 'stale native private SRW writer binder'
     assert b'[hold-release-v2]' in native and b'[deliver-hold-v2]' in native, 'native FEX hold-release boundary missing'
     assert b'[native-window-retire-v1]' in native, 'native dead-window layer cleanup missing'
     assert b'_winios_native_window_create' in native and b'_winios_native_window_retire' in native, 'native window lifecycle bridge missing'
@@ -153,6 +184,14 @@ def check(staged, app, ipa):
     ec_cpu_data = (staged.parent.parent / 'arm64ec-windows/xtajit64.dll').read_bytes()
     fex_cpu(ec_cpu_data, 'arm64ec')
     assert (app / 'arm64ec-windows/xtajit64.dll').read_bytes() == ec_cpu_data, 'Xcode packaged stale ARM64EC FEX'
+    native_ntdlls = {}
+    for directory, machine in (('aarch64-windows', 'aarch64'), ('arm64ec-windows', 'arm64ec')):
+        staged_ntdll = staged.parent.parent / directory / 'ntdll.dll'
+        packaged_ntdll = app / directory / 'ntdll.dll'
+        expected_ntdll = staged_ntdll.read_bytes()
+        assert packaged_ntdll.read_bytes() == expected_ntdll, 'Xcode packaged stale native ntdll writer contracts'
+        native_ntdll_contract(packaged_ntdll, machine)
+        native_ntdlls[directory] = expected_ntdll
     assert b'[alias-prot-v2]' in native and b'[fex-exit-v1]' in native and b'[native-thread-cancel-v1]' in native, 'native protection/retirement/cancellation consumer missing'
     assert b'[alias-prot-compat]' in native and b'[image-alias-retire-v1]' in native and b'[swp-context-v1]' in native, 'stale native alias lifetime/protection producer'
     assert b'[surface-expose-v1]' in native and b'[steam-client-update-v1]' in native, 'stale popup expose or official Steam updater integration'
@@ -184,6 +223,8 @@ def check(staged, app, ipa):
         assert archive.read('Payload/Madeira.app/Madeira.debug.dylib') == native, 'ZIP native consumer differs'
         assert archive.read('Payload/Madeira.app/aarch64-windows/xtajit.dll') == cpu_data, 'ZIP FEX producer differs'
         assert archive.read('Payload/Madeira.app/arm64ec-windows/xtajit64.dll') == ec_cpu_data, 'ZIP ARM64EC FEX producer differs'
+        for directory, expected_ntdll in native_ntdlls.items():
+            assert archive.read('Payload/Madeira.app/' + directory + '/ntdll.dll') == expected_ntdll, 'ZIP native ntdll writer contract differs'
         assert archive.read('Payload/Madeira.app/i386-windows/kernelbase.dll') == guest, 'ZIP guest32 caller differs'
         assert archive.read('Payload/Madeira.app/arm64ec-windows/madeira-steam-service.exe') == service, 'ZIP Steam service helper differs'
         assert archive.read('Payload/Madeira.app/aarch64-windows/services.exe') == scm, 'ZIP SCM startup producer differs'

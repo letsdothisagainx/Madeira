@@ -343,7 +343,7 @@ jobs:
       # Cache objects, never skip the shared staging/configure/build/package gates.
       - uses: actions/cache@v4
         with:
-          key: plan19-${{ steps.sdk.outputs.key }}-fex-pe-${{ steps.pins.outputs.fex }}-${{ hashFiles('build/fex-compat/**', 'build/fex-wow64/build.sh', 'build/fex-arm64ec/build.sh', 'tools/build/stage-fex-compat.py', 'tools/build/build-fex-pe-compat.sh', 'tools/build/build-fex-wow64-compat.sh', 'tools/build/build-fex-arm64ec-compat.sh', 'tools/build/setup-llvm-mingw.sh', 'tools/check-io-abi-package.py') }}
+          key: plan19-${{ steps.sdk.outputs.key }}-fex-pe-${{ steps.pins.outputs.fex }}-${{ hashFiles('build/fex-compat/**', 'build/fex-wow64/build.sh', 'build/fex-arm64ec/build.sh', 'tools/build/stage-fex-compat.py', 'tools/build/build-fex-pe-compat.sh', 'tools/build/build-fex-wow64-compat.sh', 'tools/build/build-fex-arm64ec-compat.sh', 'tools/build/setup-llvm-mingw.sh', 'tools/check-io-abi-package.py', 'tools/check-fex-subfloor-atomics.py') }}
           path: |
             FEX/build-wow64
             FEX/build-arm64ec

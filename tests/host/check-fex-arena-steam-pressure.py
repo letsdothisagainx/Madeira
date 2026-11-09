@@ -124,7 +124,7 @@ static void pressure(int prior)
         assert(storage[i].ios_fex_lease==ios_thread_process_lease(storage[i].ios_fex_owner,0));
     }
     owners[3].lease++;owners[3].quiescent=0;current_owner=owners[3].owner;
-    ios_fex_owners[3]=(struct ios_fex_owner_record){owners[3].owner,NULL,owners[3].lease};
+    ios_fex_owners[3]=(struct ios_fex_owner_record){owners[3].owner,NULL,owners[3].lease,0};
     for(unsigned i=0;i<32;i++)assert(allocate(0x1000000,0x1000000,3,0));
     for(unsigned owner=0;owner<9;owner++){owners[owner].quiescent=1;ios_fex_reclaim_process_views(owners[owner].owner);}
     assert(!live&&ranges[0].base==(void *)arena_lo&&ranges[0].end==(void *)arena_hi);

@@ -5,6 +5,7 @@ CMake compilation is substituted here; allocator behavior and PE package
 validation have separate production-source and image fixtures.
 """
 from pathlib import Path
+import ast
 import importlib.util
 import json
 import os
@@ -23,7 +24,7 @@ with tempfile.TemporaryDirectory(prefix='madeira-fex-pe-') as temporary:
     scripts = ('tools/build/stage-fex-compat.py', 'tools/build/build-fex-pe-compat.sh',
                'tools/build/build-fex-wow64-compat.sh', 'tools/build/build-fex-arm64ec-compat.sh',
                'build/fex-wow64/build.sh', 'build/fex-arm64ec/build.sh')
-    for relative in (*scripts, *('build/fex-compat/' + name for name in stager.PATCHES)):
+    for relative in (*scripts, 'tools/check-fex-subfloor-atomics.py', *('build/fex-compat/' + name for name in stager.PATCHES)):
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / relative, path)
@@ -45,12 +46,17 @@ with tempfile.TemporaryDirectory(prefix='madeira-fex-pe-') as temporary:
 
     commands = root / 'bin'
     commands.mkdir()
+    coff_source=(ROOT/'tests/host/check-fex-subfloor-atomics.py').read_text()
+    coff_node=next(node for node in ast.parse(coff_source).body if isinstance(node,ast.FunctionDef) and node.name=='fixture')
+    (root/'coff_fixture.py').write_text('import struct\n'+ast.get_source_segment(coff_source,coff_node)+'\n')
     trace = root / 'trace.jsonl'
     cmake = commands / 'cmake'
     cmake.write_text(r'''#!/usr/bin/env python3
 import json, os, struct, sys
 from pathlib import Path
 root=Path(os.environ['ROOT']); args=sys.argv[1:]
+sys.path.insert(0,str(root))
+from coff_fixture import fixture
 with Path(os.environ['PE_TRACE']).open('a') as log:log.write(json.dumps(args)+'\n')
 core=root/'FEX/FEXCore/Source/Interface/IR/IREmitter.h'
 assert 'TryReownOrClaimBuffer()' in core.read_text()
@@ -67,6 +73,13 @@ if args[0]=='--build':
     data=bytearray(0x300);data[:2]=b'MZ';struct.pack_into('<I',data,0x3c,0x80)
     data[0x80:0x84]=b'PE\0\0';struct.pack_into('<I',data,0x80+24+56,len(data))
     output.write_bytes(data)
+    if target=='arm64ecfex':
+        native,metadata=fixture()
+        if os.environ.get('FAIL_EC_ATOMICS')=='1':
+            struct.pack_into('<I',native,metadata['raw']+8,0xc80afd28)
+            data[-1]=1;output.write_bytes(data)
+        obj=build_dir/'Source/Windows/ARM64EC/CMakeFiles/arm64ecfex.dir/IosJitAlias.cpp.obj'
+        obj.parent.mkdir(parents=True,exist_ok=True);obj.write_bytes(native)
 ''')
     cmake.chmod(0o755)
     (root / 'tools/check-io-abi-package.py').write_text('''
@@ -112,6 +125,12 @@ def fex_cpu(data, backend):
     result = run('arm64ec', FAIL_EC='1')
     assert result.returncode == 37, result.stdout + result.stderr
     restored()
+    published=(root/'app/Madeira/arm64ec-windows/xtajit64.dll').read_bytes()
+    result=run('arm64ec',FAIL_EC_ATOMICS='1')
+    assert result.returncode and 'exclusive-store instruction in controlled subfloor code' in result.stderr, result.stdout+result.stderr
+    assert (root/'app/Madeira/arm64ec-windows/xtajit64.dll').read_bytes()==published, 'unsafe object was copied before the real code gate'
+    restored()
+    print('PASS actual COFF gate rejects an untuned exclusive-store object before CPU publication and restores every owned FEX source')
     lock = source / '.madeira-pe-overlay.lock'
     lock.mkdir()
     before = trace.read_bytes()

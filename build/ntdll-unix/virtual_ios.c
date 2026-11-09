@@ -694,6 +694,7 @@ static int ios_pool_live_overlap( uintptr_t rw_start, size_t size,
                                   size_t *off_out, void **peb_out );
 
 void *ios_jit_current_peb(void);
+unsigned long long ios_subfloor_map_floor(void);
 /* ml966: defined further down but called from the sub-floor registration site
  * above it, so it needs a prototype here (the build passes
  * -Wno-implicit-function-declaration, which would otherwise turn the call into
@@ -4529,6 +4530,9 @@ static int ios_alias_per_process_enabled(void)
     return enabled;
 }
 
+static int ios_fex_subfloor_image_capable(void *, void *, unsigned long long);
+static int ios_subfloor_callback_capable( void *owner, ios_alias_cb_t callback );
+
 static ios_alias_cb_t ios_alias_cb_for( void *peb )
 {
     int i;
@@ -4774,6 +4778,8 @@ void ios_jit_add_mapping(void *pe_base, void *jit_base, size_t size)
  * entry point called directly from here is the ml613 crash (its first bytes are
  * the x64 entry thunk, fetched as ARM64). FEX routes a below-4GB first argument
  * into its query-only table -- see the ml951 block in IosJitAlias.cpp.
+ * Protocol v1 additionally admits an exact fixed main image between 4GiB and
+ * the actual task floor, after proving the current private backend's capability.
  *
  * Runtime off switch: MADEIRA_NO_SUBFLOOR_XQUERY=1 simply stops the push, which
  * leaves FEX's table empty and the fallback inert. Checked here because getenv
@@ -4801,6 +4807,13 @@ void ios_push_subfloor_window( unsigned long long low_base, unsigned long long r
         if (!own_cb) return;   /* pushed later by the owner's catch-up loop */
         fprintf( stderr, "ml951: pushing sub-floor window guest %#llx+%#llx -> real %#llx to FEX (owner %p, own callback)\n",
                  low_base, size, real_base, owner );
+        if (low_base >= 0x100000000ull)
+        {
+            if (!ios_subfloor_callback_capable( owner, own_cb )) return;
+            /* Protocol v1 control is sent only to a positively identified new
+             * private backend. An old backend must never receive this tuple. */
+            own_cb( 0, 0, ios_subfloor_map_floor() );
+        }
         own_cb( low_base, real_base, size );
         return;
     }
@@ -4813,6 +4826,11 @@ void ios_push_subfloor_window( unsigned long long low_base, unsigned long long r
      * callback, a known gap). The owner is read after the callback: the register
      * path stores it before its release store of the callback. */
     if (owner && owner != ios_jit_alias_pushback_peb) return;
+    if (low_base >= 0x100000000ull)
+    {
+        if (!owner || !ios_subfloor_callback_capable( owner, cb )) return;
+        cb( 0, 0, ios_subfloor_map_floor() );
+    }
     fprintf( stderr, "ml951: pushing sub-floor window guest %#llx+%#llx -> real %#llx to FEX (owner %p)\n",
              low_base, size, real_base, owner );
     cb( low_base, real_base, size );
@@ -4894,6 +4912,36 @@ static void *ios_pe_find_export( const unsigned char *base, const char *want )
         if (!strcmp( (const char *)(base + names[i]), want ))
             return (void *)(base + funcs[ords[i]]);
     return NULL;
+}
+
+/* The floor extension is an optional, versioned protocol.  Use pre-CRT DATA
+ * proof for the registering owner's live private CPU image, not a global module
+ * or an unverified callback return value.  This runs on the normal Wine thread,
+ * never the Mach exception thread. */
+static int ios_subfloor_callback_capable( void *owner, ios_alias_cb_t callback )
+{
+    unsigned long long lease;
+    uintptr_t pc = (uintptr_t)callback;
+    int i;
+
+    if (!owner || !callback || !(lease = ios_thread_process_lease(owner,0)) ||
+        ios_thread_process_quiescent_lease(owner) == lease) return 0;
+    for (i = 0; i < ios_jit_mapping_count; i++)
+    {
+        const struct ios_jit_mapping *m = &ios_jit_mappings[i];
+        unsigned long long generation = __atomic_load_n(&m->generation,__ATOMIC_ACQUIRE);
+        uintptr_t rx=(uintptr_t)m->jit_base;
+        if (!generation || m->unmapped || !m->size || !m->is_fex ||
+            (m->owner_peb ? m->owner_peb != owner : m->map_peb != owner) ||
+            pc < rx || pc-rx >= m->size) continue;
+        /* The private image's bounded export check ran while its validated
+         * mapping was still RW, before CRT/JIT publication. Do not reparse
+         * headers that this process may since have made inaccessible. */
+        return ios_fex_subfloor_image_capable(owner,m->pe_base,lease) &&
+            __atomic_load_n(&m->generation,__ATOMIC_ACQUIRE) == generation && !m->unmapped &&
+            ios_thread_process_lease(owner,0) == lease;
+    }
+    return 0;
 }
 
 /* Versioned DATA from the rebuilt module. Offsets are compiler-produced;
@@ -5208,6 +5256,21 @@ NTSTATUS unixcall_ios_push_jit_aliases(void *args)
     void *self = ios_jit_current_peb();
     int i, pass, pushed = 0, own_pushed = 0, others_left = 0;
     if (!params || !params->callback) return STATUS_INVALID_PARAMETER;
+    {
+        extern int ios_subfloor_extended_owner(void *owner, unsigned long long lease);
+        unsigned long long lease=ios_thread_process_lease(self,0);
+        int extended=ios_subfloor_extended_owner(self,lease);
+        if (extended < 0 || (extended &&
+            !ios_subfloor_callback_capable(self,params->callback)))
+        {
+            dprintf(2,"[subfloor-contract-v1] status=%08x reason=backend-protocol-unavailable owner=%p lease=%llu before-guest-entry=1\n",
+                    (unsigned)STATUS_NOT_SUPPORTED,self,lease);
+            /* PE startup has not entered the fixed image yet.  Do not report a
+             * successful relocation or run its unrelocated code from high VA. */
+            abort_process(STATUS_NOT_SUPPORTED);
+            return STATUS_NOT_SUPPORTED;
+        }
+    }
     ios_jit_alias_pushback_peb = self;
     __atomic_store_n(&ios_jit_alias_pushback_cb, params->callback, __ATOMIC_RELEASE);
     if (ios_alias_per_process_enabled()) ios_alias_cb_set( self, params->callback );
@@ -8367,6 +8430,30 @@ static void *address_space_start = (void *)0x10000;
 #endif
 #ifdef WINE_IOS
 static char *ios_query_map_floor(void);
+
+/* Query the kernel's actual unmappable prefix, not merely the historical 4GiB
+ * minimum.  Only the bounded 4..8GiB domain is supported by protocol v1; an
+ * unexpected/unaligned floor fails back to the legacy boundary.  No VA is
+ * reserved or made accessible by this value. */
+unsigned long long ios_subfloor_map_floor(void)
+{
+    static unsigned long long limit;
+    unsigned long long value=__atomic_load_n(&limit,__ATOMIC_ACQUIRE);
+    if (!value)
+    {
+        const char *off=getenv("MADEIRA_SUBFLOOR_ACTUAL_FLOOR");
+        const char *entry=getenv("MADEIRA_SUBFLOOR_LOWENTRY");
+        const char *vm=getenv("MADEIRA_SUBFLOOR_VM");
+        const char *owners=getenv("MADEIRA_ALIAS_PER_PROCESS");
+        value=(uintptr_t)ios_query_map_floor();
+        if ((off && off[0]=='0') || (entry && entry[0]=='0') ||
+            (vm && vm[0]=='0') || (owners && owners[0]=='0') ||
+            getenv("MADEIRA_NO_SUBFLOOR_XQUERY") || value < 0x100000000ull ||
+            value > 0x200000000ull || (value & 0xfff)) value=0x100000000ull;
+        __atomic_store_n(&limit,value,__ATOMIC_RELEASE);
+    }
+    return value;
+}
 #endif
 #ifdef _WIN64
 static void *address_space_limit = (void *)0x7fffffff0000;  /* top of the total available address space */
@@ -15458,6 +15545,11 @@ static void delete_view( struct file_view *view ) /* [in] View */
     if ((view->protect & SEC_IMAGE) && ios_jit_image_retire_enabled())
         ios_jit_retire_image( view->base, view->size );
     if (view->protect & SEC_IMAGE) ios_jit_note_image_unmapped( view->base, view->size );
+    if (view->protect & SEC_IMAGE)
+    {
+        extern void ios_subfloor_release_mapping(unsigned long long,unsigned long long);
+        ios_subfloor_release_mapping((uintptr_t)view->base,view->size);
+    }
     /* The last host page can also have an anonymous JIT alias (a PE tail
      * rounded from 4 KiB to 16 KiB). Its binding dies with this image view,
      * before unmap_area replaces the backing. Keep the pool storage alive
@@ -24471,6 +24563,29 @@ static int ios_shared_section_private(void)
     return enabled;
 }
 
+/* Only open_main_image reaches virtual_map_module. The exact metadata token
+ * distinguishes that initial mapping from generic late SEC_IMAGE maps, even
+ * if a nested map happens on the same Wine thread. */
+static _Thread_local const void *ios_subfloor_main_image_info;
+
+/* Extended subfloor support is deliberately limited to a fixed AMD64 main
+ * executable wholly inside the kernel-unmappable prefix.  Relocatable DLLs,
+ * native code and WoW guest windows keep their existing loader contracts. */
+static int ios_subfloor_fixed_main_eligible( unsigned long long preferred, size_t size,
+                                           const void *mapped, const IMAGE_NT_HEADERS *nt, int hybrid )
+{
+    unsigned long long floor=ios_subfloor_map_floor();
+    return !hybrid && preferred >= 0x100000000ull && preferred < floor && !(preferred & 0xffff) &&
+        size && !(size & 0xfff) && size <= floor-preferred && (uintptr_t)mapped >= floor &&
+        size <= UINT64_MAX-(uintptr_t)mapped && !ios_wow_in_window(mapped) &&
+        nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC &&
+        nt->OptionalHeader.SectionAlignment >= page_size &&
+        nt->FileHeader.Machine == IMAGE_FILE_MACHINE_AMD64 &&
+        (nt->FileHeader.Characteristics & IMAGE_FILE_RELOCS_STRIPPED) &&
+        !(nt->FileHeader.Characteristics & IMAGE_FILE_DLL) &&
+        !(nt->OptionalHeader.DllCharacteristics & IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE);
+}
+
 /***********************************************************************
  *           ios_subfloor_window_held
  *
@@ -25034,6 +25149,29 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
         fprintf( stderr, "ml1195: sub-floor image RELOCS_STRIPPED without a dynamic base, mapped at "
                  "%p (preferred %#llx): ImageBase rewritten, nothing relocated\n",
                  ptr, (unsigned long long)image_info->base );
+    }
+    else if (!image_info->map_addr &&
+             ios_subfloor_fixed_main_eligible(image_info->base,total_size,ptr,nt,
+                                             image_info->is_hybrid || (view->protect & VPROT_ARM64EC)))
+    {
+        extern int ios_register_fixed_subfloor_image(unsigned long long,unsigned long long,
+                                                     unsigned long long,void *);
+        if (ios_subfloor_main_image_info != image_info)
+        {
+            status=STATUS_CONFLICTING_ADDRESSES;
+            goto done;
+        }
+        if (!ios_register_fixed_subfloor_image(image_info->base,total_size,(uintptr_t)ptr,
+                                               ios_jit_current_peb()))
+        {
+            status=STATUS_CONFLICTING_ADDRESSES;
+            goto done;
+        }
+        /* This is a pending logical-address contract, not relocation of bytes.
+         * The owner's backend must prove protocol v1 before any guest entry. */
+        ((IMAGE_NT_HEADERS64 *)nt)->OptionalHeader.ImageBase=(uintptr_t)ptr;
+        dprintf(2,"[subfloor-contract-v1] stage=main-map guest=%#llx backing=%p size=%#lx floor=%#llx pending-backend=1\n",
+                (unsigned long long)image_info->base,ptr,(unsigned long)total_size,ios_subfloor_map_floor());
     }
 #endif
 
@@ -26524,8 +26662,15 @@ NTSTATUS virtual_map_module( HANDLE mapping, void **module, SIZE_T *size, SECTIO
     if (status == STATUS_IMAGE_ALREADY_LOADED)
     {
         ios_exe_win_wait_for_handoff( image_info );
+#ifdef WINE_IOS
+        const void *previous_main_info=ios_subfloor_main_image_info;
+        ios_subfloor_main_image_info=image_info;
+#endif
         status = virtual_map_image( mapping, module, size, shared_file, limit_low, limit_high, 0,
                                     machine, image_info, &nt_name, FALSE, 0 );
+#ifdef WINE_IOS
+        ios_subfloor_main_image_info=previous_main_info;
+#endif
         virtual_fill_image_information( image_info, info );
     }
 #ifdef WINE_IOS
@@ -30180,15 +30325,16 @@ static int ios_subfloor_image_translate( unsigned long long addr, unsigned long 
         const char *e = getenv( "MADEIRA_SUBFLOOR_VM" );   /* ml1201: 0 = VirtualProtect/VirtualQuery leave fixed-base image windows alone */
         on = !(e && e[0] == '0');
     }
-    if (!on || addr >= 0x100000000ull) return 0;
+    if (!on || addr >= ios_subfloor_map_floor()) return 0;
     if (!len) len = 1;
+    if (len > UINT64_MAX-addr) return 0;
     peb = ios_jit_current_peb();
     for (i = 0; ios_subfloor_enum( i, &lo, &re, &sz, &own ); i++)
     {
         /* ml1205: another process's window. The KUSER_SHARED_DATA window (ml952,
          * owner NULL) is no image: 0x7ffe0000 keeps its own answer. */
         if (own ? own != peb : lo == 0x7ffe0000ull) continue;
-        if (!sz || !re || addr < lo || addr + len > lo + sz) continue;
+        if (!sz || !re || addr < lo || addr-lo >= sz || len > sz-(addr-lo)) continue;
         *real_out = re + (addr - lo);
         return 1;
     }
@@ -36099,6 +36245,12 @@ static NTSTATUS unmap_view_of_section( HANDLE process, PVOID addr, ULONG flags )
     }
 
     server_enter_uninterrupted_section( &virtual_mutex, &sigset );
+#ifdef WINE_IOS
+    {
+        unsigned long long backing;
+        if (ios_subfloor_image_translate((uintptr_t)addr,1,&backing)) addr=(void *)(uintptr_t)backing;
+    }
+#endif
     if (!(view = find_view( addr, 0 )) || is_view_valloc( view )) goto done;
 
     if (flags & MEM_PRESERVE_PLACEHOLDER && !(view->protect & VPROT_PLACEHOLDER))

@@ -27,5 +27,6 @@ cmake -S "$R/FEX" -B "$B" -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_TESTING=OFF -DBUILD_THUNKS=OFF -DENABLE_ASSERTIONS=OFF \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 cmake --build "$B" --target arm64ecfex
+python3 "$R/tools/check-fex-subfloor-atomics.py" --build-dir "$B"
 mkdir -p "$R/app/Madeira/arm64ec-windows"
 cp "$B/Bin/libarm64ecfex.dll" "$R/app/Madeira/arm64ec-windows/xtajit64.dll" && ls -l "$R/app/Madeira/arm64ec-windows/xtajit64.dll"

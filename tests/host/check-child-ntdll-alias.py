@@ -66,6 +66,7 @@ code = r'''
 typedef int NTSTATUS;
 #define STATUS_SUCCESS 0
 #define STATUS_INVALID_PARAMETER ((NTSTATUS)0xC000000D)
+#define STATUS_NOT_SUPPORTED ((NTSTATUS)0xC00000BB)
 #define ERR(...) do { } while (0)
 static int ios_image_is_fex(const void *base,size_t size){(void)base;(void)size;return 0;}
 static void *cur_peb;
@@ -76,6 +77,11 @@ int ios_subfloor_enum( int idx, unsigned long long *low, unsigned long long *rea
 void ios_push_subfloor_window( unsigned long long a, unsigned long long b, unsigned long long c, void *owner )
 { (void)a; (void)b; (void)c; (void)owner; }
 static void ios_resolve_fex_exports( void ) { }
+/* This fixture has no fixed image/subfloor contract. The complete protocol
+ * admission/refusal paths execute in check-directx-fixed-image.py. */
+static unsigned long long ios_thread_process_lease(void *owner,int create) {(void)owner;(void)create;return 1;}
+static int ios_subfloor_extended_owner(void *owner,unsigned long long lease) {(void)owner;(void)lease;return 0;}
+static void abort_process(int status) {(void)status;assert(!"unexpected fixed-image guard");abort();}
 '''
 code += between(native, '#define IOS_JIT_MAX_MAPPINGS', '\n};')
 code += 'static struct ios_jit_mapping ios_jit_mappings[IOS_JIT_MAX_MAPPINGS];\n'
@@ -84,6 +90,7 @@ code += function(native, 'static unsigned long long ios_jit_new_generation(void)
 start = native.index('static void (*ios_jit_alias_pushback_cb)')
 end = native.index('\n}', native.index('static void ios_alias_cb_drop( void *peb )', start)) + 2
 code += native[start:end] + '\n'   # the callback, its owner, the per-process callbacks and their lookups
+code += 'static int ios_subfloor_callback_capable(void *owner,ios_alias_cb_t callback) {(void)owner;(void)callback;return 0;}\n'
 code += function(native, 'void ios_jit_add_mapping(void *pe_base, void *jit_base, size_t size)')
 code += between(native, 'struct ios_push_jit_aliases_args {', '\n};')
 code += function(native, 'static int ios_jit_owned_copy( void *pe_base, void *peb )')

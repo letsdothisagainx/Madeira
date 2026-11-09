@@ -25,6 +25,15 @@ with tempfile.TemporaryDirectory() as temp:
         if relative.endswith(('.a','.exe','.dll','.txt')):
             p.parent.mkdir(parents=True, exist_ok=True); p.write_bytes(b'fixture')
     import importlib.util
+    package_fixture_spec=importlib.util.spec_from_file_location('fex_package_fixture',root/'tests/host/check-fex-subfloor-package.py')
+    package_fixture=importlib.util.module_from_spec(package_fixture_spec);package_fixture_spec.loader.exec_module(package_fixture)
+    for directory,machine in (('aarch64-windows',0xaa64),('arm64ec-windows',0x8664)):
+        native_path=t/'app/Madeira'/directory/'ntdll.dll';native_path.parent.mkdir(parents=True,exist_ok=True)
+        native_path.write_bytes(package_fixture.ntdll_fixture(machine)[0])
+    stage_verifier=t/'tools/build/stage-native-counter-writes.py';stage_verifier.parent.mkdir(parents=True,exist_ok=True)
+    stage_verifier.write_bytes((root/'tools/build/stage-native-counter-writes.py').read_bytes())
+    native_abi=t/'build/ntdll-unix/native_counter_alias_abi.h';native_abi.parent.mkdir(parents=True,exist_ok=True)
+    native_abi.write_bytes((root/'build/ntdll-unix/native_counter_alias_abi.h').read_bytes())
     fixture_spec=importlib.util.spec_from_file_location('htmlipc_fixture', root/'tests/host/check-htmlipc-image.py')
     htmlipc=importlib.util.module_from_spec(fixture_spec);fixture_spec.loader.exec_module(htmlipc)
     bridge=htmlipc.fixture();bridge_manifest=htmlipc.manifest(bridge)
@@ -61,6 +70,8 @@ with tempfile.TemporaryDirectory() as temp:
     struct.pack_into('<H', cpu, 0x86, 2)  # writable DATA and native RX code
     struct.pack_into('<H', cpu, 0x94, 240)
     struct.pack_into('<H', cpu, 0x98, 0x20b)
+    struct.pack_into('<II', cpu, 0x98 + 56, 0x2000, 0x200)
+    struct.pack_into('<I', cpu, 0x98 + 108, 16)
     struct.pack_into('<II', cpu, 0x98 + 112, 0x1000, 0x100)
     cpu[0x188:0x190] = b'.data\0\0\0'
     struct.pack_into('<IIII', cpu, 0x190, 0x400, 0x1000, 0x400, 0x200)
@@ -86,18 +97,19 @@ with tempfile.TemporaryDirectory() as temp:
     struct.pack_into('<Q', ec_cpu, 0x98 + 24, 0x180000000)
     struct.pack_into('<II', ec_cpu, 0x98 + 112 + 80, 0x1180, 208)
     ec_cpu[0x240:0x600] = bytes(0x3c0)
-    struct.pack_into('<IIHHIIIIIII', ec_cpu, 0x200, 0, 0, 0, 0, 0, 1, 5, 5, 0x1040, 0x1060, 0x1080)
-    struct.pack_into('<IIIII', ec_cpu, 0x240, 0x13a0, 0x13a8, 0x1400, 0x1404, 0x1408)
-    struct.pack_into('<IIIII', ec_cpu, 0x260, 0x10a0, 0x10c0, 0x10e0, 0x1100, 0x1120)
-    struct.pack_into('<HHHHH', ec_cpu, 0x280, 0, 1, 2, 3, 4)
+    struct.pack_into('<IIHHIIIIIII', ec_cpu, 0x200, 0, 0, 0, 0, 0, 1, 6, 6, 0x1040, 0x1060, 0x1080)
+    struct.pack_into('<IIIIII', ec_cpu, 0x240, 0x13a0, 0x13a8, 0x1400, 0x1404, 0x1408, 0x13b0)
+    struct.pack_into('<IIIIII', ec_cpu, 0x260, 0x10a0, 0x10c0, 0x10e0, 0x1100, 0x1120, 0x1140)
+    struct.pack_into('<HHHHHH', ec_cpu, 0x280, 0, 1, 2, 3, 4, 5)
     for offset, name in [(0x2a0, b'ios_fex_band_base'), (0x2c0, b'ios_fex_band_end'),
                          (0x2e0, b'BTCpu64FlushInstructionCache'), (0x300, b'BTCpu64NotifyMemoryDirty'),
-                         (0x320, b'BTCpu64IosAddAliasMapping')]:
+                         (0x320, b'BTCpu64IosAddAliasMapping'), (0x340,b'IosSubfloorProtocolV1')]:
         ec_cpu[offset:offset + len(name) + 1] = name + b'\0'
     struct.pack_into('<I', ec_cpu, 0x380, 208)
     struct.pack_into('<Q', ec_cpu, 0x380 + 200, 0x180001260)
     struct.pack_into('<III', ec_cpu, 0x460, 1, 0x1270, 1)
     struct.pack_into('<II', ec_cpu, 0x470, 0x1401, 0x100)
+    struct.pack_into('<Q', ec_cpu, 0x5b0, 0x4d53460100000001)
     ec_cpu.extend(shared)
     ec_cpu_path = t/'app/Madeira/arm64ec-windows/xtajit64.dll'
     ec_cpu_path.write_bytes(ec_cpu)
@@ -116,9 +128,14 @@ Path(sys.argv[1]).write_bytes(plistlib.dumps({'CFBundleIdentifier':'test.madeira
 PY_FIXTURE_INFO
 cp "$ROOT/app/Madeira/aarch64-windows/wow64.dll" "$ROOT/app/Madeira/aarch64-windows/xtajit.dll" "$TEST_APP/aarch64-windows/"
 cp "$ROOT/app/Madeira/aarch64-windows/services.exe" "$TEST_APP/aarch64-windows/"
+cp "$ROOT/app/Madeira/aarch64-windows/ntdll.dll" "$TEST_APP/aarch64-windows/"
+cp "$ROOT/app/Madeira/arm64ec-windows/ntdll.dll" "$TEST_APP/arm64ec-windows/"
+if [ "${STALE_NATIVE_NTDLL:-}" = 1 ]; then printf 'old ntdll' > "$TEST_APP/arm64ec-windows/ntdll.dll"; fi
 if [ "${STALE_SCM:-}" = 1 ]; then printf 'old SCM' > "$TEST_APP/aarch64-windows/services.exe"; fi
 printf '[native-group-retire-v1][wow-placement-v1][wow-native-export-v1][fex-callback-v2][child-native-dll-v1][process-wow64-v1][child-native-ntdll-v1][guest-trap-context-v1][surface-expose-v1][steam-client-update-v1][alias-prot-compat][image-alias-retire-v1][swp-context-v1][alias-prot-v2][fex-exit-v1][native-thread-cancel-v1][io-abi] v2 native-owned IOSB scopes active[wow-write][guest32-symbols][guest32-cxx-first-v1][cef-atexit-v1][steam-handoff-v1]_madeira_child_server_exited[fex-owner-v1] pre-crt[fex-owner-v1] retired[fex-owner-census-v2][hold-release-v2][deliver-hold-v2][native-window-retire-v1]_winios_native_window_create_winios_native_window_retire[guest32-fault-v1][steam-progress-v1]_winios_ui_progress_snapshot[srv-poll-drop-v1]poll-slots-highwater=' > "$TEST_APP/Madeira.debug.dylib"
 printf '[cef-image-owner-v1][guest-breakpoint64-v1]' >> "$TEST_APP/Madeira.debug.dylib"
+if [ "${STALE_SUBFLOOR_CONTRACT:-}" != 1 ]; then printf '[subfloor-contract-v1]' >> "$TEST_APP/Madeira.debug.dylib"; fi
+if [ "${STALE_NATIVE_SRW_ALIAS:-}" != 1 ]; then printf '[native-srw-alias-v1]' >> "$TEST_APP/Madeira.debug.dylib"; fi
 if [ "${STALE_POOL_GROWTH:-}" != 1 ]; then printf '[pool-code-growth]' >> "$TEST_APP/Madeira.debug.dylib"; fi
 if [ "${STALE_CEF_IMAGE:-}" = 1 ]; then
   sed 's/\\[cef-image-owner-v1\\]//g' "$TEST_APP/Madeira.debug.dylib" > "$TEST_APP/native.stale"
@@ -161,6 +178,26 @@ done
     def run(extra=None):
         return subprocess.run(['bash',str(package)],env=dict(env,**(extra or {})),capture_output=True,text=True)
     result=run(); assert result.returncode == 0, result.stdout+result.stderr
+    result=run({'STALE_SUBFLOOR_CONTRACT':'1'})
+    assert result.returncode and 'stale native fixed-image subfloor protocol consumer' in result.stderr, result.stderr
+    result=run({'STALE_NATIVE_SRW_ALIAS':'1'})
+    assert result.returncode and 'stale native private SRW writer binder' in result.stderr, result.stderr
+    result=run({'STALE_NATIVE_NTDLL':'1'})
+    assert result.returncode and 'Xcode packaged stale native ntdll writer contracts' in result.stderr, result.stderr
+    native_ntdll_path=t/'app/Madeira/arm64ec-windows/ntdll.dll'
+    complete_ntdll=native_ntdll_path.read_bytes()
+    invalid_ntdll=bytearray(complete_ntdll);invalid_ntdll[package_fixture.ntdll_fixture(0x8664)[1](0xc280)]=0
+    native_ntdll_path.write_bytes(invalid_ntdll)
+    result=run()
+    assert result.returncode and 'native SRW history contents differ from source ABI' in result.stderr, result.stderr
+    native_ntdll_path.write_bytes(complete_ntdll)
+    print('PASS missing native subfloor consumer, stale ntdll copies and invalid private history contracts fail actual final packaging')
+    invalid_ec=bytearray(ec_cpu);struct.pack_into('<Q',invalid_ec,0x5b0,0)
+    ec_cpu_path.write_bytes(invalid_ec)
+    result=run()
+    assert result.returncode and 'FEX DATA capability value differs from source ABI' in result.stderr, result.stderr
+    ec_cpu_path.write_bytes(ec_cpu)
+    print('PASS stale ARM64EC subfloor DATA capability fails actual final packaging; WoW64 has no new protocol requirement')
     result=run({'STALE_EC_CPU':'1'})
     assert result.returncode and 'Xcode packaged stale ARM64EC FEX' in result.stderr, result.stderr
     for marker in (b'[fex-ir-pool-v1]', b'[fex-owner-allocator-v1]'):

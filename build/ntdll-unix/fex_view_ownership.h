@@ -5,6 +5,7 @@ static struct ios_fex_owner_record
 {
     void *owner, *image;
     unsigned long long lease;
+    unsigned subfloor_protocol;
 } ios_fex_owners[IOS_FEX_OWNERS];
 extern unsigned long long ios_thread_process_lease(void *, int);
 extern unsigned long long ios_thread_process_quiescent_lease(void *);
@@ -58,12 +59,19 @@ static NTSTATUS ios_fex_prepare_image(char *base, size_t size, const IMAGE_NT_HE
                                      const IMAGE_SECTION_HEADER *sections, int hybrid)
 {
     const char *name = ios_pe_module_name(base,size);
-    ULONG_PTR *first, *last, lo = ios_fex_arena_base_unix, hi = ios_fex_arena_end_unix;
+    ULONG_PTR *first, *last, *subfloor, lo = ios_fex_arena_base_unix, hi = ios_fex_arena_end_unix;
     void *owner;
     unsigned long long lease;
-    unsigned i, free_slot = IOS_FEX_OWNERS;
+    unsigned i, free_slot = IOS_FEX_OWNERS, subfloor_protocol=0;
     static unsigned reports;
-    if (strcasecmp(name,"libwow64fex.dll") && strcasecmp(name,"libarm64ecfex.dll")) return STATUS_SUCCESS;
+    /* Any replacement at this host address revokes its previous optional
+     * CPU proof, including differently named/non-CPU images and early errors.
+     * The host view tree never permits two live mappings at the same address. */
+    for (i=0;i<IOS_FEX_OWNERS;i++)
+        if (ios_fex_owners[i].image==base) ios_fex_owners[i].subfloor_protocol=0;
+    if (!name || (strcasecmp(name,"libwow64fex.dll") && strcasecmp(name,"libarm64ecfex.dll")))
+        return STATUS_SUCCESS;
+    owner=ios_jit_current_peb(); lease=ios_thread_process_lease(owner,1);
     if (nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
         (nt->FileHeader.Machine != IMAGE_FILE_MACHINE_ARM64 && nt->FileHeader.Machine != IMAGE_FILE_MACHINE_ARM64EC &&
          !(nt->FileHeader.Machine == IMAGE_FILE_MACHINE_AMD64 && hybrid)) ||
@@ -71,6 +79,8 @@ static NTSTATUS ios_fex_prepare_image(char *base, size_t size, const IMAGE_NT_HE
     for (i = 0; i < nt->FileHeader.NumberOfSections; i++)
         if ((sections[i].Characteristics & (IMAGE_SCN_MEM_SHARED | IMAGE_SCN_MEM_WRITE)) ==
             (IMAGE_SCN_MEM_SHARED | IMAGE_SCN_MEM_WRITE)) return STATUS_INVALID_IMAGE_FORMAT;
+    subfloor=ios_fex_private_export(base,size,nt,sections,"IosSubfloorProtocolV1");
+    if (subfloor && *subfloor==0x4d53460100000001ull) subfloor_protocol=1;
     first = ios_fex_private_export(base,size,nt,sections,"ios_fex_band_base");
     last = ios_fex_private_export(base,size,nt,sections,"ios_fex_band_end");
     /* Older unrelated CPU backends retain their original behavior; ownership
@@ -82,18 +92,29 @@ static NTSTATUS ios_fex_prepare_image(char *base, size_t size, const IMAGE_NT_HE
         if ((*first || *last) && (*first != lo || *last != hi-1)) return STATUS_CONFLICTING_ADDRESSES;
         *first = lo; *last = hi-1; /* existing inclusive FEX band ABI */
     }
-    owner = ios_jit_current_peb(); lease = ios_thread_process_lease(owner,1);
     if (!owner || !lease) return STATUS_SUCCESS;
     for (i = 0; i < IOS_FEX_OWNERS; i++)
     {
         if (ios_fex_owners[i].owner == owner && ios_fex_owners[i].lease == lease) { free_slot=i; break; }
         if (!ios_fex_owners[i].owner && free_slot == IOS_FEX_OWNERS) free_slot=i;
     }
-    if (free_slot < IOS_FEX_OWNERS) ios_fex_owners[free_slot] = (struct ios_fex_owner_record){owner,base,lease};
+    if (free_slot < IOS_FEX_OWNERS) ios_fex_owners[free_slot] = (struct ios_fex_owner_record){owner,base,lease,subfloor_protocol};
     if (reports++ < 32)
         dprintf(2,"[fex-owner-v1] pre-crt image=%s module=%p owner=%p lease=%llu arena=%p..%p band=%p..%p private=1 tracked=%u\n",
                 name,base,owner,lease,(void *)lo,(void *)hi,(void *)*first,(void *)*last,free_slot < IOS_FEX_OWNERS);
     return STATUS_SUCCESS;
+}
+
+/* Cached before private CPU execution; capability cannot be borrowed from a
+ * different owner/image or from an old process reusing the same PEB address. */
+static int ios_fex_subfloor_image_capable(void *owner,void *image,unsigned long long lease)
+{
+    unsigned i;
+    if (!owner || !image || !lease) return 0;
+    for (i=0;i<IOS_FEX_OWNERS;i++)
+        if (ios_fex_owners[i].owner==owner && ios_fex_owners[i].image==image &&
+            ios_fex_owners[i].lease==lease) return ios_fex_owners[i].subfloor_protocol==1;
+    return 0;
 }
 
 static void ios_fex_tag_view(struct file_view *view, ULONG_PTR low, ULONG_PTR high)

@@ -1,0 +1,246 @@
+--- a/Source/Windows/ARM64EC/IosJitAlias.cpp
++++ b/Source/Windows/ARM64EC/IosJitAlias.cpp
+@@ -263,7 +263,17 @@
+  * disjoint: a real JIT alias's PeBase is a mapped PE image base, which on iOS
+  * is always >= 4GB; a sub-floor window's low base is by definition < 4GB.
+  */
+-static constexpr uint64_t kIosSubfloorFloor = 0x100000000ull;
++static constexpr uint64_t kIosSubfloorDefaultFloor = 0x100000000ull;
++static constexpr uint64_t kIosSubfloorMaximumFloor = 0x200000000ull;
++static std::atomic<uint64_t> g_SubfloorFloor {kIosSubfloorDefaultFloor};
++/* Versioned DATA capability: native Wine snapshots it before THIS owner's private
++ * CPU image starts. No callback probing is allowed. */
++extern "C" { uint64_t IosSubfloorProtocolV1 = 0x4d53460100000001ull; }
++static bool IosSubfloorConfigureFloor(uint64_t Floor) {
++  if (Floor < kIosSubfloorDefaultFloor || Floor > kIosSubfloorMaximumFloor || (Floor & 0xfffull)) return false;
++  auto Previous = kIosSubfloorDefaultFloor;
++  return g_SubfloorFloor.compare_exchange_strong(Previous, Floor, std::memory_order_acq_rel) || Previous == Floor;
++}
+ static constexpr int kMaxSubfloorEntries = 8;
+ 
+ struct IosSubfloorEntry {
+@@ -275,11 +285,42 @@
+ static IosSubfloorEntry g_Subfloor[kMaxSubfloorEntries];
+ static int g_SubfloorCount;
+ 
++// Only one initial main image may use protocol v1 in a private CPU image.
++// Its coordinates are immutable after release publication. Atomic state is the
++// sole later mutation: retirement cannot race plain coordinate writes, and a
++// retired descriptor is never revived for a different image/generation.
++struct IosExtendedSubfloorEntry {
++  std::atomic<uint32_t> State {0}; // 0 empty, 1 publishing, 2 live, 3 retired
++  uint64_t LowBase {}, RealBase {}, Size {};
++};
++static IosExtendedSubfloorEntry g_ExtendedSubfloor;
++static bool IosExtendedSubfloorSnapshot(uint64_t* Low, uint64_t* Real, uint64_t* Size) {
++  if (g_ExtendedSubfloor.State.load(std::memory_order_acquire) != 2) return false;
++  const auto L=g_ExtendedSubfloor.LowBase, R=g_ExtendedSubfloor.RealBase, S=g_ExtendedSubfloor.Size;
++  if (g_ExtendedSubfloor.State.load(std::memory_order_acquire) != 2) return false;
++  *Low=L; *Real=R; *Size=S;
++  return true;
++}
++static bool IosExtendedSubfloorAdd(uint64_t Low, uint64_t Real, uint64_t Size) {
++  uint32_t Empty=0;
++  if (!g_ExtendedSubfloor.State.compare_exchange_strong(Empty,1,std::memory_order_acq_rel)) {
++    uint64_t L,R,S;
++    return Empty==2 && IosExtendedSubfloorSnapshot(&L,&R,&S) && L==Low && R==Real && S==Size;
++  }
++  g_ExtendedSubfloor.LowBase=Low;g_ExtendedSubfloor.RealBase=Real;g_ExtendedSubfloor.Size=Size;
++  g_ExtendedSubfloor.State.store(2,std::memory_order_release);
++  return true;
++}
++
+ // low -> real, or Addr unchanged when it is not in a window.
+ uint64_t IosSubfloorToReal(uint64_t Addr) {
+-  if (Addr >= kIosSubfloorFloor) {
++  if (Addr >= g_SubfloorFloor.load(std::memory_order_acquire)) {
+     return Addr; // fast reject: the overwhelmingly common case
+   }
++  uint64_t Low,Real,Size;
++  if (IosExtendedSubfloorSnapshot(&Low,&Real,&Size) && Addr>=Low && Addr-Low<Size)
++    return Real+(Addr-Low);
++  if (Addr>=kIosSubfloorDefaultFloor) return Addr;
+   const int count = g_SubfloorCount;
+   for (int i = 0; i < count; i++) {
+     const uint64_t lb = g_Subfloor[i].LowBase;
+@@ -296,6 +337,12 @@
+ // address? If so report the window so the JIT can translate that image's own
+ // memory operands inline instead of faulting on each one.
+ extern "C" int IosSubfloorWindowForCode(uint64_t Rip, uint64_t* Low, uint64_t* Size, uint64_t* Real) {
++  uint64_t L,R,S;
++  if (IosExtendedSubfloorSnapshot(&L,&R,&S) &&
++      ((Rip>=L && Rip-L<S) || (Rip>=R && Rip-R<S))) {
++    *Low=L;*Size=S;*Real=R;return 1;
++  }
++
+   const int count = g_SubfloorCount;
+   for (int i = 0; i < count; i++) {
+     const uint64_t lb = g_Subfloor[i].LowBase, rb = g_Subfloor[i].RealBase, sz = g_Subfloor[i].Size;
+@@ -316,6 +363,10 @@
+ // real -> low, or Addr unchanged. Used to map a tracker result back into the
+ // guest's own address domain so the guest RIP is never moved high.
+ uint64_t IosSubfloorToLow(uint64_t Addr) {
++  uint64_t Low,Real,Size;
++  if (IosExtendedSubfloorSnapshot(&Low,&Real,&Size) && Addr>=Real && Addr-Real<Size)
++    return Low+(Addr-Real);
++
+   const int count = g_SubfloorCount;
+   for (int i = 0; i < count; i++) {
+     const uint64_t rb = g_Subfloor[i].RealBase;
+@@ -330,6 +381,15 @@
+ // ml1207: window Index as {low, real, size}; 0 past the end. The invalidation
+ // tracker uses it to drop a sub-floor image's code under both of its names.
+ int IosSubfloorEnum(int Index, uint64_t* Low, uint64_t* Real, uint64_t* Size) {
++  if (g_ExtendedSubfloor.State.load(std::memory_order_acquire)) {
++    if (Index==0) {
++      uint64_t L=0,R=0,S=0;
++      IosExtendedSubfloorSnapshot(&L,&R,&S);
++      *Low=L;*Real=R;*Size=S;return 1;
++    }
++    --Index;
++  }
++
+   if (Index < 0 || Index >= g_SubfloorCount) {
+     return 0;
+   }
+@@ -342,6 +402,12 @@
+ // Clip a range to the end of the window containing LowAddr, so a tracker range
+ // can never be reported as extending past the window we actually back.
+ uint64_t IosSubfloorClipSize(uint64_t LowAddr, uint64_t Size) {
++  uint64_t L,R,S;
++  if (IosExtendedSubfloorSnapshot(&L,&R,&S) && LowAddr>=L && LowAddr-L<S) {
++    const auto Available=S-(LowAddr-L);return Size<Available?Size:Available;
++  }
++  if (LowAddr>=kIosSubfloorDefaultFloor) return 0;
++
+   const int count = g_SubfloorCount;
+   for (int i = 0; i < count; i++) {
+     const uint64_t lb = g_Subfloor[i].LowBase;
+@@ -355,6 +421,10 @@
+ }
+ 
+ static bool IosSubfloorAdd(uint64_t LowBase, uint64_t RealBase, uint64_t Size) {
++  const auto Floor = g_SubfloorFloor.load(std::memory_order_acquire);
++  if (LowBase < 0x10000 || !Size || LowBase >= Floor || Size > Floor - LowBase ||
++      RealBase < Floor || Size > UINT64_MAX - RealBase) return false;
++  if (LowBase>=kIosSubfloorDefaultFloor) return IosExtendedSubfloorAdd(LowBase,RealBase,Size);
+   const int count = g_SubfloorCount;
+   for (int i = 0; i < count; i++) {
+     if (g_Subfloor[i].LowBase == LowBase) {
+@@ -377,6 +447,16 @@
+   g_SubfloorCount = count + 1;
+   return true;
+ }
++// Called only after the normal unmap callback invalidated both address names.
++// Failed unmaps and the historical <4GiB domain retain their prior behavior.
++extern "C" void IosSubfloorRetireMapping(uint64_t Address) {
++  uint64_t Low,Real,Size;
++  if (!IosExtendedSubfloorSnapshot(&Low,&Real,&Size) ||
++      !((Address>=Real && Address-Real<Size) || (Address>=Low && Address-Low<Size))) return;
++  uint32_t Live=2;
++  g_ExtendedSubfloor.State.compare_exchange_strong(Live,3,std::memory_order_acq_rel);
++}
++
+ /* ======================= end ml951 SUB-FLOOR WINDOWS ===================== */
+ 
+ void BTCpu64IosAddAliasMapping(uint64_t PeBase, uint64_t JitBase, uint64_t Size) {
+@@ -384,7 +464,11 @@
+    * a below-4GB "PeBase" (no real PE base can be there on iOS). Route it to the
+    * query-only table and return -- it must NEVER land in IosAliasEntries, which
+    * Module.S uses to rewrite branch targets. */
+-  if (PeBase < kIosSubfloorFloor) {
++  if (!PeBase && !JitBase) {
++    IosSubfloorConfigureFloor(Size); // pure atomic publication; no nested syscall or CRT call
++    return;
++  }
++  if (PeBase < g_SubfloorFloor.load(std::memory_order_acquire)) {
+     IosSubfloorAdd(PeBase, JitBase, Size);
+     return;
+   }
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -78,6 +78,7 @@
+ extern "C" uint64_t IosJitTranslate(uint64_t Addr);
+ extern "C" uint64_t IosJitReverseTranslate(uint64_t Addr);
+ extern "C" uint64_t IosSubfloorToReal(uint64_t Addr);   // ml951
++extern "C" void IosSubfloorRetireMapping(uint64_t Address);
+ extern "C" uint64_t IosSubfloorToLow(uint64_t Addr);    // ml951
+ extern "C" uint64_t IosSubfloorClipSize(uint64_t LowAddr, uint64_t Size);  // ml951
+ /* Defined in FEXCore Dispatcher.cpp; read when the dispatcher is emitted. */
+@@ -777,6 +778,19 @@
+   }
+ 
+   void MarkGuestExecutableRange(FEXCore::Core::InternalThreadState* Thread, uint64_t Start, uint64_t Length) override {
++#ifdef FEX_IOS_HOST
++    /* The executable query returns logical guest addresses for a subfloor
++     * image, while the permission tracker owns its real backing. Preserve SMC
++     * write protection there; subsequent invalidation already covers both names. */
++    const auto Real = IosSubfloorToReal(Start);
++    if (Real != Start) {
++      const auto Span = IosSubfloorClipSize(Start, Length);
++      if (Span) InvalidationTracker->ReprotectRWXIntervals(Real, Span);
++      if (Span < Length && Start <= UINT64_MAX - Span)
++        InvalidationTracker->ReprotectRWXIntervals(Start + Span, Length - Span);
++      return;
++    }
++#endif
+     InvalidationTracker->ReprotectRWXIntervals(Start, Length);
+   }
+ 
+@@ -822,7 +836,8 @@
+         auto Inner = InvalidationTracker->QueryExecutableRange(RealAddr);
+         if (Inner.Size != 0) {
+           const uint64_t LowBase = IosSubfloorToLow(Inner.Base);
+-          if (LowBase != Inner.Base) {
++          if (LowBase != Inner.Base && Address >= LowBase &&
++              Address-LowBase < IosSubfloorClipSize(LowBase,Inner.Size)) {
+             static uint32_t SubfloorHitCount = 0;
+             if (SubfloorHitCount < 8) {
+               SubfloorHitCount++;
+@@ -1765,11 +1780,18 @@
+ 
+   if (!After) {
+     ThreadCreationMutex.lock();
+-    auto [Start, Size] = InvalidationTracker->InvalidateContainingSection(reinterpret_cast<uint64_t>(Address), true);
++    uint64_t TrackerAddress=reinterpret_cast<uint64_t>(Address);
++#ifdef FEX_IOS_HOST
++    TrackerAddress=IosSubfloorToReal(TrackerAddress);
++#endif
++    auto [Start, Size] = InvalidationTracker->InvalidateContainingSection(TrackerAddress, true);
+     if (Size) {
+       HandleImageUnmap(Start, Size);
+     }
+   } else {
++#ifdef FEX_IOS_HOST
++    if (NT_SUCCESS(Status)) IosSubfloorRetireMapping(reinterpret_cast<uint64_t>(Address));
++#endif
+     ThreadCreationMutex.unlock();
+   }
+ }
+--- a/Source/Windows/ARM64EC/libarm64ecfex_ios.def
++++ b/Source/Windows/ARM64EC/libarm64ecfex_ios.def
+@@ -6,6 +6,7 @@
+ EXPORTS
+   BTCpu64FlushInstructionCache
+   BTCpu64IosAddAliasMapping
++  IosSubfloorProtocolV1 DATA
+   BTCpu64IosRipFromHostPC
+   BTCpu64IosSetMonoBridge
+   BTCpu64IosReleaseThreadHolds
+--- a/Source/Windows/ARM64EC/CMakeLists.txt
++++ b/Source/Windows/ARM64EC/CMakeLists.txt
+@@ -15,6 +15,14 @@
+ 
+ patch_library_wine(arm64ecfex)
+ 
++# The private callback publishes subfloor state before CRT/guest startup.
++# Use the same host tune as FEXCore so these atomic CAS operations lower to
++# supported LSE CAS, rather than an unhandled LL/SC sequence writing PE RX data.
++# The build verifies the actual resulting object before packaging.
++if (FEX_IOS_HOST_BUILD)
++  set_property(SOURCE IosJitAlias.cpp APPEND PROPERTY COMPILE_OPTIONS ${FEX_TUNE_COMPILE_FLAGS})
++endif()
++
+ target_include_directories(arm64ecfex PRIVATE
+   "${CMAKE_SOURCE_DIR}/Source/Windows/include/"
+   "${CMAKE_SOURCE_DIR}/Source/"
