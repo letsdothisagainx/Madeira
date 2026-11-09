@@ -1,0 +1,198 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+name: Isolated real Wine WinVerifyTrust fixture proof
+on:
+  push:
+    branches: ['codex/wintrust-real-b6edc4d-20261109']
+permissions:
+  contents: read
+jobs:
+  real-wintrust:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Install isolated Wine 9 and ordinary PE fixture compiler
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo sed -i 's@azure.archive.ubuntu.com@archive.ubuntu.com@g' /etc/apt/sources.list.d/ubuntu.sources
+          sudo apt-get update -qq -o Acquire::Retries=1 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends wine wine64 wine32:i386 gcc-mingw-w64-x86-64-posix xvfb xauth openssl
+      - name: Execute actual GenericVerifyV2 and HashOnly with untouched trust stores
+        run: |
+          xvfb-run -a python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import shutil
+          import struct
+          import subprocess
+          import tempfile
+          import urllib.request
+
+          BASE = 'b6edc4d7bdd4329b79887b463439061b5ec8b33c'
+          WINE_PIN = 'df1c5ea51e194937ac204bc3120922dc56a61bec'
+          assert subprocess.check_output(['git', 'rev-parse', 'HEAD:wine'], text=True).strip() == WINE_PIN
+          subprocess.run(['git', 'diff', '--exit-code', BASE, '--', 'app', 'build', 'tests', 'tools', 'FEX', 'wine', 'dxmt', 'madeira-dock'], check=True)
+          url = f'https://raw.githubusercontent.com/willfaust/wine/{WINE_PIN}/dlls/wintrust/tests/softpub.c'
+          with urllib.request.urlopen(url, timeout=30) as response:
+              source_bytes = response.read(1 << 20)
+          source = source_bytes.decode('utf-8')
+          assert len(source_bytes) < 1 << 20
+          assert hashlib.sha256(source_bytes).hexdigest() == '89b71215a2e0b032ad7186770bba556bfd496a52414014c8f9ef76607b204f96'
+
+          probe = r'''
+          #define UNICODE
+          #define _UNICODE
+          #include <windows.h>
+          #include <wintrust.h>
+          #include <softpub.h>
+          #include <stdio.h>
+          #include <stdint.h>
+          #include <wchar.h>
+
+          int wmain(void)
+          {
+              const wchar_t *names[] = {L"original", L"tampered", L"unsigned", L"truncated"};
+              GUID action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+              for (unsigned architecture = 0; architecture < 2; architecture++)
+              for (unsigned fixture = 0; fixture < 4; fixture++)
+              for (unsigned hash_only = 0; hash_only < 2; hash_only++)
+              {
+                  wchar_t relative[MAX_PATH], path[MAX_PATH];
+                  unsigned bits = architecture ? 64 : 32;
+                  WINTRUST_FILE_INFO file = {0};
+                  WINTRUST_DATA data = {0};
+                  LONG status, closed;
+                  DWORD error, close_error;
+                  unsigned state;
+                  if (swprintf(relative, MAX_PATH, L"fixture%u-%ls.exe", bits, names[fixture]) < 0 ||
+                      !GetFullPathNameW(relative, MAX_PATH, path, NULL)) return 2;
+                  file.cbStruct = sizeof(file);
+                  file.pcwszFilePath = path;
+                  data.cbStruct = sizeof(data);
+                  data.dwUIChoice = WTD_UI_NONE;
+                  data.fdwRevocationChecks = WTD_REVOKE_NONE;
+                  data.dwUnionChoice = WTD_CHOICE_FILE;
+                  data.pFile = &file;
+                  data.dwStateAction = WTD_STATEACTION_VERIFY;
+                  data.dwProvFlags = hash_only ? WTD_HASH_ONLY_FLAG : 0;
+                  SetLastError(0x12345678);
+                  status = WinVerifyTrust(NULL, &action, &data);
+                  error = GetLastError();
+                  state = data.hWVTStateData != NULL;
+                  data.dwStateAction = WTD_STATEACTION_CLOSE;
+                  SetLastError(0x23456789);
+                  closed = WinVerifyTrust(NULL, &action, &data);
+                  close_error = GetLastError();
+                  wprintf(L"TRUST_PROOF bits=%u fixture=%ls mode=%ls status=%08lx last-error=%08lx state-created=%u close-status=%08lx close-last-error=%08lx\n",
+                      bits, names[fixture], hash_only ? L"hash-only" : L"generic", (unsigned long)status,
+                      (unsigned long)error, state, (unsigned long)closed, (unsigned long)close_error);
+              }
+              return 0;
+          }
+          '''
+
+          report = {
+              'schema': 'isolated-real-wine-winverifytrust-proof-v1',
+              'baseCommit': BASE,
+              'fixtureWineCommit': WINE_PIN,
+              'fixtureSource': url,
+              'fixtureSourceSHA256': hashlib.sha256(source_bytes).hexdigest(),
+              'action': 'WINTRUST_ACTION_GENERIC_VERIFY_V2',
+              'options': {'ui': 'WTD_UI_NONE', 'revocation': 'WTD_REVOKE_NONE', 'genericFlags': '0', 'digestFlags': 'WTD_HASH_ONLY_FLAG'},
+              'interpretation': {
+                  'generic': 'actual-default-prefix-policy-result-not-forced-trust-success',
+                  'hashOnly': 'digest-and-SIP-consistency-not-publisher-or-chain-trust',
+                  'subject': 'public-Wine-test-data-never-executed',
+                  'platform': 'Ubuntu-Wine9-AMD64-verifier-not-Madeira-iOS-packaged-verifier',
+                  'production': 'no-game-prefix-CA-store-Valve-file-or-production-security-changes',
+                  'certificate': 'array-name-SelfSigned-does-not-establish-leaf-self-signing; retain-issuer-and-validity',
+                  'timestamp': 'no-signing-time-or-timestamp-assumed',
+                  'digestAlgorithm': 'fixture-Authenticode-image-digest-SHA1-can-be-subject-to-policy',
+              },
+              'fixtures': [], 'results': []}
+
+          with tempfile.TemporaryDirectory(prefix='madeira-real-wintrust-') as temporary:
+              work = Path(temporary)
+              for bits in (32, 64):
+                  match = re.search(r'static const BYTE SelfSignedFile' + str(bits) + r'\[\]\s*=\s*\{(.*?)\};', source, re.S)
+                  assert match, 'pinned public fixture missing'
+                  original = bytes(int(x, 16) for x in re.findall(r'0x([0-9a-fA-F]{2})\b', match[1]))
+                  expected = {32: '292610be85e31c213d7aa64cc2a3fb161eb6db400ccaa141efd481f57b366b7d',
+                              64: 'e2d233ef406ceb668595797ae47c7b71094c8389825730260cf6bfd7e8bfdad7'}
+                  assert hashlib.sha256(original).hexdigest() == expected[bits]
+                  assert original[:2] == b'MZ'
+                  pe = struct.unpack_from('<I', original, 60)[0]
+                  assert original[pe:pe + 4] == b'PE\0\0'
+                  optional = pe + 24
+                  magic = struct.unpack_from('<H', original, optional)[0]
+                  assert magic == (0x10b if bits == 32 else 0x20b)
+                  checksum = optional + 64
+                  security = optional + (96 if bits == 32 else 112) + 4 * 8
+                  certificate, certificate_size = struct.unpack_from('<II', original, security)
+                  assert 19 < pe < checksum < security < certificate
+                  assert certificate_size >= 8 and certificate + certificate_size <= len(original)
+                  certificate_length = struct.unpack_from('<I', original, certificate)[0]
+                  assert 8 <= certificate_length <= certificate_size
+                  der = original[certificate + 8:certificate + certificate_length]
+                  cert_path = work / f'fixture{bits}.p7b'
+                  cert_path.write_bytes(der)
+                  pem = subprocess.check_output(['openssl', 'pkcs7', '-inform', 'DER', '-in', str(cert_path), '-print_certs'])
+                  metadata = subprocess.check_output(['openssl', 'x509', '-noout', '-subject', '-issuer', '-dates', '-fingerprint', '-sha256'], input=pem).decode().splitlines()
+                  tampered = bytearray(original)
+                  tampered[19] ^= 1  # DOS e_csum high byte: covered; not OptionalHeader.CheckSum.
+                  unsigned = bytearray(original[:certificate])
+                  unsigned[security:security + 8] = bytes(8)
+                  variants = {'original': original, 'tampered': tampered, 'unsigned': unsigned, 'truncated': original[:64]}
+                  for name, data in variants.items():
+                      (work / f'fixture{bits}-{name}.exe').write_bytes(data)
+                      report['fixtures'].append({'bits': bits, 'variant': name, 'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()})
+                  report['fixtures'].append({'bits': bits, 'certificateMetadata': metadata,
+                      'coveredMutationOffset': 19, 'mutatedField': 'DOS-e_csum-high-byte',
+                      'excludedPEChecksumRange': [checksum, checksum + 4],
+                      'excludedSecurityDirectoryRange': [security, security + 8],
+                      'excludedCertificateRange': [certificate, certificate + certificate_size]})
+              (work / 'probe.c').write_text(probe)
+              subprocess.run(['x86_64-w64-mingw32-gcc', '-std=c11', '-O1', '-Wall', '-Wextra', '-Werror', '-municode', '-static',
+                  '-Wl,--no-insert-timestamp', str(work / 'probe.c'), '-lwintrust', '-o', str(work / 'trust-probe.exe')], check=True)
+              # Only the real API probe is launched. Signed fixture files remain data.
+              allowed = ('PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TMPDIR', 'DISPLAY', 'XAUTHORITY')
+              env = {key: os.environ[key] for key in allowed if key in os.environ}
+              env.update(WINEPREFIX=str(work / 'prefix'), WINEARCH='win64', WINEDEBUG='-all', WINEDLLOVERRIDES='mscoree,mshtml=')
+              wine = '/usr/lib/wine/wine64'
+              report['wineVersion'] = subprocess.check_output([wine, '--version'], env=env, text=True).strip()
+              report['ubuntuWinePackage'] = subprocess.check_output(['dpkg-query', '-W', '-f=${Version}', 'wine64'], text=True).strip()
+              report['utcExecutionTime'] = subprocess.check_output(['date', '-u', '+%Y-%m-%dT%H:%M:%SZ'], text=True).strip()
+              try:
+                  run = subprocess.run([wine, str(work / 'trust-probe.exe')], cwd=work, env=env, capture_output=True, timeout=120)
+                  report['probeExit'] = run.returncode
+                  report['wineStderrBytes'] = len(run.stderr)
+                  for raw in run.stdout.decode('ascii', errors='strict').splitlines():
+                      matched = re.fullmatch(r'TRUST_PROOF bits=(32|64) fixture=(original|tampered|unsigned|truncated) mode=(generic|hash-only) status=([0-9a-f]{8}) last-error=([0-9a-f]{8}) state-created=([01]) close-status=([0-9a-f]{8}) close-last-error=([0-9a-f]{8})', raw)
+                      assert matched, 'unexpected probe output'
+                      keys = ['bits', 'fixture', 'mode', 'status', 'lastError', 'stateCreated', 'closeStatus', 'closeLastError']
+                      record = dict(zip(keys, matched.groups()))
+                      report['results'].append(record)
+                      print(raw, flush=True)
+                  Path('wintrust-real-proof.json').write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
+                  assert run.returncode == 0 and len(report['results']) == 16
+                  for result in report['results']:
+                      assert result['closeStatus'] == '00000000', 'real state CLOSE failed'
+                      good_digest = result['fixture'] == 'original' and result['mode'] == 'hash-only'
+                      assert (result['status'] == '00000000') == good_digest, 'actual result did not establish intended digest-vs-policy distinction'
+                  print('PASS genuine WinVerifyTrust: originals pass HASH_ONLY; covered-byte mutations/unsigned/truncated fail; generic policy remains actual failure. No full trust or iOS/VAC claim.', flush=True)
+              finally:
+                  subprocess.run(['wineserver', '-k'], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: isolated-real-wintrust-results
+          path: wintrust-real-proof.json
+          if-no-files-found: error
+          retention-days: 3
