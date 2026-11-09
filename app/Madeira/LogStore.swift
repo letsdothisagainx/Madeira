@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import SwiftUI
 
 final class LogStore: ObservableObject {
@@ -160,6 +161,40 @@ final class LogStore: ObservableObject {
 
     /// Documents/madeira-log.txt, this run's log.
     var logURL: URL { logFileURL }
+
+    /// Read-only, on-demand diagnostic export. This never runs during startup
+    /// and never shares the original log or arbitrary application files.
+    func exportSteamGameDiagnostics() async throws -> URL {
+        let documents = logFileURL.deletingLastPathComponent()
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                let directory = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("madeira-diagnostics-" + UUID().uuidString, isDirectory: true)
+                var createdDirectory = false
+                do {
+                    let entries = try SteamGameDiagnostics.collect(documents: documents)
+                    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
+                                                           attributes: [.posixPermissions: 0o700])
+                    createdDirectory = true
+                    let url = directory.appendingPathComponent("Madeira-Steam-CS2-Diagnostics.zip")
+                    // Exclusive creation in a fresh private directory; the ZIP
+                    // writer only accesses this newly owned destination.
+                    let fd = open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+                    guard fd >= 0 else { throw SteamGameDiagnostics.Failure.unavailable }
+                    close(fd)
+                    let writer = try SaveZipWriter(url: url)
+                    for entry in entries { try writer.add(name: entry.name, data: entry.data) }
+                    try writer.finish()
+                    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+                    continuation.resume(returning: url)
+                } catch {
+                    // Only a directory created by this request can be removed.
+                    if createdDirectory { try? FileManager.default.removeItem(at: directory) }
+                    continuation.resume(throwing: SteamGameDiagnostics.Failure.unavailable)
+                }
+            }
+        }
+    }
 
     /// Keeps this session's log under the program's name as well:
     /// Documents/logs/<exe>-<yyyy-MM-dd_HH-mm-ss>.txt, e.g.

@@ -3025,9 +3025,10 @@ struct LibraryView: View {
                 JITSettingsSection()
             }
             if settingsShow("signing", "expires", "refresh", "Apple", "sign-in", "7 days") { SigningSettingsSection() }
-            if settingsShow("diagnostics", "extended logging", "logging", "log") {
+            if settingsShow("diagnostics", "extended logging", "logging", "log", "Steam", "CS2") {
                 Section {
                     Toggle("Extended logging", isOn: $input.diagnostics)
+                    SteamGameDiagnosticsExportButton()
                 } header: { Text("Diagnostics") }
             }
             if settingsShow("pointer", "mouse", "cursor", "touch", "trackpad", "sensitivity") {
