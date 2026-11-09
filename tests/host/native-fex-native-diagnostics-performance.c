@@ -14,10 +14,10 @@ extern void madeira_diag_history_old(unsigned,uint64_t,uint64_t),madeira_diag_hi
 static uintptr_t ios_write_alias(uintptr_t);
 static int ios_alias_write_is_trapped(uintptr_t);
 static int diag_read_code(uint64_t,uint32_t *);
-static int diag_target_valid(uintptr_t,uint32_t);
+static int diag_target_valid(uintptr_t,uint32_t,const void *);
 static void diag_record_fault(uint32_t);
 #define MADEIRA_PERF_CODE_READ(pc,out) diag_read_code(pc,out)
-#define MADEIRA_PERF_TARGET_VALID(address) diag_target_valid(address,insn)
+#define MADEIRA_PERF_TARGET_VALID(address) diag_target_valid(address,insn,&state)
 #define MADEIRA_PERF_RECORD_FAULT(insn) diag_record_fault(insn)
 #define main madeira_atomic_fixture_unexecuted_fex_diagnostics_entry
 #include "native-atomic-alias-performance.c"
@@ -52,12 +52,36 @@ static int diag_read_code(uint64_t pc,uint32_t *out) {
   }
   return 0;
 }
-static int diag_target_valid(uintptr_t address,uint32_t instruction) {
+/* This fixture accepts only whole 64-bit history stores. Hardware supplied
+ * the fault address; independently check its encoded effective address before
+ * the unchanged production branch writes through the bounded private alias.
+ * Unsigned addition preserves A64's modulo-64-bit address arithmetic, including
+ * negative SXTW/SXTX indices. Rn=31 is SP, while Rm=31 is the zero register.
+ */
+static uint64_t diag_history_register(const arm_thread_state64_t *state,unsigned reg) {
+  return reg==29?state->__fp:reg==30?state->__lr:state->__x[reg];
+}
+static int diag_history_store_target(uintptr_t address,uint32_t instruction,const void *input) {
+  const arm_thread_state64_t *state=input;
+  unsigned rn=(instruction>>5)&31;
+  uint64_t base=rn==31?state->__sp:diag_history_register(state,rn),offset;
+  if(!inside(address,8,(uintptr_t)active.rx+FEX_DIAG_HISTORY,192)||(address&7))return 0;
+  if((instruction&0xffc00000u)==0xf9000000u)offset=((instruction>>10)&0xfff)*UINT64_C(8);
+  else if((instruction&0xffe00c00u)==0xf8200800u){
+    unsigned rm=(instruction>>16)&31,option=(instruction>>13)&7;
+    if(!(option&2))return 0; /* unallocated register-extend option */
+    offset=rm==31?0:diag_history_register(state,rm);
+    if(option==2)offset=(uint32_t)offset;
+    else if(option==6)offset=(uint64_t)(int64_t)(int32_t)offset;
+    if(instruction&0x1000u)offset<<=3;
+  }else return 0;
+  return base+offset==(uint64_t)address;
+}
+static int diag_target_valid(uintptr_t address,uint32_t instruction,const void *state) {
   if(address&7)return 0;
   if(!diag_case)return instruction==0xf860303fu&&
     (address==(uintptr_t)active.rx+FEX_DIAG_TELEMETRY+12*8||address==(uintptr_t)active.rx+FEX_DIAG_TELEMETRY+15*8);
-  if(diag_case==2)return (instruction&0xffc00000u)==0xf9000000u&&
-    inside(address,8,(uintptr_t)active.rx+FEX_DIAG_HISTORY,192);
+  if(diag_case==2)return diag_history_store_target(address,instruction,state);
   return (instruction>>30)==3&&madeira_jit_store_family(instruction)==MADEIRA_STORE_EXCLUSIVE&&
          address==(uintptr_t)active.rx+FEX_DIAG_IRTOPO;
 }

@@ -171,6 +171,9 @@ def emulation_header(work):
     start = source.index('                    else if ((insn & 0xffc00000) == 0xf9000000)')
     end = source.index('                    /* STR (immediate, unsigned offset, 32-bit)', start)
     scalar = source[start:end]
+    start = source.index('                    else if ((insn & 0xffe00c00) == 0xf8200800)')
+    end = source.index('                    /* STLR (Store-Release Register, 64-bit):', start)
+    indexed = source[start:end]
     (work / 'production-atomic-emulation.h').write_text(helpers + r'''
 static int baseline_emulate(uint32_t insn,uintptr_t fault_pc,uintptr_t fault_addr,
                             uintptr_t rw_addr,arm_thread_state64_t *input){
@@ -180,7 +183,7 @@ static int baseline_emulate(uint32_t insn,uintptr_t fault_pc,uintptr_t fault_add
     memcpy(state.__x,gpr,sizeof(state.__x));state.__fp=gpr[29];state.__lr=gpr[30];*input=state;return 1;
   }
 #define IOS_STORE_SRC(r) ((r)==31?0ULL:state.__x[r])
-''' + exclusive + scalar + r'''
+''' + exclusive + scalar + indexed + r'''
 #undef IOS_STORE_SRC
   *input=state;return emulated;
 }
