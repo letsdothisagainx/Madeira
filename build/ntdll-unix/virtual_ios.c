@@ -4586,6 +4586,7 @@ static unsigned char ios_image_is_fex( const void *pe_base, size_t size )
 
 #include "native_atomic_image.h"
 #include "native_counter_alias.h"
+#include "native_srw_alias.h"
 
 /* ntdll's source-built probe block remains visible at its original DATA
  * export. Its explicit writer contract selects the SAME physical bytes
@@ -4595,16 +4596,23 @@ static unsigned char ios_image_is_fex( const void *pe_base, size_t size )
 static void ios_jit_bind_native_counter_writer(void *source, void *rw, void *rx, size_t size)
 {
     static unsigned int reports;
-    int bound;
+    int bound, history;
     if (strcasecmp(ios_pe_module_name(source,size),"ntdll.dll")) return;
     bound=ios_native_counter_alias_bind(rw,size,(uintptr_t)rx,
             (intptr_t)((uintptr_t)rw-(uintptr_t)rx),1);
-    if (bound) __sync_synchronize();
+    history=ios_native_srw_alias_bind(rw,size,(uintptr_t)rx,
+            (intptr_t)((uintptr_t)rw-(uintptr_t)rx),1);
+    if (bound || history) __sync_synchronize();
     if (__atomic_fetch_add(&reports,1,__ATOMIC_RELAXED)<64)
+    {
         dprintf(2,"[native-counter-alias-v1] module=ntdll.dll bytes=%u action=%s "
                   "phase=private-copy result=%s counters=preserved rx-protection=unchanged\n",
                 MADEIRA_NATIVE_COUNTER_BYTES,bound?"bound":"unchanged",
                 bound?"ready":"contract-unavailable");
+        dprintf(2,"[native-srw-alias-v1] module=ntdll.dll entries=512 entry-bytes=16 action=%s "
+                  "phase=private-copy history=preserved atomics=native rx-protection=unchanged\n",
+                history?"bound":"contract-unavailable");
+    }
 }
 
 /* The source PE retains its NULL file initializer. Preserve only our tagged,
@@ -4615,7 +4623,7 @@ static void ios_jit_copy_native_image_data(void *image, void *rw, void *rx, size
                                          size_t offset, const void *source, size_t size)
 {
     if (!strcasecmp(ios_pe_module_name(image,image_size),"ntdll.dll") &&
-        ios_native_counter_alias_copy(rw,image_size,(uintptr_t)rx,
+        ios_native_counter_and_srw_alias_copy(rw,image_size,(uintptr_t)rx,
             (intptr_t)((uintptr_t)rw-(uintptr_t)rx),offset,source,size)) return;
     memcpy((char *)rw+offset,source,size);
 }

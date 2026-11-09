@@ -59,9 +59,13 @@ static int inside(uintptr_t p, size_t size, uintptr_t start, size_t span)
 
 static int ios_fault_read_insn(uint64_t pc, uint32_t *out)
 {
+#ifdef MADEIRA_PERF_CODE_READ
+    return MADEIRA_PERF_CODE_READ(pc, out);
+#else
     if ((pc & 3) || !inside(pc, 4, (uintptr_t)active.rx, active.page)) return 0;
     memcpy(out, (void *)(uintptr_t)pc, 4);
     return 1;
+#endif
 }
 
 static int quiet_dprintf(int fd, const char *fmt, ...)
@@ -104,7 +108,11 @@ static void *exception_server(void *unused)
         uintptr_t pc = arm_thread_state64_get_pc(state), fault = (uintptr_t)req->code[1];
         uint32_t insn = 0;
         int valid = ios_fault_read_insn(pc, &insn) &&
+#ifdef MADEIRA_PERF_TARGET_VALID
+                    MADEIRA_PERF_TARGET_VALID(fault);
+#else
                     inside(fault, 8, (uintptr_t)active.rx + active.page, active.page) && !(fault & 7);
+#endif
         uintptr_t alias = (uintptr_t)active.rw + (fault - (uintptr_t)active.rx);
         int handled = valid && baseline_emulate(insn, pc, fault, alias, &state);
         if (!handled) {
