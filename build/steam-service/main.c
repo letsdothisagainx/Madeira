@@ -15,7 +15,19 @@ static wchar_t root[32768];
 static const wchar_t service_name[] = L"Steam Client Service";
 static void event(const char *name, DWORD value)
 {
-    fprintf(stderr, "[steam-service] %s=%lu\n", name, (unsigned long)value);
+    DWORD incoming = GetLastError(), written;
+    char record[128];
+    int length = snprintf(record, sizeof(record), "[steam-service] %s=%lu\r\n", name, (unsigned long)value);
+    /* Unbuffered Wine printf emits format pieces separately. Concurrent native
+     * diagnostics can split even the tag/key/value across physical rows. Send
+     * one bounded record to our inherited stderr, never a Valve endpoint.
+     * Logging failure/short writes neither retry a fragment nor change SCM. */
+    if (length > 0 && (size_t)length < sizeof(record)) {
+        HANDLE output = GetStdHandle(STD_ERROR_HANDLE);
+        if (output && output != INVALID_HANDLE_VALUE)
+            WriteFile(output, record, (DWORD)length, &written, NULL);
+    }
+    SetLastError(incoming);
 }
 static DWORD last_error(void) { DWORD e = GetLastError(); return e ? e : ERROR_GEN_FAILURE; }
 

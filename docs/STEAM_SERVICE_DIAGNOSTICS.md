@@ -140,3 +140,53 @@ service creates its private endpoint. Repeat Steam launch, then game startup.
 A successfully installed/running Steam Client Service does **not** guarantee VAC
 compatibility or successful official VAC secure play. No bypass or fabricated
 response is part of this change.
+
+## November 9 `DB9C3F84` capture
+
+The new export measures the phone's `Steam/bin/SteamService.dll` and both
+service executables as PE machine `014c`. These are disk-header snapshots at
+export time, not file hashes, import-table captures or authenticated/loaded-image
+identity. The lower-case-only DLL candidate is absent; Windows path lookup can
+resolve the observed lower-case request to the existing official-case file.
+The precise resolved file and its load flags at the earlier failure are not
+recorded.
+
+Wine creates service PID `004c` with main TID `0050`, selects its I386 guest
+window and maps SteamService.dll on worker TID `0064`, followed by CFGMGR32.dll
+and setupapi.dll. Separate Steam PID `0068` is AMD64 (64-bit pointers,
+`IsWow64Process=0`); its `SteamServiceConnect` TID `00b0` receives `c000007b`
+for the explicit DLL request and `c0000135` for bare-name fallback, then exits
+zero. An ordinary AMD64 process cannot load native I386 code as a DLL. Wine's
+`is_valid_binary` machine check precedes import binding; this evidence does not
+identify a missing imported symbol/dependency or justify weakening that check.
+The service's earlier successful load is a different process and architecture.
+The relationship of the client attempt to secure-game rejection remains unknown.
+
+The raw helper status is `service-state=4` and its result is zero, but unrelated
+native diagnostics are interleaved between the `fprintf` format pieces. Even
+the tag, key and numeric value occupy different physical rows. This explains
+why the strict exported summary has no accepted running-state record; it does
+not establish a stopped service. No parser should reconstruct arbitrary log
+fragments as a service/security result.
+
+The helper now formats each numeric event into a 128-byte local buffer and
+submits one `WriteFile` to its inherited stderr. Logging preserves incoming
+`GetLastError`; invalid handles, truncation, failure and short writes remain
+diagnostic loss, with no retry of partial records and no change to SCM results.
+No Valve pipe is opened or written. `check-steam-service-log.py`, called by the
+existing service check, executes the unchanged pinned Wine printf narrow
+string/integer path to reproduce the old five-fragment output. It executes the
+actual new producer with owned Win32 transport edges, failure cases and 1,024
+concurrent records under sanitizers. This checks the producer boundary; final
+record delivery through the iPhone's full logging transport still needs a
+device capture.
+
+There is no genuine Steam verification request/result or WinVerifyTrust return
+in the new attached evidence. Cached game hashes and embedded VPK consistency
+remain separate observations. The existing trust-wrapper host test substitutes
+the verifier's return to test noninterference, while native/package tests check
+compilation and exports. They do not execute cryptographic verification.
+Wine's ordinary `softpub.c:test_wintrust_digest` fixtures provide self-signed,
+unsigned and tampered PE inputs for a future isolated real-verifier test.
+Self-signed chain/policy errors must remain actual errors; `WTD_HASH_ONLY_FLAG`
+success measures digest consistency, not trusted signing or VAC acceptance.

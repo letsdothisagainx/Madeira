@@ -5,7 +5,7 @@
 """Compile the production service-preparation policy against scripted Win32
 outcomes. No Wine, Valve binaries, accounts, services or game data are used."""
 from pathlib import Path
-import os, subprocess, tempfile
+import os, subprocess, sys, tempfile
 root = Path(__file__).resolve().parents[2]
 code = r'''
 #include <assert.h>
@@ -44,8 +44,12 @@ with tempfile.TemporaryDirectory() as folder:
 print('PASS real preparation policy: SCM ordering, missing-only install, requery, error preservation, start failures')
 # Architecture and registry writes remain the genuine installer's responsibility.
 s=(root/'build/steam-service/main.c').read_text()
-for forbidden in ['CreateServiceW(', 'RegSetValue', 'CreateNamedPipe', 'WriteFile(', 'TerminateProcess(']:
+for forbidden in ['CreateServiceW(', 'RegSetValue', 'CreateNamedPipe', 'TerminateProcess(']:
     assert forbidden not in s, forbidden
+# The only write is one bounded numeric record to inherited stderr, never a
+# Valve endpoint. Its actual Win32 transport/error behavior is exercised below.
+assert s.count('WriteFile(') == 1 and 'GetStdHandle(STD_ERROR_HANDLE)' in s
+subprocess.run([sys.executable, str(root/'tests/host/check-steam-service-log.py')], check=True)
 assert 'SCS_32BIT_BINARY' in s and 'SCS_64BIT_BINARY' in s
 assert 'QueryServiceStatusEx' in s and 'SERVICE_RUNNING' in s
 swift=(root/'app/Madeira/MadeiraDock.swift').read_text()
