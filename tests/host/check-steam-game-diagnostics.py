@@ -89,14 +89,21 @@ let bad = [
     content.replacingOccurrences(of: "game/bin/win64/cs2.exe", with: "%2e%2e/console.log"),
     content.replacingOccurrences(of: "state=cache-hash-match", with: "state=" + secrets[0]),
     session + " url=https://example.org/?ticket=" + secrets[0],
-    trust.replacingOccurrences(of: "name=cs2.exe", with: "name=" + secrets[0]),
     trust + " token=" + secrets[0], vpk + " private=" + secrets[1],
     vpk.replacingOccurrences(of: "vpk-crypto=consistent-embedded-key", with: "vpk-crypto=" + secrets[0]),
     session + " public_key=" + secrets[1], session + " private=" + secrets[1],
     session + "\0", session + "\r" + secrets[0], session + "\u{202e}", String(repeating: "x", count: 4100) + session
 ]
 for line in bad { assert(SteamGameDiagnostics.decode(line) == nil, "unknown or sensitive row accepted") }
-put("madeira-log.txt", "[00:00:01.001] [INFO] [build] v0.1.3 (4) source=" + String(repeating: "a", count: 40) + "\n" + content + "\n" + service + "\n" + session + "\n" + bad.joined(separator: "\n") + "\n[session-log] Steam game cs2.exe: logs/cs2.exe-2026-11-09_00-03-55.txt\n")
+// An unlisted subject must not erase the actual verifier error. Only its
+// arbitrary filename is canonicalized; unknown fields still reject the row.
+let unknownTrust = trust.replacingOccurrences(of: "name=cs2.exe", with: "name=" + secrets[0])
+let unknownTrustFields = SteamGameDiagnostics.decode(unknownTrust)!.1
+assert(unknownTrustFields["name"] == "redacted-unlisted")
+assert(unknownTrustFields["result"] == "800b0100" && unknownTrustFields["choice"] == "1")
+assert(!String(describing: unknownTrustFields).contains(secrets[0]))
+assert(SteamGameDiagnostics.decode(unknownTrust + " private=" + secrets[1]) == nil)
+put("madeira-log.txt", "[00:00:01.001] [INFO] [build] v0.1.3 (4) source=" + String(repeating: "a", count: 40) + "\n" + content + "\n" + service + "\n" + session + "\n" + unknownTrust + "\n" + bad.joined(separator: "\n") + "\n[session-log] Steam game cs2.exe: logs/cs2.exe-2026-11-09_00-03-55.txt\n")
 try! fm.createDirectory(at: root.appendingPathComponent("logs"), withIntermediateDirectories: true)
 try! fm.linkItem(at: root.appendingPathComponent("madeira-log.txt"), to: root.appendingPathComponent("logs/cs2.exe-2026-11-09_00-03-55.txt"))
 let steam = "wine/drive_c/Program Files (x86)/Steam/"
@@ -110,8 +117,26 @@ var pe = Data(count: 128)
 pe[0] = 0x4d; pe[1] = 0x5a; pe[60] = 64
 pe[64] = 0x50; pe[65] = 0x45; pe[68] = 0x64; pe[69] = 0x86
 let serviceDLL = root.appendingPathComponent(steam + "bin/steamservice.dll")
+let officialDLL = root.appendingPathComponent(steam + "bin/SteamService.dll")
 try! fm.createDirectory(at: serviceDLL.deletingLastPathComponent(), withIntermediateDirectories: true)
+var pe32 = pe; pe32[68] = 0x4c; pe32[69] = 0x01
+try! pe32.write(to: officialDLL)
+func serviceRecords(_ entries: [SteamGameDiagnostics.Entry]) -> [[String: String]] {
+    (try! JSONSerialization.jsonObject(with: entries[0].data) as! [String: Any])["serviceDiskPEObservations"] as! [[String: String]]
+}
+let officialOnly = serviceRecords(try! SteamGameDiagnostics.collect(documents: root))
+assert(officialOnly.contains { $0["candidate"] == "steam-bin-service-dll-official-case" && $0["machine"] == "014c" })
+try! fm.removeItem(at: officialDLL)
 try! pe.write(to: serviceDLL)
+let lowercaseOnly = serviceRecords(try! SteamGameDiagnostics.collect(documents: root))
+assert(lowercaseOnly.contains { $0["machine"] == "8664" && $0["state"] == "header-read-only-not-authenticated" })
+// On a case-sensitive volume these are independent conflicting candidates;
+// on Apple's case-folded test volume the second spelling is the same inode.
+// Report both candidate observations and prove sameness only by dev/inode.
+try! pe32.write(to: officialDLL)
+var officialInfo = stat(), lowerInfo = stat()
+assert(lstat(officialDLL.path, &officialInfo) == 0 && lstat(serviceDLL.path, &lowerInfo) == 0)
+let distinctSpellings = officialInfo.st_dev != lowerInfo.st_dev || officialInfo.st_ino != lowerInfo.st_ino
 let invalidHandle = try! FileHandle(forWritingTo: root.appendingPathComponent("madeira-log.txt"))
 try! invalidHandle.seekToEnd(); try! invalidHandle.write(contentsOf: Data([0xff, 0xfe, 0x0a])); try! invalidHandle.close()
 let entries = try! SteamGameDiagnostics.collect(documents: root)
@@ -122,12 +147,18 @@ assert(!text.contains("successful-login") && !text.contains("auth-validation=unc
 let manifest = try! JSONSerialization.jsonObject(with: entries[0].data) as! [String: Any]
 let sources = manifest["sources"] as! [[String: Any]]
 let disk = manifest["serviceDiskPEObservations"] as! [[String: String]]
-assert(disk.contains { $0["candidate"] == "steam-bin-service-dll" && $0["machine"] == "8664" && $0["evidence"] == "disk-header-snapshot-not-loaded-image" })
+assert(disk.contains { $0["candidate"] == "steam-bin-service-dll-official-case" && $0["machine"] == "014c" && $0["evidence"] == "disk-header-snapshot-not-loaded-image" })
+if distinctSpellings {
+    assert(disk.contains { $0["candidate"] == "steam-bin-service-dll" && $0["machine"] == "8664" && $0["state"] == "header-read-only-not-authenticated" })
+} else {
+    assert(disk.contains { $0["candidate"] == "steam-bin-service-dll" && $0["state"] == "same-file-as-earlier-candidate" && $0["sameAsCandidate"] == "steam-bin-service-dll-official-case" })
+}
 assert(manifest["moduleObservations"] as? String == "no-observed-dedicated-events-unmeasured")
 assert(sources.contains { $0["source"] as? String == "cs2-session-alias" && $0["state"] as? String == "same-file-as-earlier-source" })
 assert(sources.contains { $0["source"] as? String == "steam-connection" && $0["state"] as? String == "unavailable-or-not-owned-regular-file" })
 let events = try! JSONSerialization.jsonObject(with: entries[1].data) as! [[String: Any]]
-assert(events.count == 4)
+assert(events.count == 5)
+assert(events.contains { ($0["fields"] as? [String: String])?["name"] == "redacted-unlisted" && ($0["fields"] as? [String: String])?["result"] == "800b0100" })
 assert(!events.contains { $0["source"] as? String == "steam-console" }, "raw console impersonated a structured native producer")
 assert(events.contains { ($0["fields"] as? [String: String])?["event"] == "vac-session-unverified-message" })
 assert(!events.contains { ($0["fields"] as? [String: String])?["result"] == "999" })
@@ -149,6 +180,15 @@ put("madeira-log.txt", service + "\n" + String(repeating: "secret-row\n", count:
 let boundedEntries = try! SteamGameDiagnostics.collect(documents: root, limits: bounded)
 let boundedManifest = try! JSONSerialization.jsonObject(with: boundedEntries[0].data) as! [String: Any]
 assert((boundedManifest["sources"] as! [[String: Any]])[0]["truncated"] as? Bool == true)
+// Preserve the actual early CS2 mapping/flags near5MiB as well as late
+// verifier errors after the runtime log grows beyond the8MiB input budget.
+let fillerLine = String(repeating: "x", count: 1023) + "\n"
+put("madeira-log.txt", String(repeating: fillerLine, count: 5 * 1024) + flags + "\n" + module + "\n" + String(repeating: fillerLine, count: 4 * 1024) + unknownTrust + "\n")
+let longLog = try! SteamGameDiagnostics.collect(documents: root)
+let longEvents = try! JSONSerialization.jsonObject(with: longLog[1].data) as! [[String: Any]]
+assert(longEvents.contains { $0["record"] as? String == "cs2-launch-flags-v1" })
+assert(longEvents.contains { $0["record"] as? String == "cs2-module-v1" })
+assert(longEvents.contains { ($0["fields"] as? [String: String])?["name"] == "redacted-unlisted" })
 // An input-byte cap must not amplify8MiB of newlines into millions of
 // Data subsequences before applying the row cap.
 put("madeira-log.txt", String(repeating: "\n", count: 8 << 20))

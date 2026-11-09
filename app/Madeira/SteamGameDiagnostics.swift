@@ -107,8 +107,12 @@ enum SteamGameDiagnostics {
                   oneOf(f["action"]!, "unknown 00aac56b-cd44-11d0-8cc2-00c04fc295ee 189a3842-3041-11d1-85e1-00c04fc295ee"),
                   number(f["choice"]!, maximum: 5), oneOf(f["kind"]!, "unknown file catalog blob signer cert"),
                   number(f["state"]!, maximum: 4), matches(f["result"]!, "[0-9a-fA-F]{8}"), number(f["error"]!, maximum: UInt64(UInt32.max)),
-                  oneOf(f["path"]!, "unknown bare unc drive other"), publicNames.contains(f["name"]!.lowercased()),
+                  oneOf(f["path"]!, "unknown bare unc drive other"),
                   f["limit"] == "64-per-process-module" else { return nil }
+            // The numeric verifier result remains useful for an unlisted
+            // subject. Never export that subject's arbitrary filename.
+            let name = f["name"]!.lowercased()
+            f["name"] = publicNames.contains(name) ? name : "redacted-unlisted"
         case "cs2-launch-flags-v1":
             guard keys(f, "pid tid steam condebug joy insecure allow-third-party argument-count unknown-count known-sequence parse-complete coverage"), processIDs(f),
                   ["steam", "condebug", "joy", "insecure", "allow-third-party", "parse-complete"].allSatisfy({ oneOf(f[$0]!, "0 1") }),
@@ -186,7 +190,7 @@ enum SteamGameDiagnostics {
     }
     /// Every path is a literal below an already opened, app-owned Documents
     /// directory. Neither directory nor final-file symlinks are followed.
-    private static func snapshot(_ root: Int32, _ relative: String, maximum: Int) -> Snapshot? {
+    private static func snapshot(_ root: Int32, _ relative: String, maximum: Int, preserveStartup: Bool = false) -> Snapshot? {
         let parts = relative.split(separator: "/").map(String.init)
         guard maximum > 0, !parts.isEmpty, parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else { return nil }
         guard let fd = openOwned(root, parts) else { return nil }
@@ -205,7 +209,8 @@ enum SteamGameDiagnostics {
         }
         let data: Data
         if size > limit {
-            let head = min(maximum / 8, 512 << 10), tail = maximum - head
+            let head = preserveStartup ? min(maximum * 3 / 4, 6 << 20) : min(maximum / 8, 512 << 10)
+            let tail = maximum - head
             guard let first = read(0, head, cutStart: false, cutEnd: true),
                   let last = read(size - UInt64(tail), tail, cutStart: true, cutEnd: false) else { return nil }
             data = first + last
@@ -241,15 +246,24 @@ enum SteamGameDiagnostics {
     }
     private static func servicePEs(_ root: Int32) -> [[String: String]] {
         let steam = "wine/drive_c/Program Files (x86)/"
-        let candidates = [("steam-bin-service-dll", steam + "Steam/bin/steamservice.dll"),
+        let candidates = [("steam-bin-service-dll-official-case", steam + "Steam/bin/SteamService.dll"),
+                          ("steam-bin-service-dll", steam + "Steam/bin/steamservice.dll"),
                           ("steam-bin-service-exe", steam + "Steam/bin/SteamService.exe"),
                           ("common-service-exe", steam + "Common Files/Steam/SteamService.exe")]
+        var identities: [String: String] = [:]
         return candidates.map { id, relative in
             var record = ["candidate": id, "evidence": "disk-header-snapshot-not-loaded-image", "machine": "unknown", "state": "unavailable-or-not-owned-regular-file"]
             guard let fd = openOwned(root, relative.split(separator: "/").map(String.init)) else { return record }
             defer { close(fd) }
             var before = stat()
             guard fstat(fd, &before) == 0, before.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG), before.st_size >= 64 else { return record }
+            let identity = "\(before.st_dev):\(before.st_ino)"
+            if let earlier = identities[identity] {
+                record["state"] = "same-file-as-earlier-candidate"
+                record["sameAsCandidate"] = earlier
+                return record
+            }
+            identities[identity] = id
             func read(_ offset: UInt64, _ count: Int) -> [UInt8]? {
                 guard offset <= UInt64(before.st_size), UInt64(count) <= UInt64(before.st_size) - offset else { return nil }
                 var data = [UInt8](repeating: 0, count: count)
@@ -279,7 +293,7 @@ enum SteamGameDiagnostics {
         var omitted = 0, scanned = 0, scanLimitReached = false
         var alias: String?, build = "unmeasured"
         func consume(_ id: String, _ path: String, _ maximum: Int) {
-            guard let file = snapshot(root, path, maximum: maximum) else {
+            guard let file = snapshot(root, path, maximum: maximum, preserveStartup: id == "madeira-session") else {
                 sources.append(["source": id, "state": "unavailable-or-not-owned-regular-file"]); return
             }
             if let original = identities[file.identity] {
@@ -333,6 +347,8 @@ enum SteamGameDiagnostics {
         }
         let manifest: [String: Any] = ["schema": "madeira-steam-cs2-diagnostics-v1", "sourceCommit": build,
             "collection": "explicit-user-action-bounded-head-and-tail-snapshot", "sources": sources,
+            "mainByteBudget": limits.mainBytes, "mainPrefixBudget": min(limits.mainBytes * 3 / 4, 6 << 20),
+            "mainSuffixBudget": limits.mainBytes - min(limits.mainBytes * 3 / 4, 6 << 20),
             "recordsCaptured": observations.count, "rowsScanned": scanned, "rowsOmittedWithinScan": omitted,
             "scanLimitReached": scanLimitReached, "maxRowsScanned": 131072,
             "rawLogBodies": "excluded", "accountAndAuthenticationData": "excluded-by-closed-schema",
