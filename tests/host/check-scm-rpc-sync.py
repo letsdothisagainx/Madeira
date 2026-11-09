@@ -18,6 +18,7 @@ code=r'''
 #include <string.h>
 #include <strings.h>
 #include "native_counter_alias.h"
+#include "native_srw_alias.h"
 #include <sys/mman.h>
 #include <unistd.h>
 typedef uint32_t ULONG,NTSTATUS;
@@ -47,6 +48,8 @@ int main(void) {
  unsigned char *rx=mmap(NULL,2*page,PROT_READ,MAP_SHARED,fd,0);
  assert(rw!=MAP_FAILED && rx!=MAP_FAILED);memset(rw,0xa5,2*page);
  unsigned char image[4096]={0};
+ assert(!ios_native_srw_alias_bind(image,sizeof(image),(uintptr_t)rx,
+                                  (intptr_t)((uintptr_t)rw-(uintptr_t)rx),1));
  ios_jit_rx_base_global=rx;ios_jit_rw_base_global=rw;
  for(int i=0;i<2;i++) {
   ios_jit_mappings[i].pe_base=image;ios_jit_mappings[i].size=sizeof(image);

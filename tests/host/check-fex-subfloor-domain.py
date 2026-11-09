@@ -471,6 +471,23 @@ struct Backend {
     }
     ~Backend(){assert(!dlclose(image));}
 };
+static void *owned_high_backing(size_t bytes,uint64_t floor) {
+    // A macOS host may place an anonymous mapping below the captured iOS
+    // floor. Nonfixed hints request owned free pages without replacing any
+    // existing mapping; discard only our own unsuitable results and retry.
+    const uintptr_t hints[]={0,0x140000000ull,0x200000000ull,0x400000000ull,
+        0x800000000ull,0x1000000000ull,0x2000000000ull,0x10000000000ull,
+        0x40000000000ull,0x100000000000ull,0x200000000000ull};
+    for(auto hint:hints) {
+        void *mapping=mmap(reinterpret_cast<void*>(hint),bytes,PROT_READ|PROT_WRITE,
+                           MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+        if(mapping==MAP_FAILED)continue;
+        uintptr_t address=reinterpret_cast<uintptr_t>(mapping);
+        if(address>=floor&&bytes<=UINTPTR_MAX-address)return mapping;
+        assert(!munmap(mapping,bytes));
+    }
+    return MAP_FAILED;
+}
 int main(int argc,char **argv) {
     assert(argc==4);constexpr uint64_t floor=0x1044f8000ull;
     Backend legacy(argv[1]);assert(legacy.legacy(floor));
@@ -479,7 +496,7 @@ int main(int argc,char **argv) {
     assert(ownerA.capability()==0x4d53460100000001ull&&ownerB.capability()==ownerA.capability());
     assert(ownerA.configure(floor)&&ownerA.contracts(floor));
     assert(ownerB.count()==0&&ownerB.real(0x100000000ull)==0x100000000ull);
-    void *mapping=mmap(nullptr,0x4000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);assert(mapping!=MAP_FAILED);
+    void *mapping=owned_high_backing(0x4000,floor);assert(mapping!=MAP_FAILED);
     assert(ownerB.bytes(static_cast<uint8_t*>(mapping),0x4000,floor));
     assert(ownerB.unmap(static_cast<uint8_t*>(mapping)));
     assert(ownerA.real(0x100000000ull)==0x13d700000ull);
