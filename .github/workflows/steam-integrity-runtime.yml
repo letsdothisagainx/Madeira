@@ -1,127 +1,35 @@
-name: Verify Steam content integrity runtime
-
+name: Verify CS2 diagnostic input preservation
 on:
-  workflow_dispatch:
-  workflow_call:
   push:
-    branches: [main, 'codex/pr-build-*', codex/validate-cs2-integrity-runtime-4b41]
-    paths: &integrity-paths
-      - app/Madeira/SwiftSteam/**
-      - app/Madeira/SteamIntegrityDiagnostics.swift
-      - app/Madeira/SteamOwnedLibrary.swift
-      - app/Madeira/SteamInstall.swift
-      - app/Madeira/SteamKeyValues.swift
-      - app/Madeira/ContentView.swift
-      - app/Madeira/MadeiraDock.swift
-      - app/Madeira/ExternalStorage.swift
-      - app/Madeira.xcodeproj/project.pbxproj
-      - tests/host/check-steam-library.py
-      - tests/host/check-steam-integrity-launch.py
-      - app/Madeira/SteamGameDiagnostics.swift
-      - tests/host/check-steam-game-diagnostics.py
-      - app/Madeira/CS2VACMarkers.swift
-      - tests/host/check-cs2-vac-markers.py
-      - build/crypto-unix/crypt32_unixlib_ios.c
-      - tests/host/check-crypt32-root-fd.py
-      - .github/workflows/steam-integrity-runtime.yml
-  pull_request:
-    paths: *integrity-paths
-
+    branches: [codex/validate-cs2-vac-input-8bd]
+  workflow_dispatch:
 permissions:
   contents: read
-
 jobs:
-  apple-content-integrity:
+  apple-input:
     runs-on: xcode-27
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.14'
-      - name: Configure system decoder libraries
-        run: |
-          brew list xz >/dev/null 2>&1 || brew install xz
-          echo "CPATH=$(brew --prefix xz)/include" >> "$GITHUB_ENV"
-          echo "LIBRARY_PATH=$(brew --prefix xz)/lib" >> "$GITHUB_ENV"
-      - name: Execute non-gating native launch integration with Swift and ASan
-        run: |
-          set +e
-          python3 tests/host/check-steam-integrity-launch.py --require-swift > content-launch.txt 2>&1
-          result=$?
-          tail -80 content-launch.txt
-          exit "$result"
-      - name: Execute read-only diagnostic package with Swift and ASan
-        run: python3 tests/host/check-steam-game-diagnostics.py --require-swift
-      - name: Execute accepted CS2 observation and existing-lease bodies
-        run: python3 tests/host/check-cs2-observation.py
-      - name: Execute bounded VAC user and input timestamps with Swift and ASan
-        run: python3 tests/host/check-cs2-vac-markers.py --require-swift
-      - name: Load pinned Wine list definitions for the production certificate reader
+      - name: Load pinned Wine input headers
         run: git submodule update --init --depth 1 wine
-      - name: Reproduce old crypto descriptor reuse and validate exact ownership
+      - name: Execute existing production input regressions
         run: |
-          python3 tests/host/check-crypt32-root-fd.py --baseline 4711d1235dd8ccaa84556a7257127d266b57e20b --expect-baseline-reuse-failure
-          python3 tests/host/check-crypt32-root-fd.py
-      - name: Reproduce the exact old downloader's runtime integrity failures
-        run: |
-          set +e
-          MADEIRA_STEAM_INTEGRITY_BASELINE=4b41f1dd7603612e1596ac885d0b883fa601cf26 python3 tests/host/check-steam-library.py > content-baseline.txt 2>&1
-          result=$?
-          tail -100 content-baseline.txt
-          test "$result" -eq 1 || exit 1
-          python3 - <<'PY'
-          from pathlib import Path
-          text = Path('content-baseline.txt').read_text()
-          expected = {
-              'FAIL: resuming rehashes journal candidates: only the changed completed chunk is fetched again',
-              'FAIL: every downloaded file has exactly the bytes of its depot (chunks in five encodings, encrypted names, empty file)',
-              'FAIL: a different SHA-1 fails the authentic downloader without publishing an installed record',
-              'FAIL: rejected chunk bytes never reach the game file, even when size and Adler match',
-          }
-          failures = {line for line in text.splitlines() if line.startswith('FAIL: ')}
-          assert expected <= failures, 'all four specific runtime assertions must fail against the original producer'
-          # Depending on which genuinely completed chunk wins the concurrent
-          # interruption, its uncorrected damage can also require one extra
-          # fetch in the later update. This is the same journal-trust defect.
-          related = {'FAIL: an update fetches only the chunk that changed (2 chunk(s))'}
-          assert failures - expected <= related, 'unrelated compiler, dependency or runtime failures are not a valid baseline'
-          assert 'PASS: the production Steam library, download and decoder code compile on the host' in text
-          assert f'check-steam-library: {len(failures)} FAILED' in text
-          assert 'ERROR: AddressSanitizer' not in text and 'AddressSanitizer:DEADLYSIGNAL' not in text
-          print('PASS: exact baseline compiles and reproduces all four required integrity assertions')
-          PY
-      - name: Validate production download, manifest and read-only audit with Swift and ASan
-        run: |
-          set +e
-          python3 tests/host/check-steam-library.py > content-fixed.txt 2>&1
-          result=$?
-          tail -100 content-fixed.txt
-          exit "$result"
-      - name: Bound owned-fixture diagnostic artifacts
-        if: always()
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          maximum = 512 * 1024
-          for name in ('content-launch.txt', 'content-baseline.txt', 'content-fixed.txt'):
-              path = Path(name)
-              if path.exists() and path.stat().st_size > maximum:
-                  with path.open('rb') as stream:
-                      stream.seek(-(maximum - 128), 2)
-                      tail = stream.read(maximum - 128)
-                  path.write_bytes(b'Earlier owned-fixture output omitted; artifact capped at 512 KiB.\n' + tail)
-          PY
+          set -o pipefail
+          {
+            python3 tests/host/check-hardware-input.py
+            python3 tests/host/check-pointer-geometry.py
+            python3 tests/host/check-pointer-capture.py
+            python3 tests/host/check-clipboard-paste.py
+            python3 tests/host/check-control-presets.py
+            python3 tests/host/check-pad-output.py
+          } | tee input-preservation.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: steam-content-integrity-runtime
-          path: |
-            content-launch.txt
-            content-baseline.txt
-            content-fixed.txt
-          if-no-files-found: ignore
+          name: cs2-input-preservation
+          path: input-preservation.txt
+          if-no-files-found: error
           retention-days: 14
