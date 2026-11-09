@@ -110,15 +110,37 @@ enum SteamGameDiagnostics {
                   oneOf(f["path"]!, "unknown bare unc drive other"), publicNames.contains(f["name"]!.lowercased()),
                   f["limit"] == "64-per-process-module" else { return nil }
         case "cs2-launch-flags-v1":
-            guard keys(f, "steam joy insecure allow-third-party unknown-count"),
-                  ["steam", "joy", "insecure", "allow-third-party"].allSatisfy({ oneOf(f[$0]!, "0 1") }),
-                  number(f["unknown-count"]!, maximum: 32767) else { return nil }
+            guard keys(f, "pid tid steam condebug joy insecure allow-third-party argument-count unknown-count known-sequence parse-complete coverage"), processIDs(f),
+                  ["steam", "condebug", "joy", "insecure", "allow-third-party", "parse-complete"].allSatisfy({ oneOf(f[$0]!, "0 1") }),
+                  allNumbers(f, "argument-count unknown-count", maximum: 128), f["coverage"] == "accepted-process-params" else { return nil }
+            let sequence = f["known-sequence"] == "-" ? [] : f["known-sequence"]!.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+            guard sequence.count <= 128, sequence.allSatisfy({ oneOf($0, "0 1 2 3 4") }),
+                  sequence.count + Int(f["unknown-count"]!)! == Int(f["argument-count"]!)!,
+                  ["steam", "condebug", "joy", "insecure", "allow-third-party"].enumerated().allSatisfy({
+                      f[$0.element] == (sequence.contains(String($0.offset)) ? "1" : "0")
+                  }) else { return nil }
         case "cs2-module-v1":
-            guard keys(f, "relative machine"), paths.contains(f["relative"]!),
-                  oneOf(f["machine"]!, "014c 8664 aa64 a641 a64e unknown") else { return nil }
+            guard keys(f, "pid tid path-class relative machine hybrid unknown-count dropped-observed sequence limit coverage path-source"), processIDs(f), modulePath(f),
+                  oneOf(f["machine"]!, "014c 8664 aa64 a641 a64e unknown"), oneOf(f["hybrid"]!, "0 1 unmeasured"),
+                  allNumbers(f, "unknown-count dropped-observed sequence", maximum: 128), UInt64(f["sequence"]!)! > 0, f["limit"] == "128",
+                  f["coverage"] == "bounded-observed-load-events", oneOf(f["path-source"]!, "accepted-main-image section-name") else { return nil }
         default: return nil
         }
         return (tag, f)
+    }
+    private static func modulePath(_ f: [String: String]) -> Bool {
+        guard let relative = f["relative"] else { return false }
+        switch f["path-class"] {
+        case "game": return paths.contains(relative) && !relative.hasSuffix(".vpk")
+        case "steam-client": return relative == "steamclient64.dll"
+        case "private", "unknown": return relative == "redacted"
+        case "system", "search-root":
+            let parts = relative.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+            guard parts.count == 2,
+                  oneOf(parts[0], f["path-class"] == "system" ? "system32 sysx64 syswow64" : "aarch64-windows arm64ec-windows i386-windows") else { return false }
+            return oneOf(parts[1], "ntdll.dll kernel32.dll kernelbase.dll wintrust.dll crypt32.dll bcrypt.dll advapi32.dll sechost.dll rpcrt4.dll ws2_32.dll ucrtbase.dll msvcrt.dll win32u.dll user32.dll gdi32.dll d3d11.dll dxgi.dll winemetal.dll setupapi.dll version.dll psapi.dll ole32.dll oleaut32.dll combase.dll coml2.dll winhttp.dll cryptnet.dll ncrypt.dll mswsock.dll shlwapi.dll shell32.dll shcore.dll imm32.dll uxtheme.dll comctl32.dll xtajit64.dll libarm64ecfex.dll")
+        default: return false
+        }
     }
     private static func sourceRole(_ f: [String: String]) -> Bool {
         switch f["role"] {
@@ -288,7 +310,9 @@ enum SteamGameDiagnostics {
                     if matches(p, "\\[build\\] v[0-9.]{1,16} \\([0-9]{1,5}\\) source=[0-9a-f]{40}") { build = String(p.suffix(40)) }
                 }
                 guard observations.count < limits.records else { omitted += 1; continue }
-                if let (tag, fields) = decode(line) {
+                // Native structured producers write the runtime log. Official
+                // console bodies cannot impersonate an audit/hash/module row.
+                if id == "madeira-session", let (tag, fields) = decode(line) {
                     observations.append(["source": id, "record": tag, "fields": fields]); captured += 1
                 } else if id != "madeira-session", let event = console(line) {
                     observations.append(["source": id, "record": "fixed-console-message", "fields": ["event": event, "evidence": "application-message-not-security-verdict"]]); captured += 1
@@ -314,12 +338,18 @@ enum SteamGameDiagnostics {
             "rawLogBodies": "excluded", "accountAndAuthenticationData": "excluded-by-closed-schema",
             "moduleCoverage": "observed-allowlisted-loader-events-only-not-complete-inventory",
             "effectiveArguments": "only-dedicated-flag-observations-no-raw-command-lines",
+            "knownArgumentIDs": ["0": "-steam", "1": "-condebug", "2": "-joy", "3": "-insecure", "4": "-allow_third_party_software"],
+            "argumentCompleteness": "complete-only-when-parse-complete-1-and-unknown-count-0",
+            "flagSemantics": "observed-tokens-not-engine-option-interpretation-zeros-unobserved-when-incomplete",
+            "machineInterpretation": "raw-PE-machine-plus-separate-hybrid-observation-8664-does-not-imply-pure-AMD64",
             "launchFlagObservations": coverage("cs2-launch-flags-v1"),
             "moduleObservations": coverage("cs2-module-v1"),
             "trustObservations": coverage("trust-result-v1"),
             "sessionObservations": coverage("steam-session-v1"),
             "authenticationVerdict": "unmeasured", "vacVerdict": "unmeasured",
-            "trustVerdict": "application-observations-only-not-independent-validation",
+            "trustVerdict": "unmeasured",
+            "trustObservationScope": "application-reported-WinVerifyTrust-results-not-independent-validation",
+            "structuredProducerRows": "accepted-from-main-runtime-log-only",
             "numericSessionResultDomain": "unknown-do-not-infer-authentication-status",
             "externalGameLibraries": "not-followed-unmeasured",
             "consoleCoverage": "exact-known-messages-only-unknown-lines-omitted",

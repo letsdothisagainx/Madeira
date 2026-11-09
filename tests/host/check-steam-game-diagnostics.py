@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import zipfile
 
@@ -59,8 +60,23 @@ let trust = "033c:err:wintrust:WinVerifyTrust [trust-result-v1] pid=828 action=0
 assert(SteamGameDiagnostics.decode(trust) != nil)
 let vpk = "[steam-content-audit-v1] app=730 relative=game/csgo/pak01_dir.vpk state=cache-hash-match bytes=7713879 certificate=not-pe vpk-signature=section-present-unverified vpk-format=descriptor20 vpk-version=2 vpk-type=1 vpk-reserved=0 vpk-offset=7713123 vpk-declared=20 vpk-key-bytes=294 vpk-signature-bytes=256 vpk-trailing-bytes=0 vpk-tree-bytes=300 vpk-table-offset=328 vpk-table-bytes=28 vpk-other-offset=356 vpk-other-bytes=48 vpk-reason=bounded-known-layout vpk-tree-md5=match vpk-table-md5=match vpk-whole-md5=match vpk-crypto=consistent-embedded-key vpk-extra-read-bytes=1000 key-provenance=embedded-untrusted archive-payloads=not-read vac=unclaimed current-sha1=" + String(repeating: "b", count: 40) + " reference-sha1=" + String(repeating: "c", count: 40) + " hash-source=current-file-read trust=unmeasured"
 assert(SteamGameDiagnostics.decode(vpk) != nil)
+let flags = "[cs2-launch-flags-v1] pid=033c tid=0340 steam=1 condebug=1 joy=1 insecure=0 allow-third-party=0 argument-count=3 unknown-count=0 known-sequence=0,1,2 parse-complete=1 coverage=accepted-process-params"
+assert(SteamGameDiagnostics.decode(flags) != nil)
+let module = "[cs2-module-v1] pid=033c tid=0340 path-class=game relative=game/bin/win64/cs2.exe machine=8664 hybrid=unmeasured unknown-count=0 dropped-observed=0 sequence=1 limit=128 coverage=bounded-observed-load-events path-source=accepted-main-image"
+assert(SteamGameDiagnostics.decode(module) != nil)
+let systemModule = module.replacingOccurrences(of: "path-class=game relative=game/bin/win64/cs2.exe", with: "path-class=system relative=system32/wintrust.dll").replacingOccurrences(of: "hybrid=unmeasured", with: "hybrid=1")
+assert(SteamGameDiagnostics.decode(systemModule) != nil)
+let searchModule = systemModule.replacingOccurrences(of: "path-class=system relative=system32", with: "path-class=search-root relative=arm64ec-windows")
+assert(SteamGameDiagnostics.decode(searchModule) != nil)
+assert(SteamGameDiagnostics.decode(module.replacingOccurrences(of: "path-class=game relative=game/bin/win64/cs2.exe", with: "path-class=private relative=redacted")) != nil)
+assert(SteamGameDiagnostics.decode(flags.replacingOccurrences(of: "known-sequence=0,1,2", with: "known-sequence=0,2")) == nil)
+assert(SteamGameDiagnostics.decode(flags.replacingOccurrences(of: "joy=1", with: "joy=0")) == nil)
+assert(SteamGameDiagnostics.decode(module.replacingOccurrences(of: "sequence=1", with: "sequence=00")) == nil)
 let secrets = ["OPAQUE_SENTINEL_TICKET_6a9c", "PRIVATE_SENTINEL_KEY_7b2d", "76561198000000000", "203.0.113.42", "private@example.org", "/private/var/mobile/SECRET_PATH"]
 let bad = [
+    flags + " ticket=" + secrets[0], module + " token=" + secrets[0],
+    module.replacingOccurrences(of: "game/bin/win64/cs2.exe", with: secrets[5]),
+    systemModule.replacingOccurrences(of: "system32/wintrust.dll", with: "system32/" + secrets[0]),
     session + " token=" + secrets[0], session + " opaque=" + secrets[0],
     session.replacingOccurrences(of: "reported-token=unavailable", with: "reported-token=" + secrets[0]),
     session.replacingOccurrences(of: "numeric-result=0", with: "numeric-result=" + secrets[2]),
@@ -96,6 +112,8 @@ pe[64] = 0x50; pe[65] = 0x45; pe[68] = 0x64; pe[69] = 0x86
 let serviceDLL = root.appendingPathComponent(steam + "bin/steamservice.dll")
 try! fm.createDirectory(at: serviceDLL.deletingLastPathComponent(), withIntermediateDirectories: true)
 try! pe.write(to: serviceDLL)
+let invalidHandle = try! FileHandle(forWritingTo: root.appendingPathComponent("madeira-log.txt"))
+try! invalidHandle.seekToEnd(); try! invalidHandle.write(contentsOf: Data([0xff, 0xfe, 0x0a])); try! invalidHandle.close()
 let entries = try! SteamGameDiagnostics.collect(documents: root)
 assert(entries.map(\.name) == ["manifest.json", "observations.json", "README.txt"])
 let text = entries.map { String(decoding: $0.data, as: UTF8.self) }.joined()
@@ -109,7 +127,8 @@ assert(manifest["moduleObservations"] as? String == "no-observed-dedicated-event
 assert(sources.contains { $0["source"] as? String == "cs2-session-alias" && $0["state"] as? String == "same-file-as-earlier-source" })
 assert(sources.contains { $0["source"] as? String == "steam-connection" && $0["state"] as? String == "unavailable-or-not-owned-regular-file" })
 let events = try! JSONSerialization.jsonObject(with: entries[1].data) as! [[String: Any]]
-assert(events.count == 5)
+assert(events.count == 4)
+assert(!events.contains { $0["source"] as? String == "steam-console" }, "raw console impersonated a structured native producer")
 assert(events.contains { ($0["fields"] as? [String: String])?["event"] == "vac-session-unverified-message" })
 assert(!events.contains { ($0["fields"] as? [String: String])?["result"] == "999" })
 var small = SteamGameDiagnostics.Limits(); small.records = 2
@@ -150,13 +169,16 @@ with tempfile.TemporaryDirectory(prefix='madeira-export-') as folder:
     writer = writer_source[writer_source.index('final class SaveZipWriter {'):writer_source.index('// MARK: - Zip reading')]
     (tmp / 'Writer.swift').write_text('import Foundation\nimport zlib\n' + writer)
     (tmp / 'main.swift').write_text(code)
-    # System zlib via an explicit tiny Clang module, portable across the Apple
-    # SDK and Linux Swift installations without replacing the production CRC.
-    module = tmp / 'zlib'; module.mkdir()
-    (module / 'shim.h').write_text('#include <zlib.h>\n')
-    (module / 'module.modulemap').write_text('module zlib [system] { header "shim.h" export * }\n')
+    # Apple already exports the SDK's zlib Clang module; redefining it poisons
+    # CoreFoundation imports. Linux Swift may need a module for system zlib.
+    include = []
+    if sys.platform != 'darwin':
+        module = tmp / 'zlib'; module.mkdir()
+        (module / 'shim.h').write_text('#include <zlib.h>\n')
+        (module / 'module.modulemap').write_text('module zlib [system] { header "shim.h" export * }\n')
+        include = ['-I', str(module)]
     exe = tmp / 'export-test'
-    subprocess.run([swift, '-swift-version', '5', '-sanitize=address', '-I', str(module), str(source), str(tmp / 'Writer.swift'), str(tmp / 'main.swift'), '-lz', '-o', str(exe)], check=True)
+    subprocess.run([swift, '-swift-version', '5', '-sanitize=address', *include, str(source), str(tmp / 'Writer.swift'), str(tmp / 'main.swift'), '-lz', '-o', str(exe)], check=True)
     archive = tmp / 'diagnostics.zip'
     subprocess.run([str(exe), str(docs), str(archive)], check=True)
     with zipfile.ZipFile(archive) as z:
@@ -165,6 +187,8 @@ with tempfile.TemporaryDirectory(prefix='madeira-export-') as folder:
         manifest = json.loads(z.read('manifest.json'))
         assert manifest['vacVerdict'] == 'unmeasured'
         assert manifest['authenticationVerdict'] == 'unmeasured'
+        assert manifest['trustVerdict'] == 'unmeasured'
+        assert manifest['structuredProducerRows'] == 'accepted-from-main-runtime-log-only'
         assert manifest['sourceCommit'] == 'a' * 40
         body = b'\n'.join(z.read(n) for n in z.namelist())
         assert b'OPAQUE_SENTINEL' not in body and b'PRIVATE_SENTINEL' not in body

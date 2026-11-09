@@ -1,6 +1,8 @@
 name: Validate read-only CS2 diagnostic export
 on:
   workflow_dispatch:
+  push:
+    branches: [codex/validate-export-d573]
 permissions:
   contents: read
 jobs:
