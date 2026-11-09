@@ -49,6 +49,8 @@ func put(_ relative: String, _ text: String) {
 }
 let session = "[steam-session-v1] source=cs2-console role=cs2 pid=033c tid=03b8 event=network-tos-control-missing reported-token=unavailable numeric-result-present=0 numeric-result=0 sequence=1 monotonic-ms=573093097 evidence=application-log auth-validation=unclaimed body=excluded"
 assert(SteamGameDiagnostics.decode(session) != nil)
+assert(SteamGameDiagnostics.decode(session)?.1["monotonic-clock-domain"] == "wine-posix-clock-monotonic")
+assert(SteamGameDiagnostics.decode(session + " monotonic-clock-domain=app-dispatch-uptime") == nil)
 assert(SteamGameDiagnostics.decode("[00:01:24.869] [INFO] " + session) != nil)
 let service = "[steam-service] result=1053"
 assert(SteamGameDiagnostics.decode(service)?.1["result"] == "1053")
@@ -168,6 +170,7 @@ assert(SteamGameDiagnostics.decodeConsole(consoleRows[14].0.replacingOccurrences
 assert(SteamGameDiagnostics.decodeConsole(consoleRows[4].0.replacingOccurrences(of: "(OK)", with: "(Requesting cert)")) == nil)
 let marker = "[cs2-user-marker-v1] kind=error-reported source=user input=none app=730 context=cs2-observed pid=033c session=1 sequence=5 utc=2026-11-09T08:35:16.123Z utc-offset-min=-300 monotonic-ms=572814511 evidence=user-report"
 assert(SteamGameDiagnostics.decode(marker)?.1["utc-offset-min"] == "-300")
+assert(SteamGameDiagnostics.decode(marker)?.1["monotonic-clock-domain"] == "app-dispatch-uptime")
 for invalid in [marker + " token=SECRET", marker.replacingOccurrences(of: "source=user", with: "source=runtime"),
     marker.replacingOccurrences(of: "utc-offset-min=-300", with: "utc-offset-min=-841"),
     marker.replacingOccurrences(of: "sequence=5", with: "sequence=0"),
@@ -183,7 +186,7 @@ assert(CS2VACMarkers.shared.markError())
 assert(CS2VACMarkers.snapshotLines().count == 5)
 assert(CS2VACMarkers.snapshotLines().allSatisfy { SteamGameDiagnostics.decode($0) != nil })
 let secrets = ["OPAQUE_SENTINEL_TICKET_6a9c", "PRIVATE_SENTINEL_KEY_7b2d", "76561198000000000", "203.0.113.42", "private@example.org", "/private/var/mobile/SECRET_PATH"]
-let bad = [
+let bad: [String] = [
     loaderFull + " private=" + secrets[0], loaderBare + " " + secrets[0], "prefix " + loaderFull,
     loaderFull.replacingOccurrences(of: "Program Files (x86)", with: secrets[5]),
     loaderBare.replacingOccurrences(of: "steamservice.dll", with: secrets[0] + ".dll"),
@@ -227,16 +230,22 @@ assert(unknownTrustFields["name"] == "redacted-unlisted")
 assert(unknownTrustFields["result"] == "800b0100" && unknownTrustFields["choice"] == "1")
 assert(!String(describing: unknownTrustFields).contains(secrets[0]))
 assert(SteamGameDiagnostics.decode(unknownTrust + " private=" + secrets[1]) == nil)
-put("madeira-log.txt", "[00:00:01.001] [INFO] [build] v0.1.3 (4) source=" + String(repeating: "a", count: 40) + "\n" + content + "\n" + service + "\n" + session + "\n" + unknownTrust + "\n" + loaderFull + "\n" + loaderBare + "\n" + bad.joined(separator: "\n") + "\n[session-log] Steam game cs2.exe: logs/cs2.exe-2026-11-09_00-03-55.txt\n")
+let fixtureBuild = "[00:00:01.001] [INFO] [build] v0.1.3 (4) source=" + String(repeating: "a", count: 40)
+let fixtureAlias = "[session-log] Steam game cs2.exe: logs/cs2.exe-2026-11-09_00-03-55.txt"
+put("madeira-log.txt", [fixtureBuild, content, service, session, unknownTrust, loaderFull, loaderBare,
+    bad.joined(separator: "\n"), fixtureAlias].joined(separator: "\n") + "\n")
 try! fm.createDirectory(at: root.appendingPathComponent("logs"), withIntermediateDirectories: true)
 try! fm.linkItem(at: root.appendingPathComponent("madeira-log.txt"), to: root.appendingPathComponent("logs/cs2.exe-2026-11-09_00-03-55.txt"))
 let steam = "wine/drive_c/Program Files (x86)/Steam/"
 let signatureWarning = "Some of your game files have been detected to have no signatures or invalid signatures. You will not be allowed to join VAC secure servers."
 let signatureWarningHelp = signatureWarning + " Please verify your launch options, check correctness of your game installation, restart the game and try again."
-put(steam + "steamapps/common/Counter-Strike Global Offensive/game/csgo/console.log",
-    "VAC was unable to verify your game session.\n" + signatureWarning + "\n" + signatureWarningHelp + "\n" + consoleRows.map { $0.0 }.joined(separator: "\n") + "\n" +
-    signatureWarning + " " + secrets[0] + "\n" + signatureWarningHelp + " private=" + secrets[1] + "\nprefix " + signatureWarning + "\nVAC " + secrets[0] + "\nSteamAPI " + secrets[1] + "\n" + secrets.joined(separator: " ") + "\n")
-put(steam + "logs/console_log.txt", session + "\n" + loaderFull + "\n" + loaderBare + "\n" + marker + "\n" + String(repeating: "X", count: 5000) + service + "\n")
+let fixtureConsole = ["VAC was unable to verify your game session.", signatureWarning, signatureWarningHelp,
+    consoleRows.map { $0.0 }.joined(separator: "\n"), signatureWarning + " " + secrets[0],
+    signatureWarningHelp + " private=" + secrets[1], "prefix " + signatureWarning,
+    "VAC " + secrets[0], "SteamAPI " + secrets[1], secrets.joined(separator: " ")]
+put(steam + "steamapps/common/Counter-Strike Global Offensive/game/csgo/console.log", fixtureConsole.joined(separator: "\n") + "\n")
+put(steam + "logs/console_log.txt", [session, loaderFull, loaderBare, marker, signatureWarning,
+    String(repeating: "X", count: 5000) + service].joined(separator: "\n") + "\n")
 let outside = root.deletingLastPathComponent().appendingPathComponent("outside-console.txt")
 try! Data(("[steam-service] result=999\n" + secrets[0]).utf8).write(to: outside)
 try! fm.createSymbolicLink(at: root.appendingPathComponent(steam + "logs/connection_log.txt"), withDestinationURL: outside)
@@ -293,6 +302,8 @@ let confirmed = summary["confirmedObservations"] as! [String: Bool]
 assert(confirmed["networkCertificateAuthOKReported"] == true && confirmed["relayNetworkReadyReported"] == true)
 assert(confirmed["localLoopbackConnectionReported"] == true && confirmed["mainMenuStateReported"] == true)
 assert(confirmed["userErrorMarkerObserved"] == true && confirmed["signatureWarningTextObserved"] == true)
+assert(summary["serviceStateObservation"] as? String == "unmeasured")
+assert(summary["confirmedObservationBooleanSemantics"] as? String == "false-means-not-observed-not-the-opposite-state")
 assert((summary["unmeasured"] as! [String]).contains("VAC-secure-server-acceptance"))
 let markerEvents = events.filter { $0["record"] as? String == "cs2-user-marker-v1" }
 assert(markerEvents.count == 5 && markerEvents.allSatisfy { $0["source"] as? String == "madeira-marker-ring" })
@@ -358,6 +369,67 @@ assert(noisyEvents.contains { $0["source"] as? String == "madeira-marker-ring" }
 assert(noisyEvents.contains { $0["source"] as? String == "cs2-console" && ($0["fields"] as? [String: String])?["event"] == "relay-network-ready" })
 // Main-runtime producer strings embedded in the real console remain untrusted.
 assert(!noisyEvents.contains { $0["source"] as? String == "steam-console" && $0["record"] as? String == "steam-service-loader-v1" })
+
+// The marked November 9 capture had 487 performance rows among 503 console
+// events. Reproduce the next quota boundary with the same public grammars:
+// the old forward-only collector lost the late 17:51:50 generic confirmation.
+// This does not claim the real capture contained a dropped VAC verdict.
+func markedConsolePriorityFixture(_ root: URL) {
+    func write(_ relative: String, _ body: String) {
+        let url = root.appendingPathComponent(relative)
+        try! FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try! Data(body.utf8).write(to: url)
+    }
+    let error = "[cs2-user-marker-v1] kind=error-reported source=user input=none app=730 context=cs2-observed pid=033c session=99 sequence=4000 utc=2026-11-09T22:51:55.489Z utc-offset-min=-300 monotonic-ms=510860109 evidence=user-report"
+    let perf = "11/09 17:50:00 [SteamNetSockets] SteamNetworkingSockets lock held for 196.0ms.  (Performance warning.)  ServiceThread,RecvUDPPacket\n"
+    let confirmation = "11/09 17:51:50 [Localization System] CLocalize::CompileString failed to localize: '#GenericConfirmText_Label'\n"
+    let consolePath = "wine/drive_c/Program Files (x86)/Steam/steamapps/common/Counter-Strike Global Offensive/game/csgo/console.log"
+    let nearPerf = perf.replacingOccurrences(of: "17:50:00", with: "17:51:49")
+    let explicitWarning = "11/09 16:00:00 VAC was unable to verify your game session.\n"
+    // A torn numeric producer record stays unknown; never stitch adjacent rows.
+    write("madeira-log.txt", error + "\n[steam-service] service-state=[vfree] phase=fixture\n4\n")
+    write(consolePath, String(repeating: perf, count: 600) + String(repeating: nearPerf, count: 64) + confirmation + explicitWarning)
+    let result = try! SteamGameDiagnostics.collect(documents: root)
+    let events = try! JSONSerialization.jsonObject(with: result[2].data) as! [[String: Any]]
+    assert(events.contains { ($0["fields"] as? [String: String])?["event"] == "generic-confirm-localization-warning" },
+           "late marked interaction was starved by repetitive network performance rows")
+    let warning = events.first { ($0["fields"] as? [String: String])?["event"] == "generic-confirm-localization-warning" }!["fields"] as! [String: String]
+    assert(warning["clock"] == "console-wall-year-zone-unmeasured")
+    assert(warning["marker-wall-proximity-seconds"] == "5")
+    assert(warning["marker-wall-proximity-basis"] == "assumes-console-matches-marker-device-local-wall-clock")
+    assert(events.contains { ($0["fields"] as? [String: String])?["event"] == "vac-session-unverified-message" })
+    let perfEvents = events.filter { ($0["fields"] as? [String: String])?["event"] == "network-lock-held" }
+    assert(perfEvents.count == 32 && perfEvents.allSatisfy { ($0["fields"] as? [String: String])?["console-time"] == "11/09 17:51:49" })
+    let metadata = try! JSONSerialization.jsonObject(with: result[0].data) as! [String: Any]
+    let source = (metadata["sources"] as! [[String: Any]]).first { $0["source"] as? String == "cs2-console" }!
+    assert((source["performanceEventsObserved"] as! [String: Int])["network-lock-held"] == 664)
+    assert(source["rowsOmittedBySelection"] as? Int == 632)
+    assert(source["rowsOmittedByRecordBudget"] as? Int == 0)
+    assert(source["performanceEventsSampled"] as? Int == 32 && events.count <= 512)
+    let summary = try! JSONSerialization.jsonObject(with: result[3].data) as! [String: Any]
+    assert(summary["serviceStateObservation"] as? String == "unmeasured")
+    // Offset changes affect only conditional selection; console time is never
+    // silently relabeled as UTC or the app's monotonic clock.
+    write("madeira-log.txt", error.replacingOccurrences(of: "utc-offset-min=-300", with: "utc-offset-min=0") + "\n")
+    let unaligned = try! SteamGameDiagnostics.collect(documents: root)
+    let unalignedEvents = try! JSONSerialization.jsonObject(with: unaligned[2].data) as! [[String: Any]]
+    assert(unalignedEvents.allSatisfy { ($0["fields"] as? [String: String])?["marker-wall-proximity-seconds"] == nil })
+    let rollover = error.replacingOccurrences(of: "2026-11-09T22:51:55.489Z", with: "2027-01-01T00:00:05.489Z")
+        .replacingOccurrences(of: "utc-offset-min=-300", with: "utc-offset-min=0")
+    write("madeira-log.txt", rollover + "\n")
+    write(consolePath, confirmation.replacingOccurrences(of: "11/09 17:51:50", with: "12/31 23:59:58"))
+    let boundary = try! SteamGameDiagnostics.collect(documents: root)
+    let boundaryEvents = try! JSONSerialization.jsonObject(with: boundary[2].data) as! [[String: Any]]
+    assert((boundaryEvents[0]["fields"] as! [String: String])["marker-wall-proximity-seconds"] == "7")
+    for (year, lastDay) in [("2027", "02/28"), ("2028", "02/29")] {
+        write("madeira-log.txt", rollover.replacingOccurrences(of: "2027-01-01", with: year + "-03-01") + "\n")
+        write(consolePath, confirmation.replacingOccurrences(of: "11/09 17:51:50", with: lastDay + " 23:59:58"))
+        let february = try! SteamGameDiagnostics.collect(documents: root)
+        let rows = try! JSONSerialization.jsonObject(with: february[2].data) as! [[String: Any]]
+        assert((rows[0]["fields"] as! [String: String])["marker-wall-proximity-seconds"] == "7")
+    }
+}
+markedConsolePriorityFixture(root)
 
 // Use the actual existing ZIP writer, including its CRC32 and central directory.
 let writer = try! SaveZipWriter(url: output)

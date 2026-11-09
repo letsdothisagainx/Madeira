@@ -16,6 +16,13 @@ enum SteamGameDiagnostics {
     struct Limits { var mainBytes = 8 << 20; var otherBytes = 256 << 10; var records = 2048 }
     enum Failure: Error { case unavailable }
     private struct Snapshot { let bytes: Data; let identity: String; let truncated: Bool }
+    private struct ConsoleCandidate {
+        var fields: [String: String]
+        let row: Int
+        let priority: Int
+        let markerDistance: Int?
+    }
+    private struct MarkerWallClock { let second: Int; let leapYear: Bool }
     private static let paths: Set<String> = [
         "game/bin/win64/cs2.exe", "game/bin/win64/tier0.dll", "game/bin/win64/engine2.dll",
         "game/bin/win64/filesystem_stdio.dll", "game/bin/win64/rendersystemdx11.dll",
@@ -138,6 +145,7 @@ enum SteamGameDiagnostics {
                       number(f["t-ms"]!, maximum: 86_400_000), matches(f["mono-ns"]!, "[0-9]{1,20}"),
                       UInt64(f["mono-ns"]!) != nil, f["intervals"] == "overlap-allowed", f["cpu-time"] == "unmeasured" else { return nil }
                 f.removeValue(forKey: "mono-ns") // Relative timing suffices; host uptime is excluded.
+                f["clock-domain"] = "wine-posix-monotonic-relative-to-startup-origin"
                 return (tag, f)
             }
             guard keys(f, "event phase attempt creator pid t-ms duration-ms status create-ok intervals"),
@@ -213,6 +221,9 @@ enum SteamGameDiagnostics {
                   f["evidence"] == "fault-safe-peb-read-only", f["scope"] == "guest-peb-fields-only" else { return nil }
         default: return nil
         }
+        if tag == "cs2-user-marker-v1" { f["monotonic-clock-domain"] = "app-dispatch-uptime" }
+        if tag == "steam-session-v1" { f["monotonic-clock-domain"] = "wine-posix-clock-monotonic" }
+        if tag == "startup-timeline-v1" { f["clock-domain"] = "wine-posix-monotonic-relative-to-startup-origin" }
         return (tag, f)
     }
     private static func modulePath(_ f: [String: String]) -> Bool {
@@ -364,6 +375,49 @@ enum SteamGameDiagnostics {
         }
         return nil
     }
+    // Console year/zone are unknown. This coordinate is used only to prefer
+    // nearby records under an explicit device-local-wall-clock assumption;
+    // it never assigns a UTC instant or proves a shared clock or causality.
+    private static func wallSecond(_ text: String, leapYear: Bool) -> Int? {
+        let parts = text.split(whereSeparator: { $0 == "/" || $0 == " " || $0 == ":" })
+        guard parts.count == 5 else { return nil }
+        let numbers = parts.compactMap { Int($0) }
+        let days = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+        guard numbers.count == 5, (1...12).contains(numbers[0]), (1...days[numbers[0] - 1]).contains(numbers[1]),
+              (0...23).contains(numbers[2]), (0...59).contains(numbers[3]), (0...59).contains(numbers[4]) else { return nil }
+        return (((days.prefix(numbers[0] - 1).reduce(0, +) + numbers[1] - 1) * 24 + numbers[2]) * 60 + numbers[3]) * 60 + numbers[4]
+    }
+    private static func markerWallSecond(_ fields: [String: String]) -> MarkerWallClock? {
+        guard fields["kind"] == "error-reported", fields["app"] == "730", let utc = fields["utc"],
+              let offset = fields["utc-offset-min"].flatMap(Int.init) else { return nil }
+        let format = ISO8601DateFormatter()
+        format.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        guard let date = format.date(from: utc) else { return nil }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let c = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date.addingTimeInterval(Double(offset * 60)))
+        guard let year = c.year, let month = c.month, let day = c.day, let hour = c.hour, let minute = c.minute, let second = c.second else { return nil }
+        let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+        guard let value = wallSecond(String(format: "%02d/%02d %02d:%02d:%02d", month, day, hour, minute, second), leapYear: leap) else { return nil }
+        return MarkerWallClock(second: value, leapYear: leap)
+    }
+    private static func preferred(_ lhs: ConsoleCandidate, _ rhs: ConsoleCandidate) -> Bool {
+        if lhs.priority != rhs.priority { return lhs.priority > rhs.priority }
+        let left = lhs.markerDistance ?? Int.max, right = rhs.markerDistance ?? Int.max
+        if left != right { return left < right }
+        return lhs.row > rhs.row
+    }
+    private static func retain(_ candidate: ConsoleCandidate, in selected: inout [ConsoleCandidate], limit: Int) {
+        guard limit > 0 else { return }
+        if selected.count == limit, let last = selected.last, !preferred(candidate, last) { return }
+        var low = 0, high = selected.count
+        while low < high {
+            let middle = (low + high) / 2
+            if preferred(candidate, selected[middle]) { high = middle } else { low = middle + 1 }
+        }
+        selected.insert(candidate, at: low)
+        if selected.count > limit { selected.removeLast() }
+    }
     /// Every path is a literal below an already opened, app-owned Documents
     /// directory. Neither directory nor final-file symlinks are followed.
     private static func snapshot(_ root: Int32, _ relative: String, maximum: Int, preserveStartup: Bool = false) -> Snapshot? {
@@ -504,6 +558,14 @@ enum SteamGameDiagnostics {
             identities[file.identity] = id
             var captured = 0, rows = 0, budgetOmitted = 0, lineStart = file.bytes.startIndex
             var rowLimitReached = false
+            let console = id == "cs2-console"
+            let performanceBudget = console ? min(32, recordCap / 8) : 0
+            var selectedEvents: [ConsoleCandidate] = [], selectedPerformance: [ConsoleCandidate] = []
+            var decodedConsole = 0, sampledPerformance = 0, performanceCounts: [String: Int] = [:]
+            let markerClocks = console ? observations.compactMap { event -> MarkerWallClock? in
+                guard event["record"] as? String == "cs2-user-marker-v1", let fields = event["fields"] as? [String: String] else { return nil }
+                return markerWallSecond(fields)
+            }.suffix(8) : []
             // Source-local row and record caps prevent a giant main log from
             // starving the actual console. Never allocate Data.split's one
             // subsequence per newline before applying those caps.
@@ -523,19 +585,64 @@ enum SteamGameDiagnostics {
                     }
                     if matches(p, "\\[build\\] v[0-9.]{1,16} \\([0-9]{1,5}\\) source=[0-9a-f]{40}") { build = String(p.suffix(40)) }
                 }
+                if console, var fields = decodeConsole(line) {
+                    decodedConsole += 1
+                    let event = fields["event"]!
+                    let performance = ["network-lock-held", "network-lock-wait", "network-service-thread-delayed"].contains(event)
+                    if performance { performanceCounts[event, default: 0] += 1 }
+                    let distance = fields["console-time"].flatMap { time in
+                        markerClocks.compactMap { anchor -> Int? in
+                            guard let second = wallSecond(time, leapYear: anchor.leapYear) else { return nil }
+                            let raw = abs(second - anchor.second)
+                            return min(raw, (anchor.leapYear ? 366 : 365) * 86400 - raw)
+                        }.min()
+                    }
+                    let nearby = distance.map { $0 <= 30 } == true
+                    if nearby {
+                        fields["marker-wall-proximity-seconds"] = String(distance!)
+                        fields["marker-wall-proximity-basis"] = "assumes-console-matches-marker-device-local-wall-clock"
+                    }
+                    let critical = ["vac-session-unverified-message", "vac-signature-warning-message", "api-initialization-failed-message", "steam-client-unavailable-message"].contains(event)
+                    let priority = critical ? 4 : event == "generic-confirm-localization-warning" ? 3 : nearby ? 2 : 1
+                    let candidate = ConsoleCandidate(fields: fields, row: rows, priority: priority, markerDistance: distance)
+                    if performance { retain(candidate, in: &selectedPerformance, limit: performanceBudget) }
+                    else { retain(candidate, in: &selectedEvents, limit: recordCap - performanceBudget) }
+                    continue
+                }
                 guard captured < recordCap, observations.count < limits.records else { budgetOmitted += 1; omitted += 1; continue }
                 // Structured producers are accepted only from the runtime
                 // log/ring; official console text cannot impersonate them.
                 if id == "madeira-session", let (tag, fields) = decode(line) {
                     if append(id, tag, fields, row: rows) { captured += 1 }
-                } else if id != "madeira-session", let fields = decodeConsole(line) {
-                    if append(id, "application-console-event", fields, row: rows) { captured += 1 }
                 } else { omitted += 1 }
             }
-            sources.append(["source": id, "state": "bounded-snapshot", "bytesRead": file.bytes.count,
+            if console {
+                for candidate in (selectedEvents + selectedPerformance).sorted(by: { $0.row < $1.row }) {
+                    if append(id, "application-console-event", candidate.fields, row: candidate.row) {
+                        captured += 1
+                        if performanceCounts[candidate.fields["event"]!] != nil { sampledPerformance += 1 }
+                    } else { budgetOmitted += 1 }
+                }
+                omitted += decodedConsole - captured
+            }
+            var source: [String: Any] = ["source": id, "state": "bounded-snapshot", "bytesRead": file.bytes.count,
                 "truncated": file.truncated, "capturedRecords": captured, "recordBudget": recordCap,
                 "rowsScanned": rows, "rowBudget": rowCap, "rowLimitReached": rowLimitReached,
-                "rowsOmittedByRecordBudget": budgetOmitted])
+                "rowsOmittedByRecordBudget": budgetOmitted]
+            if console {
+                source["selection"] = "fixed-event-priority-and-assumed-marker-wall-proximity-within-byte-snapshot"
+                source["performanceSampleBudget"] = performanceBudget
+                source["performanceEventsObserved"] = performanceCounts
+                source["performanceEventsSampled"] = sampledPerformance
+                source["rowsOmittedBySelection"] = decodedConsole - selectedEvents.count - selectedPerformance.count
+                source["markerWindowSeconds"] = 30
+                source["markerWindowPrecision"] = "console-whole-seconds-marker-truncated-to-second-for-ranking"
+                source["markerClockAssumption"] = "console-year-zone-unmeasured-assume-device-local-wall-clock-for-selection-only"
+                source["usableErrorMarkerCount"] = markerClocks.count
+            } else if id != "madeira-session" {
+                source["typedDecoder"] = "unmeasured-no-proven-source-specific-grammar"
+            }
+            sources.append(source)
         }
         let mainCap = max(1, limits.records / 2), consoleCap = max(1, limits.records / 4)
         consume("madeira-session", "madeira-log.txt", limits.mainBytes, mainCap, 131072)
@@ -566,6 +673,8 @@ enum SteamGameDiagnostics {
         }
         let summary: [String: Any] = [
             "scope": "observations-from-bounded-export-not-security-validation",
+            "confirmedObservationBooleanSemantics": "false-means-not-observed-not-the-opposite-state",
+            "serviceStateObservation": seenRecord("steam-service", "service-state", "4") ? "running-reported" : "unmeasured",
             "confirmedObservations": [
                 "mainMenuStateReported": seenConsole("main-menu-state-reported"),
                 "source2InitializationReported": seenConsole("source2-initialized"),
@@ -586,13 +695,13 @@ enum SteamGameDiagnostics {
                 "specific-rejected-file": "unidentified-from-these-observations",
                 "service-dll-error-causes-vac-warning": "unproven",
                 "pix-nsight-message-causes-vac-warning": "unproven",
-                "generic-confirm-warning-is-vac-popup": "unproven-without-correlated-error-marker",
+                "generic-confirm-warning-is-vac-popup": "unproven-generic-warning-and-user-marker-do-not-identify-dialog-body",
                 "secure-launch-environment-compatibility": "not-established-by-network-authentication"
             ],
             "unmeasured": ["independent-Valve-file-trust", "VAC-secure-server-acceptance", "complete-module-inventory", "complete-guest-and-host-debugger-state"],
             "interpretation": "network-authentication-relay-readiness-and-local-loopback-never-establish-VAC-approval",
             "warningAbsence": "not-observed-in-bounded-console-is-not-proof-of-no-popup",
-            "clockCorrelation": "console-MM/DD-wall-clock-has-no-year-or-zone; UTC-user-markers-carry-device-offset; proximity-does-not-establish-causality"
+            "clockCorrelation": "console-MM/DD-year-zone-unmeasured; marker-wall-window-assumes-device-local-time; app-DispatchTime-and-Wine-CLOCK_MONOTONIC-are-distinct-domains; proximity-does-not-establish-causality"
         ]
         let manifest: [String: Any] = ["schema": "madeira-steam-cs2-diagnostics-v2", "sourceCommit": build,
             "collection": "explicit-user-action-bounded-source-priority-snapshot", "sources": sources,
@@ -623,6 +732,9 @@ enum SteamGameDiagnostics {
             "numericSessionResultDomain": "unknown-do-not-infer-authentication-status",
             "externalGameLibraries": "not-followed-unmeasured",
             "consoleCoverage": "typed-sanitized-known-event-excerpt-not-complete-console",
+            "consoleSelection": "critical-events-and-conditional-marker-wall-window-before-bounded-performance-samples-within-byte-snapshot",
+            "steamLogCoverage": "bounded-read-no-proven-source-specific-typed-decoder",
+            "monotonicClockCorrelation": "app-dispatch-uptime-and-wine-posix-clock-monotonic-must-not-be-subtracted-without-measured-calibration",
             "serviceDiskPEObservations": servicePEs(root)]
         func json(_ object: Any) throws -> Data { try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]) }
         let explanation = """
@@ -633,6 +745,11 @@ enum SteamGameDiagnostics {
         certificate contents, credentials and arbitrary text are never copied.
         UTC input/error markers are observations from Madeira or the user, not a VAC
         verdict. Source-local quotas prevent giant runtime logs from starving them.
+        Console selection favors fixed warning events and a conditional 30-second
+        device-local marker window within the byte snapshot. Console year/zone and
+        shared-clock agreement are unmeasured. App DispatchTime and Wine's POSIX
+        monotonic values have distinct domains; do not subtract them. Repetitive
+        performance rows are sampled and counted. Steam log grammars are unmeasured.
         Summary hypotheses are not causes. AuthStatus OK and relay readiness concern
         networking certificates; loopback connections are local. None establish
         VAC-secure acceptance, independent Valve file trust or a working secure game.
