@@ -131,7 +131,7 @@ static const char *const ios_cs2_game_paths[] = {
 static const char *const ios_cs2_system_names[] = {
     "ntdll.dll", "kernel32.dll", "kernelbase.dll", "wintrust.dll", "crypt32.dll", "bcrypt.dll",
     "advapi32.dll", "sechost.dll", "rpcrt4.dll", "ws2_32.dll", "ucrtbase.dll", "msvcrt.dll",
-    "win32u.dll", "user32.dll", "gdi32.dll", "d3d11.dll", "dxgi.dll", "winemetal.dll",
+    "win32u.dll", "user32.dll", "gdi32.dll", "d3d9.dll", "d3d11.dll", "dxgi.dll", "winemetal.dll", "nvapi64.dll",
     "setupapi.dll", "version.dll", "psapi.dll", "ole32.dll", "oleaut32.dll", "combase.dll",
     "coml2.dll", "winhttp.dll", "cryptnet.dll", "ncrypt.dll", "mswsock.dll", "shlwapi.dll",
     "shell32.dll", "shcore.dll", "imm32.dll", "uxtheme.dll", "comctl32.dll", "xtajit64.dll", "libarm64ecfex.dll"

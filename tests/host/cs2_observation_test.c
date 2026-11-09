@@ -202,6 +202,10 @@ static void path_tests(void)
     classification(&ios_cs2_processes[0], "C:/Program Files (x86)/Steam/steamclient64.dll", "steam-client", "steamclient64.dll");
     classification(&ios_cs2_processes[0], "C:/Windows/sysWOW64/ntdll.dll", "system", "syswow64/ntdll.dll");
     classification(&ios_cs2_processes[0], "/owned/Madeira Search/arm64ec-windows/d3d11.dll", "search-root", "arm64ec-windows/d3d11.dll");
+    classification(&ios_cs2_processes[0], "c:/windows/system32/d3d9.dll", "system", "system32/d3d9.dll");
+    classification(&ios_cs2_processes[0], "c:/windows/system32/nvapi64.dll", "system", "system32/nvapi64.dll");
+    classification(&ios_cs2_processes[0], "/owned/Madeira Search/arm64ec-windows/nvapi64.dll", "search-root", "arm64ec-windows/nvapi64.dll");
+    classification(&ios_cs2_processes[0], "c:/private/nvapi64.dll", "private", "redacted");
     classification(&ios_cs2_processes[0], "/owned/Madeira Search Other/arm64ec-windows/d3d11.dll", "private", "redacted");
     classification(&ios_cs2_processes[0], "D:/Windows/system32/ntdll.dll", "private", "redacted");
     classification(&ios_cs2_processes[0], "C:/Windows/system32/private.dll", "private", "redacted");
