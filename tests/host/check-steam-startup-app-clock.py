@@ -18,9 +18,11 @@ view = (ROOT / 'app/Madeira/ContentView.swift').read_text()
 for marker in ('.requested)', '.launcherReady)', '.jitGate)', '.jitReady)',
                '.wineserverStart)', '.wineStart)'):
     assert 'SteamStartupClock.shared.mark(' + marker in view
-for marker in ('.browserBegin)', '.browserCacheBegin)', '.browserCacheReady)',
-               '.browserBridgeReady)', '.browserReady)'):
-    assert 'SteamStartupClock.shared.mark(' + marker in source
+browser = source[source.index('enum SteamNativeBrowserLaunchFiles'):]
+for phase in ('browserBegin', 'browserCacheBegin', 'browserCacheReady',
+              'browserBridgeReady', 'browserReady', 'failed'):
+    assert f'SteamStartupClock.shared.mark(.{phase}, log: progress)' in browser
+assert 'LogStore' not in browser, 'Browser preparation must use its supplied progress reporter'
 assert 'MADEIRA_STARTUP_T0_NS' in (ROOT / 'build/ntdll-unix/steam_startup_timeline.h').read_text()
 if not shutil.which('swiftc'):
     assert not args.require_swift, 'Apple Swift compiler is required'

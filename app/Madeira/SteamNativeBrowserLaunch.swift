@@ -441,7 +441,7 @@ enum SteamNativeBrowserLaunchFiles {
     private func prepare(drive: URL, resourceRoot: URL?, idle: () -> Bool,
                          progress: @escaping (String) -> Void) async throws -> Prepared {
         typealias Files = SteamNativeBrowserLaunchFiles
-        SteamStartupClock.shared.mark(.browserBegin) { LogStore.shared.log($0) }
+        SteamStartupClock.shared.mark(.browserBegin, log: progress)
         do {
             guard idle() else { throw Files.Failure.active }
             guard let resources = resourceRoot else { throw Files.Failure.missingBridge }
@@ -449,23 +449,23 @@ enum SteamNativeBrowserLaunchFiles {
             let launcher = try SteamClientUpdateFiles.launcher(drive: drive)
             let steam = launcher.deletingLastPathComponent(), chromeHTML = steam.appendingPathComponent("bin/chromehtml.dll")
             let compat = try Files.compatRoot(drive: drive, idle: idle)
-            SteamStartupClock.shared.mark(.browserCacheBegin) { LogStore.shared.log($0) }
+            SteamStartupClock.shared.mark(.browserCacheBegin, log: progress)
             let cache = try await SteamBrowserRuntime.prepare(cacheBase: compat, steamRoot: steam, chromeHTML: chromeHTML,
                                                             idle: idle, progress: progress)
-            SteamStartupClock.shared.mark(.browserCacheReady) { LogStore.shared.log($0) }
+            SteamStartupClock.shared.mark(.browserCacheReady, log: progress)
             guard idle() else { throw Files.Failure.active }
             try Files.installBridge(source, manifest: manifest, drive: drive, digest: SteamBrowserRuntime.hash, idle: idle, report: progress)
-            SteamStartupClock.shared.mark(.browserBridgeReady) { LogStore.shared.log($0) }
+            SteamStartupClock.shared.mark(.browserBridgeReady, log: progress)
             Files.prepareMutableLogs(drive: drive, idle: idle, report: progress)
             try SteamBrowserRuntimeFiles.core(chromeHTML, steamRoot: steam, recipe: SteamBrowserRuntimeFiles.official, digest: SteamBrowserRuntime.hash)
             guard idle() else { throw Files.Failure.active }
             progress("[steam-browser-bridge-v2] phase=bridge-paths result=begin")
             let prepared = try Files.prepared(cache, bridge: manifest.fingerprint, drive: drive)
             progress("[steam-browser-bridge-v2] phase=bridge-paths result=verified helper=accepted installed=verified")
-            SteamStartupClock.shared.mark(.browserReady) { LogStore.shared.log($0) }
+            SteamStartupClock.shared.mark(.browserReady, log: progress)
             return prepared
         } catch {
-            SteamStartupClock.shared.mark(.failed) { LogStore.shared.log($0) }
+            SteamStartupClock.shared.mark(.failed, log: progress)
             SteamStartupClock.shared.reset()
             progress("[steam-browser-bridge-v2] phase=bridge-preparation result=failed code=\((error as NSError).code)")
             // Raw Foundation errors may contain the private container path.
