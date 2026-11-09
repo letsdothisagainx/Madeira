@@ -8,6 +8,8 @@ root = Path(__file__).resolve().parents[2]
 commands = [
     ['python3', 'tests/host/check-stale-runtime-links.py'],
     ['python3', 'tests/host/check-steam-integrity-launch.py', '--require-swift'],
+    ['python3', 'tests/host/check-cs2-observation.py'],
+    ['python3', 'tests/host/check-steam-game-diagnostics.py', '--require-swift'],
     ['python3', 'tests/host/check-process-image-lookup.py'],
     ['python3', 'tests/host/check-registration-program-behavior.py'],
     ['python3', 'tests/host/check-native-registration-tools.py'],

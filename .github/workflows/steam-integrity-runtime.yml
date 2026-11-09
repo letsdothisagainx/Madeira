@@ -17,6 +17,8 @@ on:
       - app/Madeira.xcodeproj/project.pbxproj
       - tests/host/check-steam-library.py
       - tests/host/check-steam-integrity-launch.py
+      - app/Madeira/SteamGameDiagnostics.swift
+      - tests/host/check-steam-game-diagnostics.py
       - .github/workflows/steam-integrity-runtime.yml
   pull_request:
     paths: *integrity-paths
@@ -48,6 +50,8 @@ jobs:
           result=$?
           tail -80 content-launch.txt
           exit "$result"
+      - name: Execute read-only diagnostic package with Swift and ASan
+        run: python3 tests/host/check-steam-game-diagnostics.py --require-swift
       - name: Reproduce the exact old downloader's runtime integrity failures
         run: |
           set +e

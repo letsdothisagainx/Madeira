@@ -2,7 +2,7 @@ name: Build IPA
 
 on:
   push:
-    branches: [main, 'codex/pr-build-*']
+    branches: [main, 'codex/pr-build-*', codex/validate-cs2-integrity-runtime-4b41]
   pull_request:
   workflow_dispatch:
     inputs:
