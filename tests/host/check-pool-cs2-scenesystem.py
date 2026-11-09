@@ -123,6 +123,7 @@ pe_helpers = r'''
 #include "native_atomic_image.h"
 #include "native_counter_alias.h"
 #include "native_srw_alias.h"
+#include "native_fex_diagnostics_alias.h"
 #include <strings.h>
 #undef STATUS_NO_MEMORY
 #define STATUS_NO_MEMORY ((int)0xc0000017u)

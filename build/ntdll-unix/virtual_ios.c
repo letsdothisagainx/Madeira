@@ -4591,6 +4591,7 @@ static unsigned char ios_image_is_fex( const void *pe_base, size_t size )
 #include "native_atomic_image.h"
 #include "native_counter_alias.h"
 #include "native_srw_alias.h"
+#include "native_fex_diagnostics_alias.h"
 
 /* ntdll's source-built probe block remains visible at its original DATA
  * export. Its explicit writer contract selects the SAME physical bytes
@@ -4601,6 +4602,17 @@ static void ios_jit_bind_native_counter_writer(void *source, void *rw, void *rx,
 {
     static unsigned int reports;
     int bound, history;
+    if (ios_native_fex_name(ios_pe_module_name(source,size)))
+    {
+        bound=ios_native_fex_diagnostics_bind(rw,size,(uintptr_t)source,(uintptr_t)rx,
+                (intptr_t)((uintptr_t)rw-(uintptr_t)rx),1);
+        if (bound) __sync_synchronize();
+        if (__atomic_fetch_add(&reports,1,__ATOMIC_RELAXED)<64)
+            dprintf(2,"[fex-native-diagnostics-v1] module=%s spans=3 action=%s "
+                      "phase=private-copy telemetry=preserved atomics=native rx-protection=unchanged\n",
+                    ios_pe_module_name(source,size),bound?"bound":"contract-unavailable");
+        return;
+    }
     if (strcasecmp(ios_pe_module_name(source,size),"ntdll.dll")) return;
     bound=ios_native_counter_alias_bind(rw,size,(uintptr_t)rx,
             (intptr_t)((uintptr_t)rw-(uintptr_t)rx),1);
@@ -4628,6 +4640,9 @@ static void ios_jit_copy_native_image_data(void *image, void *rw, void *rx, size
 {
     if (!strcasecmp(ios_pe_module_name(image,image_size),"ntdll.dll") &&
         ios_native_counter_and_srw_alias_copy(rw,image_size,(uintptr_t)rx,
+            (intptr_t)((uintptr_t)rw-(uintptr_t)rx),offset,source,size)) return;
+    if (ios_native_fex_name(ios_pe_module_name(image,image_size)) &&
+        ios_native_fex_diagnostics_copy(rw,image_size,(uintptr_t)image,(uintptr_t)rx,
             (intptr_t)((uintptr_t)rw-(uintptr_t)rx),offset,source,size)) return;
     memcpy((char *)rw+offset,source,size);
 }
