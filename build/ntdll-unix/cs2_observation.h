@@ -6,7 +6,8 @@
 #include <stddef.h>
 #include <stdint.h>
 void ios_cs2_observe_current_start(unsigned machine);
-void ios_cs2_observe_current_map(const void *name, unsigned machine, int hybrid);
+void ios_cs2_observe_current_map(const void *name, unsigned machine, int hybrid, int wine_builtin);
+void ios_cs2_observe_current_debug(void);
 
 #ifdef MADEIRA_CS2_OBSERVATION_IMPLEMENTATION
 #include <errno.h>
@@ -126,7 +127,13 @@ static const char *const ios_cs2_game_paths[] = {
     "game/bin/win64/cs2.exe", "game/bin/win64/tier0.dll", "game/bin/win64/engine2.dll",
     "game/bin/win64/filesystem_stdio.dll", "game/bin/win64/rendersystemdx11.dll",
     "game/bin/win64/steam_api64.dll", "game/bin/win64/steamnetworkingsockets.dll",
+    "game/bin/win64/sdl3.dll", "game/bin/win64/inputsystem.dll", "game/bin/win64/imemanager.dll",
+    "game/bin/win64/gameinput.dll", "game/bin/win64/localize.dll", "game/bin/win64/amd_ags_x64.dll",
+    "game/bin/win64/d3dcompiler_47.dll", "game/bin/win64/resourcesystem.dll",
     "game/csgo/bin/win64/client.dll", "game/csgo/bin/win64/server.dll"
+};
+static const char *const ios_cs2_steam_paths[] = {
+    "steamclient64.dll", "tier0_s64.dll", "vstdlib_s64.dll", "crashhandler64.dll", "gameoverlayrenderer64.dll"
 };
 static const char *const ios_cs2_system_names[] = {
     "ntdll.dll", "kernel32.dll", "kernelbase.dll", "wintrust.dll", "crypt32.dll", "bcrypt.dll",
@@ -134,13 +141,16 @@ static const char *const ios_cs2_system_names[] = {
     "win32u.dll", "user32.dll", "gdi32.dll", "d3d9.dll", "d3d11.dll", "dxgi.dll", "winemetal.dll", "nvapi64.dll",
     "setupapi.dll", "version.dll", "psapi.dll", "ole32.dll", "oleaut32.dll", "combase.dll",
     "coml2.dll", "winhttp.dll", "cryptnet.dll", "ncrypt.dll", "mswsock.dll", "shlwapi.dll",
-    "shell32.dll", "shcore.dll", "imm32.dll", "uxtheme.dll", "comctl32.dll", "xtajit64.dll", "libarm64ecfex.dll"
+    "shell32.dll", "shcore.dll", "imm32.dll", "uxtheme.dll", "comctl32.dll", "xtajit64.dll", "libarm64ecfex.dll",
+    "cryptbase.dll", "winmm.dll", "msacm32.dll", "iphlpapi.dll", "dnsapi.dll", "nsi.dll",
+    "dbghelp.dll", "imagehlp.dll", "cfgmgr32.dll", "secur32.dll", "wininet.dll", "mpr.dll",
+    "hid.dll", "dwmapi.dll", "dinput8.dll", "wsock32.dll", "mmdevapi.dll", "avrt.dll", "schannel.dll", "rsaenh.dll"
 };
 struct ios_cs2_process {
     void *owner;
     uint64_t lease;
     uint32_t pid;
-    unsigned maps, unknown, dropped;
+    unsigned maps, unknown, dropped, debug_observed;
     char game[IOS_CS2_PATH], steam[IOS_CS2_PATH], search[IOS_CS2_PATH];
 };
 static struct ios_cs2_process ios_cs2_processes[4];
@@ -168,7 +178,8 @@ static void ios_cs2_classify(const struct ios_cs2_process *state, const char *pa
     *kind = "private"; strcpy(relative, "redacted");
     for (i = 0; i < sizeof(ios_cs2_game_paths)/sizeof(*ios_cs2_game_paths); i++)
         if (ios_cs2_under(path, state->game, ios_cs2_game_paths[i])) { *kind = "game"; strcpy(relative, ios_cs2_game_paths[i]); return; }
-    if (ios_cs2_under(path, state->steam, "steamclient64.dll")) { *kind = "steam-client"; strcpy(relative, "steamclient64.dll"); return; }
+    for (i = 0; i < sizeof(ios_cs2_steam_paths)/sizeof(*ios_cs2_steam_paths); i++)
+        if (ios_cs2_under(path, state->steam, ios_cs2_steam_paths[i])) { *kind = "steam-client"; strcpy(relative, ios_cs2_steam_paths[i]); return; }
     for (i = 0; i < sizeof(ios_cs2_system_names)/sizeof(*ios_cs2_system_names); i++) for (j = 0; j < 3; j++)
     {
         snprintf(candidate, sizeof(candidate), "%s/%s", system_dirs[j], ios_cs2_system_names[i]);
@@ -217,11 +228,12 @@ static void ios_cs2_record_start(void *owner, uint32_t pid, uint32_t tid, uint64
 }
 static void ios_cs2_record_map(void *owner, uint32_t pid, uint32_t tid, uint64_t lease,
     const uint16_t *image, size_t image_length, const uint16_t *name, size_t name_length,
-    unsigned machine, int hybrid, int main_image)
+    unsigned machine, int hybrid, int wine_builtin, int main_image)
 {
     struct ios_cs2_process *state;
     char path[IOS_CS2_PATH], relative[96];
     const char *kind = "unknown", *hybrid_text = hybrid < 0 ? "unmeasured" : hybrid ? "1" : "0";
+    const char *builtin_text = wine_builtin < 0 ? "unmeasured" : wine_builtin ? "1" : "0";
     unsigned sequence, unknown, dropped;
     if (!tid || !ios_cs2_role(image, image_length) || !(state = ios_cs2_find(owner, pid, lease))) return;
     if (pthread_mutex_trylock(&ios_cs2_mutex))
@@ -242,8 +254,10 @@ static void ios_cs2_record_map(void *owner, uint32_t pid, uint32_t tid, uint64_t
     if (machine == 0x014c || machine == 0x8664 || machine == 0xaa64 || machine == 0xa641 || machine == 0xa64e)
         snprintf(path, sizeof(path), "%04x", machine);
     else strcpy(path, "unknown");
-    MADEIRA_CS2_EMIT("[cs2-module-v1] pid=%04x tid=%04x path-class=%s relative=%s machine=%s hybrid=%s unknown-count=%u dropped-observed=%u sequence=%u limit=256 coverage=bounded-observed-load-events path-source=%s\n",
-        pid, tid, kind, relative, path, hybrid_text, unknown, dropped, sequence, main_image ? "accepted-main-image" : "section-name");
+    /* wine_builtin is the loader's observed DOS-header marker, never a
+     * cryptographic signature, publisher identity, or trust decision. */
+    MADEIRA_CS2_EMIT("[cs2-module-v1] pid=%04x tid=%04x path-class=%s relative=%s machine=%s hybrid=%s unknown-count=%u dropped-observed=%u sequence=%u limit=256 coverage=bounded-observed-load-events path-source=%s wine-builtin=%s header-source=accepted-image-info\n",
+        pid, tid, kind, relative, path, hybrid_text, unknown, dropped, sequence, main_image ? "accepted-main-image" : "section-name", builtin_text);
 }
 #endif
 #endif

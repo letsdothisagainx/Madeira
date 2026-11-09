@@ -25746,7 +25746,7 @@ done:
     server_leave_uninterrupted_section( &virtual_mutex, &sigset );
 #ifdef WINE_IOS
     ios_swap_image_flush( NT_SUCCESS(status) );   /* madeira-bcd swap-images: outside the lock (ml1081) */
-    if (NT_SUCCESS(status)) ios_cs2_observe_current_map(nt_name, image_info->machine, image_info->is_hybrid);
+    if (NT_SUCCESS(status)) ios_cs2_observe_current_map(nt_name, image_info->machine, image_info->is_hybrid, image_info->wine_builtin);
 #endif
     if (needs_close) close( unix_fd );
     if (shared_needs_close) close( shared_fd );

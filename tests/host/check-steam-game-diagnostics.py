@@ -52,6 +52,10 @@ assert(SteamGameDiagnostics.decode(session) != nil)
 assert(SteamGameDiagnostics.decode("[00:01:24.869] [INFO] " + session) != nil)
 let service = "[steam-service] result=1053"
 assert(SteamGameDiagnostics.decode(service)?.1["result"] == "1053")
+let verificationRequest = "[native-steam-verify-v1] app=730 phase=requested mechanism=steam-validate result=unobserved completion=steam-ui"
+assert(SteamGameDiagnostics.decode(verificationRequest) != nil)
+assert(SteamGameDiagnostics.decode(verificationRequest.replacingOccurrences(of: "result=unobserved", with: "result=success")) == nil)
+assert(SteamGameDiagnostics.decode(verificationRequest + " ticket=PRIVATE_AUTH_SENTINEL") == nil)
 let content = "[steam-content-audit-v1] app=730 relative=game/bin/win64/cs2.exe state=cache-hash-match bytes=2967704 certificate=table-present-unverified vpk-signature=not-vpk trust=unmeasured"
 assert(SteamGameDiagnostics.decode(content) != nil)
 let origin = "[startup-timeline-v1] event=origin source=first-observed-create clock=monotonic t-ms=1095 mono-ns=572814511435000 intervals=overlap-allowed cpu-time=unmeasured"
@@ -75,6 +79,27 @@ let flags = "[cs2-launch-flags-v1] pid=033c tid=0340 steam=1 condebug=1 joy=1 in
 assert(SteamGameDiagnostics.decode(flags) != nil)
 let module = "[cs2-module-v1] pid=033c tid=0340 path-class=game relative=game/bin/win64/cs2.exe machine=8664 hybrid=unmeasured unknown-count=0 dropped-observed=0 sequence=1 limit=256 coverage=bounded-observed-load-events path-source=accepted-main-image"
 assert(SteamGameDiagnostics.decode(module) != nil)
+assert(SteamGameDiagnostics.decode(module)?.1["wine-builtin"] == "unmeasured")
+assert(SteamGameDiagnostics.decode(module)?.1["header-source"] == "legacy-machine-hybrid-only")
+assert(SteamGameDiagnostics.decode(module)?.1["catalog-role"] == "cs2-game-layout")
+let moduleHeaders = module + " wine-builtin=0 header-source=accepted-image-info"
+assert(SteamGameDiagnostics.decode(moduleHeaders)?.1["wine-builtin"] == "0")
+assert(SteamGameDiagnostics.decode(moduleHeaders)?.1["header-source"] == "accepted-image-info")
+for invalid in [module + " wine-builtin=1", module + " header-source=accepted-image-info",
+                moduleHeaders.replacingOccurrences(of: "wine-builtin=0", with: "wine-builtin=2"),
+                moduleHeaders.replacingOccurrences(of: "header-source=accepted-image-info", with: "header-source=trusted"),
+                moduleHeaders + " catalog-role=cs2-game-layout"] {
+    assert(SteamGameDiagnostics.decode(invalid) == nil)
+}
+let debug = "[cs2-guest-debug-v1] pid=033c tid=0340 being-debugged=1 nt-global-flag=00000070 limit=1-per-process coverage=accepted-post-server-init-snapshot evidence=fault-safe-peb-read-only scope=guest-peb-fields-only"
+assert(SteamGameDiagnostics.decode(debug)?.1["being-debugged"] == "1")
+assert(SteamGameDiagnostics.decode(debug.replacingOccurrences(of: "being-debugged=1 nt-global-flag=00000070", with: "being-debugged=unmeasured nt-global-flag=unmeasured")) != nil)
+for invalid in [debug + " token=SECRET", debug.replacingOccurrences(of: "being-debugged=1", with: "being-debugged=false"),
+                debug.replacingOccurrences(of: "nt-global-flag=00000070", with: "nt-global-flag=0"),
+                debug.replacingOccurrences(of: "scope=guest-peb-fields-only", with: "scope=all-debugger-state"),
+                debug.replacingOccurrences(of: "evidence=fault-safe-peb-read-only", with: "evidence=IsDebuggerPresent-called")] {
+    assert(SteamGameDiagnostics.decode(invalid) == nil)
+}
 assert(SteamGameDiagnostics.decode(module.replacingOccurrences(of: "unknown-count=0", with: "unknown-count=256").replacingOccurrences(of: "sequence=1", with: "sequence=256")) != nil)
 assert(SteamGameDiagnostics.decode(module.replacingOccurrences(of: "sequence=1", with: "sequence=257")) == nil)
 assert(SteamGameDiagnostics.decode(module.replacingOccurrences(of: "dropped-observed=0", with: "dropped-observed=129")) == nil)
@@ -86,6 +111,24 @@ for name in ["d3d9.dll", "nvapi64.dll"] {
     assert(SteamGameDiagnostics.decode(systemModule.replacingOccurrences(of: "wintrust.dll", with: name)) != nil)
     assert(SteamGameDiagnostics.decode(searchModule.replacingOccurrences(of: "wintrust.dll", with: name)) != nil)
 }
+for (name, role) in [("xtajit64.dll", "fex-runtime-name"), ("libarm64ecfex.dll", "fex-runtime-name"),
+                     ("d3d11.dll", "dxmt-runtime-name"), ("winemetal.dll", "dxmt-runtime-name"),
+                     ("cryptbase.dll", "windows-runtime-name"), ("mmdevapi.dll", "windows-runtime-name")] {
+    assert(SteamGameDiagnostics.decode(systemModule.replacingOccurrences(of: "wintrust.dll", with: name))?.1["catalog-role"] == role)
+    assert(SteamGameDiagnostics.decode(searchModule.replacingOccurrences(of: "wintrust.dll", with: name))?.1["catalog-role"] == role)
+}
+for path in ["game/bin/win64/sdl3.dll", "game/bin/win64/inputsystem.dll", "game/bin/win64/imemanager.dll",
+             "game/bin/win64/gameinput.dll", "game/bin/win64/localize.dll", "game/bin/win64/amd_ags_x64.dll",
+             "game/bin/win64/d3dcompiler_47.dll", "game/bin/win64/resourcesystem.dll"] {
+    assert(SteamGameDiagnostics.decode(module.replacingOccurrences(of: "game/bin/win64/cs2.exe", with: path))?.1["catalog-role"] == "cs2-game-layout")
+    assert(SteamGameDiagnostics.decode(content.replacingOccurrences(of: "game/bin/win64/cs2.exe", with: path)) == nil,
+           "module catalog must not broaden content audit paths")
+}
+for name in ["steamclient64.dll", "tier0_s64.dll", "vstdlib_s64.dll", "crashhandler64.dll", "gameoverlayrenderer64.dll"] {
+    assert(SteamGameDiagnostics.decode(module.replacingOccurrences(of: "path-class=game relative=game/bin/win64/cs2.exe", with: "path-class=steam-client relative=" + name))?.1["catalog-role"] == "steam-client-layout")
+}
+assert(SteamGameDiagnostics.decode(systemModule.replacingOccurrences(of: "system32/wintrust.dll", with: "system32/unlisted.dll")) == nil)
+assert(SteamGameDiagnostics.decode(module.replacingOccurrences(of: "game/bin/win64/cs2.exe", with: "game/bin/win64/unlisted.dll")) == nil)
 
 assert(SteamGameDiagnostics.decode(module.replacingOccurrences(of: "path-class=game relative=game/bin/win64/cs2.exe", with: "path-class=private relative=redacted")) != nil)
 assert(SteamGameDiagnostics.decode(flags.replacingOccurrences(of: "known-sequence=0,1,2", with: "known-sequence=0,2")) == nil)
@@ -238,6 +281,7 @@ if distinctSpellings {
     assert(disk.contains { $0["candidate"] == "steam-bin-service-dll" && $0["state"] == "same-file-as-earlier-candidate" && $0["sameAsCandidate"] == "steam-bin-service-dll-official-case" })
 }
 assert(manifest["moduleObservations"] as? String == "no-observed-dedicated-events-unmeasured")
+assert(manifest["guestDebugObservations"] as? String == "no-observed-dedicated-events-unmeasured")
 assert(sources.contains { $0["source"] as? String == "cs2-session-alias" && $0["state"] as? String == "same-file-as-earlier-source" })
 assert(sources.contains { $0["source"] as? String == "steam-connection" && $0["state"] as? String == "unavailable-or-not-owned-regular-file" })
 let events = try! JSONSerialization.jsonObject(with: entries[1].data) as! [[String: Any]]
@@ -285,11 +329,16 @@ assert((boundedManifest["sources"] as! [[String: Any]]).first { $0["source"] as?
 // Preserve the actual early CS2 mapping/flags near5MiB as well as late
 // verifier errors after the runtime log grows beyond the8MiB input budget.
 let fillerLine = String(repeating: "x", count: 1023) + "\n"
-put("madeira-log.txt", String(repeating: fillerLine, count: 5 * 1024) + flags + "\n" + module + "\n" + String(repeating: fillerLine, count: 4 * 1024) + unknownTrust + "\n")
+let dedicatedRows = [flags, module, moduleHeaders, debug].joined(separator: "\n") + "\n"
+put("madeira-log.txt", String(repeating: fillerLine, count: 5 * 1024) + dedicatedRows + String(repeating: fillerLine, count: 4 * 1024) + unknownTrust + "\n")
 let longLog = try! SteamGameDiagnostics.collect(documents: root)
 let longEvents = try! JSONSerialization.jsonObject(with: longLog[1].data) as! [[String: Any]]
 assert(longEvents.contains { $0["record"] as? String == "cs2-launch-flags-v1" })
 assert(longEvents.contains { $0["record"] as? String == "cs2-module-v1" })
+assert(longEvents.contains { $0["record"] as? String == "cs2-guest-debug-v1" && ($0["fields"] as? [String: String])?["being-debugged"] == "1" })
+let longManifest = try! JSONSerialization.jsonObject(with: longLog[0].data) as! [String: Any]
+assert(longManifest["guestDebugObservations"] as? String == "observed-allowlisted-events")
+assert((try! JSONSerialization.jsonObject(with: longLog[3].data) as! [String: Any])["confirmedObservations"] as? [String: Bool] != nil)
 assert(longEvents.contains { ($0["fields"] as? [String: String])?["name"] == "redacted-unlisted" })
 // An input-byte cap must not amplify8MiB of newlines into millions of
 // Data subsequences before applying the row cap.

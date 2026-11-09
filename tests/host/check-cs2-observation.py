@@ -51,11 +51,14 @@ static _Thread_local void *ios_retired_thread_owner;
 virtual = (ROOT / 'build/ntdll-unix/virtual_ios.c').read_text()
 image_map = virtual[virtual.index('static NTSTATUS virtual_map_image('):virtual.index(' *             virtual_map_section')]
 assert image_map.index('server_leave_uninterrupted_section(') < image_map.index('ios_cs2_observe_current_map(')
-assert 'if (NT_SUCCESS(status)) ios_cs2_observe_current_map(nt_name, image_info->machine, image_info->is_hybrid);' in image_map
+assert 'if (NT_SUCCESS(status)) ios_cs2_observe_current_map(nt_name, image_info->machine, image_info->is_hybrid, image_info->wine_builtin);' in image_map
 loader = (ROOT / 'build/ntdll-unix/loader_ios.c').read_text()
 assert 'ios_register_proc_ident(NtCurrentTeb()->Peb, &main_image_info);\n    ios_cs2_observe_current_start(main_image_info.Machine);' in loader
 assert 'ios_cs2_observe_current_start(ios_cur_image_info()->Machine);' in loader
 server = (ROOT / 'build/ntdll-unix/server_ios.c').read_text()
+done = body(server, 'void server_init_process_done(void)')
+assert done.index('SERVER_END_REQ;') < done.index('ios_cs2_observe_current_debug();') < done.index('signal_start_thread(')
+assert done.count('ios_cs2_observe_current_debug();') == 1
 for name in ('size_t server_init_process(void)', 'size_t server_init_process_child('):
     startup = body(server, name)
     assert startup.index('set_thread_id( NtCurrentTeb(), pid, tid );') < startup.index('ios_thread_process_lease(NtCurrentTeb()->Peb,1);')

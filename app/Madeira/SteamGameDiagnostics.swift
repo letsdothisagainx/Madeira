@@ -23,6 +23,28 @@ enum SteamGameDiagnostics {
         "game/csgo/bin/win64/client.dll", "game/csgo/bin/win64/server.dll",
         "game/csgo/pak01_dir.vpk", "game/core/pak01_dir.vpk"
     ]
+    // Diagnostic layout candidates only. Matching a literal accepted loader
+    // path identifies a catalog entry, never its publisher or file trust.
+    // Keep this separate from the content audit's deliberately smaller list.
+    private static let moduleGamePaths = Set(paths.filter { !$0.hasSuffix(".vpk") }).union([
+        "game/bin/win64/sdl3.dll", "game/bin/win64/inputsystem.dll", "game/bin/win64/imemanager.dll",
+        "game/bin/win64/gameinput.dll", "game/bin/win64/localize.dll", "game/bin/win64/amd_ags_x64.dll",
+        "game/bin/win64/d3dcompiler_47.dll", "game/bin/win64/resourcesystem.dll"
+    ])
+    private static let moduleSteamNames: Set<String> = [
+        "steamclient64.dll", "tier0_s64.dll", "vstdlib_s64.dll", "crashhandler64.dll", "gameoverlayrenderer64.dll"
+    ]
+    private static let moduleSystemNames: Set<String> = [
+        "ntdll.dll", "kernel32.dll", "kernelbase.dll", "wintrust.dll", "crypt32.dll", "bcrypt.dll",
+        "advapi32.dll", "sechost.dll", "rpcrt4.dll", "ws2_32.dll", "ucrtbase.dll", "msvcrt.dll",
+        "win32u.dll", "user32.dll", "gdi32.dll", "d3d9.dll", "d3d11.dll", "dxgi.dll", "winemetal.dll", "nvapi64.dll",
+        "setupapi.dll", "version.dll", "psapi.dll", "ole32.dll", "oleaut32.dll", "combase.dll",
+        "coml2.dll", "winhttp.dll", "cryptnet.dll", "ncrypt.dll", "mswsock.dll", "shlwapi.dll",
+        "shell32.dll", "shcore.dll", "imm32.dll", "uxtheme.dll", "comctl32.dll", "xtajit64.dll", "libarm64ecfex.dll",
+        "cryptbase.dll", "winmm.dll", "msacm32.dll", "iphlpapi.dll", "dnsapi.dll", "nsi.dll",
+        "dbghelp.dll", "imagehlp.dll", "cfgmgr32.dll", "secur32.dll", "wininet.dll", "mpr.dll",
+        "hid.dll", "dwmapi.dll", "dinput8.dll", "wsock32.dll", "mmdevapi.dll", "avrt.dll", "schannel.dll", "rsaenh.dll"
+    ]
     private static func matches(_ value: String, _ pattern: String) -> Bool {
         value.range(of: "^(?:" + pattern + ")$", options: .regularExpression) != nil
     }
@@ -126,6 +148,10 @@ enum SteamGameDiagnostics {
                   oneOf(f["create-ok"]!, "0 1"), f["intervals"] == "overlap-allowed" else { return nil }
         case "steam-content-audit-v1":
             guard content(f) else { return nil }
+        case "native-steam-verify-v1":
+            guard keys(f, "app phase mechanism result completion"), f["app"] == "730",
+                  f["phase"] == "requested", f["mechanism"] == "steam-validate",
+                  f["result"] == "unobserved", f["completion"] == "steam-ui" else { return nil }
         case "cs2-user-marker-v1":
             guard keys(f, "kind source input app context pid session sequence utc utc-offset-min monotonic-ms evidence"),
                   oneOf(f["kind"]!, "session-begin session-end process-observed test-begin error-reported input"),
@@ -165,11 +191,26 @@ enum SteamGameDiagnostics {
                       f[$0.element] == (sequence.contains(String($0.offset)) ? "1" : "0")
                   }) else { return nil }
         case "cs2-module-v1":
-            guard keys(f, "pid tid path-class relative machine hybrid unknown-count dropped-observed sequence limit coverage path-source"), processIDs(f), modulePath(f),
+            let base = "pid tid path-class relative machine hybrid unknown-count dropped-observed sequence limit coverage path-source"
+            guard keys(f, base) || keys(f, base + " wine-builtin header-source") else { return nil }
+            guard processIDs(f), modulePath(f),
                   oneOf(f["machine"]!, "014c 8664 aa64 a641 a64e unknown"), oneOf(f["hybrid"]!, "0 1 unmeasured"),
                   allNumbers(f, "unknown-count sequence", maximum: 256), number(f["dropped-observed"]!, maximum: 128),
                   UInt64(f["sequence"]!)! > 0, f["limit"] == "256",
                   f["coverage"] == "bounded-observed-load-events", oneOf(f["path-source"]!, "accepted-main-image section-name") else { return nil }
+            if let builtin = f["wine-builtin"] {
+                guard oneOf(builtin, "0 1 unmeasured"), f["header-source"] == "accepted-image-info" else { return nil }
+            } else {
+                f["wine-builtin"] = "unmeasured"
+                f["header-source"] = "legacy-machine-hybrid-only"
+            }
+            f["catalog-role"] = moduleCatalogRole(f)
+        case "cs2-guest-debug-v1":
+            guard keys(f, "pid tid being-debugged nt-global-flag limit coverage evidence scope"), processIDs(f),
+                  oneOf(f["being-debugged"]!, "0 1 unmeasured"),
+                  f["nt-global-flag"] == "unmeasured" || matches(f["nt-global-flag"]!, "[0-9a-f]{8}"),
+                  f["limit"] == "1-per-process", f["coverage"] == "accepted-post-server-init-snapshot",
+                  f["evidence"] == "fault-safe-peb-read-only", f["scope"] == "guest-peb-fields-only" else { return nil }
         default: return nil
         }
         return (tag, f)
@@ -177,15 +218,27 @@ enum SteamGameDiagnostics {
     private static func modulePath(_ f: [String: String]) -> Bool {
         guard let relative = f["relative"] else { return false }
         switch f["path-class"] {
-        case "game": return paths.contains(relative) && !relative.hasSuffix(".vpk")
-        case "steam-client": return relative == "steamclient64.dll"
+        case "game": return moduleGamePaths.contains(relative)
+        case "steam-client": return moduleSteamNames.contains(relative)
         case "private", "unknown": return relative == "redacted"
         case "system", "search-root":
             let parts = relative.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
             guard parts.count == 2,
                   oneOf(parts[0], f["path-class"] == "system" ? "system32 sysx64 syswow64" : "aarch64-windows arm64ec-windows i386-windows") else { return false }
-            return oneOf(parts[1], "ntdll.dll kernel32.dll kernelbase.dll wintrust.dll crypt32.dll bcrypt.dll advapi32.dll sechost.dll rpcrt4.dll ws2_32.dll ucrtbase.dll msvcrt.dll win32u.dll user32.dll gdi32.dll d3d11.dll dxgi.dll winemetal.dll setupapi.dll version.dll psapi.dll ole32.dll oleaut32.dll combase.dll coml2.dll winhttp.dll cryptnet.dll ncrypt.dll mswsock.dll shlwapi.dll shell32.dll shcore.dll d3d9.dll nvapi64.dll imm32.dll uxtheme.dll comctl32.dll xtajit64.dll libarm64ecfex.dll")
+            return moduleSystemNames.contains(parts[1])
         default: return false
+        }
+    }
+    private static func moduleCatalogRole(_ f: [String: String]) -> String {
+        switch f["path-class"] {
+        case "game": return "cs2-game-layout"
+        case "steam-client": return "steam-client-layout"
+        case "system", "search-root":
+            let name = f["relative"]!.split(separator: "/").last!
+            if ["xtajit64.dll", "libarm64ecfex.dll"].contains(String(name)) { return "fex-runtime-name" }
+            if ["d3d9.dll", "d3d11.dll", "dxgi.dll", "winemetal.dll", "nvapi64.dll"].contains(String(name)) { return "dxmt-runtime-name" }
+            return "windows-runtime-name"
+        default: return "unclassified"
         }
     }
     private static func sourceRole(_ f: [String: String]) -> Bool {
@@ -525,6 +578,7 @@ enum SteamGameDiagnostics {
                 "userErrorMarkerObserved": seenRecord("cs2-user-marker-v1", "kind", "error-reported"),
                 "serviceRunningReported": seenRecord("steam-service", "service-state", "4"),
                 "serviceDLLInvalidImageReported": seenRecord("steam-service-loader-v1", "status", "c000007b"),
+                "guestPEBBeingDebuggedSetObserved": seenRecord("cs2-guest-debug-v1", "being-debugged", "1"),
                 "cachedReferenceMismatchObserved": seenRecord("steam-content-audit-v1", "state", "cache-hash-mismatch"),
                 "embeddedVPKConsistencyObserved": seenRecord("steam-content-audit-v1", "vpk-crypto", "consistent-embedded-key")
             ],
@@ -535,7 +589,7 @@ enum SteamGameDiagnostics {
                 "generic-confirm-warning-is-vac-popup": "unproven-without-correlated-error-marker",
                 "secure-launch-environment-compatibility": "not-established-by-network-authentication"
             ],
-            "unmeasured": ["independent-Valve-file-trust", "VAC-secure-server-acceptance", "complete-module-inventory"],
+            "unmeasured": ["independent-Valve-file-trust", "VAC-secure-server-acceptance", "complete-module-inventory", "complete-guest-and-host-debugger-state"],
             "interpretation": "network-authentication-relay-readiness-and-local-loopback-never-establish-VAC-approval",
             "warningAbsence": "not-observed-in-bounded-console-is-not-proof-of-no-popup",
             "clockCorrelation": "console-MM/DD-wall-clock-has-no-year-or-zone; UTC-user-markers-carry-device-offset; proximity-does-not-establish-causality"
@@ -555,8 +609,12 @@ enum SteamGameDiagnostics {
             "argumentCompleteness": "complete-only-when-parse-complete-1-and-unknown-count-0",
             "flagSemantics": "observed-tokens-not-engine-option-interpretation-zeros-unobserved-when-incomplete",
             "machineInterpretation": "raw-PE-machine-plus-separate-hybrid-observation-8664-does-not-imply-pure-AMD64",
+            "moduleCatalogInterpretation": "fixed-layout-or-name-match-only-not-original-publisher-implementation-signature-or-trust",
+            "wineBuiltinInterpretation": "loader-observed-Wine-DOS-header-marker-not-a-cryptographic-signature",
             "launchFlagObservations": coverage("cs2-launch-flags-v1"),
             "moduleObservations": coverage("cs2-module-v1"),
+            "guestDebugObservations": coverage("cs2-guest-debug-v1"),
+            "guestDebugScope": "one-startup-guest-PEB-snapshot-not-host-attachment-later-state-or-complete-debugger-detection",
             "trustObservations": coverage("trust-result-v1"),
             "sessionObservations": coverage("steam-session-v1"),
             "authenticationVerdict": "unmeasured", "vacVerdict": "unmeasured", "trustVerdict": "unmeasured",
@@ -578,6 +636,10 @@ enum SteamGameDiagnostics {
         Summary hypotheses are not causes. AuthStatus OK and relay readiness concern
         networking certificates; loopback connections are local. None establish
         VAC-secure acceptance, independent Valve file trust or a working secure game.
+        Module catalog roles identify fixed layouts or names, not the original
+        publisher or implementation. Wine builtin is a DOS-header marker, not a
+        cryptographic signature. Guest PEB debugger fields are a single startup
+        snapshot; unreadable fields remain unmeasured and host state is unmeasured.
         Unknown, sensitive, unavailable and out-of-budget content is explicitly omitted.
         Timestamped cs2.exe session logs are aliases/hardlinks of the runtime log,
         not independent game-console evidence. No installed game/account file changes.

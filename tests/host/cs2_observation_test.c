@@ -83,7 +83,7 @@ static void map(void *owner, unsigned pid, uint64_t lease, const char *name,
     size_t image_length = wide(game_image, image_wide, IOS_CS2_PATH);
     size_t name_length = wide(name, name_wide, IOS_CS2_PATH);
     ios_cs2_record_map(owner, pid, 0x340, lease, image_wide, image_length,
-                       name_wide, name_length, machine, hybrid, main_image);
+                       name_wide, name_length, machine, hybrid, main_image ? -1 : 1, main_image);
 }
 static void private_excluded(void)
 {
@@ -200,6 +200,26 @@ static void path_tests(void)
     classification(&ios_cs2_processes[0], game_image, "game", "game/bin/win64/cs2.exe");
     classification(&ios_cs2_processes[0], "C:/Program Files (x86)/Steam/steamapps/common/Counter-Strike Global Offensive/game/csgo/bin/win64/client.dll", "game", "game/csgo/bin/win64/client.dll");
     classification(&ios_cs2_processes[0], "C:/Program Files (x86)/Steam/steamclient64.dll", "steam-client", "steamclient64.dll");
+    for (i = 0; i < sizeof(ios_cs2_game_paths) / sizeof(*ios_cs2_game_paths); i++)
+    {
+        char candidate[IOS_CS2_PATH];
+        snprintf(candidate, sizeof(candidate), "C:/Program Files (x86)/Steam/steamapps/common/Counter-Strike Global Offensive/%s", ios_cs2_game_paths[i]);
+        classification(&ios_cs2_processes[0], candidate, "game", ios_cs2_game_paths[i]);
+    }
+    for (i = 0; i < sizeof(ios_cs2_steam_paths) / sizeof(*ios_cs2_steam_paths); i++)
+    {
+        char candidate[IOS_CS2_PATH];
+        snprintf(candidate, sizeof(candidate), "C:/Program Files (x86)/Steam/%s", ios_cs2_steam_paths[i]);
+        classification(&ios_cs2_processes[0], candidate, "steam-client", ios_cs2_steam_paths[i]);
+        snprintf(candidate, sizeof(candidate), "C:/private/%s", ios_cs2_steam_paths[i]);
+        classification(&ios_cs2_processes[0], candidate, "private", "redacted");
+    }
+    for (i = 0; i < sizeof(ios_cs2_system_names) / sizeof(*ios_cs2_system_names); i++)
+    {
+        char candidate[IOS_CS2_PATH];
+        snprintf(candidate, sizeof(candidate), "C:/Windows/sysx64/%s", ios_cs2_system_names[i]);
+        classification(&ios_cs2_processes[0], candidate, "system", candidate + strlen("C:/Windows/"));
+    }
     classification(&ios_cs2_processes[0], "C:/Windows/sysWOW64/ntdll.dll", "system", "syswow64/ntdll.dll");
     classification(&ios_cs2_processes[0], "/owned/Madeira Search/arm64ec-windows/d3d11.dll", "search-root", "arm64ec-windows/d3d11.dll");
     classification(&ios_cs2_processes[0], "c:/windows/system32/d3d9.dll", "system", "system32/d3d9.dll");
@@ -257,6 +277,8 @@ static void record_tests(void)
     map(owner, 0x324, 23, "C:/Windows/system32/d3d11.dll", 0xa641, 1, 0);
     assert(strstr(captured[2], "path-class=system relative=system32/d3d11.dll machine=a641 hybrid=1"));
     assert(strstr(captured[2], "path-source=section-name"));
+    assert(strstr(captured[1], "wine-builtin=unmeasured header-source=accepted-image-info"));
+    assert(strstr(captured[2], "wine-builtin=1 header-source=accepted-image-info"));
     snprintf(name, sizeof(name), "C:/Users/PRIVATE_OPAQUE_SENTINEL_76561198000000000/private.dll");
     map(owner, 0x324, 23, name, 0x1234, -1, 0);
     assert(strstr(captured[3], "path-class=private relative=redacted machine=unknown hybrid=unmeasured unknown-count=1"));

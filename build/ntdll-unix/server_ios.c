@@ -142,6 +142,7 @@ static void wine_log_write(const char *fmt, ...)
 #include "unix_private.h"
 #include "ios_wow.h"
 #include "steam_startup_timeline.h"
+#include "cs2_observation.h"
 #include "ddk/wdm.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(server);
@@ -6179,6 +6180,7 @@ void server_init_process_done(void)
 
     assert( !status );
 #ifdef WINE_IOS
+    ios_cs2_observe_current_debug();
     /* On iOS, the parent's PE code (CreateProcessInternalW) should call
      * NtResumeThread to unsuspend the child. But since we use thread-based
      * CreateProcess, the resume mechanism may not work correctly.
