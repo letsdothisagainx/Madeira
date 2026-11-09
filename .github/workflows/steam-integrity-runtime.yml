@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   workflow_call:
   push:
-    branches: [main, 'codex/pr-build-*']
+    branches: [main, 'codex/pr-build-*', codex/validate-cs2-integrity-runtime-4b41]
     paths: &integrity-paths
       - app/Madeira/SwiftSteam/**
       - app/Madeira/SteamIntegrityDiagnostics.swift
@@ -52,6 +52,8 @@ jobs:
           exit "$result"
       - name: Execute read-only diagnostic package with Swift and ASan
         run: python3 tests/host/check-steam-game-diagnostics.py --require-swift
+      - name: Execute accepted CS2 observation and existing-lease bodies
+        run: python3 tests/host/check-cs2-observation.py
       - name: Reproduce the exact old downloader's runtime integrity failures
         run: |
           set +e
