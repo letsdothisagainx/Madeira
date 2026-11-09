@@ -19,6 +19,8 @@ ui = (ROOT / 'app/Madeira/Library.swift').read_text()
 project = (ROOT / 'app/Madeira.xcodeproj/project.pbxproj').read_text()
 assert 'SteamGameDiagnosticsExportButton()' in ui
 assert 'SteamGameDiagnostics.swift in Sources' in project
+assert 'Export CS2 VAC Diagnostics' in source.read_text()
+assert 'CS2VACMarkers.snapshotLines()' in source.read_text()
 assert 'DispatchQueue.global(qos: .utility).async' in store
 assert 'SteamGameDiagnostics.collect(documents: documents)' in store
 assert 'O_EXCL | O_NOFOLLOW' in store and 'if createdDirectory' in store
@@ -80,10 +82,63 @@ let systemModule = module.replacingOccurrences(of: "path-class=game relative=gam
 assert(SteamGameDiagnostics.decode(systemModule) != nil)
 let searchModule = systemModule.replacingOccurrences(of: "path-class=system relative=system32", with: "path-class=search-root relative=arm64ec-windows")
 assert(SteamGameDiagnostics.decode(searchModule) != nil)
+for name in ["d3d9.dll", "nvapi64.dll"] {
+    assert(SteamGameDiagnostics.decode(systemModule.replacingOccurrences(of: "wintrust.dll", with: name)) != nil)
+    assert(SteamGameDiagnostics.decode(searchModule.replacingOccurrences(of: "wintrust.dll", with: name)) != nil)
+}
+
 assert(SteamGameDiagnostics.decode(module.replacingOccurrences(of: "path-class=game relative=game/bin/win64/cs2.exe", with: "path-class=private relative=redacted")) != nil)
 assert(SteamGameDiagnostics.decode(flags.replacingOccurrences(of: "known-sequence=0,1,2", with: "known-sequence=0,2")) == nil)
 assert(SteamGameDiagnostics.decode(flags.replacingOccurrences(of: "joy=1", with: "joy=0")) == nil)
 assert(SteamGameDiagnostics.decode(module.replacingOccurrences(of: "sequence=1", with: "sequence=00")) == nil)
+// Reproduce the useful public shapes in the actual November9 console.
+// IDs/endpoints identify a grammar only and must not appear in the export.
+let consoleRows: [(String, String)] = [
+    ("11/09 03:30:21 PIX/NSIGHT WAS detected.", "engine-pix-nsight-reported"),
+    ("11/09 03:32:36 ChangeGameUIState: CSGO_GAME_UI_STATE_INVALID -> CSGO_GAME_UI_STATE_MAINMENU", "main-menu-state-reported"),
+    ("11/09 03:32:36 Source2Init OK", "source2-initialized"),
+    ("11/09 03:30:27 [SteamNetSockets] AuthStatus (steamid:76561198000000000):  Attempting  (Requesting cert)", "network-auth-status"),
+    ("11/09 03:32:41 [SteamNetSockets] AuthStatus (steamid:76561198000000000):  OK  (OK)", "network-auth-status"),
+    ("11/09 03:32:40 [SteamNetSockets] Certificate expires in 37h24m at 1794347803 (current time 1794213160), will renew in 35h24m", "network-certificate-renewal-scheduled"),
+    ("11/09 03:32:40 [SteamNetSockets] SDR network config fetch attempt #1 failed.  HTTP 504.  .  Trying again.", "relay-config-retry"),
+    ("11/09 03:32:41 [SteamNetSockets] Got SDR network config.  Loaded revision 1793736599 OK", "relay-config-loaded"),
+    ("11/09 03:32:47 [SteamNetSockets] SDR RelayNetworkStatus:  avail=OK  config=OK  anyrelay=OK   (OK.  Relays: 25 valid, 0 great, 4 good+, 10 ok+, 19 ignored)", "relay-network-ready"),
+    ("11/09 03:33:38 [Client] CL:  CCreateGameClientJob creating client connection to 'loopback'", "connection-attempt"),
+    ("11/09 03:33:39 [Networking] Connected loopback client=a1b2c3d4@loopback:1 <-> server=e5f60718@loopback:0", "local-loopback-connected"),
+    ("11/09 03:33:39 [Client] CL:  Connected to 'loopback:1'", "local-loopback-connected"),
+    ("11/09 03:35:16 [Localization System] CLocalize::CompileString failed to localize: '#GenericConfirmText_Label'", "generic-confirm-localization-warning"),
+    ("11/09 03:34:28 [SteamNetSockets] Waited 51.0ms for SteamNetworkingSockets lock [ServiceThread]", "network-lock-wait"),
+    ("11/09 03:34:28 [SteamNetSockets] SteamNetworkingSockets lock held for 196.0ms.  (Performance warning.)  ServiceThread,RecvUDPPacket", "network-lock-held"),
+    (#"11/09 03:34:28 [SteamNetSockets] src\steamnetworkingsockets\clientlib\steamnetworkingsockets_lowlevel.cpp(2874): SteamnetworkingSockets service thread waited 140ms for lock!  This directly adds to network latency!  It could be a bug, but it's usually caused by general performance problem such as thread starvation or a debug output handler taking too long."#, "network-service-thread-delayed")
+]
+for (row, expected) in consoleRows {
+    let f = SteamGameDiagnostics.decodeConsole(row)!
+    assert(f["event"] == expected && f["console-time"] != "unmeasured")
+    assert(f["clock"] == "console-wall-year-zone-unmeasured")
+    assert(!String(describing: f).contains("76561198000000000"))
+}
+assert(SteamGameDiagnostics.decodeConsole("\u{feff}" + consoleRows[0].0)?["event"] == "engine-pix-nsight-reported")
+assert(SteamGameDiagnostics.decodeConsole("99/09 03:32:36 Source2Init OK") == nil)
+assert(SteamGameDiagnostics.decodeConsole("11/09 25:32:36 Source2Init OK") == nil)
+assert(SteamGameDiagnostics.decodeConsole(consoleRows[14].0.replacingOccurrences(of: "196.0ms", with: "99999.0ms")) == nil)
+assert(SteamGameDiagnostics.decodeConsole(consoleRows[14].0.replacingOccurrences(of: "RecvUDPPacket", with: "SECRET_TRACE")) == nil)
+assert(SteamGameDiagnostics.decodeConsole(consoleRows[4].0.replacingOccurrences(of: "(OK)", with: "(Requesting cert)")) == nil)
+let marker = "[cs2-user-marker-v1] kind=error-reported source=user input=none app=730 context=cs2-observed pid=033c session=1 sequence=5 utc=2026-11-09T08:35:16.123Z utc-offset-min=-300 monotonic-ms=572814511 evidence=user-report"
+assert(SteamGameDiagnostics.decode(marker)?.1["utc-offset-min"] == "-300")
+for invalid in [marker + " token=SECRET", marker.replacingOccurrences(of: "source=user", with: "source=runtime"),
+    marker.replacingOccurrences(of: "utc-offset-min=-300", with: "utc-offset-min=-841"),
+    marker.replacingOccurrences(of: "sequence=5", with: "sequence=0"),
+    marker.replacingOccurrences(of: "input=none", with: "input=keyboard")] {
+    assert(SteamGameDiagnostics.decode(invalid) == nil)
+}
+// Exercise the actual app-owned ring, not injected rows or a fake collector.
+CS2VACMarkers.shared.begin(appID: 730)
+CS2VACMarkers.shared.observeProcess(pid: "033c")
+assert(CS2VACMarkers.shared.beginTest())
+CS2VACMarkers.shared.noteInput(.pointer)
+assert(CS2VACMarkers.shared.markError())
+assert(CS2VACMarkers.snapshotLines().count == 5)
+assert(CS2VACMarkers.snapshotLines().allSatisfy { SteamGameDiagnostics.decode($0) != nil })
 let secrets = ["OPAQUE_SENTINEL_TICKET_6a9c", "PRIVATE_SENTINEL_KEY_7b2d", "76561198000000000", "203.0.113.42", "private@example.org", "/private/var/mobile/SECRET_PATH"]
 let bad = [
     loaderFull + " private=" + secrets[0], loaderBare + " " + secrets[0], "prefix " + loaderFull,
@@ -114,6 +169,13 @@ let bad = [
     session + "\0", session + "\r" + secrets[0], session + "\u{202e}", String(repeating: "x", count: 4100) + session
 ]
 for line in bad { assert(SteamGameDiagnostics.decode(line) == nil, "unknown or sensitive row accepted") }
+for (row, _) in consoleRows {
+    assert(SteamGameDiagnostics.decodeConsole(row + " token=" + secrets[0]) == nil)
+    assert(SteamGameDiagnostics.decodeConsole("prefix " + row) == nil)
+}
+assert(SteamGameDiagnostics.decodeConsole("[SteamNetSockets] Certificate blob=" + secrets[1]) == nil)
+assert(SteamGameDiagnostics.decodeConsole("11/09 03:35:16 [SteamNetSockets] " + secrets.joined(separator: " ")) == nil)
+
 // An unlisted subject must not erase the actual verifier error. Only its
 // arbitrary filename is canonicalized; unknown fields still reject the row.
 let unknownTrust = trust.replacingOccurrences(of: "name=cs2.exe", with: "name=" + secrets[0])
@@ -129,9 +191,9 @@ let steam = "wine/drive_c/Program Files (x86)/Steam/"
 let signatureWarning = "Some of your game files have been detected to have no signatures or invalid signatures. You will not be allowed to join VAC secure servers."
 let signatureWarningHelp = signatureWarning + " Please verify your launch options, check correctness of your game installation, restart the game and try again."
 put(steam + "steamapps/common/Counter-Strike Global Offensive/game/csgo/console.log",
-    "VAC was unable to verify your game session.\n" + signatureWarning + "\n" + signatureWarningHelp + "\n" +
+    "VAC was unable to verify your game session.\n" + signatureWarning + "\n" + signatureWarningHelp + "\n" + consoleRows.map { $0.0 }.joined(separator: "\n") + "\n" +
     signatureWarning + " " + secrets[0] + "\n" + signatureWarningHelp + " private=" + secrets[1] + "\nprefix " + signatureWarning + "\nVAC " + secrets[0] + "\nSteamAPI " + secrets[1] + "\n" + secrets.joined(separator: " ") + "\n")
-put(steam + "logs/console_log.txt", session + "\n" + loaderFull + "\n" + loaderBare + "\n" + String(repeating: "X", count: 5000) + service + "\n")
+put(steam + "logs/console_log.txt", session + "\n" + loaderFull + "\n" + loaderBare + "\n" + marker + "\n" + String(repeating: "X", count: 5000) + service + "\n")
 let outside = root.deletingLastPathComponent().appendingPathComponent("outside-console.txt")
 try! Data(("[steam-service] result=999\n" + secrets[0]).utf8).write(to: outside)
 try! fm.createSymbolicLink(at: root.appendingPathComponent(steam + "logs/connection_log.txt"), withDestinationURL: outside)
@@ -162,7 +224,7 @@ let distinctSpellings = officialInfo.st_dev != lowerInfo.st_dev || officialInfo.
 let invalidHandle = try! FileHandle(forWritingTo: root.appendingPathComponent("madeira-log.txt"))
 try! invalidHandle.seekToEnd(); try! invalidHandle.write(contentsOf: Data([0xff, 0xfe, 0x0a])); try! invalidHandle.close()
 let entries = try! SteamGameDiagnostics.collect(documents: root)
-assert(entries.map(\.name) == ["manifest.json", "observations.json", "README.txt"])
+assert(entries.map(\.name) == ["manifest.json", "observations.json", "cs2-console.json", "summary.json", "README.txt"])
 let text = entries.map { String(decoding: $0.data, as: UTF8.self) }.joined()
 for secret in secrets { assert(!text.contains(secret), "secret leaked") }
 assert(!text.contains("successful-login") && !text.contains("auth-validation=unclaimed")) // re-encoded values, no raw source line
@@ -179,7 +241,18 @@ assert(manifest["moduleObservations"] as? String == "no-observed-dedicated-event
 assert(sources.contains { $0["source"] as? String == "cs2-session-alias" && $0["state"] as? String == "same-file-as-earlier-source" })
 assert(sources.contains { $0["source"] as? String == "steam-connection" && $0["state"] as? String == "unavailable-or-not-owned-regular-file" })
 let events = try! JSONSerialization.jsonObject(with: entries[1].data) as! [[String: Any]]
-assert(events.count == 9)
+assert(events.count == 14 + consoleRows.count)
+let consoleExcerpt = try! JSONSerialization.jsonObject(with: entries[2].data) as! [[String: Any]]
+assert(consoleExcerpt.count == 3 + consoleRows.count)
+let summary = try! JSONSerialization.jsonObject(with: entries[3].data) as! [String: Any]
+let confirmed = summary["confirmedObservations"] as! [String: Bool]
+assert(confirmed["networkCertificateAuthOKReported"] == true && confirmed["relayNetworkReadyReported"] == true)
+assert(confirmed["localLoopbackConnectionReported"] == true && confirmed["mainMenuStateReported"] == true)
+assert(confirmed["userErrorMarkerObserved"] == true && confirmed["signatureWarningTextObserved"] == true)
+assert((summary["unmeasured"] as! [String]).contains("VAC-secure-server-acceptance"))
+let markerEvents = events.filter { $0["record"] as? String == "cs2-user-marker-v1" }
+assert(markerEvents.count == 5 && markerEvents.allSatisfy { $0["source"] as? String == "madeira-marker-ring" })
+assert(!text.contains("a1b2c3d4") && !text.contains("e5f60718") && !text.contains("1794347803"))
 let loaderEvents = events.filter { $0["record"] as? String == "steam-service-loader-v1" }
 assert(loaderEvents.count == 2 && loaderEvents.allSatisfy { $0["source"] as? String == "madeira-session" })
 assert(Set(loaderEvents.compactMap { ($0["fields"] as? [String: String])?["status"] }) == Set(["c000007b", "c0000135"]))
@@ -208,7 +281,7 @@ var bounded = SteamGameDiagnostics.Limits(); bounded.mainBytes = 2048
 put("madeira-log.txt", service + "\n" + String(repeating: "secret-row\n", count: 2000) + session + "\n")
 let boundedEntries = try! SteamGameDiagnostics.collect(documents: root, limits: bounded)
 let boundedManifest = try! JSONSerialization.jsonObject(with: boundedEntries[0].data) as! [String: Any]
-assert((boundedManifest["sources"] as! [[String: Any]])[0]["truncated"] as? Bool == true)
+assert((boundedManifest["sources"] as! [[String: Any]]).first { $0["source"] as? String == "madeira-session" }?["truncated"] as? Bool == true)
 // Preserve the actual early CS2 mapping/flags near5MiB as well as late
 // verifier errors after the runtime log grows beyond the8MiB input budget.
 let fillerLine = String(repeating: "x", count: 1023) + "\n"
@@ -224,7 +297,19 @@ put("madeira-log.txt", String(repeating: "\n", count: 8 << 20))
 let flood = try! SteamGameDiagnostics.collect(documents: root)
 let floodManifest = try! JSONSerialization.jsonObject(with: flood[0].data) as! [String: Any]
 assert(floodManifest["scanLimitReached"] as? Bool == true)
-assert(floodManifest["rowsScanned"] as? Int == 131072)
+assert((floodManifest["sources"] as! [[String: Any]]).first { $0["source"] as? String == "madeira-session" }?["rowsScanned"] as? Int == 131072)
+assert((floodManifest["rowsScanned"] as! Int) <= (floodManifest["maxRowsScanned"] as! Int))
+let floodConsole = try! JSONSerialization.jsonObject(with: flood[2].data) as! [[String: Any]]
+assert(floodConsole.contains { ($0["fields"] as? [String: String])?["event"] == "relay-network-ready" })
+put("madeira-log.txt", String(repeating: service + "\n", count: 4000))
+let noisy = try! SteamGameDiagnostics.collect(documents: root)
+let noisyEvents = try! JSONSerialization.jsonObject(with: noisy[1].data) as! [[String: Any]]
+assert(noisyEvents.count <= 2048)
+assert(noisyEvents.contains { $0["source"] as? String == "madeira-marker-ring" })
+assert(noisyEvents.contains { $0["source"] as? String == "cs2-console" && ($0["fields"] as? [String: String])?["event"] == "relay-network-ready" })
+// Main-runtime producer strings embedded in the real console remain untrusted.
+assert(!noisyEvents.contains { $0["source"] as? String == "steam-console" && $0["record"] as? String == "steam-service-loader-v1" })
+
 // Use the actual existing ZIP writer, including its CRC32 and central directory.
 let writer = try! SaveZipWriter(url: output)
 for entry in entries { try! writer.add(name: entry.name, data: entry.data) }
@@ -247,19 +332,19 @@ with tempfile.TemporaryDirectory(prefix='madeira-export-') as folder:
         (module / 'module.modulemap').write_text('module zlib [system] { header "shim.h" export * }\n')
         include = ['-I', str(module)]
     exe = tmp / 'export-test'
-    subprocess.run([swift, '-swift-version', '5', '-sanitize=address', *include, str(source), str(tmp / 'Writer.swift'), str(tmp / 'main.swift'), '-lz', '-o', str(exe)], check=True)
+    subprocess.run([swift, '-swift-version', '5', '-sanitize=address', *include, str(ROOT / 'app/Madeira/CS2VACMarkers.swift'), str(source), str(tmp / 'Writer.swift'), str(tmp / 'main.swift'), '-lz', '-o', str(exe)], check=True)
     archive = tmp / 'diagnostics.zip'
     subprocess.run([str(exe), str(docs), str(archive)], check=True)
     with zipfile.ZipFile(archive) as z:
         assert z.testzip() is None
-        assert z.namelist() == ['manifest.json', 'observations.json', 'README.txt']
+        assert z.namelist() == ['manifest.json', 'observations.json', 'cs2-console.json', 'summary.json', 'README.txt']
         manifest = json.loads(z.read('manifest.json'))
         assert manifest['vacVerdict'] == 'unmeasured'
         assert manifest['authenticationVerdict'] == 'unmeasured'
         assert manifest['trustVerdict'] == 'unmeasured'
-        assert manifest['structuredProducerRows'] == 'accepted-from-main-runtime-log-only'
+        assert manifest['structuredProducerRows'] == 'accepted-from-main-runtime-log-or-app-marker-ring-only'
         assert manifest['sourceCommit'] == 'a' * 40
         body = b'\n'.join(z.read(n) for n in z.namelist())
         assert b'OPAQUE_SENTINEL' not in body and b'PRIVATE_SENTINEL' not in body
         assert b'76561198000000000' not in body and b'/private/var' not in body
-print('PASS actual stored ZIP: safe three-entry inventory, CRC/readback, typed metadata and no raw source bodies or secret sentinels')
+print('PASS actual stored ZIP: safe five-entry inventory, CRC/readback, typed metadata and no raw source bodies or secret sentinels')

@@ -126,6 +126,21 @@ enum SteamGameDiagnostics {
                   oneOf(f["create-ok"]!, "0 1"), f["intervals"] == "overlap-allowed" else { return nil }
         case "steam-content-audit-v1":
             guard content(f) else { return nil }
+        case "cs2-user-marker-v1":
+            guard keys(f, "kind source input app context pid session sequence utc utc-offset-min monotonic-ms evidence"),
+                  oneOf(f["kind"]!, "session-begin session-end process-observed test-begin error-reported input"),
+                  oneOf(f["source"]!, "library runtime user input-layer"),
+                  oneOf(f["input"]!, "none pointer keyboard controller touch"), oneOf(f["app"]!, "730 unmeasured"),
+                  oneOf(f["context"]!, "cs2-requested cs2-observed unmeasured"),
+                  f["pid"] == "unmeasured" || matches(f["pid"]!, "[0-9a-fA-F]{4,8}"),
+                  allNumbers(f, "session sequence", maximum: 4096), UInt64(f["sequence"]!)! > 0,
+                  matches(f["utc"]!, #"[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\.[0-9]{3}Z"#),
+                  matches(f["utc-offset-min"]!, "-?(?:0|[1-9][0-9]{0,2})"),
+                  let offset = Int(f["utc-offset-min"]!), (-840...840).contains(offset),
+                  number(f["monotonic-ms"]!, maximum: 1 << 52) else { return nil }
+            let identity = [f["kind"]!, f["source"]!, f["evidence"]!].joined(separator: ":")
+            guard oneOf(identity, "session-begin:library:library-lifecycle session-end:library:library-lifecycle process-observed:runtime:accepted-process-observation test-begin:user:user-report error-reported:user:user-report input:input-layer:input-dispatch"),
+                  (f["kind"] == "input") == (f["input"] != "none") else { return nil }
         case "trust-result-v1":
             let publicNames = Set(paths.map { String($0.split(separator: "/").last!) })
                 .union(["unknown", "steam.exe", "steamservice.exe", "steamclient64.dll", "wintrust.dll", "crypt32.dll", "kernel32.dll", "kernelbase.dll", "ntdll.dll"])
@@ -169,7 +184,7 @@ enum SteamGameDiagnostics {
             let parts = relative.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
             guard parts.count == 2,
                   oneOf(parts[0], f["path-class"] == "system" ? "system32 sysx64 syswow64" : "aarch64-windows arm64ec-windows i386-windows") else { return false }
-            return oneOf(parts[1], "ntdll.dll kernel32.dll kernelbase.dll wintrust.dll crypt32.dll bcrypt.dll advapi32.dll sechost.dll rpcrt4.dll ws2_32.dll ucrtbase.dll msvcrt.dll win32u.dll user32.dll gdi32.dll d3d11.dll dxgi.dll winemetal.dll setupapi.dll version.dll psapi.dll ole32.dll oleaut32.dll combase.dll coml2.dll winhttp.dll cryptnet.dll ncrypt.dll mswsock.dll shlwapi.dll shell32.dll shcore.dll imm32.dll uxtheme.dll comctl32.dll xtajit64.dll libarm64ecfex.dll")
+            return oneOf(parts[1], "ntdll.dll kernel32.dll kernelbase.dll wintrust.dll crypt32.dll bcrypt.dll advapi32.dll sechost.dll rpcrt4.dll ws2_32.dll ucrtbase.dll msvcrt.dll win32u.dll user32.dll gdi32.dll d3d11.dll dxgi.dll winemetal.dll setupapi.dll version.dll psapi.dll ole32.dll oleaut32.dll combase.dll coml2.dll winhttp.dll cryptnet.dll ncrypt.dll mswsock.dll shlwapi.dll shell32.dll shcore.dll d3d9.dll nvapi64.dll imm32.dll uxtheme.dll comctl32.dll xtajit64.dll libarm64ecfex.dll")
         default: return false
         }
     }
@@ -205,18 +220,96 @@ enum SteamGameDiagnostics {
         }
         return ["current-sha1", "reference-sha1"].allSatisfy { oneOf(f[$0]!, "unmeasured unavailable") || matches(f[$0]!, "[0-9a-f]{40}") }
     }
-    private static func console(_ line: String) -> String? {
-        // These exact complete public phrases are useful without exporting
-        // arbitrary console text, server addresses, tickets or account names.
-        switch line {
-        case "VAC was unable to verify your game session.": return "vac-session-unverified-message"
+    /// Real Source2 console messages are decoded from their own source. The
+    /// optional MM/DD wall clock has no year or zone; it is never silently
+    /// equated to a UTC runtime marker. Identifiers captured to recognize the
+    /// grammar are discarded, not copied or redacted by a permissive regex.
+    private static func captures(_ text: String, _ pattern: String) -> [String]? {
+        guard let expression = try? NSRegularExpression(pattern: "^(?:" + pattern + ")$"),
+              let match = expression.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              match.range.length == text.utf16.count else { return nil }
+        return (1..<match.numberOfRanges).map { index in
+            guard let range = Range(match.range(at: index), in: text) else { return "" }
+            return String(text[range])
+        }
+    }
+    static func decodeConsole(_ original: String) -> [String: String]? {
+        var line = original
+        if line.first == "\u{feff}" { line.removeFirst() }
+        guard !line.isEmpty, line.utf8.count <= 4096,
+              line.unicodeScalars.allSatisfy({ $0.value >= 32 && $0.value <= 126 }) else { return nil }
+        var body = line, timestamp = "unmeasured"
+        if let parts = captures(line, #"((?:0[1-9]|1[0-2])/(?:0[1-9]|[12][0-9]|3[01]) (?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]) (.+)"#) {
+            timestamp = parts[0]; body = parts[1]
+        }
+        var result = ["event": "", "console-time": timestamp, "clock": "console-wall-year-zone-unmeasured",
+                      "evidence": "application-console-message-not-security-verdict"]
+        func finish(_ event: String, _ values: [String: String] = [:]) -> [String: String] {
+            result["event"] = event; result.merge(values) { _, next in next }; return result
+        }
+        switch body {
+        case "VAC was unable to verify your game session.": return finish("vac-session-unverified-message")
         case "Some of your game files have been detected to have no signatures or invalid signatures. You will not be allowed to join VAC secure servers.",
              "Some of your game files have been detected to have no signatures or invalid signatures. You will not be allowed to join VAC secure servers. Please verify your launch options, check correctness of your game installation, restart the game and try again.":
-            return "vac-signature-warning-message"
-        case "SteamAPI_Init() failed": return "api-initialization-failed-message"
-        case "SteamAPI_Init(): SteamAPI_IsSteamRunning() did not locate a running instance of Steam.": return "steam-client-unavailable-message"
-        default: return nil
+            return finish("vac-signature-warning-message")
+        case "SteamAPI_Init() failed": return finish("api-initialization-failed-message")
+        case "SteamAPI_Init(): SteamAPI_IsSteamRunning() did not locate a running instance of Steam.": return finish("steam-client-unavailable-message")
+        case "PIX/NSIGHT WAS detected.": return finish("engine-pix-nsight-reported", ["actual-instrumentation": "unmeasured", "vac-causality": "unmeasured"])
+        case "Source2Init OK": return finish("source2-initialized")
+        case "ChangeGameUIState: CSGO_GAME_UI_STATE_INVALID -> CSGO_GAME_UI_STATE_MAINMENU":
+            return finish("main-menu-state-reported")
+        case "[Steam] Running SteamAPI_RunCallbacks for first time": return finish("steam-callbacks-started")
+        case "[SteamNetSockets] Initialized low level socket/threading support.": return finish("networking-support-initialized")
+        case "[Server] SV:  Executing listen server config file": return finish("listen-server-config", ["connection-scope": "local-not-secure-proof"])
+        case "[Client] CL:  CCreateGameClientJob creating client connection to 'loopback'":
+            return finish("connection-attempt", ["connection-scope": "local-loopback"])
+        case "[Client] CL:  Connected to 'loopback:1'": return finish("local-loopback-connected", ["connection-scope": "local-not-secure-proof"])
+        case "[Client] CL:  CGameClientConnectPrerequisite connection succeeded": return finish("client-connection-reported", ["connection-scope": "unmeasured"])
+        case "[Localization System] CLocalize::CompileString failed to localize: '#GenericConfirmText_Label'":
+            return finish("generic-confirm-localization-warning", ["popup-association": "unmeasured"])
+        default: break
         }
+        if let values = captures(body, #"\[SteamNetSockets\] AuthStatus \(steamid:[0-9]{17}\):  (Attempting|OK)  \((Requesting cert|OK)\)"#),
+           (values[0] == "Attempting" && values[1] == "Requesting cert") || (values[0] == "OK" && values[1] == "OK") {
+            return finish("network-auth-status", ["network-auth-status": values[0] == "OK" ? "ok" : "requesting-certificate", "vac-approval": "unmeasured"])
+        }
+        if let values = captures(body, #"\[SteamNetSockets\] Certificate expires in ([0-9]{1,3})h([0-5]?[0-9])m at [0-9]{1,20} \(current time [0-9]{1,20}\), will renew in ([0-9]{1,3})h([0-5]?[0-9])m"#) {
+            return finish("network-certificate-renewal-scheduled", ["expires-in-minutes": String(Int(values[0])! * 60 + Int(values[1])!),
+                "renew-in-minutes": String(Int(values[2])! * 60 + Int(values[3])!), "vac-approval": "unmeasured"])
+        }
+        if let values = captures(body, #"\[SteamNetSockets\] SDR network config fetch attempt #([0-9]{1,3}) failed\.  HTTP ([1-5][0-9]{2})\.  \.  Trying again\."#) {
+            return finish("relay-config-retry", ["attempt": values[0], "http-status": values[1], "vac-causality": "unmeasured"])
+        }
+        if captures(body, #"\[SteamNetSockets\] Got SDR network config\.  Loaded revision [0-9]{1,13} OK"#) != nil {
+            return finish("relay-config-loaded")
+        }
+        if let values = captures(body, #"\[SteamNetSockets\] SDR RelayNetworkStatus:  avail=OK  config=OK  anyrelay=OK   \(OK\.  Relays: ([0-9]{1,6}) valid, [0-9]{1,6} great, [0-9]{1,6} good\+, [0-9]{1,6} ok\+, [0-9]{1,6} ignored\)"#) {
+            return finish("relay-network-ready", ["available": "ok", "config": "ok", "any-relay": "ok", "valid-relays": values[0], "vac-approval": "unmeasured"])
+        }
+        if captures(body, #"\[Networking\] Connected loopback client=[0-9a-fA-F]{8}@loopback:1 <-> server=[0-9a-fA-F]{8}@loopback:0"#) != nil {
+            return finish("local-loopback-connected", ["connection-scope": "local-not-secure-proof"])
+        }
+        if let values = captures(body, #"\[SteamNetSockets\] Waited ([0-9]{1,5}(?:\.[0-9])?)ms for SteamNetworkingSockets lock \[(ServiceThread|ReceiveMessagesOnChannel)\]"#),
+           let duration = Double(values[0]), duration <= 60_000 {
+            return finish("network-lock-wait", ["duration-ms": values[0], "context": values[1], "vac-causality": "unmeasured"])
+        }
+        if let values = captures(body, #"\[SteamNetSockets\] SteamNetworkingSockets lock held for ([0-9]{1,5}(?:\.[0-9])?)ms\.  \(Performance warning\.\)  ([A-Za-z0-9_:(),]+)"#),
+           let duration = Double(values[0]), duration <= 60_000 {
+            let publicTraceNames: Set<String> = ["ServiceThread", "SteamDatagramClientThinker::Think", "EnsureDataCenterRoutesValid",
+                "ThinkPingProbes", "FindServerDataForCluster", "SendUDPacket", "SteamNetworkingSocketsCert_t", "AsyncCertRequestFinished",
+                "BeginFetchNetworkConfig", "HTTPRequestCompleted_t", "RecvUDPPacket", "CreateSocketPair", "Base::BInitConnection",
+                "FinalizeLocalCrypto", "BRecvCryptoHandshake", "BFinishCryptoHandshake", "CSteamNetworkConnectionBase::Think", "SendMessages"]
+            let names = values[1].split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+            guard !names.isEmpty, names.count <= 32, names.allSatisfy({
+                publicTraceNames.contains($0.replacingOccurrences(of: #"\(x[24]\)$"#, with: "", options: .regularExpression))
+            }) else { return nil }
+            return finish("network-lock-held", ["duration-ms": values[0], "vac-causality": "unmeasured"])
+        }
+        if let values = captures(body, #"\[SteamNetSockets\] src\\steamnetworkingsockets\\clientlib\\steamnetworkingsockets_lowlevel\.cpp\(2874\): SteamnetworkingSockets service thread waited ([0-9]{1,5})ms for lock!  This directly adds to network latency!  It could be a bug, but it's usually caused by general performance problem such as thread starvation or a debug output handler taking too long\."#),
+           let duration = Double(values[0]), duration <= 60_000 {
+            return finish("network-service-thread-delayed", ["duration-ms": values[0], "vac-causality": "unmeasured"])
+        }
+        return nil
     }
     /// Every path is a literal below an already opened, app-owned Documents
     /// directory. Neither directory nor final-file symlinks are followed.
@@ -321,8 +414,30 @@ enum SteamGameDiagnostics {
         guard fstat(root, &rootInfo) == 0, rootInfo.st_uid == getuid() else { throw Failure.unavailable }
         var observations: [[String: Any]] = [], sources: [[String: Any]] = [], identities: [String: String] = [:]
         var omitted = 0, scanned = 0, scanLimitReached = false
+        var markerIDs: Set<String> = []
         var alias: String?, build = "unmeasured"
-        func consume(_ id: String, _ path: String, _ maximum: Int) {
+        func append(_ id: String, _ record: String, _ fields: [String: String], row: Int?) -> Bool {
+            guard observations.count < limits.records else { return false }
+            if record == "cs2-user-marker-v1" {
+                let identity = (fields["session"] ?? "") + ":" + (fields["sequence"] ?? "")
+                guard markerIDs.insert(identity).inserted else { return false }
+            }
+            var event: [String: Any] = ["source": id, "record": record, "fields": fields]
+            if let row { event["rowInBoundedSnapshot"] = row }
+            observations.append(event)
+            return true
+        }
+        // The in-memory ring reserves recent user/input markers independently
+        // of a noisy runtime log. Repeated stderr copies are deduplicated.
+        let markerCap = min(256, max(1, limits.records / 8))
+        var markerCaptured = 0
+        for line in CS2VACMarkers.snapshotLines().suffix(markerCap) {
+            if let (tag, fields) = decode(line), tag == "cs2-user-marker-v1",
+               append("madeira-marker-ring", tag, fields, row: nil) { markerCaptured += 1 }
+        }
+        sources.append(["source": "madeira-marker-ring", "state": "bounded-memory-snapshot",
+                        "provenance": "app-owned-marker-ring-not-game-security-verdict", "capturedRecords": markerCaptured])
+        func consume(_ id: String, _ path: String, _ maximum: Int, _ recordCap: Int, _ rowCap: Int) {
             guard let file = snapshot(root, path, maximum: maximum, preserveStartup: id == "madeira-session") else {
                 sources.append(["source": id, "state": "unavailable-or-not-owned-regular-file"]); return
             }
@@ -334,15 +449,17 @@ enum SteamGameDiagnostics {
                 sources.append(source); return
             }
             identities[file.identity] = id
-            var captured = 0, lineStart = file.bytes.startIndex
-            // Incremental scan: Data.split would allocate one subsequence per
-            // newline before any record cap (millions for an 8-MiB blank log).
+            var captured = 0, rows = 0, budgetOmitted = 0, lineStart = file.bytes.startIndex
+            var rowLimitReached = false
+            // Source-local row and record caps prevent a giant main log from
+            // starving the actual console. Never allocate Data.split's one
+            // subsequence per newline before applying those caps.
             while lineStart < file.bytes.endIndex {
-                guard scanned < 131072 else { scanLimitReached = true; break }
+                guard rows < rowCap else { rowLimitReached = true; scanLimitReached = true; break }
                 guard let newline = file.bytes[lineStart...].firstIndex(of: 10) else { break }
                 var bytes = file.bytes[lineStart..<newline]
                 lineStart = file.bytes.index(after: newline)
-                scanned += 1
+                rows += 1; scanned += 1
                 if bytes.last == 13 { bytes = bytes.dropLast() }
                 guard bytes.count <= 4096, let line = String(bytes: bytes, encoding: .utf8) else { omitted += 1; continue }
                 if id == "madeira-session", let p = payload(line) {
@@ -353,34 +470,84 @@ enum SteamGameDiagnostics {
                     }
                     if matches(p, "\\[build\\] v[0-9.]{1,16} \\([0-9]{1,5}\\) source=[0-9a-f]{40}") { build = String(p.suffix(40)) }
                 }
-                guard observations.count < limits.records else { omitted += 1; continue }
-                // Native structured producers write the runtime log. Official
-                // console bodies cannot impersonate an audit/hash/module row.
+                guard captured < recordCap, observations.count < limits.records else { budgetOmitted += 1; omitted += 1; continue }
+                // Structured producers are accepted only from the runtime
+                // log/ring; official console text cannot impersonate them.
                 if id == "madeira-session", let (tag, fields) = decode(line) {
-                    observations.append(["source": id, "record": tag, "fields": fields]); captured += 1
-                } else if id != "madeira-session", let event = console(line) {
-                    observations.append(["source": id, "record": "fixed-console-message", "fields": ["event": event, "evidence": "application-message-not-security-verdict"]]); captured += 1
+                    if append(id, tag, fields, row: rows) { captured += 1 }
+                } else if id != "madeira-session", let fields = decodeConsole(line) {
+                    if append(id, "application-console-event", fields, row: rows) { captured += 1 }
                 } else { omitted += 1 }
             }
-            sources.append(["source": id, "state": "bounded-snapshot", "bytesRead": file.bytes.count, "truncated": file.truncated, "capturedRecords": captured])
+            sources.append(["source": id, "state": "bounded-snapshot", "bytesRead": file.bytes.count,
+                "truncated": file.truncated, "capturedRecords": captured, "recordBudget": recordCap,
+                "rowsScanned": rows, "rowBudget": rowCap, "rowLimitReached": rowLimitReached,
+                "rowsOmittedByRecordBudget": budgetOmitted])
         }
-        consume("madeira-session", "madeira-log.txt", limits.mainBytes)
-        if let alias { consume("cs2-session-alias", alias, limits.otherBytes) }
+        let mainCap = max(1, limits.records / 2), consoleCap = max(1, limits.records / 4)
+        consume("madeira-session", "madeira-log.txt", limits.mainBytes, mainCap, 131072)
         let steam = "wine/drive_c/Program Files (x86)/Steam/"
+        // Read the real game console before Steam logs consume residual
+        // records. It is independent from timestamp-named hardlink aliases.
+        consume("cs2-console", steam + "steamapps/common/Counter-Strike Global Offensive/game/csgo/console.log",
+                limits.otherBytes, consoleCap, 65536)
         for (id, path) in [("steam-console", "logs/console_log.txt"), ("steam-gameprocess", "logs/gameprocess_log.txt"),
                            ("steam-connection", "logs/connection_log.txt"), ("steam-service", "logs/service_log.txt"),
-                           ("cs2-console", "steamapps/common/Counter-Strike Global Offensive/game/csgo/console.log")] {
-            consume(id, steam + path, limits.otherBytes)
+                           ("steam-content", "logs/content_log.txt")] {
+            consume(id, steam + path, limits.otherBytes, max(1, limits.records / 16), 8192)
         }
+        if let alias { consume("cs2-session-alias", alias, limits.otherBytes, max(1, limits.records / 16), 8192) }
         func coverage(_ tag: String) -> String {
             observations.contains { $0["record"] as? String == tag } ? "observed-allowlisted-events" : "no-observed-dedicated-events-unmeasured"
         }
-        let manifest: [String: Any] = ["schema": "madeira-steam-cs2-diagnostics-v1", "sourceCommit": build,
-            "collection": "explicit-user-action-bounded-head-and-tail-snapshot", "sources": sources,
+        let consoleEvents = observations.filter { $0["source"] as? String == "cs2-console" }
+        func seenConsole(_ name: String) -> Bool {
+            consoleEvents.contains { ($0["fields"] as? [String: String])?["event"] == name }
+        }
+        func seenRecord(_ tag: String, _ key: String, _ value: String) -> Bool {
+            observations.contains { $0["record"] as? String == tag && ($0["fields"] as? [String: String])?[key] == value }
+        }
+        let networkOK = consoleEvents.contains {
+            let f = $0["fields"] as? [String: String]
+            return f?["event"] == "network-auth-status" && f?["network-auth-status"] == "ok"
+        }
+        let summary: [String: Any] = [
+            "scope": "observations-from-bounded-export-not-security-validation",
+            "confirmedObservations": [
+                "mainMenuStateReported": seenConsole("main-menu-state-reported"),
+                "source2InitializationReported": seenConsole("source2-initialized"),
+                "networkCertificateAuthOKReported": networkOK,
+                "relayNetworkReadyReported": seenConsole("relay-network-ready"),
+                "localLoopbackConnectionReported": seenConsole("local-loopback-connected"),
+                "enginePIXNsightMessageReported": seenConsole("engine-pix-nsight-reported"),
+                "genericConfirmLocalizationWarningReported": seenConsole("generic-confirm-localization-warning"),
+                "signatureWarningTextObserved": seenConsole("vac-signature-warning-message"),
+                "userErrorMarkerObserved": seenRecord("cs2-user-marker-v1", "kind", "error-reported"),
+                "serviceRunningReported": seenRecord("steam-service", "service-state", "4"),
+                "serviceDLLInvalidImageReported": seenRecord("steam-service-loader-v1", "status", "c000007b"),
+                "cachedReferenceMismatchObserved": seenRecord("steam-content-audit-v1", "state", "cache-hash-mismatch"),
+                "embeddedVPKConsistencyObserved": seenRecord("steam-content-audit-v1", "vpk-crypto", "consistent-embedded-key")
+            ],
+            "hypotheses": [
+                "specific-rejected-file": "unidentified-from-these-observations",
+                "service-dll-error-causes-vac-warning": "unproven",
+                "pix-nsight-message-causes-vac-warning": "unproven",
+                "generic-confirm-warning-is-vac-popup": "unproven-without-correlated-error-marker",
+                "secure-launch-environment-compatibility": "not-established-by-network-authentication"
+            ],
+            "unmeasured": ["independent-Valve-file-trust", "VAC-secure-server-acceptance", "complete-module-inventory"],
+            "interpretation": "network-authentication-relay-readiness-and-local-loopback-never-establish-VAC-approval",
+            "warningAbsence": "not-observed-in-bounded-console-is-not-proof-of-no-popup",
+            "clockCorrelation": "console-MM/DD-wall-clock-has-no-year-or-zone; UTC-user-markers-carry-device-offset; proximity-does-not-establish-causality"
+        ]
+        let manifest: [String: Any] = ["schema": "madeira-steam-cs2-diagnostics-v2", "sourceCommit": build,
+            "collection": "explicit-user-action-bounded-source-priority-snapshot", "sources": sources,
             "mainByteBudget": limits.mainBytes, "mainPrefixBudget": min(limits.mainBytes * 3 / 4, 6 << 20),
             "mainSuffixBudget": limits.mainBytes - min(limits.mainBytes * 3 / 4, 6 << 20),
-            "recordsCaptured": observations.count, "rowsScanned": scanned, "rowsOmittedWithinScan": omitted,
-            "scanLimitReached": scanLimitReached, "maxRowsScanned": 131072,
+            "recordsCaptured": observations.count, "recordBudget": limits.records,
+            "mainRecordBudget": mainCap, "consoleRecordBudget": consoleCap, "markerRecordBudget": markerCap,
+            "rowsScanned": scanned, "rowsOmittedWithinScan": omitted,
+            "scanLimitReached": scanLimitReached, "maxRowsScanned": 245760,
             "rawLogBodies": "excluded", "accountAndAuthenticationData": "excluded-by-closed-schema",
             "moduleCoverage": "observed-allowlisted-loader-events-only-not-complete-inventory",
             "effectiveArguments": "only-dedicated-flag-observations-no-raw-command-lines",
@@ -392,28 +559,32 @@ enum SteamGameDiagnostics {
             "moduleObservations": coverage("cs2-module-v1"),
             "trustObservations": coverage("trust-result-v1"),
             "sessionObservations": coverage("steam-session-v1"),
-            "authenticationVerdict": "unmeasured", "vacVerdict": "unmeasured",
-            "trustVerdict": "unmeasured",
+            "authenticationVerdict": "unmeasured", "vacVerdict": "unmeasured", "trustVerdict": "unmeasured",
             "trustObservationScope": "application-reported-WinVerifyTrust-results-not-independent-validation",
-            "structuredProducerRows": "accepted-from-main-runtime-log-only",
+            "structuredProducerRows": "accepted-from-main-runtime-log-or-app-marker-ring-only",
             "numericSessionResultDomain": "unknown-do-not-infer-authentication-status",
             "externalGameLibraries": "not-followed-unmeasured",
-            "consoleCoverage": "exact-known-messages-only-unknown-lines-omitted",
+            "consoleCoverage": "typed-sanitized-known-event-excerpt-not-complete-console",
             "serviceDiskPEObservations": servicePEs(root)]
         func json(_ object: Any) throws -> Data { try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]) }
         let explanation = """
-        Madeira Steam/CS2 diagnostic observations
-        This archive contains newly encoded allowlisted events, not raw logs.
-        It cannot establish VAC eligibility, authentication success or file trust.
-        Sources are bounded snapshots taken only when Export is pressed. Missing,
-        unknown, modified-schema and sensitive lines are omitted. External library
-        symlinks are not followed. Module events are a lower-bound observation.
-        Timestamped cs2.exe session logs are aliases/hardlinks of the Madeira
-        runtime log; they are not independent game-console evidence. Source2's
-        actual console.log is a distinct source when present and safely readable.
-        No installation, runtime, game, account or registry file is changed.
+        Madeira CS2 VAC diagnostic observations
+        cs2-console.json is a sanitized typed excerpt of the real game/csgo/console.log,
+        not a raw or complete console copy. Console timestamps preserve the app-reported
+        MM/DD wall clock; their year and timezone are unknown. Identifiers, endpoints,
+        certificate contents, credentials and arbitrary text are never copied.
+        UTC input/error markers are observations from Madeira or the user, not a VAC
+        verdict. Source-local quotas prevent giant runtime logs from starving them.
+        Summary hypotheses are not causes. AuthStatus OK and relay readiness concern
+        networking certificates; loopback connections are local. None establish
+        VAC-secure acceptance, independent Valve file trust or a working secure game.
+        Unknown, sensitive, unavailable and out-of-budget content is explicitly omitted.
+        Timestamped cs2.exe session logs are aliases/hardlinks of the runtime log,
+        not independent game-console evidence. No installed game/account file changes.
         """
-        return [Entry(name: "manifest.json", data: try json(manifest)), Entry(name: "observations.json", data: try json(observations)), Entry(name: "README.txt", data: Data(explanation.utf8))]
+        return [Entry(name: "manifest.json", data: try json(manifest)), Entry(name: "observations.json", data: try json(observations)),
+                Entry(name: "cs2-console.json", data: try json(consoleEvents)), Entry(name: "summary.json", data: try json(summary)),
+                Entry(name: "README.txt", data: Data(explanation.utf8))]
     }
 }
 
@@ -436,7 +607,7 @@ struct SteamGameDiagnosticsExportButton: View {
             }
         } label: {
             HStack {
-                Label("Export Steam/CS2 Diagnostics", systemImage: "square.and.arrow.up")
+                Label("Export CS2 VAC Diagnostics", systemImage: "square.and.arrow.up")
                 if preparing { Spacer(); ProgressView() }
             }
         }
