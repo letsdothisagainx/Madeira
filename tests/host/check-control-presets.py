@@ -248,7 +248,7 @@ assert window.index('if m.editing {') < window.index('!hit.isDescendant(of: root
     < window.index('guard m.hitsInteractive('), 'menu and dialog presentations take their touches in play mode'
 reserve = function(gamepad, '@MainActor func reserveSessionSlot(touchControls: Bool) {')
 assert reserve.index('guard Self.enabled, Self.optIn("MADEIRA_PAD_EARLY_SLOT")') < reserve.index('touchState.reserved = true')
-run = function(content, 'private func runWineFullSequence(profile: LibraryEntry? = nil) {')
+run = function(content, 'private func runWineFullSequence(')
 assert run.index('GamepadInput.shared.reserveSessionSlot(') < run.index('DispatchQueue.global'), 'reserved before Wine starts'
 
 # The built-in reaches a library session: LibraryHUD replaces the overlay's top bar there, so the
