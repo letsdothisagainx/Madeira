@@ -506,4 +506,4 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/steam-image-tools"
           "$RUNNER_TEMP/steam-image-tools/bin/pip" install capstone==5.0.6
-          "$RUNNER_TEMP/steam-image-tools/bin/python" tools/inspect-steam-startup-image.py previous-ipa/Madeira.ipa --expected-uuid "$MADEIRA_INSPECT_UUID"
+          "$RUNNER_TEMP/steam-image-tools/bin/python" tools/inspect-cs2-runtime-image.py previous-ipa/Madeira.ipa
