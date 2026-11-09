@@ -2578,15 +2578,23 @@ struct ContentView: View {
                 library.error = "Steam's appmanifest does not list this game as ready."; return
             }
             do {
+                SteamStartupClock.shared.mark(.requested) { logStore.log($0) }
                 var launch = entry
                 launch.relativePath = try NativeSteamPlay.prepare(game, drive: MadeiraDock.drive)
+                SteamStartupClock.shared.mark(.launcherReady) { logStore.log($0) }
                 launch.steamAppID = nil; launch.steamStart = nil; launch.arguments = ""; launch.desktop = false
                 launch.workingDirectory = "C:\\"
                 LogStore.shared.log("[native-steam-play-v1] app=\(appID) manifest=ready install-directory=present mechanism=steam-applaunch")
+                SteamStartupClock.shared.mark(.jitGate) { logStore.log($0) }
                 guard jitReadyForLaunch(inLibrary: true, entry: entry.id, then: { launchLibraryEntry(entry) }) else { return }
+                SteamStartupClock.shared.mark(.jitReady) { logStore.log($0) }
                 // The generated command is transient, never the saved game entry.
                 startLibraryEntry(launch, remember: false, preferences: entry, nativeSteamClient: true)
-            } catch { library.error = error.localizedDescription }
+            } catch {
+                SteamStartupClock.shared.mark(.failed) { logStore.log($0) }
+                SteamStartupClock.shared.reset()
+                library.error = error.localizedDescription
+            }
             return
         }
         if let appID = entry.steamAppID, !entry.startsSteamGameDirectly {
@@ -3477,6 +3485,7 @@ struct ContentView: View {
             JITNetworkShortcut.restoreBlocking()
 
             // Step 2: Start wineserver
+            if nativeSteamClient { SteamStartupClock.shared.mark(.wineserverStart) { logStore.log($0) } }
             self.startWineserver()
             winios_phase("wineserver-up")
 
@@ -3874,12 +3883,17 @@ struct ContentView: View {
         } else {
             SteamLibraryDiagnostics.shared.stop()
         }
+        if nativeSteamClient { SteamStartupClock.shared.mark(.wineStart) { logStore.log($0) } }
         let result = wine_process_start(winePrefixPath)
         if result == 0 {
             logStore.log("Wine process thread launched", level: .success)
             if nativeSteamClient { logStore.log("[steam-browser-bridge-v2] phase=wine-start result=thread-launched code=0") }
         } else {
             if nativeSteamClient { logStore.log("[steam-browser-bridge-v2] phase=wine-start result=failed code=\(result)", level: .error) }
+            if nativeSteamClient {
+                SteamStartupClock.shared.mark(.failed) { logStore.log($0) }
+                SteamStartupClock.shared.reset()
+            }
             unsetenv("MADEIRA_NATIVE_STEAM_LAUNCH")
             unsetenv("MADEIRA_HTMLIPC_HELPER"); unsetenv("MADEIRA_HTMLIPC_CACHE_DIR")
             SteamLibraryDiagnostics.shared.stop()

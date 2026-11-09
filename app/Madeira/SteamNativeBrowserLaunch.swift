@@ -1,12 +1,67 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Candidate only. Named source bridge + verified browser launch preparation.
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 #if canImport(CryptoKit)
 import CryptoKit
 #endif
 #if canImport(Combine)
 import Combine
 #endif
+
+// Same CLOCK_MONOTONIC epoch as the native process timeline. These are wall
+// intervals between observed boundaries, never CPU time or summed child time.
+final class SteamStartupClock: @unchecked Sendable {
+    enum Phase: String {
+        case requested, launcherReady = "launcher-ready", jitGate = "jit-gate", jitReady = "jit-ready"
+        case browserBegin = "browser-begin", browserCacheBegin = "browser-cache-begin"
+        case browserCacheReady = "browser-cache-ready", browserBridgeReady = "browser-bridge-ready"
+        case browserReady = "browser-ready", wineserverStart = "wineserver-start", wineStart = "wine-start"
+        case failed
+    }
+    static let shared = SteamStartupClock()
+    private let lock = NSLock()
+    private var epoch: UInt64 = 0, previous: UInt64 = 0, count = 0
+    private var previousPhase = "none"
+
+    static func nowNS() -> UInt64 {
+        var value = timespec()
+        guard clock_gettime(CLOCK_MONOTONIC, &value) == 0, value.tv_sec >= 0, value.tv_nsec >= 0,
+              UInt64(value.tv_sec) <= (UInt64.max - UInt64(value.tv_nsec)) / 1_000_000_000 else { return 0 }
+        return UInt64(value.tv_sec) * 1_000_000_000 + UInt64(value.tv_nsec)
+    }
+    static func line(_ phase: Phase, epoch: UInt64, previous: UInt64, previousPhase: String, now: UInt64) -> String? {
+        guard epoch > 0, now >= epoch, previous >= epoch, now >= previous,
+              Phase(rawValue: previousPhase) != nil || previousPhase == "none" else { return nil }
+        return "[startup-app-v1] phase=\(phase.rawValue) t-ms=\((now - epoch) / 1_000_000) " +
+            "previous=\(previousPhase) interval-ms=\((now - previous) / 1_000_000) accounting=observed-boundaries-not-cpu"
+    }
+    func mark(_ phase: Phase, log: (String) -> Void) {
+        let now = Self.nowNS()
+        lock.lock()
+        guard now > 0, count < 64 else { lock.unlock(); return }
+        if epoch == 0 {
+            epoch = now; previous = now
+            // Diagnostic only. The native reader validates this value and
+            // falls back to Wine entry; a bad clock never prevents a launch.
+            setenv("MADEIRA_STARTUP_T0_NS", String(now), 1)
+        }
+        let record = Self.line(phase, epoch: epoch, previous: previous, previousPhase: previousPhase, now: now)
+        if record != nil { previous = now; previousPhase = phase.rawValue; count += 1 }
+        lock.unlock()
+        if let record { log(record) }
+    }
+    func reset() {
+        lock.lock()
+        epoch = 0; previous = 0; count = 0; previousPhase = "none"
+        unsetenv("MADEIRA_STARTUP_T0_NS")
+        lock.unlock()
+    }
+}
 
 enum SteamNativeBrowserLaunchFiles {
     static let bridgeName = "madeira-htmlipc-bridge.dll"
@@ -386,6 +441,7 @@ enum SteamNativeBrowserLaunchFiles {
     private func prepare(drive: URL, resourceRoot: URL?, idle: () -> Bool,
                          progress: @escaping (String) -> Void) async throws -> Prepared {
         typealias Files = SteamNativeBrowserLaunchFiles
+        SteamStartupClock.shared.mark(.browserBegin) { LogStore.shared.log($0) }
         do {
             guard idle() else { throw Files.Failure.active }
             guard let resources = resourceRoot else { throw Files.Failure.missingBridge }
@@ -393,18 +449,24 @@ enum SteamNativeBrowserLaunchFiles {
             let launcher = try SteamClientUpdateFiles.launcher(drive: drive)
             let steam = launcher.deletingLastPathComponent(), chromeHTML = steam.appendingPathComponent("bin/chromehtml.dll")
             let compat = try Files.compatRoot(drive: drive, idle: idle)
+            SteamStartupClock.shared.mark(.browserCacheBegin) { LogStore.shared.log($0) }
             let cache = try await SteamBrowserRuntime.prepare(cacheBase: compat, steamRoot: steam, chromeHTML: chromeHTML,
                                                             idle: idle, progress: progress)
+            SteamStartupClock.shared.mark(.browserCacheReady) { LogStore.shared.log($0) }
             guard idle() else { throw Files.Failure.active }
             try Files.installBridge(source, manifest: manifest, drive: drive, digest: SteamBrowserRuntime.hash, idle: idle, report: progress)
+            SteamStartupClock.shared.mark(.browserBridgeReady) { LogStore.shared.log($0) }
             Files.prepareMutableLogs(drive: drive, idle: idle, report: progress)
             try SteamBrowserRuntimeFiles.core(chromeHTML, steamRoot: steam, recipe: SteamBrowserRuntimeFiles.official, digest: SteamBrowserRuntime.hash)
             guard idle() else { throw Files.Failure.active }
             progress("[steam-browser-bridge-v2] phase=bridge-paths result=begin")
             let prepared = try Files.prepared(cache, bridge: manifest.fingerprint, drive: drive)
             progress("[steam-browser-bridge-v2] phase=bridge-paths result=verified helper=accepted installed=verified")
+            SteamStartupClock.shared.mark(.browserReady) { LogStore.shared.log($0) }
             return prepared
         } catch {
+            SteamStartupClock.shared.mark(.failed) { LogStore.shared.log($0) }
+            SteamStartupClock.shared.reset()
             progress("[steam-browser-bridge-v2] phase=bridge-preparation result=failed code=\((error as NSError).code)")
             // Raw Foundation errors may contain the private container path.
             // Keep our existing public failure types and sanitize everything else.
