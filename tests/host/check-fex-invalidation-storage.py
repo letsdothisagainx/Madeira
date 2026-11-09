@@ -271,7 +271,7 @@ with tempfile.TemporaryDirectory(prefix='madeira-fex-invalidation-storage-') as 
         'void InvalidationTracker::InvalidateIntervalInternal(', 'void InvalidationTracker::InvalidateIntervalInternalLocked('))
     notify_start = source.index('void InvalidationTracker::HandleMemoryProtectionNotification(')
     notify = source[notify_start:source.index('\nvoid InvalidationTracker::HandleProcessExecuteFlagsChange(', notify_start)]
-    actual = 'static std::atomic<uint64_t> NestedNotificationSkips{0},NestedNotificationSkipsReported{0};\n' + actual + '\n' + notify + '\n' + ctor + '\n' + query
+    actual = 'static std::atomic<uint64_t> NestedNotificationSkips{0};\n' + actual + '\n' + notify + '\n' + ctor + '\n' + query
     shim = work / 'shims/FEXCore'
     (shim / 'Utils').mkdir(parents=True)
     (shim / 'HLE').mkdir(parents=True)
