@@ -1,6 +1,13 @@
 name: Verify Run export native iOS presentation
 on:
   workflow_dispatch:
+    inputs:
+      test_case:
+        description: 'Owned native UI cases to run'
+        required: false
+        type: choice
+        options: [all, landscape]
+        default: all
   push:
     branches: [main, 'codex/pr-build-*', codex/validate-cs2-integrity-runtime-4b41]
     paths:
@@ -32,6 +39,8 @@ jobs:
       - name: Validate literal old UI and owned ZIP fixture
         run: python3 tests/ios-run-export/generate_project.py --check
       - name: Tap production Run export and use native Files sharing
+        env:
+          MADEIRA_UI_TEST_CASE: ${{ inputs.test_case || 'all' }}
         run: python3 tests/ios-run-export/run_simulator.py
       - uses: actions/upload-artifact@v4
         if: always()
