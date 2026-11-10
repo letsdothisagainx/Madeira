@@ -3,6 +3,7 @@
 from pathlib import Path
 import json
 import os
+import plistlib
 import re
 import shutil
 import signal
@@ -80,16 +81,45 @@ def run_logged(stage, command, timeout):
     return 124 if timed_out else process.returncode
 
 
-def collect(device, verify, selected_test=''):
+def owned_container_from_metadata(device, data_path=None):
+    # Post-Xcode simctl IPC timed out after the genuine native Save test passed.
+    # Read CoreSimulator's actual, exact-bundle container ownership metadata;
+    # never guess a directory from its contents or accept an ambiguous owner.
+    if not data_path and not re.fullmatch(r'[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}', device):
+        raise ValueError('The default device-set lookup requires the selected simulator UUID')
+    data = Path(data_path) if data_path else Path.home() / 'Library/Developer/CoreSimulator/Devices' / device / 'data'
+    applications = data / 'Containers/Data/Application'
+    if data.is_symlink() or applications.is_symlink(): return None
+    matches = []
+    for index, candidate in enumerate(applications.glob('*')):
+        if index >= 4096: raise RuntimeError('Unexpectedly large simulator container catalog')
+        metadata = candidate / '.com.apple.mobile_container_manager.metadata.plist'
+        if candidate.is_symlink() or not candidate.is_dir() or metadata.is_symlink() or not metadata.is_file():
+            continue
+        if candidate.stat().st_uid != os.getuid() or metadata.stat().st_uid != os.getuid(): continue
+        if metadata.stat().st_size > 65536: continue
+        try:
+            identity = plistlib.loads(metadata.read_bytes())
+        except (OSError, ValueError, plistlib.InvalidFileException):
+            continue
+        if isinstance(identity, dict) and identity.get('MCMMetadataIdentifier') == BUNDLE:
+            matches.append(candidate.resolve())
+    print('OWNED_EXPORT_CONTAINER_METADATA exact-bundle-matches=' + str(len(matches)), flush=True)
+    return matches[0] if len(matches) == 1 else None
+
+
+def collect(device, verify, selected_test='', data_path=None):
     evidence = EVIDENCE
     evidence.mkdir(exist_ok=True)
-    result = subprocess.run(['xcrun', 'simctl', 'get_app_container', device, BUNDLE, 'data'],
-                            text=True, capture_output=True, timeout=60)
-    if result.returncode:
-        if verify: raise RuntimeError('Owned UI host container unavailable after successful tests')
-        print('Owned host was not installed; preserve xcresult build failure evidence')
-        return
-    container = Path(result.stdout.strip()).resolve()
+    container = owned_container_from_metadata(device, data_path)
+    if container is None:
+        result = subprocess.run(['xcrun', 'simctl', 'get_app_container', device, BUNDLE, 'data'],
+                                text=True, capture_output=True, timeout=60)
+        if result.returncode:
+            if verify: raise RuntimeError('Owned UI host container unavailable after successful tests')
+            print('Owned host was not installed; preserve xcresult build failure evidence')
+            return
+        container = Path(result.stdout.strip()).resolve()
     records = []
     for file in sorted((container / 'Documents').glob('run-export-events-*.txt')):
         assert not file.is_symlink() and file.is_file() and file.stat().st_size <= 65536
@@ -202,7 +232,7 @@ def main():
         return result
     finally:
         try:
-            collect(device, verify=verify, selected_test=selected_test)
+            collect(device, verify=verify, selected_test=selected_test, data_path=selected.get('dataPath'))
         except Exception as error:
             (EVIDENCE / 'collection-failure.txt').write_text(type(error).__name__ + ': ' + str(error) + '\n')
             if verify: raise
