@@ -50,9 +50,10 @@ final class ExportRunUITests: XCTestCase {
         action.tap()
     }
 
-    private func preserveOwnedPickerState(_ app: XCUIApplication) {
+    private func preserveOwnedPickerState(_ app: XCUIApplication, context: String = "picker-not-ready") {
         // Fresh simulator, owned test host, and Apple's empty system picker:
         // no game, Steam account, or user Files container is opened here.
+        print("OWNED_EXPORT_UI_CAPTURE_CONTEXT \(context)")
         for (name, application) in [
             ("host", app),
             ("springboard", XCUIApplication(bundleIdentifier: "com.apple.springboard")),
@@ -106,8 +107,12 @@ final class ExportRunUITests: XCTestCase {
         // actual picker, rather than requiring a remote button to be included
         // in the host application's accessibility query on every iOS release.
         let files = XCUIApplication(bundleIdentifier: "com.apple.DocumentManagerUICore.SaveToFiles")
-        let save = files.buttons["DOCPicker.actionButton"].firstMatch
-        let pickerOpened = save.waitForExistence(timeout: 10)
+        XCTAssertTrue(files.wait(for: .runningForeground, timeout: 30), "Apple's Files extension must become foreground")
+        // A cold simulator's remote Files provider was still initializing
+        // after the old ten-second wait. Its later full AX snapshot showed
+        // this exact Save control; wait for readiness and use a complete query.
+        let save = files.buttons.matching(identifier: "DOCPicker.actionButton").element(boundBy: 0)
+        let pickerOpened = save.waitForExistence(timeout: 45)
         if !pickerOpened { preserveOwnedPickerState(app) }
         XCTAssertTrue(pickerOpened, "Native Files destination picker must open")
         XCTAssertEqual(save.label, "Save")
@@ -118,7 +123,13 @@ final class ExportRunUITests: XCTestCase {
         let ownedFolder = files.cells["Run Export Host, Container"].firstMatch
         XCTAssertTrue(ownedFolder.waitForExistence(timeout: 5)); ownedFolder.tap()
         XCTAssertTrue(save.isEnabled); XCTAssertTrue(save.isHittable); save.tap()
-        event("event=share-finished request=1 completed=1", app: app, timeout: 20)
+        preserveOwnedPickerState(app, context: "immediately-after-native-save")
+        let completion = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label CONTAINS %@", "event=share-finished request=1 completed=1"),
+            object: app.staticTexts["host.events"].firstMatch)
+        let completed = XCTWaiter.wait(for: [completion], timeout: 20) == .completed
+        if !completed { preserveOwnedPickerState(app, context: "after-native-completion-timeout") }
+        XCTAssertTrue(completed, "Native Save must report its actual successful activity completion")
         XCTAssertTrue(app.buttons["library-menu"].waitForExistence(timeout: 8))
         XCTAssertTrue(app.staticTexts["host.session"].firstMatch.label.contains("session-ended"))
         XCTAssertTrue(app.staticTexts["host.key-window"].firstMatch.label.contains("library"))
