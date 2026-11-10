@@ -319,15 +319,27 @@ Production.run()
 '''
 
 # Execute the actual launch-selection/logging block. Measurement and budget
-# eligibility are controlled edges here; the C policy arithmetic itself is
-# exercised by check-pool-cs2-budget.py. No allocation or device result is faked.
+# inputs are controlled edges here. The C plan and both arena getters below are
+# compiled from production; no duplicate Swift policy constants substitute for
+# the768/384 arena split. No allocation or device result is faked.
 content = (root / 'app/Madeira/ContentView.swift').read_text()
+reset_start = content.index('            unsetenv("WINE_IOS_JIT_HEAD_RESERVE_MB")', content.index('// Private startup policy belongs to this launch only.'))
+private_reset = content[reset_start:content.index('            // A library entry\'s launch profile', reset_start)]
+locks_start = content.index('            let cs2PartitionNames = ')
+private_locks = content[locks_start:content.index('\n\n', locks_start)]
+assert private_reset.count('unsetenv(') == 4
+assert 'let cs2PartitionLocksReady = setenv("MADEIRA_ENV_LOCKED", cs2PartitionLocks.joined(separator: ","), 1) == 0' in private_locks
+assert private_locks.index('unsetenv(name)') < private_locks.index('let cs2PartitionLocksReady = ')
+policy_bodies = [function(allocator, signature) for signature in (
+    'bool jit_cs2_pool_plan(', 'uint64_t jit_cs2_image_arena_mb(', 'uint64_t jit_cs2_code_tail_limit_mb(')]
+policy_header = '#include <stdbool.h>\n#include <stdint.h>\n' + '\n'.join(body.split('{', 1)[0].rstrip() + ';' for body in policy_bodies) + '\n'
+policy_c = '#include "policy.h"\n' + ''.join(policy_bodies)
 selection_start = content.index('            var poolSizeMB = DockPerformancePolicy.sessionPoolMB(')
 selection = content[selection_start:content.index('            // ml694:', selection_start)]
 assert 'JIT pool overridden' not in selection
 assert selection.count('[jit-pool-selection-v1]') == 1
 assert selection.index('JIT pool requested') < selection.index('jit_cs2_pool_plan(') < selection.index('[jit-pool-selection-v1]')
-swift_fixture = 'import Foundation\n' + swift_fixture + r'''
+swift_fixture = 'import Foundation\nimport CS2StartupPolicy\n#if canImport(Darwin)\nimport Darwin\n#else\nimport Glibc\n#endif\n' + swift_fixture + r'''
 enum Level { case info, error }
 final class SelectionLog {
     var lines: [String] = []
@@ -346,33 +358,73 @@ enum ProcessInfo {
     struct Snapshot { let physicalMemory: UInt64 = 8192 << 20 }
     static let processInfo = Snapshot()
 }
-var budgetEligible = true, budgetCalls = 0
+var budgetEligible = true, budgetCalls = 0, measureAvailable = true, measureMap = true
+var snapshotCalls = 0, mapCalls = 0
+var failingExports = Set<String>(), exportedNames: [String] = []
+func platformSet(_ name: String, _ value: String) -> Int32 {
+    #if canImport(Darwin)
+    return Darwin.setenv(name, value, 1)
+    #else
+    return Glibc.setenv(name, value, 1)
+    #endif
+}
+// These are controlled OS failure edges around the production publication
+// calls, not replacement lock/selection logic. Normal calls use real setenv.
+func setenv(_ name: String, _ value: String, _ overwrite: Int32) -> Int32 {
+    exportedNames.append(name)
+    return failingExports.contains(name) ? -1 : platformSet(name, value)
+}
+func environment() -> [String: String] {
+    var result: [String: String] = [:]
+    for name in ["MADEIRA_ENV_LOCKED", "WINE_IOS_JIT_HEAD_RESERVE_MB", "WINE_IOS_JIT_CODE_TAIL_LIMIT_MB",
+                 "WINE_IOS_JIT_IMAGE_ARENA_MB", "WINE_IOS_FEX_CODE_GUARD_V1"] {
+        if let value = getenv(name) { result[name] = String(cString: value) }
+    }
+    return result
+}
 func jit_memory_snapshot(_ available: inout UInt64, _ footprint: inout UInt64) -> Bool {
-    available = 6033 << 20; footprint = 110 << 20; return true
+    snapshotCalls += 1
+    available = UInt64(budgetEligible ? 6033 : 2048) << 20; footprint = 110 << 20
+    return measureAvailable
 }
 func jit_task_map_range(_ low: inout UInt64, _ high: inout UInt64) -> Bool {
-    low = 0x104774000; high = 0xfc0000000; return true
+    mapCalls += 1; low = 0x104774000; high = 0xfc0000000; return measureMap
 }
-func jit_cs2_pool_plan(_ requested: UInt64, _ available: UInt64, _ footprint: UInt64,
+func fixture_cs2_pool_plan(_ requested: UInt64, _ available: UInt64, _ footprint: UInt64,
     _ physical: UInt64, _ low: UInt64, _ high: UInt64, _ selected: inout UInt64, _ reserve: inout UInt64) -> Bool {
     budgetCalls += 1
-    if budgetEligible { selected = 1152; reserve = 240 }
-    return budgetEligible
+    return CS2StartupPolicy.jit_cs2_pool_plan(requested, available, footprint, physical, low, high, &selected, &reserve)
 }
-func jit_cs2_code_tail_limit_mb() -> UInt64 { 512 }
 struct SelectionProfile { let steamAppID: Int }
 struct SelectionLaunch { let dock: Bool, compact: Bool }
-struct SelectionResult { let lines: [String], size: Int, floor: Int, failed: Bool, calls: Int }
+struct SelectionResult {
+    let lines: [String], size: Int, floor: Int, failed: Bool, calls: Int
+    let environment: [String: String], locksReady: Bool, publications: [String], snapshots: Int, maps: Int
+}
 func select(app: Int? = nil, global: String? = nil, game: String? = nil,
-    existing: Bool = false, eligible: Bool = true, compact: Bool = false) -> SelectionResult {
+    existing: Bool = false, eligible: Bool = true, compact: Bool = false,
+    stale: Bool = false, profileFlags: [String: String] = [:], fail: Set<String> = [],
+    snapshot: Bool = true, map: Bool = true) -> SelectionResult {
     MadeiraConfig.globalPool = global; MadeiraConfig.gamePool = game
     StikJITHelper.poolTaken = existing; budgetEligible = eligible; budgetCalls = 0
+    measureAvailable = snapshot; measureMap = map; snapshotCalls = 0; mapCalls = 0
+    failingExports = fail; exportedNames = []
+    _ = platformSet("MADEIRA_ENV_LOCKED", "OTHER, MADEIRA_EXE,WINE_IOS_JIT_IMAGE_ARENA_MB")
+    for name in ["WINE_IOS_JIT_HEAD_RESERVE_MB", "WINE_IOS_JIT_CODE_TAIL_LIMIT_MB", "WINE_IOS_JIT_IMAGE_ARENA_MB", "WINE_IOS_FEX_CODE_GUARD_V1"] {
+        if stale { _ = platformSet(name, "999") } else { unsetenv(name) }
+    }
+@PRIVATE_RESET@
+    // Simulate a profile publishing stale private input AFTER the real launch
+    // reset. The actual lock-preparation block must clear and lock both names.
+    for (name, value) in profileFlags { _ = platformSet(name, value) }
+@PRIVATE_LOCKS@
     let logStore = SelectionLog()
     let profile = app.map { SelectionProfile(steamAppID: $0) }
     let dockLaunch = SelectionLaunch(dock: compact, compact: compact)
 @SELECTION@
     return SelectionResult(lines: logStore.lines, size: poolSizeMB, floor: minimumPoolSize,
-        failed: cs2PoolPreflightFailure != nil, calls: budgetCalls)
+        failed: cs2PoolPreflightFailure != nil, calls: budgetCalls, environment: environment(),
+        locksReady: cs2PartitionLocksReady, publications: exportedNames, snapshots: snapshotCalls, maps: mapCalls)
 }
 func record(_ result: SelectionResult, _ fields: [String]) {
     let rows = result.lines.filter { $0.hasPrefix("[jit-pool-selection-v1]") }
@@ -389,8 +441,13 @@ precondition(configured.lines.contains { $0.contains("JIT pool requested at 1024
 record(select(global: "1024", game: "768"), ["source=game-config", "configured-mb=768", "effective-mb=768"])
 let cs2 = select(app: 730, global: "1024")
 record(cs2, ["source=cs2-budget-selected", "configured-mb=1024", "effective-mb=1152", "image-reserve-mb=240",
-             "code-tail-limit-mb=512", "session-reserve-mb=2048", "existing-pool=0", "result=requested"])
+             "code-tail-limit-mb=384", "hard-image-arena-mb=768", "private-code-guard-v1=1",
+             "session-reserve-mb=2048", "existing-pool=0", "result=requested"])
 precondition(cs2.size == 1152 && cs2.floor == 1152 << 20 && !cs2.failed && cs2.calls == 1)
+precondition(CS2StartupPolicy.jit_cs2_image_arena_mb() == 768 && CS2StartupPolicy.jit_cs2_code_tail_limit_mb() == 384)
+precondition(cs2.environment["WINE_IOS_JIT_HEAD_RESERVE_MB"] == "240")
+precondition(cs2.environment["WINE_IOS_JIT_CODE_TAIL_LIMIT_MB"] == "384")
+precondition(cs2.environment["WINE_IOS_JIT_IMAGE_ARENA_MB"] == "768" && cs2.environment["WINE_IOS_FEX_CODE_GUARD_V1"] == "1")
 let declined = select(app: 730, global: "1024", eligible: false)
 record(declined, ["source=cs2-budget-declined", "configured-mb=1024", "effective-mb=none",
                   "image-reserve-mb=0", "code-tail-limit-mb=0", "session-reserve-mb=0", "result=declined"])
@@ -398,8 +455,32 @@ precondition(declined.failed && declined.floor == 0 && declined.calls == 1)
 let reused = select(app: 730, global: "1024", existing: true)
 record(reused, ["source=cs2-existing-pool", "effective-mb=none", "existing-pool=1", "result=declined"])
 precondition(reused.failed && reused.floor == 0 && reused.calls == 0)
-print("PASS actual startup selection telemetry: defaults/config requests, CS2 effective1152, declined eligibility and existing-pool refusal; sizing and guards unchanged")
-'''.replace('@SELECTION@', selection)
+let injected = ["WINE_IOS_JIT_IMAGE_ARENA_MB": "888", "WINE_IOS_FEX_CODE_GUARD_V1": "9"]
+let inherited = select(stale: true, profileFlags: injected)
+precondition(inherited.environment["WINE_IOS_JIT_IMAGE_ARENA_MB"] == nil && inherited.environment["WINE_IOS_FEX_CODE_GUARD_V1"] == nil)
+precondition(inherited.environment["WINE_IOS_JIT_HEAD_RESERVE_MB"] == nil && inherited.environment["WINE_IOS_JIT_CODE_TAIL_LIMIT_MB"] == nil)
+let locks = inherited.environment["MADEIRA_ENV_LOCKED"]!.split(separator: ",").map(String.init)
+precondition(locks.contains("OTHER") && locks.contains("MADEIRA_EXE") && locks.contains("WINE_IOS_FEX_CODE_GUARD_V1"))
+precondition(locks.filter { $0 == "WINE_IOS_JIT_IMAGE_ARENA_MB" }.count == 1 && inherited.locksReady)
+let overridden = select(app: 730, stale: true, profileFlags: injected)
+precondition(!overridden.failed && overridden.environment["WINE_IOS_JIT_IMAGE_ARENA_MB"] == "768" && overridden.environment["WINE_IOS_FEX_CODE_GUARD_V1"] == "1")
+for name in ["MADEIRA_ENV_LOCKED", "WINE_IOS_JIT_IMAGE_ARENA_MB", "WINE_IOS_FEX_CODE_GUARD_V1"] {
+    let refused = select(app: 730, stale: true, profileFlags: injected, fail: [name])
+    record(refused, ["source=cs2-policy-export-declined", "effective-mb=none", "hard-image-arena-mb=0", "private-code-guard-v1=0", "result=declined"])
+    precondition(refused.failed && refused.calls == 1 && refused.floor == 1152 << 20)
+    precondition(refused.environment["WINE_IOS_JIT_IMAGE_ARENA_MB"] == nil && refused.environment["WINE_IOS_FEX_CODE_GUARD_V1"] == nil)
+    if name == "MADEIRA_ENV_LOCKED" {
+        precondition(!refused.locksReady && !refused.publications.contains("WINE_IOS_JIT_IMAGE_ARENA_MB") && !refused.publications.contains("WINE_IOS_FEX_CODE_GUARD_V1"))
+    }
+}
+for result in [select(app: 730, stale: true, profileFlags: injected, snapshot: false),
+               select(app: 730, stale: true, profileFlags: injected, map: false)] {
+    record(result, ["source=cs2-budget-declined", "effective-mb=none", "result=declined"])
+    precondition(result.failed && result.calls == 0 && result.floor == 0)
+    precondition(result.environment["WINE_IOS_JIT_IMAGE_ARENA_MB"] == nil && result.environment["WINE_IOS_FEX_CODE_GUARD_V1"] == nil)
+}
+print("PASS actual startup selection telemetry: real C plan/getters1152=768+384; stale/profile private flags cleared and lock inheritance preserved; lock/arena/guard publication failures and measurement/existing-pool refusal decline without a smaller fallback")
+'''.replace('@PRIVATE_RESET@', private_reset).replace('@PRIVATE_LOCKS@', private_locks).replace('@SELECTION@', selection.replace('jit_cs2_pool_plan(', 'fixture_cs2_pool_plan('))
 
 with tempfile.TemporaryDirectory(prefix='madeira-pool-startup-') as directory:
     temporary = Path(directory)
@@ -413,11 +494,17 @@ with tempfile.TemporaryDirectory(prefix='madeira-pool-startup-') as directory:
     if result.returncode:
         print(result.stderr, end='')
         result.check_returncode()
-    compiler = shutil.which('swiftc')
+    compiler = os.environ.get('SWIFTC') or shutil.which('swiftc')
     if compiler:
+        policy_source, policy_object = temporary / 'policy.c', temporary / 'policy.o'
+        (temporary / 'policy.h').write_text(policy_header)
+        (temporary / 'module.modulemap').write_text('module CS2StartupPolicy [system] { header "policy.h" export * }\n')
+        policy_source.write_text(policy_c)
+        subprocess.run([os.environ.get('CC', 'cc'), '-std=c11', '-Wall', '-Wextra', '-Werror',
+                        '-c', str(policy_source), '-o', str(policy_object)], check=True)
         swiftfile, swift_binary = temporary / 'startup.swift', temporary / 'swift-startup'
         swiftfile.write_text(swift_fixture)
-        subprocess.run([compiler, str(swiftfile), '-o', str(swift_binary)], check=True)
+        subprocess.run([compiler, '-I', str(temporary), str(swiftfile), str(policy_object), '-o', str(swift_binary)], check=True)
         subprocess.run([str(swift_binary)], check=True)
     elif args.require_swift:
         raise SystemExit('Swift compiler required for the production sizing fixture')
