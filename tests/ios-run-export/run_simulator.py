@@ -2,26 +2,89 @@
 """Run actual native share UI on an owned iOS simulator host, collect tiny fixtures."""
 from pathlib import Path
 import json
+import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import threading
+import time
 import uuid
 import zipfile
 
 HERE = Path(__file__).resolve().parent
 BUNDLE = 'com.madeira.tests.RunExportUIHost'
+EVIDENCE = HERE / 'simulator-evidence'
 
 
 def call(*args):
-    return subprocess.check_output(args, text=True)
+    return subprocess.check_output(args, text=True, timeout=60)
+
+
+def run_logged(stage, command, timeout):
+    """End stalled simulator tools before Actions kills evidence upload.
+
+    The first native run reached the job's 25-minute timeout and then its
+    five-minute cancellation grace, leaving neither an xcresult artifact nor
+    a readable job-log blob. Preserve each stage's output while it runs and
+    terminate the complete owned subprocess group within the job budget.
+    """
+    EVIDENCE.mkdir(exist_ok=True)
+    output_path = EVIDENCE / (stage + '.log')
+    started = time.monotonic()
+    print('UI stage started:', stage, 'timeout-seconds=' + str(timeout), flush=True)
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               start_new_session=True)
+
+    def copy_output():
+        remaining = 8 * 1024 * 1024
+        with output_path.open('wb') as output:
+            for line in iter(process.stdout.readline, b''):
+                sys.stdout.buffer.write(line)
+                sys.stdout.buffer.flush()
+                if remaining:
+                    chunk = line[:remaining]
+                    output.write(chunk)
+                    output.flush()
+                    remaining -= len(chunk)
+
+    pump = threading.Thread(target=copy_output, daemon=True)
+    pump.start()
+    timed_out = False
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        print('UI stage timed out:', stage, '; terminating owned process group', flush=True)
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait(timeout=10)
+    pump.join(timeout=5)
+    elapsed = round(time.monotonic() - started, 3)
+    (EVIDENCE / (stage + '-status.json')).write_text(json.dumps({
+        'stage': stage, 'elapsedSeconds': elapsed, 'timeoutSeconds': timeout,
+        'timedOut': timed_out, 'returnCode': process.returncode,
+    }, indent=2) + '\n')
+    print('UI stage finished:', stage, 'elapsed-seconds=' + str(elapsed),
+          'return-code=' + str(process.returncode), 'timed-out=' + str(timed_out), flush=True)
+    return 124 if timed_out else process.returncode
 
 
 def collect(device, verify):
-    evidence = HERE / 'simulator-evidence'
+    evidence = EVIDENCE
     evidence.mkdir(exist_ok=True)
     result = subprocess.run(['xcrun', 'simctl', 'get_app_container', device, BUNDLE, 'data'],
-                            text=True, capture_output=True)
+                            text=True, capture_output=True, timeout=60)
     if result.returncode:
         if verify: raise RuntimeError('Owned UI host container unavailable after successful tests')
         print('Owned host was not installed; preserve xcresult build failure evidence')
@@ -59,7 +122,7 @@ def collect(device, verify):
 
 
 def main():
-    subprocess.run([sys.executable, str(HERE / 'generate_project.py')], check=True)
+    subprocess.run([sys.executable, str(HERE / 'generate_project.py')], check=True, timeout=60)
     data = json.loads(call('xcrun', 'simctl', 'list', 'devices', 'available', '--json'))
     choices = []
     for runtime, devices in data['devices'].items():
@@ -69,23 +132,42 @@ def main():
             if device.get('isAvailable', True) and device['name'].startswith('iPhone'):
                 choices.append((version, device['state'] == 'Booted', device['name'], device))
     assert choices, 'An installed available iPhone simulator is required; UI tests must not silently skip'
-    selected = sorted(choices, key=lambda item: item[:3], reverse=True)[0][3]
+    # Keep a conventional, numbered iPhone model reproducible across runner
+    # images. The prior iPhone Duo timeout is not evidence of a device defect.
+    conventional = [item for item in choices if re.fullmatch(r'iPhone \d+(?: (?:Pro|Pro Max|Plus))?', item[2])]
+    selected = sorted(conventional or choices, key=lambda item: item[:3], reverse=True)[0][3]
     device = selected['udid']
     print('Using owned UI test simulator:', selected['name'], device, flush=True)
-    if selected['state'] != 'Booted':
-        subprocess.run(['xcrun', 'simctl', 'boot', device], check=True)
-    subprocess.run(['xcrun', 'simctl', 'bootstatus', device, '-b'], check=True)
-    result_path = HERE / ('Result-' + uuid.uuid4().hex + '.xcresult')
-    command = ['xcodebuild', 'test', '-project', str(HERE / 'RunExportUI.xcodeproj'),
-               '-scheme', 'RunExportUI', '-configuration', 'Debug', '-sdk', 'iphonesimulator',
-               '-destination', 'id=' + device, '-derivedDataPath', str(HERE / 'DerivedData'),
-               '-resultBundlePath', str(result_path), '-parallel-testing-enabled', 'NO',
-               '-maximum-concurrent-test-simulator-destinations', '1',
-               '-test-timeouts-enabled', 'YES', '-maximum-test-execution-time-allowance', '180',
-               'CODE_SIGNING_ALLOWED=NO', 'CODE_SIGNING_REQUIRED=NO', "CODE_SIGN_IDENTITY="]
-    result = subprocess.run(command)
-    collect(device, verify=result.returncode == 0)
-    raise SystemExit(result.returncode)
+    EVIDENCE.mkdir(exist_ok=True)
+    (EVIDENCE / 'simulator.json').write_text(json.dumps({
+        'device': selected, 'scope': 'owned integration test host only',
+    }, indent=2) + '\n')
+    result = 1
+    verify = False
+    try:
+        if selected['state'] != 'Booted':
+            result = run_logged('simulator-boot', ['xcrun', 'simctl', 'boot', device], 60)
+            if result: return result
+        result = run_logged('simulator-bootstatus', ['xcrun', 'simctl', 'bootstatus', device, '-b'], 300)
+        if result: return result
+        result_path = HERE / ('Result-' + uuid.uuid4().hex + '.xcresult')
+        command = ['xcodebuild', 'test', '-project', str(HERE / 'RunExportUI.xcodeproj'),
+                   '-scheme', 'RunExportUI', '-configuration', 'Debug', '-sdk', 'iphonesimulator',
+                   '-destination', 'id=' + device, '-derivedDataPath', str(HERE / 'DerivedData'),
+                   '-resultBundlePath', str(result_path), '-parallel-testing-enabled', 'NO',
+                   '-maximum-concurrent-test-simulator-destinations', '1',
+                   '-test-timeouts-enabled', 'YES', '-maximum-test-execution-time-allowance', '180',
+                   'CODE_SIGNING_ALLOWED=NO', 'CODE_SIGNING_REQUIRED=NO', "CODE_SIGN_IDENTITY="]
+        result = run_logged('xcodebuild', command, 720)
+        verify = result == 0
+        return result
+    finally:
+        try:
+            collect(device, verify=verify)
+        except Exception as error:
+            (EVIDENCE / 'collection-failure.txt').write_text(type(error).__name__ + ': ' + str(error) + '\n')
+            if verify: raise
+            print('Owned fixture collection failed after unsuccessful simulator stage:', type(error).__name__, flush=True)
 
 
-if __name__ == '__main__': main()
+if __name__ == '__main__': raise SystemExit(main())
