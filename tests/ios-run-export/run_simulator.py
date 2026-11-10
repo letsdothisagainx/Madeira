@@ -80,7 +80,7 @@ def run_logged(stage, command, timeout):
     return 124 if timed_out else process.returncode
 
 
-def collect(device, verify):
+def collect(device, verify, selected_test=''):
     evidence = EVIDENCE
     evidence.mkdir(exist_ok=True)
     result = subprocess.run(['xcrun', 'simctl', 'get_app_container', device, BUNDLE, 'data'],
@@ -107,15 +107,17 @@ def collect(device, verify):
     elif verify:
         raise AssertionError('Actual file supplied to UIKit was not retained or was unavailable')
     if verify:
-        assert len(records) >= 5, 'Every actual test launch must preserve its bounded event trail'
+        assert len(records) >= (1 if selected_test else 5), 'Every actual test launch must preserve its bounded event trail'
         modern = [r for r in records if 'baseline=0' in r]
         assert any('event=share-presented' in r and 'event=share-finished' in r for r in modern)
-        assert any('event=failed' in r and 'stage=archive' in r for r in modern)
-        assert any('baseline=1' in r and 'event=factory-created' in r and 'event=share-presented' not in r for r in records)
+        if not selected_test:
+            assert any('event=failed' in r and 'stage=archive' in r for r in modern)
+            assert any('baseline=1' in r and 'event=factory-created' in r and 'event=share-presented' not in r for r in records)
         print('PASS real UIKit event trails and CRC-openable archive supplied to native sharing; fixture-only evidence')
     (evidence / 'summary.json').write_text(json.dumps({
         'schema': 'madeira-export-ui-simulator-v1', 'hostBundle': BUNDLE,
         'nativeUITestsPassed': verify, 'eventFiles': len(records),
+        'selectedTest': selected_test or 'full-suite',
         'scope': 'production coordinator/UIKit + owned host and archive-production boundary; no game or account data',
         'deviceAcceptance': 'unverified; simulator does not establish operation on the user iPhone',
     }, indent=2) + '\n')
@@ -144,6 +146,14 @@ def main():
     }, indent=2) + '\n')
     result = 1
     verify = False
+    test_case = os.environ.get('MADEIRA_UI_TEST_CASE', 'all')
+    selectors = {
+        'all': '',
+        'landscape': 'RunExportUITests/ExportRunUITests/testActiveLandscapeExportSurvivesOriginDestructionAndOpensFiles',
+    }
+    if test_case not in selectors:
+        raise ValueError('Only the all or landscape owned UI test selection is permitted')
+    selected_test = selectors[test_case]
     try:
         if selected['state'] != 'Booted':
             result = run_logged('simulator-boot', ['xcrun', 'simctl', 'boot', device], 60)
@@ -158,12 +168,14 @@ def main():
                    '-maximum-concurrent-test-simulator-destinations', '1',
                    '-test-timeouts-enabled', 'YES', '-maximum-test-execution-time-allowance', '180',
                    'CODE_SIGNING_ALLOWED=NO', 'CODE_SIGNING_REQUIRED=NO', "CODE_SIGN_IDENTITY="]
+        if selected_test:
+            command.append('-only-testing:' + selected_test)
         result = run_logged('xcodebuild', command, 720)
         verify = result == 0
         return result
     finally:
         try:
-            collect(device, verify=verify)
+            collect(device, verify=verify, selected_test=selected_test)
         except Exception as error:
             (EVIDENCE / 'collection-failure.txt').write_text(type(error).__name__ + ': ' + str(error) + '\n')
             if verify: raise
