@@ -43,9 +43,8 @@ pc_advance = signal[first:signal.index('                        static volatile 
 header = ledger + r'''
 void *ios_jit_rx_base_global, *ios_jit_rw_base_global;
 size_t ios_jit_pool_size_global;
-/* Hardware loop cases use unguarded aliases. Guard faults have their own
- * production-handler test and are never manufactured by this fixture. */
-int ios_jit_code_guard_contains(uintptr_t address,size_t length) { (void)address;(void)length;return 0; }
+/* The including native-atomic fixture supplies the single empty private-guard
+ * registry boundary for these unguarded hardware loop cases. */
 static int ios_jit_low_contains(uintptr_t address) { (void)address; return 0; }
 uintptr_t ios_jit_anon_alias_lookup(uintptr_t address) { (void)address; return 0; }
 int ios_page_expected_prot(const void *address) { (void)address; return -1; }
@@ -89,6 +88,9 @@ static int baseline_emulate(uint32_t insn, uintptr_t fault_pc, uintptr_t fault_a
     return handled;
 }
 '''
+common_fixture = (root / 'tests/host/native-atomic-alias-performance.c').read_text()
+assert len(re.findall(r'(?m)^(?:static inline )?int ios_jit_code_guard_contains\(',
+                      common_fixture + header)) == 1, 'one shared native guard-registry boundary'
 with tempfile.TemporaryDirectory(prefix='madeira-conditional-mach-') as folder:
     work = Path(folder)
     (work / 'production-atomic-emulation.h').write_text(header)
