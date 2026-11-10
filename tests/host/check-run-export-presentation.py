@@ -28,6 +28,8 @@ assert 'static let shared = RunExportCoordinator()' in source
 assert 'host.windowLevel = .alert + 1' in source
 assert 'source?.window?.windowScene' in source and 'activeScenes.count == 1' in source
 assert 'activity.viewIfLoaded?.window != nil' in source
+completion = source[source.index('activity.completionWithItemsHandler = '):source.index('if let popover = ', source.index('activity.completionWithItemsHandler = '))]
+assert completion.index('guard self.operation.acceptsCompletion(request: identity)') < completion.index('self.closePresentation()')
 assert 'popover.sourceView = root.view' in source
 assert 'previousKeyWindow.makeKey()' in source
 assert 'RunExportPresentation.swift in Sources' in project
@@ -70,19 +72,24 @@ import Foundation
             exportCalls += 1
             return try await withCheckedThrowingContinuation { pending = $0 }
         }
-        let presenter: (URL) async throws -> Void = { presentations.append($0) }
+        let presenter: (URL) async throws -> Void = {
+            precondition(operation.phase == .presenting && operation.acceptsCompletion(request: operation.request))
+            presentations.append($0)
+        }
         var button: ButtonLifetime? = ButtonLifetime {
             precondition(operation.start(export: exporter, present: presenter, record: { events.append($0) }))
         }
         weak var oldButton = button
         button!.tap()
         precondition(operation.phase == .creating && events.count == 1 && events[0].contains("event=requested"))
+        precondition(!operation.acceptsCompletion(request: operation.request))
         precondition(!operation.start(export: { preconditionFailure("duplicate export") }, present: presenter, record: { _ in }))
         button = nil
         precondition(oldButton == nil, "request must not retain a transient view")
         await wait { pending != nil }
         pending!.resume(returning: zip); pending = nil
         await wait { operation.phase == .sharing }
+        precondition(operation.acceptsCompletion(request: operation.request))
         precondition(exportCalls == 1 && presentations == [zip] && operation.archive == zip)
         precondition(events.count == 3 && events[1].contains("event=archive-created") && events[2].contains("event=share-presented"))
         let oldRequest = operation.request
@@ -90,8 +97,10 @@ import Foundation
         precondition(events.count == 3, "native completion may not duplicate presentation events")
         operation.finish(request: oldRequest, completed: false, error: nil)
         precondition(operation.phase == .idle && operation.archive == nil && FileManager.default.fileExists(atPath: zip.path))
+        precondition(!operation.acceptsCompletion(request: oldRequest))
         precondition(operation.start(export: { zip }, present: presenter, record: { events.append($0) }))
         await wait { operation.phase == .sharing }
+        precondition(!operation.acceptsCompletion(request: oldRequest))
         operation.finish(request: oldRequest, completed: true, error: nil)
         precondition(operation.phase == .sharing, "a late callback must not close a new request")
         operation.finish(request: operation.request, completed: true, error: nil)
@@ -106,18 +115,27 @@ import Foundation
         await wait { error != nil }
         precondition(error!.stage == .presentation && error!.domain == "export" && error!.code == 77)
         precondition(operation.archive == zip && !events.joined().contains("secret-token") && !events.joined().contains("credential"))
+        let failedPhase = operation.phase
+        precondition(!operation.acceptsCompletion(request: operation.request), "same-request callback after timeout/failure may not close a newer error alert")
+        operation.finish(request: operation.request, completed: true, error: nil)
+        precondition(operation.phase == failedPhase && operation.archive == zip)
         error = nil
         precondition(operation.start(export: { folder }, present: presenter, record: { events.append($0) }))
         await wait { error != nil }
         precondition(error!.stage == .archive && presentations.count == 2)
         error = nil
         precondition(operation.start(export: { zip }, present: { _ in
+            precondition(operation.phase == .presenting && operation.acceptsCompletion(request: operation.request))
+            operation.finish(request: operation.request, completed: false, error: nil)
+        }, record: { events.append($0) }))
+        await wait { operation.phase == .idle }
+        precondition(operation.start(export: { zip }, present: { _ in
             operation.didPresent(request: operation.request)
             operation.finish(request: operation.request, completed: true, error: nil)
         }, record: { events.append($0) }))
         await wait { operation.phase == .idle }
         precondition(events.last!.contains("event=share-finished"), "presentation completion must not resurrect a closed sheet")
-        print("PASS production export operation: actual action, transient button destruction, duplicate taps, delayed archive, ordered real presentation event, cancellation/completion, retry, stale callback rejection and sanitized useful errors")
+        print("PASS production export operation: actual action, transient button destruction, duplicate taps, delayed archive, ordered real presentation event, completion during presenting/sharing, retry, failed/idle/stale callback rejection and sanitized useful errors")
     }
 }
 '''

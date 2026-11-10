@@ -83,9 +83,12 @@ final class RunExportOperation {
         record("[run-export-v1] event=share-presented request=\(request)")
     }
 
+    func acceptsCompletion(request identity: Int) -> Bool {
+        identity == request && (phase == .presenting || phase == .sharing)
+    }
+
     func finish(request identity: Int? = nil, completed: Bool, error: Error?) {
-        guard identity == nil || identity == request else { return }
-        guard phase == .presenting || phase == .sharing else { return }
+        guard acceptsCompletion(request: identity ?? request) else { return }
         if let error { fail(Failure.capture(error, at: .activity)); return }
         record("[run-export-v1] event=share-finished request=\(request) completed=\(completed ? 1 : 0)")
         // The file remains on disk for asynchronous Files/share extensions.
@@ -169,7 +172,10 @@ final class RunExportCoordinator: ObservableObject {
                 Task { @MainActor in
                     guard let self else { return }
                     reply(.success(()))
-                    guard self.operation.request == identity else { return }
+                    // A timeout can already have replaced this activity's
+                    // window with a failure alert for the same request. Its
+                    // late completion must not close that newer presentation.
+                    guard self.operation.acceptsCompletion(request: identity) else { return }
                     self.operation.didPresent(request: identity)
                     self.closePresentation()
                     self.operation.finish(request: identity, completed: completed, error: error)
