@@ -19,6 +19,11 @@ def body(signature):
 census = body('static void ios_pool_failure_census( size_t want )')
 assert 'jit_pool_size,' not in census and 'jit_pool_size -' not in census
 hole = body('static size_t ios_pool_hole_between(') + '\n' + body('static size_t ios_pool_holes_between(')
+account_start = source.index('/* madeira-pool-accounting begin')
+account_end = source.index('/* madeira-pool-accounting end */', account_start) + len('/* madeira-pool-accounting end */')
+accounting = source[account_start:account_end]
+carve_start = source.index('#define IOS_TAIL_CARVE_MAX ')
+carve_table = source[carve_start:source.index('\n\n', carve_start)]
 assert 'ios_pool_holes_between( ios_jit_pool_size_global, jit_pool_offset, ios_jit_tail_reserved,' in census, \
     'the census leaves pool-mid\'s second hole out of the virgin room too'
 assert source.count('ios_pool_failure_census( alloc_size );') == 1
@@ -40,21 +45,32 @@ harness = r'''
 #define MB ((size_t)1 << 20)
 #define ARRAY_SIZE(a) (sizeof(a)/sizeof((a)[0]))
 #define IOS_POOL_REUSE_GRACE_SEC 3
+#define IOS_POOL_LEDGER_MAX 1024
+#define IOS_POOL_FREE_MAX 1024
+struct ios_pool_alloc { size_t off, size; void *peb; uint64_t tag; };
 struct ios_pool_free { size_t off, size; time_t freed_at; int advised; uint64_t tag; };
-static struct ios_pool_free ios_pool_freelist[8];
-static unsigned ios_pool_free_count;
+static struct ios_pool_free ios_pool_freelist[IOS_POOL_FREE_MAX];
+static struct ios_pool_alloc ios_pool_ledger[IOS_POOL_LEDGER_MAX];
+static int ios_pool_ledger_count;
+static int ios_pool_free_count;
+static unsigned ios_tail_carve_n;
+static pthread_mutex_t ios_tail_carve_lock = PTHREAD_MUTEX_INITIALIZER;
+static void *ios_jit_rx_base_global = (void *)(uintptr_t)0x148000000;
+static uintptr_t ios_jit_low_rx_global = 0x12a400000;
 static size_t ios_jit_pool_size_global, jit_pool_offset, ios_jit_tail_reserved;
 static size_t ios_jit_hole_off_eff, ios_jit_hole_end_eff;
 static size_t ios_jit_hole2_off, ios_jit_hole2_end;   /* pool-mid: no second hole here */
 static size_t ios_jit_low_reserved, ios_jit_low_size_global;
 static pthread_mutex_t ios_pool_lock = PTHREAD_MUTEX_INITIALIZER;
-static char output[16384];
+static pthread_mutex_t output_lock = PTHREAD_MUTEX_INITIALIZER;
+static char output[32768];
 static size_t length;
 static unsigned lines;
 static time_t fake_time(time_t *p) { if (p) *p = 100; return 100; }
 static int capture(int fd, const char *format, ...)
 {
     assert(fd == 2);
+    pthread_mutex_lock(&output_lock);
     va_list args;
     va_start(args, format);
     int n = vsnprintf(output + length, sizeof(output) - length, format, args);
@@ -62,11 +78,12 @@ static int capture(int fd, const char *format, ...)
     assert(n > 0 && length + (size_t)n < sizeof(output));
     length += (size_t)n;
     lines++;
+    pthread_mutex_unlock(&output_lock);
     return n;
 }
 #define time fake_time
 #define dprintf capture
-''' + hole + '\n' + census + r'''
+''' + carve_table + '\n' + hole + '\n' + accounting + '\n' + census + r'''
 #undef time
 #undef dprintf
 static void *fail(void *p) { ios_pool_failure_census((size_t)p); return NULL; }
@@ -96,10 +113,10 @@ int main(int argc, char **argv)
     }
     size_t before[] = {ios_jit_pool_size_global, jit_pool_offset, ios_jit_tail_reserved,
         ios_jit_hole_off_eff, ios_jit_hole_end_eff, ios_jit_low_reserved, ios_jit_low_size_global};
-    struct ios_pool_free saved[8];
+    struct ios_pool_free saved[IOS_POOL_FREE_MAX];
     memcpy(saved, ios_pool_freelist, sizeof(saved));
     ios_pool_failure_census(6 * MB);
-    assert(lines == 1);
+    assert(lines == 2);
     assert(strstr(output, "free_bytes=0xb80000 largest=0x800000"));
     assert(strstr(output, "aged_bytes=0xa80000 aged_largest=0x800000"));
     assert(strstr(output, "raw_size_fit=1 aged_size_fit=1 poison_marked_bytes=0x800000"));
@@ -113,7 +130,7 @@ int main(int argc, char **argv)
     for (size_t i = 0; i < 12; ++i)
         assert(pthread_create(&workers[i], NULL, fail, (void *)((i + 1) * 0x4000)) == 0);
     for (unsigned i = 0; i < 12; ++i) assert(pthread_join(workers[i], NULL) == 0);
-    assert(lines == 8 && !memcmp(saved, ios_pool_freelist, sizeof(saved)) && ios_pool_free_count == 4);
+    assert(lines == 16 && !memcmp(saved, ios_pool_freelist, sizeof(saved)) && ios_pool_free_count == 4);
     size_t after[] = {ios_jit_pool_size_global, jit_pool_offset, ios_jit_tail_reserved,
         ios_jit_hole_off_eff, ios_jit_hole_end_eff, ios_jit_low_reserved, ios_jit_low_size_global};
     assert(!memcmp(before, after, sizeof(before)));

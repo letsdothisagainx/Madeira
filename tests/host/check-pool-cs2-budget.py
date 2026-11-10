@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Replay CS2's phonon.dll exhaustion through the production pool functions.
+"""Replay recorded CS2 image exhaustion through actual production pool functions.
 
 The November 5 log has a 1 GiB pool, image head 0x1dcd0000, code tail
 0x20014000 and a 0x3310000-byte phonon.dll request. Its 226 free extents
@@ -11,11 +11,20 @@ carves and rollback), image allocation chain, failure path and process reclaim.
 Only Darwin region/thread queries and unrelated platform callbacks are supplied
 by the harness. Real shared file mappings check the RX/RW alias relationship.
 No Wine/game execution or assertion of a successful device launch is implied.
+
+The default matrix keeps historical exact-address controls separate from
+current-policy returned-handle replays of every older lifecycle. The November
+10 capture has 45 grants, an interval-censored clock boundary, and genuine
+embree/client failure. Baseline and promotion-only controls must still fail;
+combined production must preserve live code, retain safe future image space,
+and survive bounded image/rotation stress at unchanged pool budgets.
 """
 from pathlib import Path
 import json
+import hashlib
 import os
 import subprocess
+import sys
 import tempfile
 
 root = Path(__file__).resolve().parents[2]
@@ -30,6 +39,25 @@ def function(source, signature):
     while source.index(';', start) < source.index('{', start):
         start = source.index(signature, start + len(signature))
     return source[start:source.index('\n}', start) + 2] + '\n'
+
+
+# Explicit executable controls for the former policy. Only the two changed
+# production decisions are reverted; all allocation/release/alias paths remain
+# the extracted source. Never call an old-address assertion a new-policy pass.
+variant = os.environ.get('MADEIRA_POOL_REPLAY_VARIANT', 'current')
+if variant in ('historical', 'baseline'):
+    pinned = (root / 'tests/fixtures/jit-pool/retire-owner-before-free-certification.c').read_text()
+    assert hashlib.sha256(pinned.encode()).hexdigest() == '2aee569776f37cb17f8ef707c61ec5fb4f1188c4eb06b893576adf72e47816b1'
+    native = native.replace(function(native, 'static unsigned ios_tail_carves_retire_owner('), pinned, 1)
+if variant in ('historical', 'baseline', 'promotion') and 'static size_t ios_pool_code_carve_preserve_span(' in native:
+    original = function(native, 'static size_t ios_pool_code_carve_preserve_span(')
+    empty = original[:original.index('{') + 1] + '''
+    (void)carves;(void)count;(void)selected;(void)total;
+    (void)h1_off;(void)h1_end;(void)h2_off;(void)h2_end;
+    return 0; /* former policy had no certified-span preservation */
+}
+'''
+    native = native.replace(original, empty, 1)
 
 
 carve_start = native.index('#define IOS_TAIL_CARVE_MAX ')
@@ -91,6 +119,7 @@ helper_signatures = (
     'static size_t ios_pool_take_freed_for_tail(',
     'static int ios_tail_carve_in_low(',
     'static int ios_pool_preserve_code_carve(',
+    'static size_t ios_pool_code_carve_preserve_span(',
     'static int ios_pool_code_carve_better(',
     'static int ios_pool_fresh_tail_fits(',
     'static int ios_tail_carve_scan(',
@@ -108,13 +137,23 @@ helper_signatures = (
 )
 # The source override permits the same regression to compile the previous
 # production implementation and demonstrate its recorded capacity failure.
-helpers = ''.join(function(native, signature) for signature in helper_signatures if signature in native)
+helpers = ''
+for signature in helper_signatures:
+    if signature == 'static void ios_pool_failure_census(' and '/* madeira-pool-accounting begin' in native:
+        begin = native.index('/* madeira-pool-accounting begin')
+        end = native.index('/* madeira-pool-accounting end */', begin) + len('/* madeira-pool-accounting end */')
+        helpers += native[begin:end] + '\n'
+    if signature in native:
+        helpers += function(native, signature)
 
 tail_trace = json.loads((root / 'tests/host/fixtures/pool-cs2-200111-tail.json').read_text())
 nov7_trace = json.loads((root / 'tests/host/fixtures/pool-cs2-083837-tail.json').read_text())
 embree_trace = json.loads((root / 'tests/host/fixtures/pool-cs2-200636-tail.json').read_text())
 november8_trace = json.loads((root / 'tests/host/fixtures/pool-cs2-095621-tail.json').read_text())
 fbb4_trace = json.loads((root / 'tests/host/fixtures/pool-cs2-fbb4-dep-tail.json').read_text())
+november10_trace = json.loads((root / 'tests/host/fixtures/pool-cs2-011804-tail.json').read_text())
+assert november10_trace['installed_commit'] == 'fce37394462fd9e1ad4288961f39b1fc636fbc33'
+assert sum(e['op'] == 'allocate' for e in november10_trace['events']) == 45
 assert fbb4_trace['installed_commit'] == 'fbb4a56f4e6959aef2f71651f281d844a451614f'
 assert len([e for e in fbb4_trace['events'] if e['op'] == 'allocate']) == 30
 dep_sweep = fbb4_trace['foreign_dep_sweep']
@@ -149,12 +188,14 @@ static const struct captured_tail_event captured_tail_events[] = {
 tail_replay += 'static const struct captured_tail_event captured_nov7_tail_events[] = {\n' + captured_rows(nov7_trace) + '\n};\n'
 tail_replay += '#define REPLAY_MAIN_TRANSFER %d\n' % ('static int ios_pool_recycle_main_code_range(' in native)
 tail_replay += '#define REPLAY_CODE_TIE %d\n' % ('static int ios_pool_code_carve_better(' in native)
+tail_replay += '#define REPLAY_CERTIFIED_SPAN %d\n' % ('static size_t ios_pool_code_carve_preserve_span(' in native)
 tail_replay += '#define REPLAY_LEGACY_ONLY %d\n' % (os.environ.get('MADEIRA_POOL_LEGACY_REPLAY_ONLY') == '1')
 tail_replay += 'static const struct captured_tail_event captured_embree_tail_events[] = {\n' + captured_rows(embree_trace) + '\n};\n'
 
 tail_replay += 'static const struct captured_tail_event captured_november8_tail_events[] = {\n' + captured_rows(november8_trace) + '\n};\n'
 tail_replay += 'static const struct captured_tail_event captured_fbb4_tail_events[] = {\n' + captured_rows(fbb4_trace) + '\n};\n'
 tail_replay += 'static const size_t captured_fbb4_foreign_copy_sizes[] = {\n' + ','.join(e['requested'] for e in dep_sweep['copies']) + '\n};\n'
+tail_replay += 'static const struct captured_tail_event captured_november10_tail_events[] = {\n' + captured_rows(november10_trace) + '\n};\n'
 
 # Swift's launch plumbing is platform-owned; the decision and arithmetic run
 # below as production C. Keep the selected game and the pre-Wine failure path
@@ -207,6 +248,18 @@ fixture = r'''
 #define MB ((size_t)1 << 20)
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "failed line %d: %s\n", __LINE__, #c); exit(1); } } while (0)
+static pthread_mutex_t diagnostics_lock=PTHREAD_MUTEX_INITIALIZER;
+static char recycle_report[2048];
+static int capture_dprintf(int fd,const char *format,...)
+{
+    (void)fd;char line[4096];va_list arguments;va_start(arguments,format);
+    int count=vsnprintf(line,sizeof(line),format,arguments);va_end(arguments);
+    pthread_mutex_lock(&diagnostics_lock);
+    if(strstr(line,"[pool-recycle-main]"))snprintf(recycle_report,sizeof(recycle_report),"%.*s",(int)sizeof(recycle_report)-1,line);
+    pthread_mutex_unlock(&diagnostics_lock);
+    return count;
+}
+#define dprintf capture_dprintf
 #define STATUS_SUCCESS 0
 #define STATUS_NO_MEMORY ((int)0xc0000017u)
 #define FALL_THROUGH 7
@@ -1579,6 +1632,246 @@ static void check_captured_fbb4_tail_history(void)
     puts("PASS fbb4 firstfailure kernelbase.dll180000 with64KiBvirgin/7freeextents88000/largest4c000; scopedDEPtestpreventsforeignsweepwithoutchangingcapacityorretirementproof");
 }
 
+
+
+/* Counterfactual current-production replay of EVERY older captured lifecycle.
+ * Returned handles replace historical addresses; only known terminal image
+ * requests and their recorded pre-copy head snapshots are replayed as copies.
+ * Historical intermediate image extent coordinates remain unspecified. */
+static void check_prior_capture_current(const char *name,const struct captured_tail_event *events,unsigned count,
+                                       unsigned image_line,size_t pre_server,int dependency_before_rotation,int dependencies)
+{
+    void *handles[64]={0},*active_code=NULL;size_t sizes[64]={0};
+    struct ios_tail_carve pinned[3];unsigned pins=0,changes=0;
+    size_t server=(size_t)-1,client=(size_t)-1,embree=(size_t)-1;
+    int copied=0;
+    reset(1152*MB,240*MB);ios_pool_code_tail_limit=512*MB;
+    jit_pool_offset=ios_jit_tail_reserved=0;ios_pool_free_count=ios_pool_ledger_count=ios_tail_carve_n=0;
+    memset(ios_tail_carves,0,sizeof ios_tail_carves);
+    for(unsigned i=0;i<count;i++)
+    {
+        const struct captured_tail_event *e=&events[i];owner=e->owner;fake_now=1000+e->seconds;
+        set_process_lease((void *)owner,e->lease,e->op==2);
+        if(e->line==image_line)
+        {
+            november8_image_extents();jit_pool_offset=pre_server;
+            CHECK(!allocate_image(0x2580000,&server));copied=1;
+            if(dependency_before_rotation)
+            {CHECK(!allocate_image(0x29a8000,&client));CHECK(!allocate_image(0x1524000,&embree));}
+        }
+        if(e->op==2){ios_tail_carves_owner_died((void *)owner);continue;}
+        if(e->op==1)
+        {
+            void *released=NULL;size_t bytes=0;
+            CHECK(release_code(handles[e->handle],MEM_RELEASE,&released,&bytes)==STATUS_SUCCESS);
+            CHECK(released==handles[e->handle]&&bytes==sizes[e->handle]);continue;
+        }
+        if(!copied&&e->head>jit_pool_offset)jit_pool_offset=e->head;
+        size_t got=e->ask;
+        if(e->rotation)got=rotate(&handles[e->handle]);
+        else CHECK(allocate_code(&got,&handles[e->handle])==STATUS_SUCCESS);
+        CHECK(got>0 && (e->rotation ? got>=16*MB : got>=e->ask));sizes[e->handle]=got;
+        size_t off=(uintptr_t)handles[e->handle]-(uintptr_t)rx_memory;
+        if(off!=e->observed_off||got!=e->observed)changes++;
+        if(e->rotation)active_code=handles[e->handle];
+        if(e->ask==128*MB&&!e->rotation)
+        {
+            CHECK(pins<3&&got==128*MB);pinned[pins]=ios_tail_carves[find_carve(off)];
+            *(uint64_t *)((char *)rw_memory+off)=0xbabe000000000000ULL+pins;
+            *(uint64_t *)((char *)rw_memory+off+got-8)=0xface000000000000ULL+pins;pins++;
+        }
+        check_code_image_nonoverlap();
+    }
+    CHECK(copied&&pins==3&&active_code);
+    if(dependencies&&!dependency_before_rotation)
+    {CHECK(!allocate_image(0x29a8000,&client));CHECK(!allocate_image(0x1524000,&embree));}
+    CHECK(ios_pool_ledger_holds(server,0x2580000,(void *)owner));check_owned_executable_image(server,0x2580000);
+    if(dependencies)
+    {
+        CHECK(ios_pool_ledger_holds(client,0x29a8000,(void *)owner));CHECK(ios_pool_ledger_holds(embree,0x1524000,(void *)owner));
+        check_owned_executable_image(client,0x29a8000);check_owned_executable_image(embree,0x1524000);
+    }
+    size_t tail=ios_jit_tail_reserved;
+    for(unsigned n=0;n<4;n++)
+    {
+        void *next=NULL,*released=NULL;size_t bytes=0;CHECK(rotate(&next)>=16*MB);
+        CHECK(release_code(active_code,MEM_RELEASE,&released,&bytes)==STATUS_SUCCESS);CHECK(released==active_code);
+        active_code=next;CHECK(ios_jit_tail_reserved==tail);check_code_image_nonoverlap();
+    }
+    for(unsigned n=0;n<pins;n++)
+    {
+        CHECK(!memcmp(&ios_tail_carves[find_carve(pinned[n].off)],&pinned[n],sizeof pinned[n]));
+        CHECK(*(uint64_t *)((char *)rx_memory+pinned[n].off)==0xbabe000000000000ULL+n);
+        CHECK(*(uint64_t *)((char *)rx_memory+pinned[n].off+pinned[n].size-8)==0xface000000000000ULL+n);
+    }
+    printf("PASS current-production older-capture %s: %u events returned-handles=%u altered grants,3live128 intact,server%s and4later rotations;geometry head=%zx tail=%zx\n",name,count,changes,dependencies?"/client/embree":"",jit_pool_offset,(size_t)ios_jit_tail_reserved);
+}
+static void check_all_prior_captures_current(void)
+{
+    check_prior_capture_current("200111",captured_tail_events,ARRAY_SIZE(captured_tail_events),74400,0x244dc000,0,0);
+    check_prior_capture_current("083837",captured_nov7_tail_events,ARRAY_SIZE(captured_nov7_tail_events),47060,0x24454000,1,1);
+    check_prior_capture_current("200636",captured_embree_tail_events,ARRAY_SIZE(captured_embree_tail_events),46675,0x24448000,1,1);
+    check_prior_capture_current("095621",captured_november8_tail_events,ARRAY_SIZE(captured_november8_tail_events),46265,0x24464000,0,1);
+    check_prior_capture_current("fbb4",captured_fbb4_tail_events,ARRAY_SIZE(captured_fbb4_tail_events),45737,0x244a8000,0,1);
+}
+
+/* November10: every logged grant/release/retirement in its actual time(NULL)
+ * second. In particular endpoint receipts retire at88; CS2 asks for its tiny
+ * dispatcher at90, before their three-second grace expires. */
+static void check_captured_november10_tail_history(void)
+{
+    void *handles[64]={0};size_t sizes[64]={0};
+    struct ios_tail_carve pinned[3];unsigned pins=0,grants=0,changes=0;
+    int shift=getenv("MADEIRA_POOL_NOV10_CLOCK_SHIFT")?atoi(getenv("MADEIRA_POOL_NOV10_CLOCK_SHIFT")):0;
+    CHECK(shift>=-1&&shift<=1);
+    reset(1152*MB,240*MB);ios_pool_code_tail_limit=512*MB;
+    jit_pool_offset=ios_jit_tail_reserved=0;ios_pool_free_count=ios_pool_ledger_count=ios_tail_carve_n=0;
+    memset(ios_tail_carves,0,sizeof ios_tail_carves);
+    for(unsigned i=0;i<ARRAY_SIZE(captured_november10_tail_events);i++)
+    {
+        const struct captured_tail_event *e=&captured_november10_tail_events[i];
+        owner=e->owner;fake_now=1000+e->seconds+(e->line>=40255?shift:0);
+        set_process_lease((void *)owner,e->lease,e->op==2);
+        if(e->op==2){ios_tail_carves_owner_died((void *)owner);continue;}
+        if(e->op==1)
+        {
+            void *released=NULL;size_t bytes=0;
+            CHECK(handles[e->handle]);
+            CHECK(release_code(handles[e->handle],MEM_RELEASE,&released,&bytes)==STATUS_SUCCESS);
+            CHECK(released==handles[e->handle]&&bytes==sizes[e->handle]);continue;
+        }
+        if(e->head>jit_pool_offset)jit_pool_offset=e->head;
+        size_t got=e->ask;
+        if(e->rotation||e->ask==128*MB)got=rotate(&handles[e->handle]);
+        else CHECK(allocate_code(&got,&handles[e->handle])==STATUS_SUCCESS);
+        size_t off=(uintptr_t)handles[e->handle]-(uintptr_t)rx_memory;
+        CHECK(got==e->observed);
+        if(off!=e->observed_off)changes++;
+        if(getenv("MADEIRA_POOL_NOV10_EXPECT_BASELINE"))
+        {
+            if(off!=e->observed_off)fprintf(stderr,"November10 baseline mismatch line%u size%zx off%zx expected%zx\n",e->line,got,off,e->observed_off);
+            CHECK(off==e->observed_off);
+        }
+        sizes[e->handle]=got;grants++;
+        if(e->ask==128*MB&&!e->rotation)
+        {
+            CHECK(pins<ARRAY_SIZE(pinned)&&got==128*MB);
+            pinned[pins]=ios_tail_carves[find_carve(off)];
+            *(uint64_t *)((char *)rw_memory+off)=0xcafe100000000000ULL+pins;
+            *(uint64_t *)((char *)rw_memory+off+got-8)=0xbeef100000000000ULL+pins; pins++;
+        }
+        if(e->line==40255)
+            printf("November10 tiny-selection off=%zx tail=%zx time=%ld: endpoint retirement1088 age=%ld shift=%d (nonzero is separate schedule sensitivity)\n",off,(size_t)ios_jit_tail_reserved,(long)fake_now,(long)fake_now-1088,shift);
+    }
+    CHECK(grants==45&&pins==3);
+    owner=0x1122b4000;set_process_lease((void *)owner,31,0);fake_now=1101+shift;
+    /* The ten older image-free addresses are unavailable. Match the exact
+     * measured aggregate using separated bounded extents, never fake a large
+     * eligible receipt or claim they reproduce unlogged image coordinates. */
+    static const size_t holes[]={0x28000,0x20000,0x20000,0x1c000,0x18000,0x18000,0x14000,0x10000,0xc000,0xc000};
+    size_t sum=0;ios_pool_free_count=0;
+    for(unsigned i=0;i<ARRAY_SIZE(holes);i++)
+    {
+        ios_pool_freelist[i]=(struct ios_pool_free){(i+1)*MB,holes[i],0,1,0};sum+=holes[i];ios_pool_free_count++;
+    }
+    CHECK(sum==0xf0000);
+    jit_pool_offset=0x273c8000;
+    size_t client=(size_t)-1,embree=(size_t)-1;
+    CHECK(!allocate_image(0x29a8000,&client)&&client==0x273c8000);
+    CHECK(jit_pool_offset==0x29d70000);
+    size_t head_before=jit_pool_offset,tail_before=ios_jit_tail_reserved;
+    int result=allocate_image(0x1524000,&embree);
+    printf("November10 actual-capture replay: grants=%u changed-addresses=%u head=%zx tail=%zx virgin=%zx embree-status=%d embree-off=%zx\n",grants,changes,jit_pool_offset,(size_t)ios_jit_tail_reserved,ios_jit_pool_size_global-jit_pool_offset-ios_jit_tail_reserved,result,embree);
+    if(getenv("MADEIRA_POOL_NOV10_EXPECT_BASELINE")||getenv("MADEIRA_POOL_NOV10_EXPECT_FAILURE"))
+    {
+        if(getenv("MADEIRA_POOL_NOV10_EXPECT_BASELINE"))
+        { CHECK(!changes&&tail_before==0x1e018000);CHECK(ios_jit_pool_size_global-head_before-tail_before==0x278000); }
+        CHECK(result==-1&&ios_jit_copy_refused);
+        CHECK(jit_pool_offset==head_before&&ios_jit_tail_reserved==tail_before);
+        if(getenv("MADEIRA_POOL_NOV10_EXPECT_BASELINE"))
+        {
+            CHECK(strstr(recycle_report,"aged-receipts=5")&&strstr(recycle_report,"aged-bytes=0x3008000"));
+            CHECK(strstr(recycle_report,"largest=0x1008000")&&strstr(recycle_report,"missing-proof=1"));
+        }
+        CHECK(ios_pool_ledger_holds(client,0x29a8000,(void *)owner));
+        check_owned_executable_image(client,0x29a8000);
+        size_t retry=(size_t)-1;CHECK(allocate_image(0x29a8000,&retry)==-1);
+        CHECK(jit_pool_offset==head_before&&ios_jit_tail_reserved==tail_before);
+        CHECK(ios_pool_ledger_holds(client,0x29a8000,(void *)owner));
+        puts(getenv("MADEIRA_POOL_NOV10_EXPECT_BASELINE")?
+             "PASS November10 installed baseline: exact45grants/bounded clocks, exact5proof/48MiB+32KiB census; embree failure and retained-client retry failure" :
+             "PASS promotion-only negative control: correcting FREE ownership alone still fails embree at real age2 endpoint timing");
+    }
+    else
+    {
+        CHECK(!result);
+        printf("November10 actual production transfer: %s",recycle_report);
+        CHECK(ios_pool_ledger_holds(client,0x29a8000,(void *)owner));
+        CHECK(ios_pool_ledger_holds(embree,0x1524000,(void *)owner));
+        check_owned_executable_image(client,0x29a8000);check_owned_executable_image(embree,0x1524000);
+        check_code_image_nonoverlap();
+        CHECK(jit_pool_offset==head_before&&ios_jit_tail_reserved==tail_before);
+        unsigned ordinary=find_carve((uintptr_t)handles[44]-(uintptr_t)rx_memory);
+        CHECK(ios_tail_carves[ordinary].free&&!ios_tail_carves[ordinary].retired);
+        CHECK(ios_tail_carves[ordinary].peb==(void *)owner&&ios_tail_carves[ordinary].allocation_lease==31&&!ios_tail_carves[ordinary].retired_lease);
+        expect_failed_image(40*MB); /* separate forced dependency failure */
+        CHECK(ios_pool_ledger_holds(client,0x29a8000,(void *)owner));
+        check_owned_executable_image(client,0x29a8000);
+        for(unsigned n=0;n<4;n++)
+        {
+            void *next=NULL,*released=NULL;size_t bytes=0;
+            CHECK(rotate(&next)==16*MB);
+            CHECK(release_code(handles[45],MEM_RELEASE,&released,&bytes)==STATUS_SUCCESS);
+            CHECK(released==handles[45]&&bytes==16*MB);handles[45]=next;
+            CHECK(ios_jit_tail_reserved==tail_before);check_code_image_nonoverlap();
+        }
+        size_t total_free=ios_jit_pool_size_global-jit_pool_offset-ios_jit_tail_reserved,largest=total_free;
+        for(int i=0;i<ios_pool_free_count;i++)
+        { total_free+=ios_pool_freelist[i].size;if(ios_pool_freelist[i].size>largest)largest=ios_pool_freelist[i].size; }
+        size_t receipts=0,receipt_largest=0,live_code=0,ordinary_free=0;unsigned live_count=0;
+        for(unsigned i=0;i<ios_tail_carve_n;i++)
+        {
+            const struct ios_tail_carve *c=&ios_tail_carves[i];
+            if(!c->free){live_code+=c->size;live_count++;}
+            else if(!c->retired)ordinary_free+=c->size;
+            if(!c->free||!c->retired||!c->allocation_lease||c->allocation_lease!=c->retired_lease||
+               fake_now-c->freed_at<IOS_POOL_REUSE_GRACE_SEC||c->off>=ios_jit_pool_size_global)continue;
+            receipts+=c->size;
+#if REPLAY_CERTIFIED_SPAN
+            size_t span=ios_pool_code_carve_preserve_span(ios_tail_carves,ios_tail_carve_n,i,ios_jit_pool_size_global,0,0,0,0);
+            if(span>receipt_largest)receipt_largest=span;
+#endif
+        }
+        printf("November10 post-dependency capacity: image-freelist-plus-virgin=%zx largest=%zx main-virgin=%zx aged-certified-code=%zx code-span=%zx live-code=%zx live-carves=%u ordinary-free-code=%zx (logical fixture geometry; prior small image extents synthetic; nophysicalclaim)\n",total_free,largest,ios_jit_pool_size_global-jit_pool_offset-ios_jit_tail_reserved,receipts,receipt_largest,live_code,live_count,ordinary_free);
+        expect_failed_image(20*MB);expect_failed_image(40*MB);
+        size_t extra[3];
+        for(unsigned n=0;n<3;n++)
+        { extra[n]=(size_t)-1;CHECK(!allocate_image(8*MB,&extra[n]));check_owned_executable_image(extra[n],8*MB); }
+        for(unsigned n=0;n<4;n++)
+        {
+            void *next=NULL,*released=NULL;size_t bytes=0;CHECK(rotate(&next)==16*MB);
+            CHECK(release_code(handles[45],MEM_RELEASE,&released,&bytes)==STATUS_SUCCESS);
+            CHECK(released==handles[45]&&bytes==16*MB);handles[45]=next;
+            CHECK(ios_jit_tail_reserved==tail_before);check_code_image_nonoverlap();
+        }
+        CHECK(ios_pool_ledger_holds(client,0x29a8000,(void *)owner)&&ios_pool_ledger_holds(embree,0x1524000,(void *)owner));
+        for(unsigned n=0;n<3;n++)CHECK(ios_pool_ledger_holds(extra[n],8*MB,(void *)owner));
+        total_free=ios_jit_pool_size_global-jit_pool_offset-ios_jit_tail_reserved;largest=total_free;
+        for(int i=0;i<ios_pool_free_count;i++)
+        { total_free+=ios_pool_freelist[i].size;if(ios_pool_freelist[i].size>largest)largest=ios_pool_freelist[i].size; }
+        printf("November10 post24MiB-synthetic-stress: image-freelist-plus-virgin=%zx largest=%zx head=%zx tail=%zx\n",total_free,largest,jit_pool_offset,(size_t)ios_jit_tail_reserved);
+        puts("PASS corrected ownership/placement: embree+8+8+8MiB separately labeled synthetic chain,4FEX rotations AFTER images(8total);20/40MiB single requests honestly fail; no grace/proof relaxation");
+        set_process_lease((void *)owner,31,1);ios_jit_reclaim_process((void *)owner);
+        CHECK(!ios_pool_ledger_holds(client,0x29a8000,(void *)owner)&&!ios_pool_ledger_holds(embree,0x1524000,(void *)owner));
+    }
+    for(unsigned i=0;i<pins;i++)
+    {
+        CHECK(!memcmp(&ios_tail_carves[find_carve(pinned[i].off)],&pinned[i],sizeof pinned[i]));
+        CHECK(*(uint64_t *)((char *)rx_memory+pinned[i].off)==0xcafe100000000000ULL+i);
+        CHECK(*(uint64_t *)((char *)rx_memory+pinned[i].off+pinned[i].size-8)==0xbeef100000000000ULL+i);
+    }
+}
+
 struct scheduled_request { unsigned role; size_t size, limit, off; void *ret; int status; };
 static void *scheduled_allocate(void *opaque)
 {
@@ -1712,6 +2005,18 @@ int main(void)
         CHECK(!fclose(backing));
         return 0;
     }
+    if(getenv("MADEIRA_POOL_CURRENT_PRIOR"))
+    {
+        check_all_prior_captures_current();
+        CHECK(!munmap(rx_memory,mapped_size)&&!munmap(rw_memory,mapped_size));
+        CHECK(!fclose(backing));return 0;
+    }
+    if(getenv("MADEIRA_POOL_NOV10_ONLY"))
+    {
+        check_captured_november10_tail_history();
+        CHECK(!munmap(rx_memory,mapped_size)&&!munmap(rw_memory,mapped_size));
+        CHECK(!fclose(backing));return 0;
+    }
     check_original_and_growth_only();
     check_paired_budget(selected, reserve);
     check_capacity_failure();
@@ -1738,6 +2043,22 @@ int main(void)
 '''
 
 if __name__ == '__main__':
+    if not any(os.environ.get(key) for key in ('MADEIRA_POOL_REPLAY_VARIANT', 'MADEIRA_POOL_SOURCE',
+                                               'MADEIRA_POOL_NOV10_ONLY', 'MADEIRA_POOL_CURRENT_PRIOR',
+                                               'MADEIRA_POOL_LEGACY_REPLAY_ONLY')):
+        # Historical exact-address controls and current returned-handle
+        # projections are distinct executions, never interchangeable claims.
+        runs = [('historical', {}),
+                ('baseline', {'MADEIRA_POOL_NOV10_ONLY': '1', 'MADEIRA_POOL_NOV10_EXPECT_BASELINE': '1'}),
+                ('promotion', {'MADEIRA_POOL_NOV10_ONLY': '1', 'MADEIRA_POOL_NOV10_EXPECT_FAILURE': '1'}),
+                ('current', {'MADEIRA_POOL_CURRENT_PRIOR': '1'})]
+        runs += [('current', {'MADEIRA_POOL_NOV10_ONLY': '1', 'MADEIRA_POOL_NOV10_CLOCK_SHIFT': str(shift)})
+                 for shift in (0, -1, 1)]
+        for selected, settings in runs:
+            print('POOL POLICY CONTROL:', selected, settings, flush=True)
+            environment = dict(os.environ, MADEIRA_POOL_REPLAY_VARIANT=selected, **settings)
+            subprocess.run([sys.executable, __file__], env=environment, check=True)
+        raise SystemExit(0)
     with tempfile.TemporaryDirectory(prefix='madeira-pool-cs2-') as directory:
         temporary = Path(directory)
         unit, binary = temporary / 'cs2.c', temporary / 'cs2'

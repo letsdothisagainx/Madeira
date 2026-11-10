@@ -273,6 +273,8 @@ def check(staged, app, ipa):
     assert b'[fex-owner-v1] pre-crt' in native and b'[fex-owner-v1] retired' in native, 'native FEX ownership lifecycle missing'
     assert b'[fex-owner-census-v2]' in native, 'native FEX live-owner census missing'
     assert b'[pool-code-growth]' in native, 'stale native executable-pool growth budget'
+    assert b'[pool-accounting]' in native, 'stale native executable-pool owner accounting'
+    assert b'[cs2-window-geometry-v1]' in native, 'stale native original-window geometry observer'
     assert b'[subfloor-contract-v1]' in native, 'stale native fixed-image subfloor protocol consumer'
     assert b'[native-srw-alias-v1]' in native, 'stale native private SRW writer binder'
     assert b'[fex-native-diagnostics-v1] module=%s spans=4 action=%s' in native, 'stale native private FEX diagnostic writer binder (four spans required)'

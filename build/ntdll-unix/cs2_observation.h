@@ -9,23 +9,10 @@ void ios_cs2_observe_current_start(unsigned machine);
 void ios_cs2_observe_current_map(const void *name, unsigned machine, int hybrid, int wine_builtin);
 void ios_cs2_observe_current_debug(void);
 
-#ifdef MADEIRA_CS2_OBSERVATION_IMPLEMENTATION
-#include <errno.h>
-#include <pthread.h>
-#include <stdio.h>
-#include <string.h>
 #define IOS_CS2_PATH 1024
-#define IOS_CS2_ARGS 128
-/* The measured CS2 main thread alone had 125 map events. Keep bounded
- * headroom for concurrent/resource views without claiming a full census. */
-#define IOS_CS2_MAPS 256
-#define IOS_CS2_DROPS 128
-struct ios_cs2_flags {
-    unsigned flag[5], arguments, unknown, complete;
-    char sequence[IOS_CS2_ARGS * 2];
-};
-static unsigned ios_cs2_lower(unsigned c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
-static int ios_cs2_role(const uint16_t *image, size_t length)
+/* Shared, read-only process allowlist. No caller exports the source path. */
+static inline unsigned ios_cs2_lower(unsigned c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
+static inline int ios_cs2_role(const uint16_t *image, size_t length)
 {
     static const char suffix[] = "cs2.exe";
     size_t i, base = length;
@@ -36,6 +23,20 @@ static int ios_cs2_role(const uint16_t *image, size_t length)
     for (i = 0; i < sizeof(suffix) - 1; i++) if (ios_cs2_lower(image[base + i]) != (unsigned char)suffix[i]) return 0;
     return 1;
 }
+#ifdef MADEIRA_CS2_OBSERVATION_IMPLEMENTATION
+#include <errno.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <string.h>
+#define IOS_CS2_ARGS 128
+/* The measured CS2 main thread alone had 125 map events. Keep bounded
+ * headroom for concurrent/resource views without claiming a full census. */
+#define IOS_CS2_MAPS 256
+#define IOS_CS2_DROPS 128
+struct ios_cs2_flags {
+    unsigned flag[5], arguments, unknown, complete;
+    char sequence[IOS_CS2_ARGS * 2];
+};
 /* CRT quoting: argv[0] uses the executable-name rule; later arguments use
  * even/odd backslashes before quotes and doubled quotes within quotes. */
 static struct ios_cs2_flags ios_cs2_parse(const uint16_t *text, size_t length)

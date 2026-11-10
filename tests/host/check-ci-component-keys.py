@@ -42,6 +42,11 @@ cases = {
     'metal-lifecycle': ('build/dxmt-ios/metal_lifecycle.h', {'dxmt', 'ipa'}),
     'metal-submission-gate': ('build/dxmt-ios/metal_submission_gate.h', {'dxmt', 'ipa'}),
     'metal-lifecycle-stage': ('tools/build/stage-dxmt-lifecycle.py', {'dxmt', 'ipa'}),
+    # Native win32u is rebuilt in every app job; no component cache owns it.
+    'window-geometry-stage': ('tools/build/stage-window-geometry.py', {'ipa'}),
+    'window-geometry-header': ('build/win32u-unix/window_geometry.h', {'ipa'}),
+    'window-geometry-build': ('build/win32u-unix/build.sh', {'ipa'}),
+    'cs2-window-allowlist': ('build/ntdll-unix/cs2_observation.h', {'ipa'}),
     'system-programs': ('build/wine-pe/build-system-programs.sh', {'wine-host', 'ipa'}),
     'process-lookup-stage': ('tools/build/stage-process-lookup.py', {'wine-host', 'ipa'}),
     'system-program-package': ('tools/check-system-programs.py', {'wine-host', 'ipa'}),

@@ -155,6 +155,8 @@ else
   printf '%s' '[fex-native-diagnostics-v1] module=%s spans=3 action=%s' >> "$TEST_APP/Madeira.debug.dylib"
 fi
 if [ "${STALE_POOL_GROWTH:-}" != 1 ]; then printf '[pool-code-growth]' >> "$TEST_APP/Madeira.debug.dylib"; fi
+if [ "${STALE_POOL_ACCOUNTING:-}" != 1 ]; then printf '[pool-accounting]' >> "$TEST_APP/Madeira.debug.dylib"; fi
+if [ "${STALE_WINDOW_GEOMETRY:-}" != 1 ]; then printf '[cs2-window-geometry-v1]' >> "$TEST_APP/Madeira.debug.dylib"; fi
 if [ "${STALE_CEF_IMAGE:-}" = 1 ]; then
   sed 's/\\[cef-image-owner-v1\\]//g' "$TEST_APP/Madeira.debug.dylib" > "$TEST_APP/native.stale"
   mv "$TEST_APP/native.stale" "$TEST_APP/Madeira.debug.dylib"
@@ -277,6 +279,11 @@ done
     print('PASS stale native process-group retirement fails final IPA validation')
     result=run({'STALE_POOL_GROWTH':'1'})
     assert result.returncode and 'stale native executable-pool growth budget' in result.stderr, result.stderr
+    result=run({'STALE_POOL_ACCOUNTING':'1'})
+    assert result.returncode and 'stale native executable-pool owner accounting' in result.stderr, result.stderr
+    result=run({'STALE_WINDOW_GEOMETRY':'1'})
+    assert result.returncode and 'stale native original-window geometry observer' in result.stderr, result.stderr
+    print('PASS missing original-window geometry observer fails actual final IPA validation')
     print('PASS stale executable-pool growth code fails final IPA validation')
     result=run({'STALE_CEF_IMAGE':'1'})
     assert result.returncode and 'stale private CEF image retirement' in result.stderr, result.stderr

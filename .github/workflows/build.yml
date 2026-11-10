@@ -419,7 +419,8 @@ jobs:
                          b'[alias-exclusive-loop]', b'[alias-str-immediate]', b'access=independent-images-v1',
                          b'[alias-exclusive-add]', b'[native-srw-alias-v1]', b'[startup-app-v1]',
                          b'[startup-timeline-v1]', b'[steam-session-v1]', b'[metal-resource-v1]',
-                         b'[metal-api-v1]', b'[metal-progress-v1]', b'[metal-lifecycle-v1]'):
+                         b'[metal-api-v1]', b'[metal-progress-v1]', b'[metal-lifecycle-v1]',
+                         b'[cs2-window-geometry-v1]', b'[pool-accounting]'):
               assert marker in image, 'missing native diagnostic: ' + repr(marker)
           assert b'SEGV LOOP FATAL' not in image, 'legacy fault-skipping path is still bundled'
           print('PASS native attach/UI/I/O/guard/process-isolation diagnostics included in IPA')

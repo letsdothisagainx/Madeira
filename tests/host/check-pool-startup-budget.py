@@ -44,6 +44,7 @@ helpers = ''.join(function(native, signature) for signature in (
     'static int ios_pool_low_take(',
     'static int ios_tail_carve_in_low(',
     'static int ios_pool_code_carve_better(',
+    'static size_t ios_pool_code_carve_preserve_span(',
     'static int ios_pool_preserve_code_carve(',
     'static size_t ios_pool_code_growth_cap(',
     'static int ios_pool_code_growth_fits(',
@@ -302,6 +303,89 @@ swift_fixture = 'typealias vm_address_t = UInt\n' + 'enum Production {\n' + size
 }
 Production.run()
 '''
+
+# Execute the actual launch-selection/logging block. Measurement and budget
+# eligibility are controlled edges here; the C policy arithmetic itself is
+# exercised by check-pool-cs2-budget.py. No allocation or device result is faked.
+content = (root / 'app/Madeira/ContentView.swift').read_text()
+selection_start = content.index('            var poolSizeMB = DockPerformancePolicy.sessionPoolMB(')
+selection = content[selection_start:content.index('            // ml694:', selection_start)]
+assert 'JIT pool overridden' not in selection
+assert selection.count('[jit-pool-selection-v1]') == 1
+assert selection.index('JIT pool requested') < selection.index('jit_cs2_pool_plan(') < selection.index('[jit-pool-selection-v1]')
+swift_fixture = 'import Foundation\n' + swift_fixture + r'''
+enum Level { case info, error }
+final class SelectionLog {
+    var lines: [String] = []
+    func log(_ line: String, level: Level = .info) { lines.append(line) }
+}
+enum MadeiraConfig {
+    static var gamePool: String?, globalPool: String?
+    static func gameValue(_ key: String) -> String? { gamePool }
+    static func get(_ key: String) -> String? { globalPool }
+}
+enum DockPerformancePolicy {
+    static func sessionPoolMB(standard: Int, dock: Bool, compact: Bool) -> Int { dock && compact ? 512 : standard }
+}
+enum StikJITHelper { static var poolTaken = false }
+enum ProcessInfo {
+    struct Snapshot { let physicalMemory: UInt64 = 8192 << 20 }
+    static let processInfo = Snapshot()
+}
+var budgetEligible = true, budgetCalls = 0
+func jit_memory_snapshot(_ available: inout UInt64, _ footprint: inout UInt64) -> Bool {
+    available = 6033 << 20; footprint = 110 << 20; return true
+}
+func jit_task_map_range(_ low: inout UInt64, _ high: inout UInt64) -> Bool {
+    low = 0x104774000; high = 0xfc0000000; return true
+}
+func jit_cs2_pool_plan(_ requested: UInt64, _ available: UInt64, _ footprint: UInt64,
+    _ physical: UInt64, _ low: UInt64, _ high: UInt64, _ selected: inout UInt64, _ reserve: inout UInt64) -> Bool {
+    budgetCalls += 1
+    if budgetEligible { selected = 1152; reserve = 240 }
+    return budgetEligible
+}
+func jit_cs2_code_tail_limit_mb() -> UInt64 { 512 }
+struct SelectionProfile { let steamAppID: Int }
+struct SelectionLaunch { let dock: Bool, compact: Bool }
+struct SelectionResult { let lines: [String], size: Int, floor: Int, failed: Bool, calls: Int }
+func select(app: Int? = nil, global: String? = nil, game: String? = nil,
+    existing: Bool = false, eligible: Bool = true, compact: Bool = false) -> SelectionResult {
+    MadeiraConfig.globalPool = global; MadeiraConfig.gamePool = game
+    StikJITHelper.poolTaken = existing; budgetEligible = eligible; budgetCalls = 0
+    let logStore = SelectionLog()
+    let profile = app.map { SelectionProfile(steamAppID: $0) }
+    let dockLaunch = SelectionLaunch(dock: compact, compact: compact)
+@SELECTION@
+    return SelectionResult(lines: logStore.lines, size: poolSizeMB, floor: minimumPoolSize,
+        failed: cs2PoolPreflightFailure != nil, calls: budgetCalls)
+}
+func record(_ result: SelectionResult, _ fields: [String]) {
+    let rows = result.lines.filter { $0.hasPrefix("[jit-pool-selection-v1]") }
+    precondition(rows.count == 1)
+    for field in fields { precondition(rows[0].split(separator: " ").contains(Substring(field)), field) }
+    precondition(rows[0].contains("coverage=startup-plan-not-allocation"))
+    precondition(!result.lines.contains { $0.contains("overridden") })
+}
+record(select(), ["source=app-default", "configured-mb=none", "effective-mb=896", "result=requested"])
+record(select(compact: true), ["source=dock-compact-default", "effective-mb=512"])
+let configured = select(global: "1024")
+record(configured, ["source=global-config", "configured-mb=1024", "effective-mb=1024", "image-reserve-mb=0"])
+precondition(configured.lines.contains { $0.contains("JIT pool requested at 1024MB") })
+record(select(global: "1024", game: "768"), ["source=game-config", "configured-mb=768", "effective-mb=768"])
+let cs2 = select(app: 730, global: "1024")
+record(cs2, ["source=cs2-budget-selected", "configured-mb=1024", "effective-mb=1152", "image-reserve-mb=240",
+             "code-tail-limit-mb=512", "session-reserve-mb=2048", "existing-pool=0", "result=requested"])
+precondition(cs2.size == 1152 && cs2.floor == 1152 << 20 && !cs2.failed && cs2.calls == 1)
+let declined = select(app: 730, global: "1024", eligible: false)
+record(declined, ["source=cs2-budget-declined", "configured-mb=1024", "effective-mb=none",
+                  "image-reserve-mb=0", "code-tail-limit-mb=0", "session-reserve-mb=0", "result=declined"])
+precondition(declined.failed && declined.floor == 0 && declined.calls == 1)
+let reused = select(app: 730, global: "1024", existing: true)
+record(reused, ["source=cs2-existing-pool", "effective-mb=none", "existing-pool=1", "result=declined"])
+precondition(reused.failed && reused.floor == 0 && reused.calls == 0)
+print("PASS actual startup selection telemetry: defaults/config requests, CS2 effective1152, declined eligibility and existing-pool refusal; sizing and guards unchanged")
+'''.replace('@SELECTION@', selection)
 
 with tempfile.TemporaryDirectory(prefix='madeira-pool-startup-') as directory:
     temporary = Path(directory)

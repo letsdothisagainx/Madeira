@@ -3645,6 +3645,7 @@ static size_t ios_pool_low_image_range( size_t alloc_size )
 /* Failure-only, bounded bookkeeping snapshot. A grace-expired size fit is
  * not a promise of executable/owner-safe reuse; the normal allocator still
  * performs all of those checks. Never touch mappings or FEX/guest payloads. */
+static void ios_pool_failure_accounting_report( size_t want );
 static void ios_pool_failure_census( size_t want )
 {
     static size_t requests[8];
@@ -3652,13 +3653,14 @@ static void ios_pool_failure_census( size_t want )
     size_t free_bytes = 0, largest = 0, aged_bytes = 0, aged_largest = 0, poisoned = 0;
     size_t main_virgin = 0, c_used, c_virgin, c_image_virgin, hole;
     const size_t code_reserve = 4u * 1024 * 1024;
-    unsigned raw_fit = 0, aged_fit = 0, i;
+    unsigned raw_fit = 0, aged_fit = 0, i, emitted = 0;
     time_t now = time( NULL );
 
     pthread_mutex_lock( &ios_pool_lock );
     for (i = 0; i < count; i++) if (requests[i] == want) goto done;
     if (count == ARRAY_SIZE(requests)) goto done;
     requests[count++] = want;
+    emitted = 1;
     for (i = 0; i < (unsigned)ios_pool_free_count; i++)
     {
         const struct ios_pool_free *entry = &ios_pool_freelist[i];
@@ -3689,6 +3691,9 @@ static void ios_pool_failure_census( size_t want )
              (unsigned long)c_virgin, (unsigned long)c_image_virgin );
 done:
     pthread_mutex_unlock( &ios_pool_lock );
+    /* The owner snapshot takes carve -> pool, never pool -> carve. Share the
+     * existing once-per-request cap without querying thread leases here. */
+    if (emitted) ios_pool_failure_accounting_report( want );
 }
 
 /* ml1039: hand a RECLAIMED head range to the code-buffer tail.
@@ -3785,6 +3790,69 @@ static int ios_pool_code_carve_better( const struct ios_tail_carve *candidate,
     if (ios_tail_carve_in_low( candidate->off ) || ios_tail_carve_in_low( current->off )) return 0;
     return !candidate->retired && current->retired && current->allocation_lease &&
            current->allocation_lease == current->retired_lease;
+}
+
+/* A tiny retired carve can join much larger retired neighbours. Preserve that
+ * certified main-pool run when fresh storage fits, even while a neighbour is
+ * still in its grace period. This is only a placement preference: no receipt,
+ * age, mapping or thread-state requirement for reuse or transfer changes.
+ * Caller holds the carve lock; this bounded metadata walk changes nothing. */
+static size_t ios_pool_code_carve_preserve_span( const struct ios_tail_carve *carves,
+                                                unsigned count, unsigned selected, size_t total,
+                                                size_t h1_off, size_t h1_end,
+                                                size_t h2_off, size_t h2_end )
+{
+    const size_t limit = 64u * 1024 * 1024;
+    unsigned char eligible[IOS_TAIL_CARVE_MAX] = {0}, joined[IOS_TAIL_CARVE_MAX] = {0};
+    size_t lo, hi;
+    unsigned i;
+    int changed;
+
+    if (!carves || count > IOS_TAIL_CARVE_MAX || selected >= count || !total ||
+        (h1_end != h1_off && (h1_end < h1_off || h1_end > total)) ||
+        (h2_end != h2_off && (h2_end < h2_off || h2_end > total))) return 0;
+    for (i = 0; i < count; i++)
+    {
+        const struct ios_tail_carve *c = &carves[i];
+        size_t end;
+
+        /* Region C has a wrapping offset outside the main pool. */
+        if (!c->free || !c->retired || !c->allocation_lease ||
+            c->allocation_lease != c->retired_lease || !c->size || c->size > limit ||
+            (c->off & 0x3fff) || (c->size & 0x3fff) || c->off >= total || c->size > total - c->off)
+            continue;
+        end = c->off + c->size;
+        if ((h1_end > h1_off && c->off < h1_end && end > h1_off) ||
+            (h2_end > h2_off && c->off < h2_end && end > h2_off)) continue;
+        eligible[i] = 1;
+    }
+    if (!eligible[selected]) return 0;
+    lo = carves[selected].off;
+    hi = lo + carves[selected].size;
+    joined[selected] = 1;
+    do
+    {
+        changed = 0;
+        for (i = 0; i < count; i++)
+        {
+            const struct ios_tail_carve *c = &carves[i];
+
+            if (!eligible[i] || joined[i] || c->size > limit - (hi - lo)) continue;
+            if (c->off + c->size == lo) lo = c->off;
+            else if (c->off == hi) hi += c->size;
+            else continue;
+            joined[i] = 1;
+            changed = 1;
+        }
+    } while (changed);
+    for (i = 0; i < count; i++)
+    {
+        const struct ios_tail_carve *c = &carves[i];
+
+        if (joined[i] || !c->size || c->off >= hi) continue;
+        if (c->size > ~(size_t)0 - c->off || c->off + c->size > lo) return 0;
+    }
+    return hi - lo;
 }
 
 /* A tiny dispatcher allocation must not consume a whole retired code buffer
@@ -3923,6 +3991,252 @@ static int ios_tail_carve_occupied( const void *base, size_t size )
 static unsigned ios_tail_carve_n;
 static pthread_mutex_t ios_tail_carve_lock = PTHREAD_MUTEX_INITIALIZER;
 
+/* madeira-pool-accounting begin
+ * Logical reservations only: RX/RW aliases share backing and are never
+ * counted separately. Neither these records nor bump cursors measure live
+ * physical pages. Image records have PEBs but no allocation generation;
+ * cleared retired-carve PEBs cannot be reconstructed from their lease. */
+#define IOS_POOL_ACCOUNT_OWNER_MAX 32
+#define IOS_POOL_ACCOUNT_RANGE_MAX (IOS_POOL_LEDGER_MAX + IOS_POOL_FREE_MAX + IOS_TAIL_CARVE_MAX)
+enum ios_pool_account_kind
+{
+    IOS_ACCOUNT_IMAGE, IOS_ACCOUNT_CODE_ALLOCATED, IOS_ACCOUNT_CODE_FREE,
+    IOS_ACCOUNT_CODE_RETIRED, IOS_ACCOUNT_CODE_UNPROVED,
+    IOS_ACCOUNT_IMAGE_FREE, IOS_ACCOUNT_IMAGE_POISON, IOS_ACCOUNT_OVERLAP,
+    IOS_ACCOUNT_KIND_COUNT
+};
+struct ios_pool_account_owner
+{
+    void *peb;
+    unsigned long long lease;
+    size_t bytes[2][IOS_ACCOUNT_CODE_UNPROVED + 1];
+};
+struct ios_pool_account_snapshot
+{
+    struct ios_pool_account_owner owners[IOS_POOL_ACCOUNT_OWNER_MAX], omitted;
+    unsigned owner_count, omitted_owners, valid_records;
+    size_t invalid_records;
+    size_t bytes[2][IOS_ACCOUNT_KIND_COUNT];
+    size_t main_size, main_head_highwater, main_tail_reserved, main_holes, main_virgin;
+    size_t c_size, c_reserved, c_virgin;
+    unsigned invalid_geometry;
+};
+struct ios_pool_account_range
+{
+    uintptr_t lo, hi;
+    void *peb;
+    unsigned long long lease;
+    unsigned region, kind;
+};
+
+/* Validate offsets without following owner pointers or touching either alias.
+ * Region C offsets intentionally wrap relative to the main RX base. */
+static int ios_pool_account_range( size_t off, size_t size, uintptr_t rx, size_t main_size,
+                                    uintptr_t low_rx, size_t low_size, unsigned *region,
+                                    uintptr_t *lo, uintptr_t *hi )
+{
+    size_t relative;
+    if (!size) return 0;
+    if (off < main_size && size <= main_size - off)
+    {
+        *region = 0;
+        *lo = rx + off;
+    }
+    else
+    {
+        relative = off - (size_t)(low_rx - rx);
+        if (!low_size || relative >= low_size || size > low_size - relative) return 0;
+        *region = 1;
+        *lo = low_rx + relative;
+    }
+    *hi = *lo + size;
+    return 1;
+}
+
+/* Pure accounting over a caller-serialized view. Overlapping records are
+ * attributed to an explicit unknown bucket, counting their union once rather
+ * than picking a potentially stale owner. Fixed storage bounds the work. */
+static void ios_pool_account_collect( struct ios_pool_account_snapshot *out,
+                                      const struct ios_pool_alloc *ledger, unsigned ledger_n,
+                                      const struct ios_pool_free *freelist, unsigned free_n,
+                                      const struct ios_tail_carve *carves, unsigned carve_n,
+                                      uintptr_t rx, size_t main_size, size_t head, size_t tail,
+                                      uintptr_t low_rx, size_t low_size, size_t low_reserved,
+                                      size_t h1_off, size_t h1_end, size_t h2_off, size_t h2_end )
+{
+    struct ios_pool_account_range ranges[IOS_POOL_ACCOUNT_RANGE_MAX];
+    size_t holes, next, cursor;
+    unsigned n = 0, i, j, total;
+    memset( out, 0, sizeof(*out) );
+    out->main_size = main_size;
+    out->main_head_highwater = head;
+    out->main_tail_reserved = tail;
+    out->c_size = low_size;
+    out->c_reserved = low_reserved;
+    out->invalid_geometry = !rx || main_size > UINTPTR_MAX - rx ||
+        (low_size && (!low_rx || low_size > UINTPTR_MAX - low_rx ||
+                     (low_rx < rx + main_size && rx < low_rx + low_size))) ||
+        (h1_end != h1_off && (h1_end < h1_off || h1_end > main_size)) ||
+        (h2_end != h2_off && (h2_end < h2_off || h2_end > main_size)) ||
+        (h1_off < h1_end && h2_off < h2_end && h1_off < h2_end && h2_off < h1_end);
+    if (!out->invalid_geometry)
+    {
+        out->main_holes = ios_pool_holes_between( main_size, 0, 0, h1_off, h1_end, h2_off, h2_end );
+        holes = ios_pool_holes_between( main_size, head, tail, h1_off, h1_end, h2_off, h2_end );
+        if (head <= main_size && tail <= main_size - head && holes <= main_size - head - tail)
+            out->main_virgin = main_size - head - tail - holes;
+        if (low_reserved <= low_size) out->c_virgin = low_size - low_reserved;
+    }
+    if (ledger_n > IOS_POOL_LEDGER_MAX) { out->invalid_records += ledger_n - IOS_POOL_LEDGER_MAX; ledger_n = IOS_POOL_LEDGER_MAX; }
+    if (free_n > IOS_POOL_FREE_MAX) { out->invalid_records += free_n - IOS_POOL_FREE_MAX; free_n = IOS_POOL_FREE_MAX; }
+    if (carve_n > IOS_TAIL_CARVE_MAX) { out->invalid_records += carve_n - IOS_TAIL_CARVE_MAX; carve_n = IOS_TAIL_CARVE_MAX; }
+    total = ledger_n + free_n + carve_n;
+    for (i = 0; i < total; i++)
+    {
+        struct ios_pool_account_range entry;
+        size_t off, size;
+        memset( &entry, 0, sizeof(entry) );
+        if (i < ledger_n)
+        {
+            off = ledger[i].off; size = ledger[i].size;
+            entry.peb = ledger[i].peb;
+            entry.kind = IOS_ACCOUNT_IMAGE; /* generation deliberately unknown */
+        }
+        else if (i < ledger_n + free_n)
+        {
+            const struct ios_pool_free *f = &freelist[i - ledger_n];
+            off = f->off; size = f->size;
+            entry.kind = f->advised & 2 ? IOS_ACCOUNT_IMAGE_POISON : IOS_ACCOUNT_IMAGE_FREE;
+        }
+        else
+        {
+            const struct ios_tail_carve *c = &carves[i - ledger_n - free_n];
+            off = c->off; size = c->size;
+            entry.peb = c->peb; entry.lease = c->allocation_lease;
+            if (!c->free) entry.kind = IOS_ACCOUNT_CODE_ALLOCATED;
+            else if (!c->retired && !c->retired_lease) entry.kind = IOS_ACCOUNT_CODE_FREE;
+            else if (c->retired && !c->peb && c->allocation_lease && c->allocation_lease == c->retired_lease)
+                entry.kind = IOS_ACCOUNT_CODE_RETIRED;
+            else entry.kind = IOS_ACCOUNT_CODE_UNPROVED;
+        }
+        if (out->invalid_geometry ||
+            !ios_pool_account_range( off, size, rx, main_size, low_rx, low_size,
+                                     &entry.region, &entry.lo, &entry.hi ) ||
+            (!entry.region && ((h1_off < h1_end && off < h1_end && h1_off < off + size) ||
+                               (h2_off < h2_end && off < h2_end && h2_off < off + size))))
+        {
+            out->invalid_records++;
+            continue;
+        }
+        ranges[n++] = entry;
+        if (entry.kind > IOS_ACCOUNT_CODE_UNPROVED) continue;
+        for (j = 0; j + 1 < n; j++)
+            if (ranges[j].kind <= IOS_ACCOUNT_CODE_UNPROVED &&
+                ranges[j].peb == entry.peb && ranges[j].lease == entry.lease) break;
+        if (j + 1 < n) continue;
+        if (out->owner_count == IOS_POOL_ACCOUNT_OWNER_MAX) out->omitted_owners++;
+        else
+        {
+            out->owners[out->owner_count].peb = entry.peb;
+            out->owners[out->owner_count++].lease = entry.lease;
+        }
+    }
+    out->valid_records = n;
+    /* Sweep every boundary. Even duplicate/partially overlapping stale records
+     * contribute each reserved byte once, with ambiguous attribution explicit. */
+    cursor = UINTPTR_MAX;
+    for (i = 0; i < n; i++) if (ranges[i].lo < cursor) cursor = ranges[i].lo;
+    for (;;)
+    {
+        unsigned active = 0, first = 0, kind, region;
+        struct ios_pool_account_owner *owner;
+        next = UINTPTR_MAX;
+        for (i = 0; i < n; i++)
+        {
+            if (ranges[i].lo > cursor && ranges[i].lo < next) next = ranges[i].lo;
+            if (ranges[i].lo <= cursor && ranges[i].hi > cursor)
+            {
+                if (!active++) first = i;
+                if (ranges[i].hi < next) next = ranges[i].hi;
+            }
+        }
+        if (next == UINTPTR_MAX && !active) break;
+        if (active)
+        {
+            region = ranges[first].region;
+            kind = active == 1 ? ranges[first].kind : (unsigned)IOS_ACCOUNT_OVERLAP;
+            out->bytes[region][kind] += next - cursor;
+            if (kind <= IOS_ACCOUNT_CODE_UNPROVED)
+            {
+                owner = &out->omitted;
+                for (j = 0; j < out->owner_count; j++)
+                    if (out->owners[j].peb == ranges[first].peb && out->owners[j].lease == ranges[first].lease)
+                    { owner = &out->owners[j]; break; }
+                owner->bytes[region][kind] += next - cursor;
+            }
+        }
+        cursor = next;
+        if (cursor == UINTPTR_MAX) break;
+    }
+}
+
+static void ios_pool_account_snapshot( struct ios_pool_account_snapshot *out )
+{
+    pthread_mutex_lock( &ios_tail_carve_lock );
+    pthread_mutex_lock( &ios_pool_lock );
+    ios_pool_account_collect( out, ios_pool_ledger, ios_pool_ledger_count < 0 ? 0 : ios_pool_ledger_count,
+        ios_pool_freelist, ios_pool_free_count < 0 ? 0 : ios_pool_free_count, ios_tail_carves, ios_tail_carve_n,
+        (uintptr_t)ios_jit_rx_base_global, ios_jit_pool_size_global, jit_pool_offset, ios_jit_tail_reserved,
+        ios_jit_low_rx_global, ios_jit_low_size_global, ios_jit_low_reserved,
+        ios_jit_hole_off_eff, ios_jit_hole_end_eff, ios_jit_hole2_off, ios_jit_hole2_end );
+    pthread_mutex_unlock( &ios_pool_lock );
+    pthread_mutex_unlock( &ios_tail_carve_lock );
+}
+
+static void ios_pool_account_print_owner( size_t want, const char *label, const struct ios_pool_account_owner *owner )
+{
+    dprintf( 2, "[pool-owner] failed_want=0x%lx group=%s peb=0x%lx allocation_lease=%llu "
+        "image_main=0x%lx image_c=0x%lx code_allocated_main=0x%lx code_allocated_c=0x%lx "
+        "code_free_main=0x%lx code_free_c=0x%lx code_retired_main=0x%lx code_retired_c=0x%lx "
+        "code_unproved_main=0x%lx code_unproved_c=0x%lx\n", (unsigned long)want, label, (unsigned long)(uintptr_t)owner->peb, owner->lease,
+        (unsigned long)owner->bytes[0][0], (unsigned long)owner->bytes[1][0],
+        (unsigned long)owner->bytes[0][1], (unsigned long)owner->bytes[1][1],
+        (unsigned long)owner->bytes[0][2], (unsigned long)owner->bytes[1][2],
+        (unsigned long)owner->bytes[0][3], (unsigned long)owner->bytes[1][3],
+        (unsigned long)owner->bytes[0][4], (unsigned long)owner->bytes[1][4] );
+}
+
+static void ios_pool_failure_accounting_report( size_t want )
+{
+    struct ios_pool_account_snapshot snapshot;
+    size_t logical_union[2] = { 0, 0 };
+    unsigned i;
+    ios_pool_account_snapshot( &snapshot );
+    for (i = 0; i < IOS_ACCOUNT_KIND_COUNT; i++)
+    {
+        logical_union[0] += snapshot.bytes[0][i];
+        logical_union[1] += snapshot.bytes[1][i];
+    }
+    dprintf( 2, "[pool-accounting] failed_want=0x%lx snapshot=post_failure_serialized owners=%u omitted_owners=%u valid_records=%u invalid_records=%lu "
+        "invalid_geometry=%u main_size=0x%lx main_head_highwater=0x%lx main_tail_reserved=0x%lx "
+        "main_holes=0x%lx main_virgin=0x%lx c_size=0x%lx c_reserved=0x%lx c_virgin=0x%lx "
+        "image_free_main=0x%lx image_free_c=0x%lx image_poison_main=0x%lx image_poison_c=0x%lx "
+        "overlap_unknown_main=0x%lx overlap_unknown_c=0x%lx logical_union_main=0x%lx logical_union_c=0x%lx "
+        "image_generation=unknown lease_zero=unknown retired_owner_peb=unknown aliases=shared_backing "
+        "physical_bytes=unknown cursors_are_not_live_bytes=1 reuse_eligibility=unchecked\n",
+        (unsigned long)want, snapshot.owner_count, snapshot.omitted_owners, snapshot.valid_records, (unsigned long)snapshot.invalid_records,
+        snapshot.invalid_geometry, (unsigned long)snapshot.main_size, (unsigned long)snapshot.main_head_highwater,
+        (unsigned long)snapshot.main_tail_reserved, (unsigned long)snapshot.main_holes, (unsigned long)snapshot.main_virgin,
+        (unsigned long)snapshot.c_size, (unsigned long)snapshot.c_reserved, (unsigned long)snapshot.c_virgin,
+        (unsigned long)snapshot.bytes[0][IOS_ACCOUNT_IMAGE_FREE], (unsigned long)snapshot.bytes[1][IOS_ACCOUNT_IMAGE_FREE],
+        (unsigned long)snapshot.bytes[0][IOS_ACCOUNT_IMAGE_POISON], (unsigned long)snapshot.bytes[1][IOS_ACCOUNT_IMAGE_POISON],
+        (unsigned long)snapshot.bytes[0][IOS_ACCOUNT_OVERLAP], (unsigned long)snapshot.bytes[1][IOS_ACCOUNT_OVERLAP],
+        (unsigned long)logical_union[0], (unsigned long)logical_union[1] );
+    for (i = 0; i < snapshot.owner_count; i++) ios_pool_account_print_owner( want, "owner", &snapshot.owners[i] );
+    if (snapshot.omitted_owners) ios_pool_account_print_owner( want, "omitted_aggregate", &snapshot.omitted );
+}
+/* madeira-pool-accounting end */
+
 /* madeira-bcd: a dead pseudo-process's FEX code buffers.
  *
  * FEX releases a code buffer when it rotates to a new one, never when its
@@ -3949,7 +4263,10 @@ static int ios_tail_carve_ready( const struct ios_tail_carve *carve, time_t now 
     return !carve->retired || now - carve->freed_at >= IOS_POOL_REUSE_GRACE_SEC;
 }
 
-/* Retire `peb`'s live carves; the caller holds ios_tail_carve_lock. Returns
+/* Retire `peb`'s live carves and certify its ordinary releases only after the
+ * exact allocation lease becomes quiescent. FEX's earlier FREE retains that
+ * identity but proves no retirement by itself. The caller holds the carve
+ * lock; the quiescence query must already have completed outside it. Returns
  * how many, and their bytes in *bytes. */
 static unsigned ios_tail_carves_retire_owner( struct ios_tail_carve *carves, unsigned n, void *peb,
                                               time_t now, size_t *bytes, unsigned long long quiescent_lease )
@@ -3960,7 +4277,9 @@ static unsigned ios_tail_carves_retire_owner( struct ios_tail_carve *carves, uns
     if (!peb) return 0;
     for (i = 0; i < n; i++)
     {
-        if (carves[i].free || carves[i].peb != peb) continue;
+        if (carves[i].peb != peb) continue;
+        if (carves[i].free && (carves[i].retired || !quiescent_lease ||
+                              carves[i].allocation_lease != quiescent_lease)) continue;
         carves[i].free = 1;
         carves[i].retired = 1;
         carves[i].retired_lease = quiescent_lease && quiescent_lease == carves[i].allocation_lease
@@ -32906,6 +33225,7 @@ retry_code_carve_reuse:
             unsigned i, best = ~0u;
             time_t now = time( NULL );
             int fresh_fits;
+            size_t preserve_size = 0;
             pthread_mutex_lock( &ios_tail_carve_lock );
             fresh_fits = ios_tail_carve_n < IOS_TAIL_CARVE_MAX &&
                 (low_fits || (!low_ok && ios_pool_fresh_tail_fits( ios_jit_pool_size_global, jit_pool_offset,
@@ -32916,14 +33236,22 @@ retry_code_carve_reuse:
                     (low_ok || !ios_tail_carve_in_low( ios_tail_carves[i].off )) &&   /* madeira-bcd pool-low */
                     (best == ~0u || ios_pool_code_carve_better( &ios_tail_carves[i], &ios_tail_carves[best] )))
                     best = i;
+            if (best != ~0u) preserve_size = ios_tail_carves[best].size;
+            if (best != ~0u && !reuse_all_carves && fresh_fits && alloc_size <= 0x10000)
+            {
+                size_t span = ios_pool_code_carve_preserve_span( ios_tail_carves, ios_tail_carve_n, best,
+                    ios_jit_pool_size_global, ios_jit_hole_off_eff, ios_jit_hole_end_eff,
+                    ios_jit_hole2_off, ios_jit_hole2_end );
+                if (span > preserve_size) preserve_size = span;
+            }
             if (best != ~0u && !reuse_all_carves &&
-                ios_pool_preserve_code_carve( ios_tail_carves[best].size, alloc_size, fresh_fits ))
+                ios_pool_preserve_code_carve( preserve_size, alloc_size, fresh_fits ))
             {
                 static unsigned preserve_n;
                 if (__sync_add_and_fetch( &preserve_n, 1 ) <= 16)
                     dprintf(2, "[pool-carve] keep-large=0x%lx tiny=0x%lx fresh=%s "
                                "(normal reservation checks and reuse fallback kept)\n",
-                            (unsigned long)ios_tail_carves[best].size, (unsigned long)alloc_size,
+                            (unsigned long)preserve_size, (unsigned long)alloc_size,
                             low_fits ? "region-C" : "main-tail");
                 kept_large_carve = 1;
                 best = ~0u;

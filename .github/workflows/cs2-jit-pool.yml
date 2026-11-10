@@ -2,7 +2,7 @@ name: Verify CS2 FEX arena and executable pool capacity
 on:
   workflow_dispatch:
   push:
-    branches: [main, 'codex/pr-build-*']
+    branches: [main, 'codex/pr-build-*', codex/validate-cs2-integrity-runtime-4b41]
     paths:
       - app/Madeira/JITAllocator.c
       - app/Madeira/JITAllocator.h
@@ -27,6 +27,7 @@ on:
       - tests/host/check-jit-alias-*.py
       - tests/host/check-pool-*.py
       - tests/host/fixtures/pool-cs2-*.json
+      - tests/fixtures/jit-pool/**
       - tests/host/check-jit-pool-meter.py
       - tests/host/check-loader-import-failure-retention.py
       - tests/host/fixtures/loader-import-failure-*.c
@@ -69,6 +70,7 @@ on:
       - tests/host/check-jit-alias-*.py
       - tests/host/check-pool-*.py
       - tests/host/fixtures/pool-cs2-*.json
+      - tests/fixtures/jit-pool/**
       - tests/host/check-jit-pool-meter.py
       - tests/host/check-loader-import-failure-retention.py
       - tests/host/fixtures/loader-import-failure-*.c
@@ -141,6 +143,7 @@ jobs:
           python3 tests/host/check-jit-alias-str-immediate.py
           python3 tests/host/check-jit-exclusive.py
           python3 tests/host/check-pool-failure-census.py
+          python3 tests/host/check-pool-owner-accounting.py
           python3 tests/host/check-pool-split.py
           python3 tests/host/check-pool-code-exit.py
           python3 tests/host/check-pool-placement.py

@@ -50,6 +50,7 @@ static int capture(int fd, const char *format, ...)
     }
     return 0;
 }
+#undef dprintf /* replace the shared fixture's separate recycle-report capture */
 #define dprintf capture
 static int pool_mprotect(void *address, size_t size, int prot)
 {

@@ -41,6 +41,7 @@ helpers = ''.join(function(signature) for signature in (
     'static int ios_pool_low_take(',
     'static int ios_tail_carve_in_low(',
     'static int ios_pool_code_carve_better(',
+    'static size_t ios_pool_code_carve_preserve_span(',
     'static int ios_pool_preserve_code_carve(',
     'static size_t ios_pool_code_growth_cap(',
     'static int ios_pool_code_growth_fits(',
@@ -52,6 +53,9 @@ helpers = ''.join(function(signature) for signature in (
     'static int ios_tail_carve_foreign_release(',
     'static void ios_tail_carves_owner_died(',
 ))
+baseline_retire = (root / 'tests/fixtures/jit-pool/retire-owner-before-free-certification.c').read_text()
+assert 'if (carves[i].free || carves[i].peb != peb) continue;' in baseline_retire
+helpers += baseline_retire.replace('ios_tail_carves_retire_owner(', 'baseline_retire_owner(', 1)
 carve_start = source.index('#define IOS_TAIL_CARVE_MAX ')
 carve_table = source[carve_start:source.index('\n\n', carve_start)]
 ec = source[source.index('size_t alloc_size = (*size_ptr + 0x3FFF) & ~0x3FFFUL;'):]
@@ -265,27 +269,27 @@ static size_t replay(int fix)
     CHECK(rotate(&rs2, 41, 0x11fb8000) == 128 * MB && off_of(rs2.code) == 0x30000000);
     start(&rs3, 0x106778000, 74, 0x11fb8000);
     CHECK(ios_tail_carve_n == 11);                               /* "free_left=11" */
-    if (fix) CHECK(c_off(rs3.code) == 0x3010000 && scans == 1);  /* rs1's buffer, 46 s after its exit */
+    if (fix) CHECK(c_off(rs3.code) == 0x3010000 && scans == 2);  /* rs1's dispatcher and code, both certified */
     else CHECK(c_off(rs3.code) == 0x4014000 && !scans);
     quit(&rs3, 75);
     quit(&l1, 75);
     quit(&play, 75);
     start(&l2, 0x10697c000, 75, 0x132c4000);
     quit(&rs2, 75);
-    if (fix) CHECK(retired_count() == 4 && c_off(l2.code) == 0x4014000);   /* rs3 l1 play: 16 MB; rs2: 128 MB */
+    if (fix) CHECK(retired_count() == 8 && c_off(l2.code) == 0x4014000);   /* four owners' dispatcher/code pairs */
     else CHECK(!retired_count() && c_off(l2.code) == 0x5014000);
     start(&rs4, 0x1069a8000, 77, 0x15378000);                    /* 2 s after the exits: nothing retired is ready */
-    if (fix) CHECK(c_off(rs4.code) == 0x5014000 && scans == 1);
+    if (fix) CHECK(c_off(rs4.code) == 0x501c000 && scans == 2);
     else CHECK(c_off(rs4.code) == 0x6014000);
     start(&rs5, 0x1069b0000, 78, 0x15cfc000);
-    if (fix) CHECK(c_off(rs5.code) == 0x1008000 && scans == 2 && ios_jit_tail_reserved == 128 * MB);
+    if (fix) CHECK(c_off(rs5.code) == 0x1008000 && scans == 4 && ios_jit_tail_reserved == 128 * MB);
     else CHECK(off_of(rs5.code) == 0x2f000000 && ios_jit_tail_reserved == 0x9000000);
     quit(&rs4, 78);
     start(&sch, 0x1069bc000, 82, 0x16680000);
-    if (fix) CHECK(c_off(sch.code) == 0x200c000 && scans == 3);
+    if (fix) CHECK(c_off(sch.code) == 0x200c000 && scans == 6);
     else CHECK(off_of(sch.code) == 0x2e000000 && ios_jit_tail_reserved == 0xa000000);
     CHECK(rotate(&sch, 83, 0x17004000) == 128 * MB);
-    if (fix) CHECK(off_of(sch.code) == 0x30000000 && scans == 4 && ios_jit_tail_reserved == 128 * MB);  /* rs2's */
+    if (fix) CHECK(off_of(sch.code) == 0x30000000 && scans == 7 && ios_jit_tail_reserved == 128 * MB);  /* rs2's */
     else CHECK(off_of(sch.code) == 0x1f0c8000 && ios_jit_tail_reserved == 0x18f38000);
     got = rotate(&l2, 89, 0x17004000);
     if (fix) CHECK(got == 128 * MB && off_of(l2.code) == 0x28000000 && ios_jit_tail_reserved == 256 * MB);
@@ -298,13 +302,165 @@ static size_t replay(int fix)
         CHECK(rotate(&sch, 95, 0x17004000) == 128 * MB && off_of(sch.code) == 0x1f0c8000);
     }
     start(&gta, 0x106760000, 128, 0x17304000);
-    CHECK(c_off(gta.misc) == 0x4010000);
+    CHECK(c_off(gta.misc) == (fix ? 0x300c000 : 0x4010000));
     CHECK(c_off(gta.code) == (fix ? 0x200c000 : 0x5014000));
     got = rotate(&gta, 142, 0x1b240000);
-    if (fix) CHECK(off_of(gta.code) == 0x30000000 && scans == 4);
+    if (fix) CHECK(off_of(gta.code) == 0x30000000 && scans == 8);
     else CHECK(got == 16 * MB && off_of(gta.code) == 0x2e000000);
     CHECK(ios_jit_tail_reserved == 0x18f38000);
     return got;
+}
+
+static void unit_preserve_span(void)
+{
+    struct ios_tail_carve c[6] = {
+        {.off=0x42fe8000, .size=16*MB, .free=1, .retired=1, .allocation_lease=21, .retired_lease=21, .freed_at=198},
+        {.off=0x43fe8000, .size=0x4000, .free=1, .retired=1, .allocation_lease=28, .retired_lease=28, .freed_at=196},
+        {.off=0x43fec000, .size=0x4000, .free=1, .retired=1, .allocation_lease=21, .retired_lease=21, .freed_at=198},
+        {.off=0x43ff0000, .size=16*MB, .free=1, .retired=1, .allocation_lease=18, .retired_lease=18, .freed_at=198},
+        {.off=0x44ff0000, .size=0x4000, .free=1, .retired=1, .allocation_lease=18, .retired_lease=18, .freed_at=198},
+        {.off=0x44ff4000, .size=0x4000, .allocation_lease=5}
+    }, saved[6];
+    memcpy(saved, c, sizeof(c));
+    CHECK(ios_tail_carve_ready(&c[1], 200) && !ios_tail_carve_ready(&c[2], 200));
+    size_t span = ios_pool_code_carve_preserve_span(c, 6, 1, 0x48000000, 0, 0, 0, 0);
+    CHECK(span == 32*MB + 0xc000 && !memcmp(c, saved, sizeof(c)));
+    CHECK(ios_pool_code_carve_preserve_span(c, 6, 1, 0x48000000,
+          c[1].off, c[1].off, c[1].off+0x1000, c[1].off+0x1000) == span);
+    CHECK(ios_pool_preserve_code_carve(span, 0x4000, 1));
+    CHECK(!ios_pool_preserve_code_carve(span, 0x4000, 0));
+    CHECK(!ios_pool_preserve_code_carve(span, 0x20000, 1));
+    CHECK(!ios_tail_carve_ready(&c[2], 200)); /* preservation grants no early reuse */
+    CHECK(!ios_pool_code_carve_preserve_span(NULL, 6, 1, 0x48000000, 0, 0, 0, 0));
+    CHECK(!ios_pool_code_carve_preserve_span(c, IOS_TAIL_CARVE_MAX+1, 1, 0x48000000, 0, 0, 0, 0));
+    CHECK(!ios_pool_code_carve_preserve_span(c, 6, 6, 0x48000000, 0, 0, 0, 0));
+    CHECK(!ios_pool_code_carve_preserve_span(c, 6, 1, 0, 0, 0, 0, 0));
+    CHECK(!ios_pool_code_carve_preserve_span(c, 6, 1, 0x48000000, c[1].off, c[1].off+0x4000, 0, 0));
+    CHECK(!ios_pool_code_carve_preserve_span(c, 6, 1, 0x48000000, 0, 0, c[1].off, c[1].off+0x4000));
+    CHECK(!ios_pool_code_carve_preserve_span(c, 6, 1, 0x48000000, 0x47000000, 0x48004000, 0, 0));
+    CHECK(!ios_pool_code_carve_preserve_span(c, 6, 1, 0x48000000, 0x20000, 0x10000, 0, 0));
+    CHECK(!ios_pool_code_carve_preserve_span(c, 6, 1, 0x48000000, 0, 0, 0x20000, 0x10000));
+    for (unsigned kind = 0; kind < 9; ++kind)
+    {
+        memcpy(c, saved, sizeof(c));
+        if (!kind) c[1].free = 0;
+        else if (kind == 1) c[1].retired = 0;
+        else if (kind == 2) c[1].allocation_lease = 0;
+        else if (kind == 3) c[1].retired_lease = 27;
+        else if (kind == 4) c[1].off++;
+        else if (kind == 5) c[1].size++;
+        else if (kind == 6) c[1].off = 0x48000000;
+        else if (kind == 7) c[1].size = 128*MB;
+        else c[1].off = SIZE_MAX - 0x3fff; /* wrapping region-C offset */
+        CHECK(!ios_pool_code_carve_preserve_span(c, 6, 1, 0x48000000, 0, 0, 0, 0));
+    }
+    memcpy(c, saved, sizeof(c));
+    c[0].free = 0; c[2].retired_lease = 0;
+    CHECK(ios_pool_code_carve_preserve_span(c, 6, 1, 0x48000000, 0, 0, 0, 0) == 0x4000);
+    memcpy(c, saved, sizeof(c));
+    c[5].off = c[1].off; /* foreign overlapping metadata cannot manufacture a run */
+    CHECK(!ios_pool_code_carve_preserve_span(c, 6, 1, 0x48000000, 0, 0, 0, 0));
+    struct ios_tail_carve bounded[3] = {
+        {.off=0, .size=32*MB, .free=1, .retired=1, .allocation_lease=1, .retired_lease=1},
+        {.off=32*MB, .size=0x4000, .free=1, .retired=1, .allocation_lease=2, .retired_lease=2},
+        {.off=32*MB+0x4000, .size=32*MB, .free=1, .retired=1, .allocation_lease=3, .retired_lease=3}
+    };
+    CHECK(ios_pool_code_carve_preserve_span(bounded, 3, 1, 128*MB, 0, 0, 0, 0) == 32*MB+0x4000);
+    puts("PASS: tiny certified bridge preserves a bounded contiguous main-pool run while neighbours age; live/unproved/overlapping/invalid/region-C metadata never supplies credit");
+}
+
+static void unit_preserve_fallback(void)
+{
+    for (unsigned full_table = 0; full_table < 2; ++full_table)
+    {
+        reset();
+        ios_jit_low_size_global = 0;
+        ios_jit_tail_reserved = 128*MB;
+        jit_pool_offset = full_table ? 16*MB : 768*MB;
+        ios_tail_carves[0] = (struct ios_tail_carve){.off=0x30000000, .size=16*MB,
+            .free=1, .retired=1, .allocation_lease=11, .retired_lease=11, .freed_at=90};
+        ios_tail_carves[1] = (struct ios_tail_carve){.off=0x31000000, .size=0x4000,
+            .free=1, .retired=1, .allocation_lease=12, .retired_lease=12, .freed_at=90};
+        ios_tail_carves[2] = (struct ios_tail_carve){.off=0x31004000, .size=16*MB,
+            .free=1, .retired=1, .allocation_lease=13, .retired_lease=13, .freed_at=90};
+        ios_tail_carve_n = full_table ? IOS_TAIL_CARVE_MAX : 3;
+        struct ios_tail_carve left = ios_tail_carves[0], right = ios_tail_carves[2];
+        owner = 9; fake_now = 100;
+        size_t want = 0x4000, tail = ios_jit_tail_reserved, head = jit_pool_offset;
+        void *rx = NULL;
+        CHECK(allocate(&want, &rx) == STATUS_SUCCESS && want == 0x4000 && off_of(rx) == 0x31000000);
+        CHECK(scans == 1 && ios_jit_tail_reserved == tail && jit_pool_offset == head);
+        CHECK(!ios_tail_carves[1].free && !ios_tail_carves[1].retired &&
+              ios_tail_carves[1].peb == (void *)9 && ios_tail_carves[1].allocation_lease == 9 &&
+              !ios_tail_carves[1].retired_lease);
+        CHECK(!memcmp(&left, &ios_tail_carves[0], sizeof(left)) &&
+              !memcmp(&right, &ios_tail_carves[2], sizeof(right)));
+    }
+    puts("PASS: a certified tiny bridge retains normal guarded reuse when fresh space or carve metadata is unavailable; neighbour receipts and cursors stay intact");
+}
+
+static void unit_free_retirement(void)
+{
+    struct ios_tail_carve original, before[2];
+    size_t bytes = 0;
+    void *addr = NULL;
+    size_t size = 0;
+
+    reset();
+    ios_tail_carves[0] = (struct ios_tail_carve){.off = 0x10000, .size = 0x4000,
+        .peb = (void *)7, .allocation_lease = 70};
+    ios_tail_carves[1] = (struct ios_tail_carve){.off = 0x100000, .size = 16*MB,
+        .peb = (void *)7, .allocation_lease = 70};
+    ios_tail_carve_n = 2;
+    owner = 7; fake_now = 90;
+    CHECK(release(pool + 0x10000, MEM_RELEASE, &addr, &size) == STATUS_SUCCESS);
+    CHECK(addr == pool + 0x10000 && size == 0x4000);
+    original = ios_tail_carves[0];
+    CHECK(original.free && !original.retired && original.peb == (void *)7 &&
+          original.allocation_lease == 70 && !original.retired_lease && original.freed_at == 90);
+
+    /* FEX's FREE is not proof. Neither active/unknown ownership nor a stale
+     * quiescence identity can certify the still-owned ordinary release. */
+    const unsigned long long rejected[] = {0, 69, 71};
+    for (unsigned i = 0; i < sizeof(rejected)/sizeof(rejected[0]); ++i)
+    {
+        memcpy(before, ios_tail_carves, sizeof(before));
+        CHECK(!ios_tail_carves_retire_owner(ios_tail_carves, 1, (void *)7, 100, &bytes, rejected[i]));
+        CHECK(!bytes && !memcmp(before, ios_tail_carves, sizeof(before)));
+    }
+
+    /* The pinned production control loses this exact receipt despite having
+     * the same final owner proof; its live carve behavior remains unchanged. */
+    memcpy(before, ios_tail_carves, sizeof(before));
+    CHECK(baseline_retire_owner(before, 2, (void *)7, 100, &bytes, 70) == 1 && bytes == 16*MB);
+    CHECK(!memcmp(&before[0], &original, sizeof(original)));
+    CHECK(ios_tail_carves_retire_owner(ios_tail_carves, 2, (void *)7, 100, &bytes, 70) == 2);
+    CHECK(bytes == 16*MB + 0x4000);
+    for (unsigned i = 0; i < 2; ++i)
+        CHECK(ios_tail_carves[i].free && ios_tail_carves[i].retired &&
+              !ios_tail_carves[i].peb && ios_tail_carves[i].allocation_lease == 70 &&
+              ios_tail_carves[i].retired_lease == 70 && ios_tail_carves[i].freed_at == 100);
+    CHECK(!ios_tail_carve_ready(&ios_tail_carves[0], 99));
+    CHECK(!ios_tail_carve_ready(&ios_tail_carves[0], 102));
+    CHECK(ios_tail_carve_ready(&ios_tail_carves[0], 103));
+    memcpy(before, ios_tail_carves, sizeof(before));
+    CHECK(!ios_tail_carves_retire_owner(ios_tail_carves, 2, (void *)7, 104, &bytes, 70));
+    CHECK(!bytes && !memcmp(before, ios_tail_carves, sizeof(before)));
+
+    /* A missing allocation identity, a new generation at the same PEB, or a
+     * different owner's handout cannot inherit the predecessor's receipt. */
+    for (unsigned i = 0; i < 3; ++i)
+    {
+        struct ios_tail_carve candidate = original;
+        if (!i) candidate.allocation_lease = 0;
+        else if (i == 1) candidate.allocation_lease = 71;
+        else { candidate.peb = (void *)8; candidate.allocation_lease = 80; }
+        struct ios_tail_carve saved;
+        memcpy(&saved, &candidate, sizeof(saved));
+        CHECK(!ios_tail_carves_retire_owner(&candidate, 1, (void *)7, 100, &bytes, 70));
+        CHECK(!bytes && !memcmp(&candidate, &saved, sizeof(saved)));
+    }
+    puts("PASS: an ordinary FEX FREE gains a receipt only at matching owner quiescence; grace restarts, retries are idempotent, active/stale/unknown/reassigned owners stay unproved");
 }
 
 static void unit(void)
@@ -335,7 +491,7 @@ static void unit(void)
     CHECK(ios_tail_carves[0].free && ios_tail_carves[0].retired && ios_tail_carves[0].freed_at == 50 && !ios_tail_carves[0].peb);
     CHECK(ios_tail_carves[0].retired_lease == 70 && !ios_tail_carves[4].retired_lease);
     CHECK(ios_tail_carves[1].free && !ios_tail_carves[1].retired && ios_tail_carves[1].peb == (void *)7);
-    CHECK(!ios_tail_carves[1].retired_lease); /* An ordinary FEX release gains no retirement receipt. */
+    CHECK(!ios_tail_carves[1].retired_lease); /* The ordinary release has no allocation identity to certify. */
     CHECK(!ios_tail_carves[2].free && !ios_tail_carves[3].free && ios_tail_carves[4].retired);
     puts("PASS: an exit retires only its own live buffers; a retired one waits out the 3 s grace, FEX's own releases do not");
 
@@ -357,7 +513,7 @@ static void unit(void)
     CHECK(ios_tail_carves[3].retired && !ios_tail_carves[3].retired_lease);
     unsetenv("MADEIRA_POOL_CODE_EXIT_RECLAIM");
     puts("PASS: MADEIRA_POOL_CODE_EXIT_RECLAIM=0 keeps them live; 1 and unset retire them");
-    puts("PASS: only a matching nonzero allocation/quiescence identity certifies retirement; ordinary releases stay unproved");
+    puts("PASS: only a matching nonzero allocation/quiescence identity certifies retirement; unidentified releases stay unproved");
 
     /* A retired 64 MB buffer, a small budget (the tail and head leave 16 MB). */
     reset();
@@ -410,6 +566,9 @@ int main(void)
     CHECK(!posix_memalign(&p, 0x4000, 0x38000000 + 0x71d0000));
     pool = p;
     low = pool + 0x38000000;
+    unit_preserve_span();
+    unit_preserve_fallback();
+    unit_free_retirement();
     unit();
     off = replay(0);
     printf("PASS: MADEIRA_POOL_CODE_EXIT_RECLAIM=0 replays the 13:11 log: tail_resv 0x18f38000, the game's buffer 0x%zx (16 MB)\n", off);

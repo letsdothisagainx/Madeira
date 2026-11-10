@@ -3063,6 +3063,8 @@ struct ContentView: View {
                 unsetenv("MADEIRA_CAGE_RELEASE")
             }
             var poolSizeMB = DockPerformancePolicy.sessionPoolMB(standard: 896, dock: dockLaunch.dock, compact: dockLaunch.compact)
+            var poolSelectionSource = poolSizeMB == 896 ? "app-default" : "dock-compact-default"
+            var configuredPoolMB: Int?
             if poolSizeMB != 896 { logStore.log("[dock-pool] compact JIT pool \(poolSizeMB)MB for this Dock launch") }
             // madeira.cfg pool: the JIT pool size in MB (256 to 1152); wins over the size above. The game's own file wins over madeira.cfg, so a game can size the pool to fit a free run above its executable window and pair it with pool-low.
             let gamePool = MadeiraConfig.gameValue("pool")
@@ -3070,10 +3072,14 @@ struct ContentView: View {
                let mb = Int(txt.trimmingCharacters(in: .whitespacesAndNewlines)),
                mb >= 256, mb <= 1152 {
                 poolSizeMB = mb
-                logStore.log("JIT pool overridden to \(mb)MB via \(gamePool != nil ? "the game's settings" : "madeira.cfg") pool")
+                configuredPoolMB = mb
+                poolSelectionSource = gamePool != nil ? "game-config" : "global-config"
+                logStore.log("JIT pool requested at \(mb)MB via \(gamePool != nil ? "the game's settings" : "madeira.cfg") pool")
             }
             var cs2PoolPreflightFailure: String?
             var minimumPoolSize = 0
+            var selectedImageReserveMB: UInt64 = 0
+            var selectedCodeTailLimitMB: UInt64 = 0
             if profile?.steamAppID == 730 {
                 var available: UInt64 = 0, footprint: UInt64 = 0
                 var mapMin: UInt64 = 0, mapMax: UInt64 = 0
@@ -3089,14 +3095,15 @@ struct ContentView: View {
                     measured ? 1 : 0, available >> 20, footprint >> 20, budget >> 20, mapMin, mapMax))
                 if safe {
                     poolSizeMB = Int(selectedMB)
+                    poolSelectionSource = "cs2-budget-selected"
                     minimumPoolSize = poolSizeMB * 1024 * 1024
+                    selectedImageReserveMB = imageReserveMB
                     setenv("WINE_IOS_JIT_HEAD_RESERVE_MB", String(imageReserveMB), 1)
                     let codeTailLimitMB = jit_cs2_code_tail_limit_mb()
+                    selectedCodeTailLimitMB = codeTailLimitMB
                     setenv("WINE_IOS_JIT_CODE_TAIL_LIMIT_MB", String(codeTailLimitMB), 1)
-                    logStore.log("[cs2-pool] automatic pool=\(poolSizeMB)MB image-reserve=\(imageReserveMB)MB; "
-                        + "fresh large-code tail budget=\(codeTailLimitMB)MB; "
-                        + "the full pool is charged once for both aliases, with 2048MB of additional session reserve")
                 } else {
+                    poolSelectionSource = StikJITHelper.poolTaken ? "cs2-existing-pool" : "cs2-budget-declined"
                     cs2PoolPreflightFailure = StikJITHelper.poolTaken
                         ? "Restart Madeira before starting CS2: this app run already created its JIT memory."
                         : "CS2 needs a 1152 MB JIT pool and enough memory for the game. "
@@ -3105,6 +3112,13 @@ struct ContentView: View {
                     logStore.log("[cs2-pool] startup budget refused; not requesting a smaller pool", level: .error)
                 }
             }
+            // A config value is a request. This is the resulting startup plan;
+            // declined/reused CS2 launches select no new pool or allocation.
+            let effectivePoolMB = cs2PoolPreflightFailure == nil ? String(poolSizeMB) : "none"
+            logStore.log("[jit-pool-selection-v1] source=\(poolSelectionSource) configured-mb=\(configuredPoolMB.map { String($0) } ?? "none") "
+                + "effective-mb=\(effectivePoolMB) image-reserve-mb=\(selectedImageReserveMB) code-tail-limit-mb=\(selectedCodeTailLimitMB) "
+                + "session-reserve-mb=\(minimumPoolSize > 0 ? 2048 : 0) result=\(cs2PoolPreflightFailure == nil ? "requested" : "declined") "
+                + "existing-pool=\(StikJITHelper.poolTaken ? 1 : 0) physical-charge=once coverage=startup-plan-not-allocation")
             // ml694: W^X A/B switch. Documents/madeira-wx.txt containing "0"
             // disables page demotion for the SAME binary, so the on/off
             // comparison needs one rebuild, not two. The previous gate read

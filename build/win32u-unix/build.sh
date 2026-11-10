@@ -73,6 +73,9 @@ compile_one() {
 
 echo "=== Building win32u unix (iOS) ==="
 
+python3 "$REPO_ROOT/tools/build/stage-window-geometry.py" \
+    --source "$WINE_SRC/dlls/win32u/window.c" --output "$BUILD_DIR/staged/window.c"
+
 # All *.c files except main.c (main.c is the PE side entry — lives in win32u.dll).
 # dibdrv/*.c compile as their own translation units.
 for src in $WINE_SRC/dlls/win32u/*.c $WINE_SRC/dlls/win32u/dibdrv/*.c; do
@@ -88,6 +91,10 @@ for src in $WINE_SRC/dlls/win32u/*.c $WINE_SRC/dlls/win32u/dibdrv/*.c; do
 
     # Per-file iOS overrides (analogous to ntdll-unix's pattern).
     case "$name" in
+        window)
+            compile_one "$BUILD_DIR/staged/window.c" "window"
+            continue
+            ;;
         class)
             compile_one "$BUILD_DIR/class_ios.c" "class"
             continue
