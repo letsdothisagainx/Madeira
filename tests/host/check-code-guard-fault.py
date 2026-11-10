@@ -100,13 +100,31 @@ for signature in (
 ):
     code += function(signature)
 code += r'''
+/* Linux guarantees only its 4 KiB native alignment. Model the actual iOS pool
+ * contract with two separately owned 16 KiB-aligned reservations; replace only
+ * our own reserved span, then trim its unused prefix/suffix. */
+static unsigned char *aligned_alias(int fd, size_t size, int protection)
+{
+    const size_t alignment = 0x4000;
+    unsigned char *reservation = mmap(0, size + alignment, PROT_NONE,
+                                      MAP_PRIVATE | MAP_ANON, -1, 0);
+    assert(reservation != MAP_FAILED);
+    uintptr_t start = ((uintptr_t)reservation + alignment - 1) & ~(uintptr_t)(alignment - 1);
+    size_t prefix = start - (uintptr_t)reservation, suffix = alignment - prefix;
+    unsigned char *mapped = mmap((void *)start, size, protection, MAP_SHARED | MAP_FIXED, fd, 0);
+    assert(mapped == (void *)start);
+    if (prefix) assert(!munmap(reservation, prefix));
+    if (suffix) assert(!munmap(mapped + size, suffix));
+    return mapped;
+}
 int main(void)
 {
     const size_t size = 0x100000, guard = size - 0x4000;
     FILE *file = tmpfile(); assert(file && !ftruncate(fileno(file), size));
-    unsigned char *rw = mmap(0, size, PROT_READ|PROT_WRITE, MAP_SHARED, fileno(file), 0);
-    unsigned char *rx = mmap(0, size, PROT_READ|PROT_EXEC, MAP_SHARED, fileno(file), 0);
-    assert(rw != MAP_FAILED && rx != MAP_FAILED);
+    unsigned char *rw = aligned_alias(fileno(file), size, PROT_READ|PROT_WRITE);
+    unsigned char *rx = aligned_alias(fileno(file), size, PROT_READ|PROT_EXEC);
+    assert(!(((uintptr_t)rw | (uintptr_t)rx) & 0x3fff));
+    assert((uintptr_t)rw + size <= (uintptr_t)rx || (uintptr_t)rx + size <= (uintptr_t)rw);
     ios_jit_rx_base_global = rx; ios_jit_rw_base_global = rw; ios_jit_pool_size_global = size;
     memset(rw, 0x55, size);
     assert(ios_fex_code_guard_arm(0, size));
