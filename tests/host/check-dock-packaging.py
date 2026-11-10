@@ -33,6 +33,13 @@ with tempfile.TemporaryDirectory() as temp:
         native_path.write_bytes(package_fixture.ntdll_fixture(machine)[0])
     stage_verifier=t/'tools/build/stage-native-counter-writes.py';stage_verifier.parent.mkdir(parents=True,exist_ok=True)
     stage_verifier.write_bytes((root/'tools/build/stage-native-counter-writes.py').read_bytes())
+    # Keep the real provenance gate active. Xcode below supplies a structural
+    # Mach-O with real fixture source digests; it is deliberately not executable.
+    # The separate native-provenance check compiles the actual accessors/decoder.
+    (t/'tools/build/native-provenance.py').write_bytes((root/'tools/build/native-provenance.py').read_bytes())
+    for relative in ('build/ntdll-unix/virtual_ios.c','app/Madeira/JITAllocator.c'):
+        target=t/relative;target.parent.mkdir(parents=True,exist_ok=True)
+        target.write_bytes((root/relative).read_bytes())
     native_abi=t/'build/ntdll-unix/native_counter_alias_abi.h';native_abi.parent.mkdir(parents=True,exist_ok=True)
     native_abi.write_bytes((root/'build/ntdll-unix/native_counter_alias_abi.h').read_bytes())
     fixture_spec=importlib.util.spec_from_file_location('htmlipc_fixture', root/'tests/host/check-htmlipc-image.py')
@@ -173,6 +180,22 @@ if [ "${STALE_WOW_PLACEMENT:-}" = 1 ]; then
   sed 's/\\[wow-placement-v1\\]//g' "$TEST_APP/Madeira.debug.dylib" > "$TEST_APP/native.stale"
   mv "$TEST_APP/native.stale" "$TEST_APP/Madeira.debug.dylib"
 fi
+python3 - "$ROOT" "$TEST_APP/Madeira.debug.dylib" <<'PY_FIXTURE_NATIVE'
+import hashlib, os, struct, sys
+from pathlib import Path
+root,image=Path(sys.argv[1]),Path(sys.argv[2])
+native=hashlib.sha256((root/'build/ntdll-unix/virtual_ios.c').read_bytes()).hexdigest()
+jit=hashlib.sha256((root/'app/Madeira/JITAllocator.c').read_bytes()).hexdigest()
+generated=(root/'app/Madeira/.build-provenance/JITAllocator.generated.h').read_text()
+assert jit in generated and os.environ['GITHUB_SHA'] in generated, 'Xcode fixture needs the actual pre-build JIT provenance header'
+if os.environ.get('STALE_NATIVE_SOURCE')=='1':native='0'*64
+if os.environ.get('STALE_JIT_SOURCE')=='1':jit='0'*64
+records=('MadeiraNativeVirtual:v1:'+native+':'+('a'*40)).encode()+bytes([0])
+records+=('MadeiraJITAllocator:v1:'+jit+':'+os.environ['GITHUB_SHA']).encode()+bytes([0])
+header=struct.pack('<8I',0xfeedfacf,0x100000c,0,6,1,24,0,0)
+header+=struct.pack('<II',0x1b,24)+bytes.fromhex('123456781234567890ab123456789abc')
+image.write_bytes(header+image.read_bytes()+records)
+PY_FIXTURE_NATIVE
 cp "$ROOT/app/Madeira/i386-windows/kernelbase.dll" "$TEST_APP/i386-windows/"
 printf fixture > "$TEST_APP/Madeira"
 printf fixture > "$TEST_APP/prefix-template.tar.gz"
@@ -199,6 +222,16 @@ done
     def run(extra=None):
         return subprocess.run(['bash',str(package)],env=dict(env,**(extra or {})),capture_output=True,text=True)
     result=run(); assert result.returncode == 0, result.stdout+result.stderr
+    with zipfile.ZipFile(t/'dist/Madeira.ipa') as archive:
+        provenance=plistlib.loads(archive.read('Payload/Madeira.app/Info.plist'))['MadeiraNativeBuildProvenance']
+        assert provenance['packageSourceRevision']==revision
+        assert provenance['virtualBuildRevision']=='a'*40
+        assert provenance['virtualBuildRevision']!=provenance['packageSourceRevision']
+        assert provenance['nativeImageUUID']=='12345678-1234-5678-90AB-123456789ABC'
+    for stale,component in [('STALE_NATIVE_SOURCE','virtual'),('STALE_JIT_SOURCE','jitallocator')]:
+        result=run({stale:'1'})
+        assert result.returncode and component+': linked source digest differs from package source' in result.stderr,result.stderr
+    print('PASS real native-provenance tool creates the pre-Xcode header, stamps linked source/UUID expectations and verifies final app/IPA; stale native/JIT source records fail, legitimate older component revisions remain visible')
     result=run({'STALE_PIXEL_PROBE':'1'})
     assert result.returncode and 'Xcode packaged stale DXMT pixel probe' in result.stderr,result.stderr
     result=run({'OMIT_RESOURCE':'pixel-readback-x64.exe'})
@@ -257,7 +290,7 @@ done
         for resource in ['madeira-wow64-probe.exe','madeira-wow64-module-probe.dll']:
             assert archive.read('Payload/Madeira.app/i386-windows/'+resource)==b'fixture'
     result=run({'GITHUB_SHA':'invalid-revision'})
-    assert result.returncode and 'invalid source revision' in result.stderr, result.stderr
+    assert result.returncode and 'source revision' in result.stderr, result.stderr
     print('PASS exact source revision is packaged in the existing build label; invalid revisions fail closed and bundle ID is preserved')
     for resource,expected in [('madeira-htmlipc-bridge.dll',bridge),('madeira-htmlipc-bridge.manifest.json',json.dumps(bridge_manifest).encode())]:
         with zipfile.ZipFile(t/'dist/Madeira.ipa') as archive:

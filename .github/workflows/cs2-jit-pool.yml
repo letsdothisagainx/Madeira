@@ -28,6 +28,8 @@ on:
       - tests/host/check-pool-*.py
       - tests/host/check-fex-code-guard-contract.py
       - tests/host/check-native-build-provenance.py
+      - tests/host/check-dock-packaging.py
+      - tools/build/package-ipa.sh
       - build/native_build_provenance.h
       - tools/build/native-provenance.py
       - tests/host/fixtures/pool-cs2-*.json
@@ -75,6 +77,8 @@ on:
       - tests/host/check-pool-*.py
       - tests/host/check-fex-code-guard-contract.py
       - tests/host/check-native-build-provenance.py
+      - tests/host/check-dock-packaging.py
+      - tools/build/package-ipa.sh
       - build/native_build_provenance.h
       - tools/build/native-provenance.py
       - tests/host/fixtures/pool-cs2-*.json
@@ -146,6 +150,7 @@ jobs:
           python3 tests/host/check-pool-recent-code-wait.py
           python3 tests/host/check-fex-code-guard-contract.py
           python3 tests/host/check-native-build-provenance.py
+          python3 tests/host/check-dock-packaging.py
           python3 tests/host/check-loader-import-failure-retention.py
           python3 tests/host/check-pool-cs2-scenesystem.py
           python3 tests/host/check-pool-rx-demotion.py
