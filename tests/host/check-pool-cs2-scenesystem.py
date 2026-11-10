@@ -73,6 +73,7 @@ static int advance_sleep(const struct timespec *delay, struct timespec *left)
     fake_now += sleep_ns / 1000000000; sleep_ns %= 1000000000;
     return 0;
 }
+#undef nanosleep /* this fixture supplies its own explicit platform clock model */
 #define nanosleep advance_sleep
 static int mach_vm_region(mach_port_t task, mach_vm_address_t *address, mach_vm_size_t *size,
                           int flavor, vm_region_info_t raw, mach_msg_type_number_t *count, mach_port_t *object)

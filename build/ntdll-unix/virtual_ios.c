@@ -4266,6 +4266,35 @@ static int ios_tail_carve_ready( const struct ios_tail_carve *carve, time_t now 
     return !carve->retired || now - carve->freed_at >= IOS_POOL_REUSE_GRACE_SEC;
 }
 
+/* Before growing the main tail for a required 16 MB code unit, a matching
+ * completed retirement may need only the remainder of its existing grace.
+ * This is an opportunity to wait, never permission to reuse: the caller drops
+ * the carve lock and retries the original selector and strict thread scan.
+ * Unknown identities, future timestamps and region C do not justify waiting. */
+static unsigned ios_pool_recent_retired_code_wait( const struct ios_tail_carve *carves, unsigned n,
+                                                   size_t want, size_t total, time_t now )
+{
+    unsigned i, remaining = 0;
+
+    if (!carves || n > IOS_TAIL_CARVE_MAX || want != 0x1000000 || !total) return 0;
+    for (i = 0; i < n; i++)
+    {
+        const struct ios_tail_carve *c = &carves[i];
+        unsigned seconds;
+        time_t age;
+
+        if (!c->free || !c->retired || !c->allocation_lease ||
+            c->allocation_lease != c->retired_lease || c->size != want ||
+            (c->off & 0x3fff) || (c->size & 0x3fff) || c->off >= total || c->size > total - c->off ||
+            c->freed_at <= 0 || c->freed_at > now) continue;
+        age = now - c->freed_at;
+        if (age >= IOS_POOL_REUSE_GRACE_SEC) continue;
+        seconds = IOS_POOL_REUSE_GRACE_SEC - age;
+        if (!remaining || seconds < remaining) remaining = seconds;
+    }
+    return remaining;
+}
+
 /* Retire `peb`'s live carves and certify its ordinary releases only after the
  * exact allocation lease becomes quiescent. FEX's earlier FREE retains that
  * identity but proves no retirement by itself. The caller holds the carve
@@ -33137,6 +33166,7 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
                        alloc_size <= ios_jit_low_size_global &&
                        ios_jit_low_reserved <= ios_jit_low_size_global - alloc_size;
         int kept_large_carve = 0, reuse_all_carves = 0, retired_busy = 0;
+        unsigned retired_waited = 0;
         size_t tail_cap = ~(size_t)0, budget_cap = ~(size_t)0;
         void *carve_peb = ios_jit_current_peb();   /* madeira-bcd: the carve's owner, see ios_tail_carve_ready */
         unsigned long long carve_lease = ios_thread_process_lease( carve_peb, 0 );
@@ -33229,6 +33259,7 @@ retry_code_carve_reuse:
             time_t now = time( NULL );
             int fresh_fits;
             size_t preserve_size = 0;
+            unsigned grace_wait = 0;
             pthread_mutex_lock( &ios_tail_carve_lock );
             fresh_fits = ios_tail_carve_n < IOS_TAIL_CARVE_MAX &&
                 (low_fits || (!low_ok && ios_pool_fresh_tail_fits( ios_jit_pool_size_global, jit_pool_offset,
@@ -33239,6 +33270,24 @@ retry_code_carve_reuse:
                     (low_ok || !ios_tail_carve_in_low( ios_tail_carves[i].off )) &&   /* madeira-bcd pool-low */
                     (best == ~0u || ios_pool_code_carve_better( &ios_tail_carves[i], &ios_tail_carves[best] )))
                     best = i;
+            if (best == ~0u && !low_ok && !retired_busy &&
+                retired_waited < IOS_POOL_REUSE_GRACE_SEC * 10)
+                grace_wait = ios_pool_recent_retired_code_wait( ios_tail_carves, ios_tail_carve_n,
+                                                               alloc_size, ios_jit_pool_size_global, now );
+            if (grace_wait)
+            {
+                struct timespec delay = { 0, 100 * 1000 * 1000 };
+                static unsigned wait_reports;
+
+                pthread_mutex_unlock( &ios_tail_carve_lock );
+                if (!retired_waited && __atomic_fetch_add( &wait_reports, 1, __ATOMIC_RELAXED ) < 16)
+                    dprintf( 2, "[pool-code-wait] want=0x%lx certified-recent=1 grace-left=%us "
+                                "step-ms=100 limit-ms=%u action=recheck-original-reuse\n",
+                             (unsigned long)alloc_size, grace_wait, (unsigned)(IOS_POOL_REUSE_GRACE_SEC * 1000) );
+                nanosleep( &delay, NULL );
+                retired_waited++;
+                goto retry_code_carve_reuse;
+            }
             if (best != ~0u) preserve_size = ios_tail_carves[best].size;
             if (best != ~0u && !reuse_all_carves && fresh_fits && alloc_size <= 0x10000)
             {

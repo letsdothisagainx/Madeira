@@ -49,6 +49,7 @@ helpers = ''.join(function(signature) for signature in (
     'static void ios_pool_tail_unreserve(',
     'static int ios_pool_fresh_tail_fits(',
     'static int ios_tail_carve_ready(',
+    'static unsigned ios_pool_recent_retired_code_wait(',
     'static unsigned ios_tail_carves_retire_owner(',
     'static int ios_tail_carve_foreign_release(',
     'static void ios_tail_carves_owner_died(',

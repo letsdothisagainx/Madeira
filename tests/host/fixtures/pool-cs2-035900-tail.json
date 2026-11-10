@@ -1,0 +1,1819 @@
+{
+  "capture": "madeira-log(20261110-035900), actual log header22:56:25 November9 local",
+  "installed_commit": "e02e86b85c034d0a43f64cf78a5876ad9733e7d6",
+  "log_sha256": "c20b641c36abd757f66e216aaa4dc8aceb11fd8fc82688c538197ac5177ab721",
+  "pool": "0x48000000",
+  "rx_base": "0x300000000",
+  "head_reserve": "0xf000000",
+  "large_code_tail_budget": "0x20000000",
+  "reuse_grace_seconds": 3,
+  "clock_note": "Integer seconds from surrounding recorded xp/app wall clocks relative22:56:49. Bounds are interval-censored, not exact native event timestamps; any inferred second is separately documented. Retirement36506 is inferred within its logged07.949..08.271 bounds from fresh grant37923 and unchanged three-second grace. Code allocation40156 selects later14 second85 within13.930..14.xxx bounds because its observed retired-buffer reuse needs full three-second grace.",
+  "head_note": "Maximum logged image allocation endpoint (minus latest data-align delta), anon-RWX cursor and explicit fresh tail cursor snapshots; observed head is replayed, historical freed image addresses are not invented.",
+  "final_head": "0x2741c000",
+  "final_tail": "0x1f040000",
+  "free_census": {
+    "count": 9,
+    "total": "0x144000",
+    "largest": "0xb8000",
+    "offsets": "not fully logged; separated aggregate fixtures must be labeled synthetic"
+  },
+  "first_failure": {
+    "line": 47238,
+    "image": "client.dll",
+    "requested": "0x29a8000",
+    "aged_receipts": 16,
+    "aged_bytes": "0x4030000",
+    "largest_retired_run": "0x2020000",
+    "missing_proof": 1
+  },
+  "events": [
+    {
+      "line": 1108,
+      "seconds": 0,
+      "clock": "[22:56:49.692",
+      "op": "allocate",
+      "handle": 1,
+      "owner": "0x101208000",
+      "lease": 2,
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x347ffc000",
+      "head": "0x20cc000",
+      "rotation": false,
+      "tid": "002c",
+      "observed_tail": "0x4000",
+      "clock_bounds": [
+        "22:56:49.692",
+        "22:56:50.389"
+      ],
+      "possible_seconds": [
+        0,
+        1
+      ]
+    },
+    {
+      "line": 1202,
+      "seconds": 0,
+      "clock": "[22:56:49.692",
+      "op": "allocate",
+      "handle": 2,
+      "owner": "0x101208000",
+      "lease": 2,
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x346ffc000",
+      "head": "0x20d0000",
+      "rotation": false,
+      "tid": "002c",
+      "observed_tail": "0x1004000",
+      "clock_bounds": [
+        "22:56:49.692",
+        "22:56:50.389"
+      ],
+      "possible_seconds": [
+        0,
+        1
+      ]
+    },
+    {
+      "line": 2415,
+      "seconds": 1,
+      "clock": "[xp] 22:56:50.389",
+      "op": "allocate",
+      "handle": 3,
+      "owner": "0x400310000",
+      "lease": 4,
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x346ff8000",
+      "head": "0x3ac8000",
+      "rotation": false,
+      "tid": "0050",
+      "observed_tail": "0x1008000",
+      "clock_bounds": [
+        "22:56:50.389",
+        "22:56:50.694"
+      ],
+      "possible_seconds": [
+        1,
+        1
+      ]
+    },
+    {
+      "line": 2474,
+      "seconds": 1,
+      "clock": "[xp] 22:56:50.389",
+      "op": "allocate",
+      "handle": 4,
+      "owner": "0x400310000",
+      "lease": 4,
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x345ff8000",
+      "head": "0x3ac8000",
+      "rotation": false,
+      "tid": "0050",
+      "observed_tail": "0x2008000",
+      "clock_bounds": [
+        "22:56:50.389",
+        "22:56:50.694"
+      ],
+      "possible_seconds": [
+        1,
+        1
+      ]
+    },
+    {
+      "line": 3310,
+      "seconds": 1,
+      "clock": "[xp] 22:56:50.694",
+      "op": "release",
+      "handle": 1,
+      "owner": "0x101208000",
+      "lease": 2,
+      "observed_rx": "0x347ffc000",
+      "observed": "0x4000",
+      "clock_bounds": [
+        "22:56:50.694",
+        "22:56:51.018"
+      ],
+      "possible_seconds": [
+        1,
+        2
+      ]
+    },
+    {
+      "line": 3387,
+      "seconds": 1,
+      "clock": "[xp] 22:56:50.694",
+      "op": "retire",
+      "owner": "0x101208000",
+      "lease": 2,
+      "clock_bounds": [
+        "22:56:50.694",
+        "22:56:51.018"
+      ],
+      "possible_seconds": [
+        1,
+        2
+      ]
+    },
+    {
+      "line": 3915,
+      "seconds": 2,
+      "clock": "[xp] 22:56:51.018",
+      "op": "allocate",
+      "handle": 5,
+      "owner": "0x10120c000",
+      "lease": 5,
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x345ff4000",
+      "head": "0x4c6c000",
+      "rotation": false,
+      "tid": "006c",
+      "observed_tail": "0x200c000",
+      "clock_bounds": [
+        "22:56:51.018",
+        "22:56:51.299"
+      ],
+      "possible_seconds": [
+        2,
+        2
+      ]
+    },
+    {
+      "line": 4002,
+      "seconds": 2,
+      "clock": "[xp] 22:56:51.018",
+      "op": "allocate",
+      "handle": 6,
+      "owner": "0x10120c000",
+      "lease": 5,
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x344ff4000",
+      "head": "0x4c70000",
+      "rotation": false,
+      "tid": "006c",
+      "observed_tail": "0x300c000",
+      "clock_bounds": [
+        "22:56:51.018",
+        "22:56:51.299"
+      ],
+      "possible_seconds": [
+        2,
+        2
+      ]
+    },
+    {
+      "line": 8572,
+      "seconds": 18,
+      "clock": "[xp] 22:57:07.928",
+      "op": "allocate",
+      "handle": 7,
+      "owner": "0x500310000",
+      "lease": 7,
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x344ff0000",
+      "head": "0xcf3c000",
+      "rotation": false,
+      "tid": "0094",
+      "observed_tail": "0x3010000",
+      "clock_bounds": [
+        "22:57:07.928",
+        "22:57:08.248"
+      ],
+      "possible_seconds": [
+        18,
+        19
+      ]
+    },
+    {
+      "line": 8580,
+      "seconds": 18,
+      "clock": "[xp] 22:57:07.928",
+      "op": "allocate",
+      "handle": 8,
+      "owner": "0x100f94000",
+      "lease": 6,
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x344fec000",
+      "head": "0xcf3c000",
+      "rotation": false,
+      "tid": "008c",
+      "observed_tail": "0x3014000",
+      "clock_bounds": [
+        "22:57:07.928",
+        "22:57:08.248"
+      ],
+      "possible_seconds": [
+        18,
+        19
+      ]
+    },
+    {
+      "line": 8635,
+      "seconds": 18,
+      "clock": "[xp] 22:57:07.928",
+      "op": "allocate",
+      "handle": 9,
+      "owner": "0x100f94000",
+      "lease": 6,
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x346ffc000",
+      "head": "0xd020000",
+      "rotation": false,
+      "tid": "008c",
+      "clock_bounds": [
+        "22:57:07.928",
+        "22:57:08.248"
+      ],
+      "possible_seconds": [
+        18,
+        19
+      ]
+    },
+    {
+      "line": 9454,
+      "seconds": 19,
+      "clock": "[xp] 22:57:08.569",
+      "op": "release",
+      "handle": 8,
+      "owner": "0x100f94000",
+      "lease": 6,
+      "observed_rx": "0x344fec000",
+      "observed": "0x4000",
+      "clock_bounds": [
+        "22:57:08.569",
+        "22:57:08.892"
+      ],
+      "possible_seconds": [
+        19,
+        19
+      ]
+    },
+    {
+      "line": 9505,
+      "seconds": 19,
+      "clock": "[xp] 22:57:08.569",
+      "op": "retire",
+      "owner": "0x100f94000",
+      "lease": 6,
+      "clock_bounds": [
+        "22:57:08.569",
+        "22:57:08.892"
+      ],
+      "possible_seconds": [
+        19,
+        19
+      ]
+    },
+    {
+      "line": 9568,
+      "seconds": 19,
+      "clock": "[xp] 22:57:08.569",
+      "op": "allocate",
+      "handle": 10,
+      "owner": "0x500310000",
+      "lease": 7,
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x343fec000",
+      "head": "0xe8cc000",
+      "rotation": false,
+      "tid": "0094",
+      "observed_tail": "0x4014000",
+      "clock_bounds": [
+        "22:57:08.569",
+        "22:57:08.892"
+      ],
+      "possible_seconds": [
+        19,
+        19
+      ]
+    },
+    {
+      "line": 15191,
+      "seconds": 22,
+      "clock": "[xp] 22:57:11.230",
+      "op": "allocate",
+      "handle": 11,
+      "owner": "0x101234000",
+      "lease": 10,
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x343fe8000",
+      "head": "0x11d20000",
+      "rotation": false,
+      "tid": "0144",
+      "observed_tail": "0x4018000",
+      "clock_bounds": [
+        "22:57:11.230",
+        "22:57:11.555"
+      ],
+      "possible_seconds": [
+        22,
+        22
+      ]
+    },
+    {
+      "line": 15280,
+      "seconds": 22,
+      "clock": "[xp] 22:57:11.230",
+      "op": "allocate",
+      "handle": 12,
+      "owner": "0x600310000",
+      "lease": 11,
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x343fe4000",
+      "head": "0x11d20000",
+      "rotation": false,
+      "tid": "0158",
+      "observed_tail": "0x401c000",
+      "clock_bounds": [
+        "22:57:11.230",
+        "22:57:11.555"
+      ],
+      "possible_seconds": [
+        22,
+        22
+      ]
+    },
+    {
+      "line": 15345,
+      "seconds": 22,
+      "clock": "[xp] 22:57:11.230",
+      "op": "allocate",
+      "handle": 13,
+      "owner": "0x101234000",
+      "lease": 10,
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x346ffc000",
+      "head": "0x11d20000",
+      "rotation": false,
+      "tid": "0144",
+      "clock_bounds": [
+        "22:57:11.230",
+        "22:57:11.555"
+      ],
+      "possible_seconds": [
+        22,
+        22
+      ]
+    },
+    {
+      "line": 15989,
+      "seconds": 22,
+      "clock": "[xp] 22:57:11.555",
+      "op": "allocate",
+      "handle": 14,
+      "owner": "0x101238000",
+      "lease": 12,
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x347ffc000",
+      "head": "0x133f4000",
+      "rotation": false,
+      "tid": "016c",
+      "clock_bounds": [
+        "22:57:11.555",
+        "22:57:11.819"
+      ],
+      "possible_seconds": [
+        22,
+        22
+      ]
+    },
+    {
+      "line": 16070,
+      "seconds": 22,
+      "clock": "[xp] 22:57:11.819",
+      "op": "allocate",
+      "handle": 15,
+      "owner": "0x101238000",
+      "lease": 12,
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x342fe4000",
+      "head": "0x13f24000",
+      "rotation": false,
+      "tid": "016c",
+      "observed_tail": "0x501c000",
+      "clock_bounds": [
+        "22:57:11.819",
+        "22:57:12.075"
+      ],
+      "possible_seconds": [
+        22,
+        23
+      ]
+    },
+    {
+      "line": 16185,
+      "seconds": 22,
+      "clock": "[xp] 22:57:11.819",
+      "op": "allocate",
+      "handle": 16,
+      "owner": "0x700310000",
+      "lease": 13,
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x344fec000",
+      "head": "0x14048000",
+      "rotation": false,
+      "tid": "0178",
+      "clock_bounds": [
+        "22:57:11.819",
+        "22:57:12.075"
+      ],
+      "possible_seconds": [
+        22,
+        23
+      ]
+    },
+    {
+      "line": 16280,
+      "seconds": 22,
+      "clock": "[xp] 22:57:11.819",
+      "op": "release",
+      "handle": 14,
+      "owner": "0x101238000",
+      "lease": 12,
+      "observed_rx": "0x347ffc000",
+      "observed": "0x4000",
+      "clock_bounds": [
+        "22:57:11.819",
+        "22:57:12.075"
+      ],
+      "possible_seconds": [
+        22,
+        23
+      ]
+    },
+    {
+      "line": 16313,
+      "seconds": 22,
+      "clock": "[xp] 22:57:11.819",
+      "op": "retire",
+      "owner": "0x101238000",
+      "lease": 12,
+      "clock_bounds": [
+        "22:57:11.819",
+        "22:57:12.075"
+      ],
+      "possible_seconds": [
+        22,
+        23
+      ]
+    },
+    {
+      "line": 16363,
+      "seconds": 22,
+      "clock": "[xp] 22:57:11.819",
+      "op": "allocate",
+      "handle": 17,
+      "owner": "0x500310000",
+      "lease": 7,
+      "requested": "0x8000000",
+      "observed": "0x8000000",
+      "observed_rx": "0x33afe4000",
+      "head": "0x14190000",
+      "rotation": false,
+      "tid": "01b0",
+      "observed_tail": "0xd01c000",
+      "clock_bounds": [
+        "22:57:11.819",
+        "22:57:12.075"
+      ],
+      "possible_seconds": [
+        22,
+        23
+      ]
+    },
+    {
+      "line": 16748,
+      "seconds": 23,
+      "clock": "[xp] 22:57:12.400",
+      "op": "release",
+      "handle": 11,
+      "owner": "0x101234000",
+      "lease": 10,
+      "observed_rx": "0x343fe8000",
+      "observed": "0x4000",
+      "clock_bounds": [
+        "22:57:12.400",
+        "22:57:12.498"
+      ],
+      "possible_seconds": [
+        23,
+        23
+      ]
+    },
+    {
+      "line": 16769,
+      "seconds": 23,
+      "clock": "[xp] 22:57:12.400",
+      "op": "retire",
+      "owner": "0x101234000",
+      "lease": 10,
+      "clock_bounds": [
+        "22:57:12.400",
+        "22:57:12.498"
+      ],
+      "possible_seconds": [
+        23,
+        23
+      ]
+    },
+    {
+      "line": 16876,
+      "seconds": 23,
+      "clock": "[xp] 22:57:12.689",
+      "op": "allocate",
+      "handle": 18,
+      "owner": "0x10120c000",
+      "lease": 5,
+      "requested": "0x8000000",
+      "observed": "0x8000000",
+      "observed_rx": "0x332fe4000",
+      "head": "0x147e4000",
+      "rotation": false,
+      "tid": "011c",
+      "observed_tail": "0x1501c000",
+      "clock_bounds": [
+        "22:57:12.689",
+        "22:57:13.008"
+      ],
+      "possible_seconds": [
+        23,
+        24
+      ]
+    },
+    {
+      "line": 16893,
+      "seconds": 23,
+      "clock": "[xp] 22:57:12.689",
+      "op": "release",
+      "handle": 6,
+      "owner": "0x10120c000",
+      "lease": 5,
+      "observed_rx": "0x344ff4000",
+      "observed": "0x1000000",
+      "clock_bounds": [
+        "22:57:12.689",
+        "22:57:13.008"
+      ],
+      "possible_seconds": [
+        23,
+        24
+      ]
+    },
+    {
+      "line": 17384,
+      "seconds": 24,
+      "clock": "[xp] 22:57:13.282",
+      "op": "allocate",
+      "handle": 19,
+      "owner": "0x700310000",
+      "lease": 13,
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x344ff4000",
+      "head": "0x147e4000",
+      "rotation": false,
+      "tid": "0178",
+      "clock_bounds": [
+        "22:57:13.282",
+        "22:57:13.601"
+      ],
+      "possible_seconds": [
+        24,
+        24
+      ]
+    },
+    {
+      "line": 17534,
+      "seconds": 24,
+      "clock": "[xp] 22:57:13.601",
+      "op": "release",
+      "handle": 10,
+      "owner": "0x500310000",
+      "lease": 7,
+      "observed_rx": "0x343fec000",
+      "observed": "0x1000000",
+      "clock_bounds": [
+        "22:57:13.601",
+        "22:57:13.922"
+      ],
+      "possible_seconds": [
+        24,
+        24
+      ]
+    },
+    {
+      "line": 17597,
+      "seconds": 24,
+      "clock": "[xp] 22:57:13.601",
+      "op": "retire",
+      "owner": "0x700310000",
+      "lease": 13,
+      "clock_bounds": [
+        "22:57:13.601",
+        "22:57:13.922"
+      ],
+      "possible_seconds": [
+        24,
+        24
+      ]
+    },
+    {
+      "line": 17662,
+      "seconds": 24,
+      "clock": "[xp] 22:57:13.601",
+      "op": "allocate",
+      "handle": 20,
+      "owner": "0x600310000",
+      "lease": 11,
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x343fec000",
+      "head": "0x1539c000",
+      "rotation": false,
+      "tid": "0158",
+      "clock_bounds": [
+        "22:57:13.601",
+        "22:57:13.922"
+      ],
+      "possible_seconds": [
+        24,
+        24
+      ]
+    },
+    {
+      "line": 17783,
+      "seconds": 24,
+      "clock": "[xp] 22:57:13.922",
+      "op": "retire",
+      "owner": "0x600310000",
+      "lease": 11,
+      "clock_bounds": [
+        "22:57:13.922",
+        "22:57:14.248"
+      ],
+      "possible_seconds": [
+        24,
+        25
+      ]
+    },
+    {
+      "line": 21496,
+      "seconds": 36,
+      "clock": "[xp] 22:57:25.954",
+      "op": "allocate",
+      "handle": 21,
+      "owner": "0x500310000",
+      "lease": 7,
+      "requested": "0x8000000",
+      "observed": "0x8000000",
+      "observed_rx": "0x32afe4000",
+      "head": "0x15410000",
+      "rotation": false,
+      "tid": "021c",
+      "observed_tail": "0x1d01c000",
+      "clock_bounds": [
+        "22:57:25.954",
+        "22:57:26.246"
+      ],
+      "possible_seconds": [
+        36,
+        37
+      ]
+    },
+    {
+      "line": 25013,
+      "seconds": 48,
+      "clock": "[xp] 22:57:37.330",
+      "op": "allocate",
+      "handle": 22,
+      "owner": "0x600310000",
+      "lease": 18,
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x32afe0000",
+      "head": "0x15410000",
+      "rotation": false,
+      "tid": "029c",
+      "observed_tail": "0x1d020000",
+      "clock_bounds": [
+        "22:57:37.330",
+        "22:57:37.582"
+      ],
+      "possible_seconds": [
+        48,
+        48
+      ]
+    },
+    {
+      "line": 25453,
+      "seconds": 50,
+      "clock": "[xp] 22:57:39.336",
+      "op": "allocate",
+      "handle": 23,
+      "owner": "0x600310000",
+      "lease": 18,
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x346ffc000",
+      "head": "0x15410000",
+      "rotation": false,
+      "tid": "029c",
+      "clock_bounds": [
+        "22:57:39.336",
+        "22:57:39.614"
+      ],
+      "possible_seconds": [
+        50,
+        50
+      ]
+    },
+    {
+      "line": 26819,
+      "seconds": 51,
+      "clock": "[xp] 22:57:40.243",
+      "op": "allocate",
+      "handle": 24,
+      "owner": "0x700310000",
+      "lease": 21,
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x347ffc000",
+      "head": "0x15f4c000",
+      "rotation": false,
+      "tid": "02b4",
+      "clock_bounds": [
+        "22:57:40.243",
+        "22:57:40.505"
+      ],
+      "possible_seconds": [
+        51,
+        51
+      ]
+    },
+    {
+      "line": 28440,
+      "seconds": 53,
+      "clock": "[xp] 22:57:42.657",
+      "op": "allocate",
+      "handle": 25,
+      "owner": "0x700310000",
+      "lease": 21,
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x344ff4000",
+      "head": "0x15f4c000",
+      "rotation": false,
+      "tid": "02b4",
+      "clock_bounds": [
+        "22:57:42.657",
+        "22:57:42.930"
+      ],
+      "possible_seconds": [
+        53,
+        53
+      ]
+    },
+    {
+      "line": 33830,
+      "seconds": 74,
+      "clock": "[xp] 22:58:03.562",
+      "op": "allocate",
+      "handle": 26,
+      "owner": "0x1094ec000",
+      "lease": 22,
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x32afdc000",
+      "head": "0x15f4c000",
+      "rotation": false,
+      "tid": "02e8",
+      "observed_tail": "0x1d024000",
+      "clock_bounds": [
+        "22:58:03.562",
+        "22:58:03.830"
+      ],
+      "possible_seconds": [
+        74,
+        74
+      ]
+    },
+    {
+      "line": 33874,
+      "seconds": 74,
+      "clock": "[xp] 22:58:03.562",
+      "op": "allocate",
+      "handle": 27,
+      "owner": "0x1094ec000",
+      "lease": 22,
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x343fec000",
+      "head": "0x15f4c000",
+      "rotation": false,
+      "tid": "02e8",
+      "clock_bounds": [
+        "22:58:03.562",
+        "22:58:03.830"
+      ],
+      "possible_seconds": [
+        74,
+        74
+      ]
+    },
+    {
+      "line": 34244,
+      "seconds": 75,
+      "clock": "[xp] 22:58:04.087",
+      "op": "release",
+      "handle": 26,
+      "owner": "0x1094ec000",
+      "lease": 22,
+      "observed_rx": "0x32afdc000",
+      "observed": "0x4000",
+      "clock_bounds": [
+        "22:58:04.087",
+        "22:58:04.409"
+      ],
+      "possible_seconds": [
+        75,
+        75
+      ]
+    },
+    {
+      "line": 34260,
+      "seconds": 75,
+      "clock": "[xp] 22:58:04.087",
+      "op": "retire",
+      "owner": "0x1094ec000",
+      "lease": 22,
+      "clock_bounds": [
+        "22:58:04.087",
+        "22:58:04.409"
+      ],
+      "possible_seconds": [
+        75,
+        75
+      ]
+    },
+    {
+      "line": 34583,
+      "seconds": 75,
+      "clock": "[xp] 22:58:04.705",
+      "op": "allocate",
+      "handle": 28,
+      "owner": "0x10e898000",
+      "lease": 23,
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x32afd8000",
+      "head": "0x173f0000",
+      "rotation": false,
+      "tid": "02f0",
+      "observed_tail": "0x1d028000",
+      "clock_bounds": [
+        "22:58:04.705",
+        "22:58:05.017"
+      ],
+      "possible_seconds": [
+        75,
+        76
+      ]
+    },
+    {
+      "line": 34627,
+      "seconds": 75,
+      "clock": "[xp] 22:58:04.705",
+      "op": "allocate",
+      "handle": 29,
+      "owner": "0x10e898000",
+      "lease": 23,
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x342fe4000",
+      "head": "0x173f4000",
+      "rotation": false,
+      "tid": "02f0",
+      "clock_bounds": [
+        "22:58:04.705",
+        "22:58:05.017"
+      ],
+      "possible_seconds": [
+        75,
+        76
+      ]
+    },
+    {
+      "line": 34958,
+      "seconds": 76,
+      "clock": "[xp] 22:58:05.017",
+      "op": "release",
+      "handle": 28,
+      "owner": "0x10e898000",
+      "lease": 23,
+      "observed_rx": "0x32afd8000",
+      "observed": "0x4000",
+      "clock_bounds": [
+        "22:58:05.017",
+        "22:58:05.334"
+      ],
+      "possible_seconds": [
+        76,
+        76
+      ]
+    },
+    {
+      "line": 34977,
+      "seconds": 76,
+      "clock": "[xp] 22:58:05.017",
+      "op": "retire",
+      "owner": "0x10e898000",
+      "lease": 23,
+      "clock_bounds": [
+        "22:58:05.017",
+        "22:58:05.334"
+      ],
+      "possible_seconds": [
+        76,
+        76
+      ]
+    },
+    {
+      "line": 35347,
+      "seconds": 77,
+      "clock": "[xp] 22:58:06.269",
+      "op": "allocate",
+      "handle": 30,
+      "owner": "0x10e89c000",
+      "lease": 24,
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x32afd4000",
+      "head": "0x188a0000",
+      "rotation": false,
+      "tid": "02f8",
+      "observed_tail": "0x1d02c000",
+      "clock_bounds": [
+        "22:58:06.269",
+        "22:58:06.565"
+      ],
+      "possible_seconds": [
+        77,
+        77
+      ]
+    },
+    {
+      "line": 35397,
+      "seconds": 77,
+      "clock": "[xp] 22:58:06.269",
+      "op": "allocate",
+      "handle": 31,
+      "owner": "0x10e89c000",
+      "lease": 24,
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x329fd4000",
+      "head": "0x188a4000",
+      "rotation": false,
+      "tid": "02f8",
+      "observed_tail": "0x1e02c000",
+      "clock_bounds": [
+        "22:58:06.269",
+        "22:58:06.565"
+      ],
+      "possible_seconds": [
+        77,
+        77
+      ]
+    },
+    {
+      "line": 35730,
+      "seconds": 77,
+      "clock": "[xp] 22:58:06.565",
+      "op": "release",
+      "handle": 30,
+      "owner": "0x10e89c000",
+      "lease": 24,
+      "observed_rx": "0x32afd4000",
+      "observed": "0x4000",
+      "clock_bounds": [
+        "22:58:06.565",
+        "22:58:06.830"
+      ],
+      "possible_seconds": [
+        77,
+        77
+      ]
+    },
+    {
+      "line": 35751,
+      "seconds": 77,
+      "clock": "[xp] 22:58:06.565",
+      "op": "retire",
+      "owner": "0x10e89c000",
+      "lease": 24,
+      "clock_bounds": [
+        "22:58:06.565",
+        "22:58:06.830"
+      ],
+      "possible_seconds": [
+        77,
+        77
+      ]
+    },
+    {
+      "line": 36104,
+      "seconds": 78,
+      "clock": "[xp] 22:58:07.653",
+      "op": "allocate",
+      "handle": 32,
+      "owner": "0x10e8ec000",
+      "lease": 25,
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x329fd0000",
+      "head": "0x192d0000",
+      "rotation": false,
+      "tid": "0300",
+      "observed_tail": "0x1e030000",
+      "clock_bounds": [
+        "22:58:07.653",
+        "22:58:07.949"
+      ],
+      "possible_seconds": [
+        78,
+        78
+      ]
+    },
+    {
+      "line": 36148,
+      "seconds": 78,
+      "clock": "[xp] 22:58:07.653",
+      "op": "allocate",
+      "handle": 33,
+      "owner": "0x10e8ec000",
+      "lease": 25,
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x343fec000",
+      "head": "0x192d0000",
+      "rotation": false,
+      "tid": "0300",
+      "clock_bounds": [
+        "22:58:07.653",
+        "22:58:07.949"
+      ],
+      "possible_seconds": [
+        78,
+        78
+      ]
+    },
+    {
+      "line": 36485,
+      "seconds": 78,
+      "clock": "[xp] 22:58:07.949",
+      "op": "release",
+      "handle": 32,
+      "owner": "0x10e8ec000",
+      "lease": 25,
+      "observed_rx": "0x329fd0000",
+      "observed": "0x4000",
+      "clock_bounds": [
+        "22:58:07.949",
+        "22:58:08.271"
+      ],
+      "possible_seconds": [
+        78,
+        79
+      ]
+    },
+    {
+      "line": 36506,
+      "seconds": 79,
+      "clock": "[xp] 22:58:07.949",
+      "op": "retire",
+      "owner": "0x10e8ec000",
+      "lease": 25,
+      "clock_bounds": [
+        "22:58:07.949",
+        "22:58:08.271"
+      ],
+      "possible_seconds": [
+        78,
+        79
+      ],
+      "clock_reason": "Retirement lies across07.949..08.271; observed fresh16MiB grant37923 in10.078..10.386 proves prior receipt was younger than3s, selecting08 second79 rather than07 second78."
+    },
+    {
+      "line": 36788,
+      "seconds": 79,
+      "clock": "[xp] 22:58:08.574",
+      "op": "allocate",
+      "handle": 34,
+      "owner": "0x10e9bc000",
+      "lease": 26,
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x329fcc000",
+      "head": "0x192d0000",
+      "rotation": false,
+      "tid": "0308",
+      "observed_tail": "0x1e034000",
+      "clock_bounds": [
+        "22:58:08.574",
+        "22:58:08.872"
+      ],
+      "possible_seconds": [
+        79,
+        79
+      ]
+    },
+    {
+      "line": 36833,
+      "seconds": 79,
+      "clock": "[xp] 22:58:08.574",
+      "op": "allocate",
+      "handle": 35,
+      "owner": "0x10e9bc000",
+      "lease": 26,
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x342fe4000",
+      "head": "0x192d0000",
+      "rotation": false,
+      "tid": "0308",
+      "clock_bounds": [
+        "22:58:08.574",
+        "22:58:08.872"
+      ],
+      "possible_seconds": [
+        79,
+        79
+      ]
+    },
+    {
+      "line": 37166,
+      "seconds": 79,
+      "clock": "[xp] 22:58:08.872",
+      "op": "release",
+      "handle": 34,
+      "owner": "0x10e9bc000",
+      "lease": 26,
+      "observed_rx": "0x329fcc000",
+      "observed": "0x4000",
+      "clock_bounds": [
+        "22:58:08.872",
+        "22:58:09.175"
+      ],
+      "possible_seconds": [
+        79,
+        80
+      ]
+    },
+    {
+      "line": 37182,
+      "seconds": 79,
+      "clock": "[xp] 22:58:08.872",
+      "op": "retire",
+      "owner": "0x10e9bc000",
+      "lease": 26,
+      "clock_bounds": [
+        "22:58:08.872",
+        "22:58:09.175"
+      ],
+      "possible_seconds": [
+        79,
+        80
+      ]
+    },
+    {
+      "line": 37455,
+      "seconds": 80,
+      "clock": "[xp] 22:58:09.436",
+      "op": "allocate",
+      "handle": 36,
+      "owner": "0x10e9e4000",
+      "lease": 27,
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x329fc8000",
+      "head": "0x19374000",
+      "rotation": false,
+      "tid": "0310",
+      "observed_tail": "0x1e038000",
+      "clock_bounds": [
+        "22:58:09.436",
+        "22:58:09.758"
+      ],
+      "possible_seconds": [
+        80,
+        80
+      ]
+    },
+    {
+      "line": 37500,
+      "seconds": 80,
+      "clock": "[xp] 22:58:09.436",
+      "op": "allocate",
+      "handle": 37,
+      "owner": "0x10e9e4000",
+      "lease": 27,
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x329fd4000",
+      "head": "0x19374000",
+      "rotation": false,
+      "tid": "0310",
+      "clock_bounds": [
+        "22:58:09.436",
+        "22:58:09.758"
+      ],
+      "possible_seconds": [
+        80,
+        80
+      ]
+    },
+    {
+      "line": 37826,
+      "seconds": 80,
+      "clock": "[xp] 22:58:09.758",
+      "op": "release",
+      "handle": 36,
+      "owner": "0x10e9e4000",
+      "lease": 27,
+      "observed_rx": "0x329fc8000",
+      "observed": "0x4000",
+      "clock_bounds": [
+        "22:58:09.758",
+        "22:58:10.078"
+      ],
+      "possible_seconds": [
+        80,
+        81
+      ]
+    },
+    {
+      "line": 37842,
+      "seconds": 80,
+      "clock": "[xp] 22:58:09.758",
+      "op": "retire",
+      "owner": "0x10e9e4000",
+      "lease": 27,
+      "clock_bounds": [
+        "22:58:09.758",
+        "22:58:10.078"
+      ],
+      "possible_seconds": [
+        80,
+        81
+      ]
+    },
+    {
+      "line": 37923,
+      "seconds": 81,
+      "clock": "[xp] 22:58:10.078",
+      "op": "allocate",
+      "handle": 38,
+      "owner": "0x700310000",
+      "lease": 21,
+      "requested": "0x8000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x328fc8000",
+      "head": "0x19420000",
+      "rotation": true,
+      "tid": "02b4",
+      "observed_tail": "0x1f038000",
+      "clock_bounds": [
+        "22:58:10.078",
+        "22:58:10.386"
+      ],
+      "possible_seconds": [
+        81,
+        81
+      ]
+    },
+    {
+      "line": 37930,
+      "seconds": 81,
+      "clock": "[xp] 22:58:10.078",
+      "op": "release",
+      "handle": 25,
+      "owner": "0x700310000",
+      "lease": 21,
+      "observed_rx": "0x344ff4000",
+      "observed": "0x1000000",
+      "clock_bounds": [
+        "22:58:10.078",
+        "22:58:10.386"
+      ],
+      "possible_seconds": [
+        81,
+        81
+      ]
+    },
+    {
+      "line": 38148,
+      "seconds": 81,
+      "clock": "[xp] 22:58:10.386",
+      "op": "allocate",
+      "handle": 39,
+      "owner": "0x10e8b4000",
+      "lease": 28,
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x328fc4000",
+      "head": "0x19e9c000",
+      "rotation": false,
+      "tid": "0318",
+      "observed_tail": "0x1f03c000",
+      "clock_bounds": [
+        "22:58:10.386",
+        "22:58:10.652"
+      ],
+      "possible_seconds": [
+        81,
+        81
+      ]
+    },
+    {
+      "line": 38193,
+      "seconds": 81,
+      "clock": "[xp] 22:58:10.386",
+      "op": "allocate",
+      "handle": 40,
+      "owner": "0x10e8b4000",
+      "lease": 28,
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x344ff4000",
+      "head": "0x19ea0000",
+      "rotation": false,
+      "tid": "0318",
+      "clock_bounds": [
+        "22:58:10.386",
+        "22:58:10.652"
+      ],
+      "possible_seconds": [
+        81,
+        81
+      ]
+    },
+    {
+      "line": 38492,
+      "seconds": 81,
+      "clock": "[xp] 22:58:10.652",
+      "op": "release",
+      "handle": 39,
+      "owner": "0x10e8b4000",
+      "lease": 28,
+      "observed_rx": "0x328fc4000",
+      "observed": "0x4000",
+      "clock_bounds": [
+        "22:58:10.652",
+        "22:58:10.968"
+      ],
+      "possible_seconds": [
+        81,
+        81
+      ]
+    },
+    {
+      "line": 38512,
+      "seconds": 81,
+      "clock": "[xp] 22:58:10.652",
+      "op": "retire",
+      "owner": "0x10e8b4000",
+      "lease": 28,
+      "clock_bounds": [
+        "22:58:10.652",
+        "22:58:10.968"
+      ],
+      "possible_seconds": [
+        81,
+        81
+      ]
+    },
+    {
+      "line": 39143,
+      "seconds": 82,
+      "clock": "[xp] 22:58:11.859",
+      "op": "retire",
+      "owner": "0x700310000",
+      "lease": 21,
+      "clock_bounds": [
+        "22:58:11.859",
+        "22:58:12.185"
+      ],
+      "possible_seconds": [
+        82,
+        83
+      ]
+    },
+    {
+      "line": 39173,
+      "seconds": 82,
+      "clock": "[xp] 22:58:11.859",
+      "op": "retire",
+      "owner": "0x600310000",
+      "lease": 18,
+      "clock_bounds": [
+        "22:58:11.859",
+        "22:58:12.185"
+      ],
+      "possible_seconds": [
+        82,
+        83
+      ]
+    },
+    {
+      "line": 40092,
+      "seconds": 84,
+      "clock": "[xp] 22:58:13.930",
+      "op": "allocate",
+      "handle": 41,
+      "owner": "0x10e9c4000",
+      "lease": 31,
+      "requested": "0x4000",
+      "observed": "0x4000",
+      "observed_rx": "0x328fc0000",
+      "head": "0x1c738000",
+      "rotation": false,
+      "tid": "0340",
+      "observed_tail": "0x1f040000",
+      "clock_bounds": [
+        "22:58:13.930",
+        "22:58:14.183"
+      ],
+      "possible_seconds": [
+        84,
+        85
+      ]
+    },
+    {
+      "line": 40156,
+      "seconds": 85,
+      "clock": "[xp] 22:58:13.930",
+      "op": "allocate",
+      "handle": 42,
+      "owner": "0x10e9c4000",
+      "lease": 31,
+      "requested": "0x1000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x346ffc000",
+      "head": "0x1c738000",
+      "rotation": false,
+      "tid": "0340",
+      "clock_bounds": [
+        "22:58:13.930",
+        "22:58:14.183"
+      ],
+      "possible_seconds": [
+        84,
+        85
+      ],
+      "clock_reason": "Observed46ffc000 retired-buffer reuse requires age3 after retirement39173 in11.xxx; allocation13.930..14.xxx therefore uses later14 second85. Earlier tiny40092 may still occur in13 second84."
+    },
+    {
+      "line": 46094,
+      "seconds": 92,
+      "clock": "[xp] 22:58:21.624",
+      "op": "allocate",
+      "handle": 43,
+      "owner": "0x10e9c4000",
+      "lease": 31,
+      "requested": "0x8000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x344ff4000",
+      "head": "0x211a8000",
+      "rotation": true,
+      "tid": "0340",
+      "clock_bounds": [
+        "22:58:21.624",
+        "22:58:21.949"
+      ],
+      "possible_seconds": [
+        92,
+        92
+      ]
+    },
+    {
+      "line": 46102,
+      "seconds": 92,
+      "clock": "[xp] 22:58:21.624",
+      "op": "release",
+      "handle": 42,
+      "owner": "0x10e9c4000",
+      "lease": 31,
+      "observed_rx": "0x346ffc000",
+      "observed": "0x1000000",
+      "clock_bounds": [
+        "22:58:21.624",
+        "22:58:21.949"
+      ],
+      "possible_seconds": [
+        92,
+        92
+      ]
+    },
+    {
+      "line": 46557,
+      "seconds": 94,
+      "clock": "[xp] 22:58:23.572",
+      "op": "allocate",
+      "handle": 44,
+      "owner": "0x10e9c4000",
+      "lease": 31,
+      "requested": "0x8000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x346ffc000",
+      "head": "0x2741c000",
+      "rotation": true,
+      "tid": "0340",
+      "clock_bounds": [
+        "22:58:23.572",
+        "22:58:23.846"
+      ],
+      "possible_seconds": [
+        94,
+        94
+      ]
+    },
+    {
+      "line": 46565,
+      "seconds": 94,
+      "clock": "[xp] 22:58:23.572",
+      "op": "release",
+      "handle": 43,
+      "owner": "0x10e9c4000",
+      "lease": 31,
+      "observed_rx": "0x344ff4000",
+      "observed": "0x1000000",
+      "clock_bounds": [
+        "22:58:23.572",
+        "22:58:23.846"
+      ],
+      "possible_seconds": [
+        94,
+        94
+      ]
+    },
+    {
+      "line": 47218,
+      "seconds": 103,
+      "clock": "[xp] 22:58:32.885",
+      "op": "allocate",
+      "handle": 45,
+      "owner": "0x10e9c4000",
+      "lease": 31,
+      "requested": "0x8000000",
+      "observed": "0x1000000",
+      "observed_rx": "0x344ff4000",
+      "head": "0x2741c000",
+      "rotation": true,
+      "tid": "0340",
+      "clock_bounds": [
+        "22:58:32.885",
+        "22:58:33.176"
+      ],
+      "possible_seconds": [
+        103,
+        104
+      ]
+    },
+    {
+      "line": 47225,
+      "seconds": 103,
+      "clock": "[xp] 22:58:32.885",
+      "op": "release",
+      "handle": 44,
+      "owner": "0x10e9c4000",
+      "lease": 31,
+      "observed_rx": "0x346ffc000",
+      "observed": "0x1000000",
+      "clock_bounds": [
+        "22:58:32.885",
+        "22:58:33.176"
+      ],
+      "possible_seconds": [
+        103,
+        104
+      ]
+    }
+  ],
+  "description": "Complete logged main-tail grants, releases and exact-owner retirement order through the first client.dll failure. Installed512MiB cap was active. This capture has one extra fresh16MiB code unit compared with011804 and no successful client/embree copy before failure.",
+  "server": {
+    "line": 47184,
+    "requested": "0x2580000",
+    "actual_allocation_off": "0x19264000",
+    "observed_rx": "0x319267000",
+    "data_align_delta": "0x3000",
+    "placement": "logged image-free reuse; bump remains2741c000"
+  },
+  "owner_processes": [
+    {
+      "line": 859,
+      "backend": "libarm64ecfex.dll",
+      "module": "0xfbe180000",
+      "owner": "0x101208000",
+      "lease": 2
+    },
+    {
+      "line": 2349,
+      "backend": "libwow64fex.dll",
+      "module": "0x3ffab0000",
+      "owner": "0x400310000",
+      "lease": 4
+    },
+    {
+      "line": 3601,
+      "backend": "libarm64ecfex.dll",
+      "module": "0x3fefa0000",
+      "owner": "0x10120c000",
+      "lease": 5
+    },
+    {
+      "line": 7746,
+      "backend": "libarm64ecfex.dll",
+      "module": "0x3f7900000",
+      "owner": "0x100f94000",
+      "lease": 6
+    },
+    {
+      "line": 8051,
+      "backend": "libwow64fex.dll",
+      "module": "0x3f6e80000",
+      "owner": "0x500310000",
+      "lease": 7
+    },
+    {
+      "line": 14133,
+      "backend": "libarm64ecfex.dll",
+      "module": "0x3f1110000",
+      "owner": "0x101234000",
+      "lease": 10
+    },
+    {
+      "line": 14643,
+      "backend": "libwow64fex.dll",
+      "module": "0x3f03f0000",
+      "owner": "0x600310000",
+      "lease": 11
+    },
+    {
+      "line": 14836,
+      "backend": "libarm64ecfex.dll",
+      "module": "0x3efb20000",
+      "owner": "0x101238000",
+      "lease": 12
+    },
+    {
+      "line": 15218,
+      "backend": "libwow64fex.dll",
+      "module": "0x3eefd0000",
+      "owner": "0x700310000",
+      "lease": 13
+    },
+    {
+      "line": 24810,
+      "backend": "libwow64fex.dll",
+      "module": "0x3e9be0000",
+      "owner": "0x600310000",
+      "lease": 18
+    },
+    {
+      "line": 26532,
+      "backend": "libwow64fex.dll",
+      "module": "0x3e7c30000",
+      "owner": "0x700310000",
+      "lease": 21
+    },
+    {
+      "line": 33698,
+      "backend": "libarm64ecfex.dll",
+      "module": "0x3e7060000",
+      "owner": "0x1094ec000",
+      "lease": 22
+    },
+    {
+      "line": 34402,
+      "backend": "libarm64ecfex.dll",
+      "module": "0x3e5bd0000",
+      "owner": "0x10e898000",
+      "lease": 23
+    },
+    {
+      "line": 35193,
+      "backend": "libarm64ecfex.dll",
+      "module": "0x3e4740000",
+      "owner": "0x10e89c000",
+      "lease": 24
+    },
+    {
+      "line": 35968,
+      "backend": "libarm64ecfex.dll",
+      "module": "0x3e32b0000",
+      "owner": "0x10e8ec000",
+      "lease": 25
+    },
+    {
+      "line": 36663,
+      "backend": "libarm64ecfex.dll",
+      "module": "0x3e1e20000",
+      "owner": "0x10e9bc000",
+      "lease": 26
+    },
+    {
+      "line": 37329,
+      "backend": "libarm64ecfex.dll",
+      "module": "0x3e0990000",
+      "owner": "0x10e9e4000",
+      "lease": 27
+    },
+    {
+      "line": 38023,
+      "backend": "libarm64ecfex.dll",
+      "module": "0x3df500000",
+      "owner": "0x10e8b4000",
+      "lease": 28
+    },
+    {
+      "line": 39812,
+      "backend": "libarm64ecfex.dll",
+      "module": "0x3dd2b0000",
+      "owner": "0x10e9c4000",
+      "lease": 31
+    }
+  ],
+  "known_image_free_consumptions": [
+    {
+      "line": 46511,
+      "off": "0xb9dc000",
+      "bytes": "0x4000",
+      "purpose": "anonymous RWX",
+      "prior_extent_bounds": "unknown",
+      "prior_freed_at": "unknown"
+    },
+    {
+      "line": 46496,
+      "off": "0xdf88000",
+      "bytes": "0x1c000",
+      "purpose": "libgmodule-2.0-0.dll",
+      "prior_extent_bounds": "unknown",
+      "prior_freed_at": "unknown"
+    }
+  ]
+}

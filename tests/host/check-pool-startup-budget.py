@@ -30,7 +30,7 @@ def function(source, signature, closing='\n}'):
 ec = native[native.index('size_t alloc_size = (*size_ptr + 0x3FFF) & ~0x3FFFUL;'):]
 ec = ec[:ec.index('size_t reserve_offset, tail_added, tail_skipped = 0;')]
 assert 'int low_ok = ios_jit_low_size_global && !ios_wow_base();' in ec
-assert ec.count('goto retry_code_carve_reuse;') == 2
+assert ec.count('goto retry_code_carve_reuse;') == 3
 assert ec.count('ios_tail_carve_ready( &ios_tail_carves[') == 2, 'cap lift and reuse share one readiness rule'
 assert 'if (kept_large_carve && !reuse_all_carves)' in ec
 assert 'reuse_all_carves = 1;\n                low_fits = 0;' in ec
@@ -50,6 +50,7 @@ helpers = ''.join(function(native, signature) for signature in (
     'static int ios_pool_code_growth_fits(',
     'static int ios_pool_fresh_tail_fits(',
     'static int ios_tail_carve_ready(',
+    'static unsigned ios_pool_recent_retired_code_wait(',
 ))
 carve_start = native.index('#define IOS_TAIL_CARVE_MAX ')
 carve_table = native[carve_start:native.index('\n\n', carve_start)]
