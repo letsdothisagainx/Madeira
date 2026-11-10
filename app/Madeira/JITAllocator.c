@@ -1,4 +1,16 @@
 #include "JITAllocator.h"
+#if __has_include(".build-provenance/JITAllocator.generated.h")
+#include ".build-provenance/JITAllocator.generated.h"
+#endif
+#ifndef MADEIRA_JIT_ALLOCATOR_SOURCE_SHA256
+#define MADEIRA_JIT_ALLOCATOR_SOURCE_SHA256 "unknown"
+#endif
+#ifndef MADEIRA_JIT_BUILD_REVISION
+#define MADEIRA_JIT_BUILD_REVISION "unknown"
+#endif
+const char *jit_allocator_build_provenance(void) {
+    return "MadeiraJITAllocator:v1:" MADEIRA_JIT_ALLOCATOR_SOURCE_SHA256 ":" MADEIRA_JIT_BUILD_REVISION;
+}
 #include "../../build/madeira_cfg.h"   /* metal-validation (ml1249) */
 
 #include <mach/mach.h>

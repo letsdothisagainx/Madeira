@@ -24,6 +24,18 @@
 
 #include "config.h"
 #ifdef WINE_IOS
+#ifndef MADEIRA_NATIVE_VIRTUAL_SOURCE_SHA256
+#define MADEIRA_NATIVE_VIRTUAL_SOURCE_SHA256 "unknown"
+#endif
+#ifndef MADEIRA_NATIVE_BUILD_REVISION
+#define MADEIRA_NATIVE_BUILD_REVISION "unknown"
+#endif
+/* This record belongs to this compiled translation unit, including when its
+ * archive is reused by a later package. It is diagnostic, never a launch gate. */
+__attribute__((visibility("default"))) const char *ios_virtual_build_provenance(void)
+{
+    return "MadeiraNativeVirtual:v1:" MADEIRA_NATIVE_VIRTUAL_SOURCE_SHA256 ":" MADEIRA_NATIVE_BUILD_REVISION;
+}
 #include "cs2_observation.h"
 #endif
 #include "../madeira_cfg.h"   /* ml1095: one config file */
@@ -19190,6 +19202,15 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
                     getenv( "WINE_IOS_JIT_CODE_TAIL_LIMIT_MB" ), jit_pool_size );
                 dprintf( 2, "[pool-head] code-buffer budget targets %lu MB of image headroom (region C and recycled buffers unchanged)\n",
                          (unsigned long)(ios_pool_head_reserve >> 20) );
+                /* Actual parser outputs, separate from the app's compiled
+                 * startup policy and bounded pre-launch environment inputs. */
+                dprintf( 2, "[pool-policy-runtime-v1] native-source=%s pool-bytes=%lu parsed-head-reserve-bytes=%lu "
+                            "parsed-code-tail-limit-bytes=%lu configured-head-env=%s launch-head-env=%s code-tail-env=%s\n",
+                         MADEIRA_NATIVE_VIRTUAL_SOURCE_SHA256, (unsigned long)jit_pool_size,
+                         (unsigned long)ios_pool_head_reserve, (unsigned long)ios_pool_code_tail_limit,
+                         getenv("MADEIRA_POOL_HEAD_RESERVE_MB") ? "present" : "unset",
+                         getenv("WINE_IOS_JIT_HEAD_RESERVE_MB") ? "present" : "unset",
+                         getenv("WINE_IOS_JIT_CODE_TAIL_LIMIT_MB") ? "present" : "unset" );
                 if (ios_pool_code_tail_limit)
                     dprintf( 2, "[pool-head] fresh MAIN code growth budget=%lu MB; existing buffers, "
                              "region C and <=16MB fallback unchanged\n",
@@ -22162,7 +22183,7 @@ static NTSTATUS map_view( struct file_view **view_ret, void *base, size_t size,
                 if (ptr ? ios_storm_gate( &vs_storm )
                         : ceiling_relaxable ? (++vs_relaxed <= 64 || !(vs_relaxed % 1024)) : (vs_fails++ < 256))
                 dprintf( 2, "[va-scan] %s window=%p..%p size=%p align=%p %s tries=%u skips=%u"
-                            " | seen=%p..%p views=%u maxgap=%p tailgap=%p stop=%s"
+                            " | seen=%p..%p views=%u maxgap=%p tailgap=%p stop=%s scope=local-window gaps=wine-views-only"
                             " | firstfail=%p errno=%d(%s) %s%s\n",
                          ptr ? "SLOW" : "FAILED", start, end, (void *)size,
                          (void *)(align_mask + 1), top_down ? "top-down" : "bottom-up",
@@ -22173,7 +22194,7 @@ static NTSTATUS map_view( struct file_view **view_ret, void *base, size_t size,
                          ios_scan_fail_addr, ios_scan_fail_errno,
                          ios_scan_fail_errno ? strerror( ios_scan_fail_errno ) : "-", what,
                          ptr ? "" : (ceiling_relaxable ? "  --> relaxing ceiling, retrying unclamped"
-                                                       : "  <-- STATUS_NO_MEMORY (callers see a NULL alloc)") );
+                                                       : "  <-- local range probe failed; higher-range fallback may still succeed") );
                 }
             }
 #ifdef WINE_IOS

@@ -278,7 +278,12 @@ for src in $WINE_SRC/dlls/ntdll/unix/*.c; do
             compile_one "$BUILD_DIR/cdrom_stub.c" "cdrom"
             ;;
         virtual)
-            compile_one "$BUILD_DIR/virtual_ios.c" "virtual"
+            # Stamp the exact source compiled here. A cached native archive may
+            # retain this older build revision while matching newer packages.
+            python3 "$REPO_ROOT/tools/build/native-provenance.py" header --root "$REPO_ROOT" \
+                --component virtual --output "$OBJ_DIR/native-provenance.generated.h" \
+                --revision "${GITHUB_SHA:-$(git -C "$REPO_ROOT" rev-parse HEAD)}"
+            compile_one "$BUILD_DIR/virtual_ios.c" "virtual" -include "$OBJ_DIR/native-provenance.generated.h"
             ;;
         signal_arm64)
             compile_one "$BUILD_DIR/signal_arm64_ios.c" "signal_arm64"

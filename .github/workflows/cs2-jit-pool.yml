@@ -26,6 +26,10 @@ on:
       - build/ntdll-unix/signal_arm64_ios.c
       - tests/host/check-jit-alias-*.py
       - tests/host/check-pool-*.py
+      - tests/host/check-fex-code-guard-contract.py
+      - tests/host/check-native-build-provenance.py
+      - build/native_build_provenance.h
+      - tools/build/native-provenance.py
       - tests/host/fixtures/pool-cs2-*.json
       - tests/fixtures/jit-pool/**
       - tests/host/check-jit-pool-meter.py
@@ -69,6 +73,10 @@ on:
       - build/ntdll-unix/signal_arm64_ios.c
       - tests/host/check-jit-alias-*.py
       - tests/host/check-pool-*.py
+      - tests/host/check-fex-code-guard-contract.py
+      - tests/host/check-native-build-provenance.py
+      - build/native_build_provenance.h
+      - tools/build/native-provenance.py
       - tests/host/fixtures/pool-cs2-*.json
       - tests/fixtures/jit-pool/**
       - tests/host/check-jit-pool-meter.py
@@ -135,6 +143,9 @@ jobs:
           python3 tests/host/check-pool-code-growth-budget.py
           python3 tests/host/check-pool-retired-main.py
           python3 tests/host/check-pool-free-grace.py
+          python3 tests/host/check-pool-recent-code-wait.py
+          python3 tests/host/check-fex-code-guard-contract.py
+          python3 tests/host/check-native-build-provenance.py
           python3 tests/host/check-loader-import-failure-retention.py
           python3 tests/host/check-pool-cs2-scenesystem.py
           python3 tests/host/check-pool-rx-demotion.py

@@ -232,3 +232,6 @@ app/Madeira/arm64ec-windows/madeira-scm-probe.exe
 build/htmlipc/obj/
 app/Madeira/arm64ec-windows/madeira-htmlipc-bridge.dll
 app/Madeira/arm64ec-windows/madeira-htmlipc-bridge.manifest.json
+
+# Compile-input provenance generated immediately before the Xcode app build.
+app/Madeira/.build-provenance/

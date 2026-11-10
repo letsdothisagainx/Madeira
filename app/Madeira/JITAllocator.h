@@ -12,6 +12,9 @@ extern "C" {
 // Opaque handle to a dual-mapped JIT region
 typedef struct JITRegion JITRegion;
 
+// Diagnostic identity of the source compiled into this app, not a launch gate.
+const char *jit_allocator_build_provenance(void);
+
 // Create a dual-mapped JIT region of the given size.
 // Returns NULL on failure. Size is rounded up to page boundary.
 // The region has two views of the same physical memory:

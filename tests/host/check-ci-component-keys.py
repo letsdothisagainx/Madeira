@@ -26,6 +26,9 @@ assert templates['mingw'] in cache_lines['i386'], 'both MinGW consumers must use
 # Expected dependency edges are independent of the workflow expressions.
 cases = {
     'app': ('app/Madeira/Main.swift', {'ipa'}),
+    # Native Unix is rebuilt in each app job; only complete IPA reuse owns it.
+    'native-provenance-generator': ('tools/build/native-provenance.py', {'ipa'}),
+    'native-provenance-parser': ('build/native_build_provenance.h', {'ipa'}),
     'fex': ('pin:FEX', {'fex', 'ipa'}),
     'wine': ('pin:wine', {'wine-host', 'i386', 'dxmt', 'ipa'}),
     'dxmt': ('pin:dxmt', {'i386', 'dxmt', 'ipa'}),
