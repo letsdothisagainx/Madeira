@@ -64,7 +64,7 @@ assert native.index('const char *big = getenv( "MADEIRA_POOL_BIG_SLOT_MB" );') <
 
 ec = native[native.index('size_t alloc_size = (*size_ptr + 0x3FFF) & ~0x3FFFUL;'):]
 ec = ec[:ec.index('size_t pool_tail_off = ios_jit_pool_size_global - reserve_offset - alloc_size;')]
-assert 'int low_ok = ios_jit_low_size_global && !ios_wow_base();' in ec, 'WoW64 never gets a C carve'
+assert 'int low_ok = !ios_pool_image_limit && ios_jit_low_size_global && !ios_wow_base();' in ec, 'WoW64 and fixed image/code partitions never get a C carve'
 assert 'if (alloc_size > cap && !low_fits) {' in ec, 'the tail cap does not refuse what C can take'
 assert ec.count('(low_ok || !ios_tail_carve_in_low( ios_tail_carves[') == 2, \
     'a freed C carve is neither reused by nor counted for a WoW64 process'

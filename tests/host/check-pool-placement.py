@@ -52,7 +52,10 @@ assert 'if (!fits && below)' in source, 'an unavailable lower slot must try the 
 assert ('#define IOS_POOL_IN_HOLE(o) ((size_t)(o) - ios_jit_hole_off < ios_jit_hole_end - ios_jit_hole_off || \\\n'
         '                             (size_t)(o) - ios_jit_hole2_off < ios_jit_hole2_end - ios_jit_hole2_off)') in source, \
     'the warmer skips the native holes (pool-mid adds a second), never the slot'
-assert source.count('if (IOS_POOL_IN_HOLE(o)) continue;') == 4, 'the warmer skips only the native hole'
+warmer = function('static void *ios_pool_warmer_thread(')
+assert warmer.count('if (IOS_POOL_IN_HOLE(o) || ios_jit_code_guard_contains(') == 4, 'all four warmer loops skip native holes and permanent guards, while the image slot remains warm'
+assert warmer.index('pthread_mutex_lock( &ios_pool_lock )') < warmer.index('head = jit_pool_offset;'), 'guard-mode warming snapshots allocation bounds under the publication lock'
+assert warmer.index('pthread_mutex_unlock( &ios_pool_lock )') > warmer.rindex('sink += rx[o];'), 'both aliases stay synchronized with guard creation through the final read'
 
 harness = r'''
 #include <stdint.h>
