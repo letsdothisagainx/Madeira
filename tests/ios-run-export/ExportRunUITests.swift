@@ -106,8 +106,12 @@ final class ExportRunUITests: XCTestCase {
         // actual picker, rather than requiring a remote button to be included
         // in the host application's accessibility query on every iOS release.
         let files = XCUIApplication(bundleIdentifier: "com.apple.DocumentManagerUICore.SaveToFiles")
-        let save = files.buttons["DOCPicker.actionButton"].firstMatch
-        let pickerOpened = save.waitForExistence(timeout: 10)
+        XCTAssertTrue(files.wait(for: .runningForeground, timeout: 30), "Apple's Files extension must become foreground")
+        // A cold simulator's remote Files provider was still initializing
+        // after the old ten-second wait. Its later full AX snapshot showed
+        // this exact Save control; wait for readiness and use a complete query.
+        let save = files.buttons.matching(identifier: "DOCPicker.actionButton").element(boundBy: 0)
+        let pickerOpened = save.waitForExistence(timeout: 45)
         if !pickerOpened { preserveOwnedPickerState(app) }
         XCTAssertTrue(pickerOpened, "Native Files destination picker must open")
         XCTAssertEqual(save.label, "Save")
