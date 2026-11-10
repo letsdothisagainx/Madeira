@@ -77,7 +77,7 @@ final class ExportRunUITests: XCTestCase {
         }
     }
 
-    private func dismissNativeShare(_ app: XCUIApplication) {
+    private func dismissNativeShare(_ app: XCUIApplication, request: Int = 1) {
         // Current iOS exposes a Close button; older simulator releases use
         // Cancel. These are actual native controls, never a mocked completion.
         let close = app.buttons["Close"].firstMatch
@@ -88,8 +88,8 @@ final class ExportRunUITests: XCTestCase {
             // Public XCTest gesture mirrors dragging the native sheet away.
             app.swipeDown()
         }
-        event("event=share-finished", app: app)
-        event("event=share-presented", app: app)
+        event("event=share-finished request=\(request)", app: app)
+        event("event=share-presented request=\(request)", app: app)
     }
 
     func testActiveLandscapeExportSurvivesOriginDestructionAndOpensFiles() throws {
@@ -99,17 +99,26 @@ final class ExportRunUITests: XCTestCase {
         request(app, controls: true)
         confirmNativeShare(app)
         openNativeFiles(app)
-        // The system Files interface must open; producing a ZIP alone cannot
-        // satisfy this check. Cancel leaves the user's storage untouched.
-        let save = app.buttons["Save"].firstMatch
+        // The system Files interface must open and perform its own copy into
+        // the isolated host's Documents folder; the archive factory cannot
+        // write the destination that the collector subsequently verifies.
+        // Save to Files runs in Apple's native extension process. Query its
+        // actual picker, rather than requiring a remote button to be included
+        // in the host application's accessibility query on every iOS release.
+        let files = XCUIApplication(bundleIdentifier: "com.apple.DocumentManagerUICore.SaveToFiles")
+        let save = files.buttons["DOCPicker.actionButton"].firstMatch
         let pickerOpened = save.waitForExistence(timeout: 10)
-        preserveOwnedPickerState(app)
+        if !pickerOpened { preserveOwnedPickerState(app) }
         XCTAssertTrue(pickerOpened, "Native Files destination picker must open")
-        let cancel = app.buttons["Cancel"].firstMatch
-        XCTAssertTrue(cancel.waitForExistence(timeout: 5)); cancel.tap()
-        let events = app.staticTexts["host.events"].firstMatch
-        if !events.exists || !events.label.contains("event=share-finished") { dismissNativeShare(app) }
-        event("event=share-finished", app: app)
+        XCTAssertEqual(save.label, "Save")
+        XCTAssertTrue(files.otherElements["Browse View (Picker)"].firstMatch.exists)
+        let picker = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        picker.name = "Owned host native Files destination picker"; picker.lifetime = .keepAlways
+        add(picker)
+        let ownedFolder = files.cells["Run Export Host, Container"].firstMatch
+        XCTAssertTrue(ownedFolder.waitForExistence(timeout: 5)); ownedFolder.tap()
+        XCTAssertTrue(save.isEnabled); XCTAssertTrue(save.isHittable); save.tap()
+        event("event=share-finished request=1 completed=1", app: app, timeout: 20)
         XCTAssertTrue(app.buttons["library-menu"].waitForExistence(timeout: 8))
         XCTAssertTrue(app.staticTexts["host.session"].firstMatch.label.contains("session-ended"))
         XCTAssertTrue(app.staticTexts["host.key-window"].firstMatch.label.contains("library"))
@@ -117,7 +126,7 @@ final class ExportRunUITests: XCTestCase {
         // application-lifetime coordinator and a real native activity.
         request(app)
         XCTAssertTrue(saveToFiles(app).waitForExistence(timeout: 5))
-        dismissNativeShare(app)
+        dismissNativeShare(app, request: 2)
         event("event=share-presented request=2", app: app)
     }
 
@@ -130,7 +139,7 @@ final class ExportRunUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["host.key-window"].firstMatch.label.contains("library"))
         request(app)
         XCTAssertTrue(saveToFiles(app).waitForExistence(timeout: 15))
-        dismissNativeShare(app)
+        dismissNativeShare(app, request: 2)
         event("event=share-presented request=2", app: app)
     }
 
