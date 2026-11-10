@@ -36397,6 +36397,106 @@ static unsigned int get_memory_image_info( HANDLE process, LPCVOID addr, MEMORY_
  * (wine/dlls/ntdll/unwind.c), which keeps the same value. */
 #define MemoryWineIosSubfloorWindow ((MEMORY_INFORMATION_CLASS)1006)
 
+#ifdef WINE_IOS
+/* VM identity queries must not use the permissive reverse translation used
+ * by unwind/late-return paths. A retained RX copy can outlive its PE view,
+ * and that PE address can already describe a different file. This proves
+ * address identity only, not a publisher or cryptographic trust level; the
+ * underlying query still supplies its ordinary metadata. Keep a snapshot
+ * across wineserver IPC without holding either allocator lock. */
+struct ios_jit_query_identity
+{
+    struct ios_jit_mapping *mapping;
+    unsigned long long generation, lease;
+    void *process_owner, *image_owner, *mapped_by, *pe_base, *rx_base;
+    size_t size;
+};
+
+/* OpenProcess(self) is a real handle, not necessarily the pseudo-handle.
+ * Resolve only its logical process identity; keep that original handle for
+ * every VM query so wineserver/APC still checks its actual access rights. */
+static int ios_jit_query_self_process( HANDLE process )
+{
+    TEB *teb = NtCurrentTeb();
+    PROCESS_BASIC_INFORMATION pbi;
+
+    if (!teb || !teb->ClientId.UniqueProcess) return 0;
+    if (process == NtCurrentProcess()) return 1;
+    if (NtQueryInformationProcess( process, ProcessBasicInformation, &pbi, sizeof(pbi), NULL )) return 0;
+    return pbi.UniqueProcessId == (ULONG_PTR)teb->ClientId.UniqueProcess;
+}
+
+static int ios_jit_query_identity_valid( const struct ios_jit_query_identity *identity )
+{
+    const struct ios_jit_mapping *m = identity->mapping;
+    if (!m || !identity->generation || !identity->lease ||
+        ios_jit_current_peb() != identity->process_owner ||
+        ios_thread_process_lease( identity->process_owner, 0 ) != identity->lease ||
+        ios_thread_process_quiescent_lease( identity->process_owner ) == identity->lease ||
+        __atomic_load_n( &m->generation, __ATOMIC_ACQUIRE ) != identity->generation ||
+        __atomic_load_n( &m->unmapped, __ATOMIC_RELAXED ) ||
+        __atomic_load_n( &m->pe_base, __ATOMIC_RELAXED ) != identity->pe_base ||
+        __atomic_load_n( &m->jit_base, __ATOMIC_RELAXED ) != identity->rx_base ||
+        __atomic_load_n( &m->size, __ATOMIC_RELAXED ) != identity->size ||
+        __atomic_load_n( &m->owner_peb, __ATOMIC_RELAXED ) != identity->image_owner ||
+        __atomic_load_n( &m->map_peb, __ATOMIC_RELAXED ) != identity->mapped_by) return 0;
+    return __atomic_load_n( &m->generation, __ATOMIC_ACQUIRE ) == identity->generation &&
+           ios_thread_process_lease( identity->process_owner, 0 ) == identity->lease;
+}
+
+static LPCVOID ios_jit_query_identity_begin( int self_process, LPCVOID address,
+                                            struct ios_jit_query_identity *identity )
+{
+    uintptr_t a = (uintptr_t)address;
+    int i, count;
+    memset( identity, 0, sizeof(*identity) );
+    /* Legacy reload mode deliberately disables unload invalidation. Without
+     * that lifetime evidence, a pool address cannot supply PE file identity. */
+    if (!self_process || !ios_image_reload_mode() ||
+        ios_jit_code_guard_contains( a, 1 )) return address;
+    identity->process_owner = ios_jit_current_peb();
+    if (!identity->process_owner ||
+        !(identity->lease = ios_thread_process_lease( identity->process_owner, 0 ))) return address;
+    count = __atomic_load_n( &ios_jit_mapping_count, __ATOMIC_ACQUIRE );
+    if (count < 0 || count > IOS_JIT_MAX_MAPPINGS) return address;
+    for (i = 0; i < count; i++)
+    {
+        struct ios_jit_mapping *m = &ios_jit_mappings[i];
+        uintptr_t rx, pe;
+        identity->generation = __atomic_load_n( &m->generation, __ATOMIC_ACQUIRE );
+        identity->rx_base = __atomic_load_n( &m->jit_base, __ATOMIC_RELAXED );
+        identity->pe_base = __atomic_load_n( &m->pe_base, __ATOMIC_RELAXED );
+        identity->size = __atomic_load_n( &m->size, __ATOMIC_RELAXED );
+        identity->image_owner = __atomic_load_n( &m->owner_peb, __ATOMIC_RELAXED );
+        identity->mapped_by = __atomic_load_n( &m->map_peb, __ATOMIC_RELAXED );
+        rx = (uintptr_t)identity->rx_base;
+        pe = (uintptr_t)identity->pe_base;
+        if (!identity->generation || !rx || !pe || !identity->size ||
+            a < rx || a - rx >= identity->size || pe > UINTPTR_MAX - (a - rx) ||
+            (identity->image_owner && (identity->image_owner != identity->process_owner ||
+                                       identity->mapped_by != identity->process_owner))) continue;
+        /* NULL ownership explicitly denotes the default/shared copy. It is
+         * not a private foreign-owner fallback; the real current-process VM
+         * query still decides whether its original PE view is mapped. */
+        identity->mapping = m;
+        if (ios_jit_query_identity_valid( identity )) return (LPCVOID)(pe + (a - rx));
+        identity->mapping = NULL;
+    }
+    return address;
+}
+
+static NTSTATUS ios_jit_query_identity_finish( const struct ios_jit_query_identity *identity,
+                                              NTSTATUS status )
+{
+    /* Preserve real access/length/server errors. A successful reply from a
+     * changed mapping is not evidence about the old executable copy. Slot
+     * generations also reject unload/reload ABA at the same PE/RX addresses. */
+    if (identity->mapping && (!status || status == STATUS_BUFFER_OVERFLOW) &&
+        !ios_jit_query_identity_valid( identity )) return STATUS_INVALID_ADDRESS;
+    return status;
+}
+#endif
+
 /***********************************************************************
  *             NtQueryVirtualMemory   (NTDLL.@)
  *             ZwQueryVirtualMemory   (NTDLL.@)
@@ -36408,6 +36508,10 @@ NTSTATUS WINAPI NtQueryVirtualMemory( HANDLE process, LPCVOID addr,
     NTSTATUS status;
 
 #ifdef WINE_IOS
+    struct ios_jit_query_identity query_identity = {0};
+    int image_query = info_class == MemoryBasicInformation || info_class == MemoryMappedFilenameInformation ||
+                      info_class == MemoryRegionInformation || info_class == MemoryImageInformation;
+    int self_query = image_query && ios_jit_query_self_process( process );
     if (info_class == MemoryWineIosSubfloorWindow)
     {
         extern int ios_subfloor_enum( int idx, unsigned long long *low, unsigned long long *real,
@@ -36437,14 +36541,21 @@ NTSTATUS WINAPI NtQueryVirtualMemory( HANDLE process, LPCVOID addr,
         }
         return STATUS_INVALID_ADDRESS;
     }
-    /* PE code in JIT pool computes addresses via ADRP relative to JIT PC.
-     * Translate JIT addresses back to original PE addresses for VM queries. */
-    addr = ios_jit_reverse_translate_addr(addr);
-    /* ml966: VirtualQuery on a low guest allocation must describe the backing,
-     * otherwise the guest sees "free" for memory it holds. */
+    /* Public identity queries require a live current-process alias. Working-
+     * set queries carry addresses in their buffer, not the addr argument.
+     * Preserve the separate private Wine loader protocols' legacy address
+     * translation; their pointer contracts are outside this identity query. */
+    if (image_query || (info_class >= MemoryWineLoadUnixLib && info_class <= MemoryWineIosJitPoolAddress))
     {
         unsigned long long lo_real = 0;
-        if (ios_lowalloc_translate( (unsigned long long)(ULONG_PTR)addr, 1, &lo_real, NULL ))
+        int local_aliases = image_query ? self_query : process == NtCurrentProcess();
+
+        if (image_query) addr = ios_jit_query_identity_begin( self_query, addr, &query_identity );
+        else if (process == NtCurrentProcess()) addr = ios_jit_reverse_translate_addr( addr );
+        /* ml966: VirtualQuery on a low guest allocation must describe the
+         * backing, otherwise the guest sees "free" for memory it holds. */
+        if (local_aliases &&
+            ios_lowalloc_translate( (unsigned long long)(ULONG_PTR)addr, 1, &lo_real, NULL ))
         {
             static int lq_n;
             if (lq_n < 16)
@@ -36454,7 +36565,8 @@ NTSTATUS WINAPI NtQueryVirtualMemory( HANDLE process, LPCVOID addr,
             }
             addr = (LPCVOID)(ULONG_PTR)lo_real;
         }
-        else if (ios_subfloor_image_translate( (unsigned long long)(ULONG_PTR)addr, 1, &lo_real ))
+        else if (local_aliases &&
+                 ios_subfloor_image_translate( (unsigned long long)(ULONG_PTR)addr, 1, &lo_real ))
         {
             static int sq_n;   /* ml1201: describe the sub-floor image's real mapping */
             if (sq_n++ < 16)
@@ -36470,19 +36582,35 @@ NTSTATUS WINAPI NtQueryVirtualMemory( HANDLE process, LPCVOID addr,
     switch(info_class)
     {
         case MemoryBasicInformation:
-            return get_basic_memory_info( process, addr, buffer, len, res_len );
+            status = get_basic_memory_info( process, addr, buffer, len, res_len );
+#ifdef WINE_IOS
+            status = ios_jit_query_identity_finish( &query_identity, status );
+#endif
+            return status;
 
         case MemoryWorkingSetExInformation:
             return get_working_set_ex( process, addr, buffer, len, res_len );
 
         case MemoryMappedFilenameInformation:
-            return get_memory_section_name( process, addr, buffer, len, res_len );
+            status = get_memory_section_name( process, addr, buffer, len, res_len );
+#ifdef WINE_IOS
+            status = ios_jit_query_identity_finish( &query_identity, status );
+#endif
+            return status;
 
         case MemoryRegionInformation:
-            return get_memory_region_info( process, addr, buffer, len, res_len );
+            status = get_memory_region_info( process, addr, buffer, len, res_len );
+#ifdef WINE_IOS
+            status = ios_jit_query_identity_finish( &query_identity, status );
+#endif
+            return status;
 
         case MemoryImageInformation:
-            return get_memory_image_info( process, addr, buffer, len, res_len );
+            status = get_memory_image_info( process, addr, buffer, len, res_len );
+#ifdef WINE_IOS
+            status = ios_jit_query_identity_finish( &query_identity, status );
+#endif
+            return status;
 
         case MemoryWineLoadUnixLib:
         case MemoryWineLoadUnixLibWow64:
