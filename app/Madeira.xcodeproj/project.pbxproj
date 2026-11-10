@@ -41,6 +41,7 @@
 		A10006F2 /* SwiftSteam/Content/SteamContentIntegrity.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20006F2 /* SteamContentIntegrity.swift */; };
 		A10006F3 /* SteamIntegrityDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20006F3 /* SteamIntegrityDiagnostics.swift */; };
 		A10006F7 /* RunDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20006F7 /* RunDiagnostics.swift */; };
+		A10006F8 /* RunExportPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20006F8 /* RunExportPresentation.swift */; };
 		A10006F4 /* SteamGameDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20006F4 /* SteamGameDiagnostics.swift */; };
 		A10006F5 /* CS2VACMarkers.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20006F5 /* CS2VACMarkers.swift */; };
 		A10006F6 /* GraphicsPixelProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20006F6 /* GraphicsPixelProbe.swift */; };
@@ -265,6 +266,7 @@
 		A20006F2 /* SteamContentIntegrity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SwiftSteam/Content/SteamContentIntegrity.swift"; sourceTree = "<group>"; };
 		A20006F3 /* SteamIntegrityDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SteamIntegrityDiagnostics.swift"; sourceTree = "<group>"; };
 		A20006F7 /* RunDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RunDiagnostics.swift"; sourceTree = "<group>"; };
+		A20006F8 /* RunExportPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RunExportPresentation.swift"; sourceTree = "<group>"; };
 		A20006F4 /* SteamGameDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SteamGameDiagnostics.swift"; sourceTree = "<group>"; };
 		A20006F5 /* CS2VACMarkers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CS2VACMarkers.swift"; sourceTree = "<group>"; };
 		A20006F6 /* GraphicsPixelProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "GraphicsPixelProbe.swift"; sourceTree = "<group>"; };
@@ -538,6 +540,7 @@
 				A20006F2 /* SteamContentIntegrity.swift */,
 				A20006F3 /* SteamIntegrityDiagnostics.swift */,
 				A20006F7 /* RunDiagnostics.swift */,
+				A20006F8 /* RunExportPresentation.swift */,
 				A20006F4 /* SteamGameDiagnostics.swift */,
 				A20006F5 /* CS2VACMarkers.swift */,
 				A20006F6 /* GraphicsPixelProbe.swift */,
@@ -926,6 +929,7 @@
 				A10006F2 /* SwiftSteam/Content/SteamContentIntegrity.swift in Sources */,
 				A10006F3 /* SteamIntegrityDiagnostics.swift in Sources */,
 				A10006F7 /* RunDiagnostics.swift in Sources */,
+				A10006F8 /* RunExportPresentation.swift in Sources */,
 				A10006F4 /* SteamGameDiagnostics.swift in Sources */,
 				A10006F5 /* CS2VACMarkers.swift in Sources */,
 				A10006F6 /* GraphicsPixelProbe.swift in Sources */,

@@ -1,0 +1,5 @@
+RunExportUI.xcodeproj/
+DerivedData/
+*.xcresult/
+simulator-evidence/
+__pycache__/

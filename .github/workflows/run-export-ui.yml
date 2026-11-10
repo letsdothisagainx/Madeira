@@ -1,0 +1,45 @@
+name: Verify Run export native iOS presentation
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'codex/pr-build-*', codex/validate-cs2-integrity-runtime-4b41]
+    paths:
+      - app/Madeira/RunExportPresentation.swift
+      - app/Madeira/SteamGameDiagnostics.swift
+      - app/Madeira/LogStore.swift
+      - app/Madeira/ContentView.swift
+      - tests/ios-run-export/**
+      - .github/workflows/run-export-ui.yml
+  pull_request:
+    paths:
+      - app/Madeira/RunExportPresentation.swift
+      - app/Madeira/SteamGameDiagnostics.swift
+      - app/Madeira/LogStore.swift
+      - app/Madeira/ContentView.swift
+      - tests/ios-run-export/**
+      - .github/workflows/run-export-ui.yml
+concurrency:
+  group: run-export-ui-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  actual-native-presentation:
+    runs-on: xcode-27
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate literal old UI and owned ZIP fixture
+        run: python3 tests/ios-run-export/generate_project.py --check
+      - name: Tap production Run export and use native Files sharing
+        run: python3 tests/ios-run-export/run_simulator.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: run-export-owned-ui-results
+          path: |
+            tests/ios-run-export/*.xcresult
+            tests/ios-run-export/simulator-evidence
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 6

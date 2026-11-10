@@ -1,0 +1,15 @@
+{
+  "sourceRevision": "d6d40213695db7b1ab0f7a9b1dd95edbcda0d7ec",
+  "views": [
+    {
+      "source": "app/Madeira/SteamGameDiagnostics.swift",
+      "name": "SteamGameDiagnosticsExportButton",
+      "sha256": "5400daea37e645b28f99029ff7cdfcd4886da7d8d8ee20a22ace1fdabdadfb4b"
+    },
+    {
+      "source": "app/Madeira/SavesAndShortcuts.swift",
+      "name": "ActivitySheet",
+      "sha256": "3308c670c6704f900b070a72a6e75f86aec8a2d0e83d1c8bb857293bddf5bcce"
+    }
+  ]
+}

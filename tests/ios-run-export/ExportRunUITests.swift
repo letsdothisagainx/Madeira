@@ -1,0 +1,142 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+import XCTest
+
+final class ExportRunUITests: XCTestCase {
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .portrait
+    }
+
+    private func launch(_ arguments: [String] = []) -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments = arguments
+        app.launch()
+        return app
+    }
+
+    private func request(_ app: XCUIApplication, controls: Bool = false, baseline: Bool = false) {
+        let menu = app.buttons[controls ? "controls-menu" : "library-menu"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 10))
+        menu.tap()
+        let button = app.buttons[baseline ? "Export Run Diagnostics" : "madeira.export-run"]
+        XCTAssertTrue(button.waitForExistence(timeout: 5))
+        button.tap()
+    }
+
+    private func event(_ text: String, app: XCUIApplication, timeout: TimeInterval = 10) {
+        let value = app.staticTexts["host.events"].firstMatch
+        let match = NSPredicate(format: "label CONTAINS %@", text)
+        expectation(for: match, evaluatedWith: value)
+        waitForExpectations(timeout: timeout)
+    }
+
+    private func saveToFiles(_ app: XCUIApplication) -> XCUIElement {
+        let predicate = NSPredicate(format: "label == %@", "Save to Files")
+        return app.descendants(matching: .any).matching(predicate).firstMatch
+    }
+
+    private func confirmNativeShare(_ app: XCUIApplication) {
+        XCTAssertTrue(saveToFiles(app).waitForExistence(timeout: 15), "Native Files sharing action must actually be visible")
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "Owned host native share interface"; shot.lifetime = .keepAlways
+        add(shot)
+    }
+
+    private func openNativeFiles(_ app: XCUIApplication) {
+        let action = saveToFiles(app)
+        XCTAssertTrue(action.waitForExistence(timeout: 8))
+        for _ in 0..<4 where !action.isHittable { app.swipeUp() }
+        XCTAssertTrue(action.isHittable, "Native Files action must receive a real tap")
+        action.tap()
+    }
+
+    private func dismissNativeShare(_ app: XCUIApplication) {
+        // Current iOS exposes a Close button; older simulator releases use
+        // Cancel. These are actual native controls, never a mocked completion.
+        let close = app.buttons["Close"].firstMatch
+        let cancel = app.buttons["Cancel"].firstMatch
+        if close.waitForExistence(timeout: 3) { close.tap() }
+        else if cancel.exists { cancel.tap() }
+        else {
+            // Public XCTest gesture mirrors dragging the native sheet away.
+            app.swipeDown()
+        }
+        event("event=share-finished", app: app)
+        event("event=share-presented", app: app)
+    }
+
+    func testActiveLandscapeExportSurvivesOriginDestructionAndOpensFiles() throws {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = launch(["--active-game", "--drop-origin"])
+        request(app, controls: true)
+        confirmNativeShare(app)
+        openNativeFiles(app)
+        // The system Files interface must open; producing a ZIP alone cannot
+        // satisfy this check. Cancel leaves the user's storage untouched.
+        let save = app.buttons["Save"].firstMatch
+        XCTAssertTrue(save.waitForExistence(timeout: 10), "Native Files destination picker must open")
+        let cancel = app.buttons["Cancel"].firstMatch
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5)); cancel.tap()
+        let events = app.staticTexts["host.events"].firstMatch
+        if !events.exists || !events.label.contains("event=share-finished") { dismissNativeShare(app) }
+        event("event=share-finished", app: app)
+        XCTAssertTrue(app.buttons["library-menu"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts["host.session"].firstMatch.label.contains("session-ended"))
+        XCTAssertTrue(app.staticTexts["host.key-window"].firstMatch.label.contains("library"))
+        // Export again after the game controls disappeared, using the same
+        // application-lifetime coordinator and a real native activity.
+        request(app)
+        XCTAssertTrue(saveToFiles(app).waitForExistence(timeout: 5))
+        dismissNativeShare(app)
+        event("event=share-presented request=2", app: app)
+    }
+
+    func testEndedSessionExportAndNativeCancellationRestoreWindow() throws {
+        XCUIDevice.shared.orientation = .portrait
+        let app = launch()
+        request(app)
+        confirmNativeShare(app)
+        dismissNativeShare(app)
+        XCTAssertTrue(app.staticTexts["host.key-window"].firstMatch.label.contains("library"))
+        request(app)
+        XCTAssertTrue(saveToFiles(app).waitForExistence(timeout: 15))
+        dismissNativeShare(app)
+        event("event=share-presented request=2", app: app)
+    }
+
+    func testActiveControlsRemainUsableAfterNativeShareCancel() throws {
+        let app = launch(["--active-game"])
+        request(app, controls: true)
+        confirmNativeShare(app)
+        dismissNativeShare(app)
+        XCTAssertTrue(app.staticTexts["host.key-window"].firstMatch.label.contains("controls"))
+        let end = app.buttons["end-controls"]
+        XCTAssertTrue(end.waitForExistence(timeout: 5)); end.tap()
+        XCTAssertTrue(app.buttons["library-menu"].waitForExistence(timeout: 5))
+    }
+
+    func testArchiveFailureShowsUsefulNativeAlertAndCanRetry() throws {
+        let app = launch(["--fail-archive"])
+        request(app)
+        let alert = app.alerts["Run export failed"]
+        XCTAssertTrue(alert.waitForExistence(timeout: 10))
+        XCTAssertTrue(alert.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] 'free storage'")).firstMatch.exists)
+        XCTAssertFalse(alert.staticTexts.allElementsBoundByIndex.map(\.label).joined().contains("credential-canary"))
+        alert.buttons["OK"].tap()
+        event("event=failed request=1 stage=archive", app: app)
+        request(app)
+        XCTAssertTrue(alert.waitForExistence(timeout: 10))
+        event("event=requested request=2", app: app)
+    }
+
+    func testLiteralD6ButtonLosesPresentationWhenItsOriginIsDestroyed() throws {
+        let app = launch(["--baseline-d6", "--active-game", "--drop-origin"])
+        request(app, controls: true, baseline: true)
+        event("event=factory-created", app: app)
+        // This is a captured D6 production control, with only its archive
+        // producer supplied by the owned fixture. Its button-owned sheet is
+        // gone; the corrected tests above require a real native share view.
+        XCTAssertFalse(saveToFiles(app).waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["library-menu"].exists)
+    }
+}

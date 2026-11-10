@@ -4414,6 +4414,12 @@ final class ControlsWindow: UIWindow {
         // Edit mode owns the whole screen: drags and the scale pinch must not
         // leak through and swing the camera while you are arranging buttons.
         if m.editing { return super.hitTest(point, with: event) }
+        // A real UIKit presentation owns its window's interaction even after
+        // the session/menu ends. This does not change ordinary click-through.
+        if let modal = rootViewController?.presentedViewController,
+           !modal.isBeingDismissed, modal.viewIfLoaded?.window === self {
+            return super.hitTest(point, with: event)
+        }
         // ml1970: the layout menu and its dialogs are UIKit presentations
         // outside the hosting view (an alert's dimming view covers the screen).
         // While one is up it takes the touches it covers; otherwise its buttons
