@@ -602,12 +602,15 @@ enum StikJITHelper {
             // Wine adopts the separately owned high-host FEX reservation
             // without releasing it. ContentView publishes the returned JIT
             // tuple before Wine starts; Wine validates all real VM spans.
-            var heldFEXBase: UInt64 = 0, heldFEXSize: UInt64 = 0, heldFEXObject: UInt64 = 0
-            if jit_required_pool_fex_reservation(&heldFEXBase, &heldFEXSize, &heldFEXObject) {
-                setenv("WINE_IOS_FEX_EARLY_V1", String(format: "%llx:%llx:%llx", heldFEXBase, heldFEXSize, heldFEXObject), 1)
+            var heldFEXBase: UInt64 = 0, heldFEXSize: UInt64 = 0
+            var heldFEXReceipt: UnsafePointer<CChar>?
+            if jit_required_pool_fex_reservation(&heldFEXBase, &heldFEXSize, &heldFEXReceipt),
+               let heldFEXReceipt {
+                setenv("WINE_IOS_FEX_EARLY_V2", heldFEXReceipt, 1)
             } else {
-                unsetenv("WINE_IOS_FEX_EARLY_V1")
+                unsetenv("WINE_IOS_FEX_EARLY_V2")
             }
+            unsetenv("WINE_IOS_FEX_EARLY_V1")
             setenv("WINE_IOS_JIT_PAIR_V1", "1", 1)
             let exempt = jit_make_region_no_footprint(rwPtr, requestedPoolSize, "pool-RW-alias")
             LogStore.shared.log("[no-footprint] pool applied=\(exempt)", level: exempt ? .success : .error)
@@ -627,6 +630,7 @@ enum StikJITHelper {
         }
         unsetenv("WINE_IOS_JIT_PAIR_V1")
         unsetenv("WINE_IOS_FEX_EARLY_V1")
+        unsetenv("WINE_IOS_FEX_EARLY_V2")
 
         let goodLow = 0x119000000
         let guestLo = 0x7000000000

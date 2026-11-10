@@ -4824,8 +4824,26 @@ static int ios_native_high_jit_pool;
 static NTSTATUS ios_native_required_pool_status;
 static uintptr_t ios_native_fex_hold_base;
 static size_t ios_native_fex_hold_size;
-static uint64_t ios_native_fex_hold_object;
 static int ios_native_fex_hold_pending;
+
+/* BEGIN NATIVE FEX RECEIPT V2 */
+#define IOS_NATIVE_FEX_RECEIPT_MAX 256
+#define IOS_NATIVE_FEX_RECEIPT_BYTES 16384
+struct ios_native_fex_segment
+{
+    uint64_t offset, length, object, backing_offset;
+    uint32_t maximum;
+};
+struct ios_native_fex_receipt
+{
+    uintptr_t base;
+    size_t size;
+    unsigned int count;
+    struct ios_native_fex_segment segments[IOS_NATIVE_FEX_RECEIPT_MAX];
+};
+/* END NATIVE FEX RECEIPT V2 */
+
+static struct ios_native_fex_receipt ios_native_fex_hold_receipt;
 
 static int ios_native_jit_number( const char *name, uintptr_t *value )
 {
@@ -4859,6 +4877,8 @@ static int ios_native_jit_span_has_protection( uintptr_t base, size_t size,
 
         do
         {
+            address = cursor;
+            length = 0;
             count = VM_REGION_SUBMAP_INFO_COUNT_64;
             kr = mach_vm_region_recurse( mach_task_self(), &address, &length, &depth,
                                          (vm_region_recurse_info_t)&info, &count );
@@ -4878,28 +4898,139 @@ static int ios_native_jit_span_has_protection( uintptr_t base, size_t size,
     return cursor == end;
 }
 
-static int ios_native_fex_hold_description( uintptr_t *base, size_t *size, uint64_t *object )
+/* Every word is bounded hexadecimal. Separators and the final NUL are part
+ * of the versioned format, so partial, signed or extra fields cannot acquire
+ * ownership. The receipt carries actual VM objects, not a digest of them. */
+static int ios_native_fex_receipt_word( const char **cursor, uint64_t *value, int more )
 {
-    const char *text = getenv( "WINE_IOS_FEX_EARLY_V1" );
-    char *separator, *second, *end;
-    unsigned long long address, length, identity;
+    const unsigned char *p = (const unsigned char *)*cursor;
+    uint64_t number = 0;
+    unsigned int digits = 0, digit;
 
-    if (!text || !*text || *text == '-' || *text == '+') return 0;
-    errno = 0;
-    address = strtoull( text, &separator, 16 );
-    if (errno || separator == text || *separator != ':' || !separator[1] ||
-        separator[1] == '-' || separator[1] == '+') return 0;
-    length = strtoull( separator + 1, &second, 16 );
-    if (errno || second == separator + 1 || *second != ':' || !second[1] ||
-        second[1] == '-' || second[1] == '+') return 0;
-    identity = strtoull( second + 1, &end, 16 );
-    if (errno || end == second + 1 || *end || !identity || identity > UINT32_MAX ||
-        length != 0x200000000ULL || address < 0x7c00000000ULL ||
-        address > 0x8000000000ULL - length || (address & 0xffff)) return 0;
-    *base = address;
-    *size = length;
-    *object = identity;
+    for (;; p++)
+    {
+        if (*p >= '0' && *p <= '9') digit = *p - '0';
+        else if (*p >= 'a' && *p <= 'f') digit = *p - 'a' + 10;
+        else if (*p >= 'A' && *p <= 'F') digit = *p - 'A' + 10;
+        else break;
+        if (++digits > 16 || number > (UINT64_MAX - digit) / 16) return 0;
+        number = number * 16 + digit;
+    }
+    if (!digits || (more ? *p != ':' : *p != 0)) return 0;
+    *cursor = (const char *)p + (more ? 1 : 0);
+    *value = number;
     return 1;
+}
+
+static int ios_native_fex_hold_description( struct ios_native_fex_receipt *receipt )
+{
+    const char *text = getenv( "WINE_IOS_FEX_EARLY_V2" ), *cursor = text;
+    uint64_t version, base, size, count, covered = 0;
+    unsigned int i;
+
+    memset( receipt, 0, sizeof(*receipt) );
+    if (!text || strnlen( text, IOS_NATIVE_FEX_RECEIPT_BYTES + 1 ) > IOS_NATIVE_FEX_RECEIPT_BYTES ||
+        !ios_native_fex_receipt_word( &cursor, &version, 1 ) || version != 2 ||
+        !ios_native_fex_receipt_word( &cursor, &base, 1 ) ||
+        !ios_native_fex_receipt_word( &cursor, &size, 1 ) ||
+        !ios_native_fex_receipt_word( &cursor, &count, 1 ) ||
+        !count || count > IOS_NATIVE_FEX_RECEIPT_MAX || size != 0x200000000ULL ||
+        base < 0x7c00000000ULL || base > 0x8000000000ULL - size || (base & 0xffff)) return 0;
+    receipt->base = base;
+    receipt->size = size;
+    receipt->count = count;
+    for (i = 0; i < receipt->count; i++)
+    {
+        struct ios_native_fex_segment *segment = &receipt->segments[i];
+        uint64_t maximum;
+
+        if (!ios_native_fex_receipt_word( &cursor, &segment->offset, 1 ) ||
+            !ios_native_fex_receipt_word( &cursor, &segment->length, 1 ) ||
+            !ios_native_fex_receipt_word( &cursor, &segment->object, 1 ) ||
+            !ios_native_fex_receipt_word( &cursor, &segment->backing_offset, 1 ) ||
+            !ios_native_fex_receipt_word( &cursor, &maximum, i + 1 < receipt->count ) ||
+            segment->offset != covered || !segment->length ||
+            ((segment->offset | segment->length | segment->backing_offset) & 0x3fff) ||
+            segment->length > size - covered || !segment->object || segment->object > UINT32_MAX ||
+            segment->backing_offset > UINT64_MAX - segment->length || maximum > UINT32_MAX ||
+            (maximum & (VM_PROT_READ | VM_PROT_WRITE)) != (VM_PROT_READ | VM_PROT_WRITE)) return 0;
+        segment->maximum = maximum;
+        covered += segment->length;
+    }
+    return covered == size;
+}
+
+static int ios_native_fex_receipts_equal( const struct ios_native_fex_receipt *a,
+                                          const struct ios_native_fex_receipt *b )
+{
+    unsigned int i;
+
+    if (!a->count || a->count > IOS_NATIVE_FEX_RECEIPT_MAX || b->count > IOS_NATIVE_FEX_RECEIPT_MAX ||
+        a->base != b->base || a->size != b->size || a->count != b->count) return 0;
+    for (i = 0; i < a->count; i++)
+    {
+        const struct ios_native_fex_segment *x = &a->segments[i], *y = &b->segments[i];
+        if (x->offset != y->offset || x->length != y->length || x->object != y->object ||
+            x->backing_offset != y->backing_offset || x->maximum != y->maximum) return 0;
+    }
+    return 1;
+}
+
+static int ios_native_fex_receipt_matches( const struct ios_native_fex_receipt *receipt )
+{
+    unsigned int i;
+    size_t visits = 0;
+    uint64_t covered = 0;
+
+    if (!receipt->count || receipt->count > IOS_NATIVE_FEX_RECEIPT_MAX || receipt->size != 0x200000000ULL ||
+        receipt->base < 0x7c00000000ULL || receipt->base > 0x8000000000ULL - receipt->size ||
+        (receipt->base & 0xffff)) return 0;
+    for (i = 0; i < receipt->count; i++)
+    {
+        const struct ios_native_fex_segment *segment = &receipt->segments[i];
+        mach_vm_address_t start, cursor, end;
+
+        if (segment->offset != covered || !segment->length || segment->length > receipt->size - covered ||
+            ((segment->offset | segment->length | segment->backing_offset) & 0x3fff) ||
+            !segment->object || segment->object > UINT32_MAX ||
+            segment->backing_offset > UINT64_MAX - segment->length) return 0;
+        start = receipt->base + segment->offset;
+        cursor = start;
+        end = start + segment->length;
+        while (cursor < end && visits++ <= receipt->size / 0x4000 + 1)
+        {
+            mach_vm_address_t address = cursor;
+            mach_vm_size_t length = 0;
+            natural_t depth = 0;
+            vm_region_submap_info_data_64_t info;
+            mach_msg_type_number_t count;
+            kern_return_t kr;
+            uint64_t displacement, expected;
+
+            do
+            {
+                address = cursor;
+                length = 0;
+                count = VM_REGION_SUBMAP_INFO_COUNT_64;
+                kr = mach_vm_region_recurse( mach_task_self(), &address, &length, &depth,
+                                             (vm_region_recurse_info_t)&info, &count );
+                if (kr != KERN_SUCCESS || !length || address > cursor ||
+                    length > ~(mach_vm_address_t)0 - address) return 0;
+                if (!info.is_submap) break;
+                if (++depth > 32) return 0;
+            } while (1);
+            displacement = cursor - address;
+            expected = segment->backing_offset + (cursor - start);
+            if (address + length <= cursor || info.user_tag != 253 || info.protection != VM_PROT_NONE ||
+                info.object_id != segment->object || (uint32_t)info.max_protection != segment->maximum ||
+                (info.max_protection & (VM_PROT_READ | VM_PROT_WRITE)) != (VM_PROT_READ | VM_PROT_WRITE) ||
+                info.offset > UINT64_MAX - displacement || info.offset + displacement != expected) return 0;
+            cursor = min( address + length, end );
+        }
+        if (cursor != end) return 0;
+        covered += segment->length;
+    }
+    return covered == receipt->size;
 }
 
 static void ios_publish_native_high_jit_pool(void)
@@ -4939,13 +5070,15 @@ static void ios_publish_native_high_jit_pool(void)
     ios_jit_rw_base_global = (void *)rw;
     ios_jit_pool_size_global = size;
     ios_native_high_jit_pool = 1;
-    if (ios_native_fex_hold_description( &ios_native_fex_hold_base, &ios_native_fex_hold_size,
-                                         &ios_native_fex_hold_object ) &&
-        !((ios_native_fex_hold_base < rx + size && ios_native_fex_hold_base + ios_native_fex_hold_size > rx) ||
-          (ios_native_fex_hold_base < rw + size && ios_native_fex_hold_base + ios_native_fex_hold_size > rw)) &&
-        ios_native_jit_span_has_protection( ios_native_fex_hold_base, ios_native_fex_hold_size,
-                                            0, VM_PROT_ALL, 253, ios_native_fex_hold_object ))
-        ios_native_fex_hold_pending = 1;
+    if (ios_native_fex_hold_description( &ios_native_fex_hold_receipt ))
+    {
+        ios_native_fex_hold_base = ios_native_fex_hold_receipt.base;
+        ios_native_fex_hold_size = ios_native_fex_hold_receipt.size;
+        if (!((ios_native_fex_hold_base < rx + size && ios_native_fex_hold_base + ios_native_fex_hold_size > rx) ||
+              (ios_native_fex_hold_base < rw + size && ios_native_fex_hold_base + ios_native_fex_hold_size > rw)) &&
+            ios_native_fex_receipt_matches( &ios_native_fex_hold_receipt ))
+            ios_native_fex_hold_pending = 1;
+    }
     dprintf( 2, "[jit-placement] native host pool published before Wine reservations rx=%p rw=%p size=0x%lx\n",
              (void *)rx, (void *)rw, (unsigned long)size );
 }
@@ -33056,7 +33189,7 @@ static NTSTATUS ios_adopt_early_fex_arena(void)
 {
     uintptr_t base;
     size_t size;
-    uint64_t object;
+    struct ios_native_fex_receipt receipt;
     uintptr_t rx = (uintptr_t)ios_jit_rx_base_global, rw = (uintptr_t)ios_jit_rw_base_global;
     size_t pool_size = ios_jit_pool_size_global;
     task_vm_info_data_t info;
@@ -33070,16 +33203,17 @@ static NTSTATUS ios_adopt_early_fex_arena(void)
         dprintf( 2, "[fex-arena] required native-host JIT layout conflicts with disabled or sub-8GB FEX configuration\n" );
         return STATUS_INVALID_PARAMETER;
     }
+    base = ios_native_fex_hold_base;
+    size = ios_native_fex_hold_size;
     if (!ios_native_fex_hold_pending ||
-        !ios_native_fex_hold_description( &base, &size, &object ) ||
-        base != ios_native_fex_hold_base || size != ios_native_fex_hold_size ||
-        object != ios_native_fex_hold_object ||
+        !ios_native_fex_hold_description( &receipt ) ||
+        !ios_native_fex_receipts_equal( &receipt, &ios_native_fex_hold_receipt ) ||
         task_info( mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &count ) != KERN_SUCCESS ||
         base < info.min_address || size > info.max_address || base > info.max_address - size ||
         (base < rx + pool_size && base + size > rx) ||
         (base < rw + pool_size && base + size > rw) ||
         (ios_layerkit_hi && base < ios_layerkit_hi && base + size > ios_layerkit_lo) ||
-        !ios_native_jit_span_has_protection( base, size, 0, VM_PROT_ALL, 253, object ))
+        !ios_native_fex_receipt_matches( &receipt ))
     {
         dprintf( 2, "[fex-arena] required early 8GB host reservation is absent, changed, or overlaps another owner; refusing fallback\n" );
         return STATUS_INVALID_ADDRESS;
@@ -33102,7 +33236,7 @@ static NTSTATUS ios_adopt_early_fex_arena(void)
     ios_fex_arena_base_unix = base;
     ios_fex_arena_end_unix = base + size;
     ios_native_fex_hold_pending = 0;
-    dprintf( 2, "[fex-arena] PUBLISHED app-owned early reservation [%p,%p) size=0x%lx version=1 handoff=held-v1\n",
+    dprintf( 2, "[fex-arena] PUBLISHED app-owned early reservation [%p,%p) size=0x%lx version=1 handoff=held-v2\n",
              (void *)base, (void *)(base + size), (unsigned long)size );
     return STATUS_SUCCESS;
 

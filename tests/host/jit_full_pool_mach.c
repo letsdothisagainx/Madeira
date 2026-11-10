@@ -42,6 +42,7 @@ static void* jit26_pool_prepare(void* pointer,size_t size){
 }
 /* ACTUAL PRODUCTION PLACEMENT INSERTED HERE */
 /* ACTUAL POLICY GETTERS INSERTED HERE */
+/* ACTUAL WINE RECEIPT PARSER INSERTED HERE */
 
 static void native_failure_region(const char* label,uint64_t wanted){
  vm_address_t at=0;vm_size_t length=0;vm_region_submap_info_data_64_t info;
@@ -94,7 +95,7 @@ static void native_failure_diagnostics(void){
 }
 
 int main(void){
- uint64_t rx=0,rw=0,base=0,bytes=0,object=0;uint32_t stage=0;int32_t error=0;
+ uint64_t rx=0,rw=0,base=0,bytes=0;const char* receipt=NULL;uint32_t stage=0;int32_t error=0;
  jit_required_early_hold();
  if(jit_required_pool.state!=1||jit_required_pool.size!=((uint64_t)1152<<20))native_failure_diagnostics();
  CHECK(jit_required_pool.state==1&&jit_required_pool.size==((uint64_t)1152<<20));
@@ -111,7 +112,13 @@ int main(void){
  for(uint64_t offset=0;offset<((uint64_t)1152<<20);offset+=0x4000)
   CHECK(*(volatile unsigned char*)(uintptr_t)(rw+offset)==0x69);
  CHECK(!jit_required_pool_release_early());
- if(jit_required_pool_fex_reservation(&base,&bytes,&object))CHECK(bytes==((uint64_t)8<<30)&&base>=UINT64_C(0x7c00000000));
+ if(jit_required_pool_fex_reservation(&base,&bytes,&receipt)){
+  CHECK(bytes==((uint64_t)8<<30)&&base>=UINT64_C(0x7c00000000)&&receipt);
+  CHECK(!setenv("WINE_IOS_FEX_EARLY_V2",receipt,1));
+  struct ios_native_fex_receipt parsed;
+  CHECK(ios_native_fex_hold_description(&parsed)&&parsed.base==base&&parsed.size==bytes&&parsed.count);
+  CHECK(parsed.count<=IOS_NATIVE_FEX_RECEIPT_MAX);
+ }
  printf("PASS real Darwin Mach: full1152MiB RX=0x%llx RW=0x%llx; shared page markers, W^X, all73728 guarded ARM64 execution probes; partition768/384; StikDebug/iPhone unverified\n",(unsigned long long)rx,(unsigned long long)rw);
  /* Only owned fixture results are removed; production correctly refuses its
   * early-release API once a live pool is published. No guest executes here. */

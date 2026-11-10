@@ -566,6 +566,13 @@ also holds a separate contiguous 8 GiB FEX reservation in the same early
 transaction. Wine adopts that exact held mapping without releasing it first.
 Small-map low guest/FEX windows remain excluded from pool placement.
 
+Large anonymous reservations can contain independent 128 MiB VM objects.
+Ownership records cover every constituent region, including backing offsets;
+they do not require one object to span the complete allocation. Early holds
+touch only one 16 KiB ownership-witness page per region. The FEX handoff uses
+a bounded versioned receipt containing the complete region records, checked
+against the kernel before adoption rather than a scalar object identifier.
+
 Both final destinations stay owned while the debugger supplies a temporary
 RX allocation. Shared remapping replaces only verified owned placeholders.
 The final RX address is prepared before its RW alias is established, allowing

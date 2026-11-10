@@ -1130,10 +1130,11 @@ void jit_wx_probe(void) {
 
 
 /* BEGIN REQUIRED POOL PLACEMENT */
-/* A full-size pool needs two virtual destinations, but only one VM object.
+/* A full-size pool needs two virtual destinations sharing the same backing objects.
  * Never infer usability from TASK_VM_INFO's address ceiling. Every selected
  * gap is checked by a fixed, non-overwriting kernel reservation. Anonymous
- * PROT_NONE reservations have no committed pool pages at image load.
+ * Reservations commit only one ownership-witness page per kernel region at
+ * image load, then retain PROT_NONE until the debugger-backed replacement.
  *
  * The upper 64 GiB on an extended map is not a general-purpose hole: guest
  * Windows/CEF use [448,496) GiB. Only Wine's managed host-furniture band
@@ -1153,20 +1154,25 @@ void jit_wx_probe(void) {
 
 struct jit_required_pool {
     uint64_t rx, rw, size, temporary, generation, fex, fex_size;
-    uint64_t rx_object, rw_object, fex_object;
-    unsigned state, rx_installed, rw_installed, rx_tag, rw_tag;
-    unsigned temporary_tag, temporary_owned;
-    uint64_t temporary_object;
-    struct jit_required_snapshot *rx_snapshot, *rw_snapshot;
+    uint64_t rx_object, rw_object, fex_object; /* First-leaf diagnostics, never ownership proof. */
+    unsigned state, rx_installed, rw_installed, temporary_owned;
+    struct jit_required_snapshot *rx_snapshot, *rw_snapshot, *fex_snapshot, *temporary_snapshot;
 };
 struct jit_required_snapshot_entry {
     uint64_t offset, length, backing_offset;
     unsigned object, maximum, tag;
 };
 struct jit_required_snapshot {
-    unsigned count, capacity;
-    struct jit_required_snapshot_entry entries[];
+    unsigned count, capacity, heap_owned;
+    struct jit_required_snapshot_entry *entries;
 };
+#define JIT_REQUIRED_EARLY_ROWS 256
+/* Four fixed receipts avoid allocating into the very gaps being protected by
+ * the image-load constructor: legacy, RX, RW, FEX. XNU normally splits these
+ * anonymous allocations into 128 MiB leaves (5, 9, 9, 64 respectively). */
+static struct jit_required_snapshot_entry jit_required_early_entries[4][JIT_REQUIRED_EARLY_ROWS];
+static struct jit_required_snapshot jit_required_early_snapshots[4];
+static char jit_required_fex_receipt[16384];
 struct jit_required_avoid { uint64_t address, size; };
 static struct jit_required_pool jit_required_pool;
 static pthread_mutex_t jit_required_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -1237,31 +1243,34 @@ static int jit_required_range(uint64_t address, uint64_t size, int tag,
     return cursor >= end;
 }
 
-static int jit_required_capture(uint64_t address, uint64_t size, int tag,
-                                vm_prot_t protection, uint64_t *object)
+
+static void jit_required_snapshot_free(struct jit_required_snapshot *snapshot)
 {
-    vm_address_t at;
-    vm_size_t length;
-    vm_region_submap_info_data_64_t info;
-    if (jit_required_region(address, &at, &length, &info) != KERN_SUCCESS ||
-        (uint64_t)at > address || !length || (uint64_t)at + length <= address) return 0;
-    *object = info.object_id; /* zero is also an exact identity, never a wildcard */
-    return jit_required_range(address, size, tag, protection, object);
+    if (!snapshot) return;
+    if (snapshot->heap_owned) { free(snapshot->entries); free(snapshot); }
+    else snapshot->count = 0;
 }
 
-static int jit_required_snapshot_capture(uint64_t address, uint64_t size, int tag,
-                                         vm_prot_t protection,
-                                         struct jit_required_snapshot **result)
+static struct jit_required_snapshot *jit_required_early_snapshot(int tag)
+{
+    unsigned index;
+    if (tag < 250 || tag > 253) return NULL;
+    index = (unsigned)tag - 250;
+    jit_required_early_snapshots[index].entries = jit_required_early_entries[index];
+    jit_required_early_snapshots[index].capacity = JIT_REQUIRED_EARLY_ROWS;
+    jit_required_early_snapshots[index].heap_owned = 0;
+    return &jit_required_early_snapshots[index];
+}
+
+static int jit_required_snapshot_fill(uint64_t address, uint64_t size, int tag,
+                                      vm_prot_t protection, int materialize,
+                                      struct jit_required_snapshot *snapshot)
 {
     uint64_t cursor = address, end;
-    unsigned capacity = (unsigned)(size / JIT_REQUIRED_PAGE + 64);
-    struct jit_required_snapshot *snapshot;
-    if (!address || !size || size > UINT64_MAX - address) return 0;
+    if (!snapshot || !address || !size || size > UINT64_MAX - address) return 0;
     end = address + size;
-    snapshot = calloc(1, sizeof(*snapshot) + (size_t)capacity * sizeof(snapshot->entries[0]));
-    if (!snapshot) return 0;
-    snapshot->capacity = capacity;
-    while (cursor < end && snapshot->count < capacity) {
+    snapshot->count = 0;
+    while (cursor < end && snapshot->count < snapshot->capacity) {
         vm_address_t at;
         vm_size_t length;
         vm_region_submap_info_data_64_t info;
@@ -1270,9 +1279,22 @@ static int jit_required_snapshot_capture(uint64_t address, uint64_t size, int ta
         if (jit_required_region(cursor, &at, &length, &info) != KERN_SUCCESS ||
             (uint64_t)at > cursor || !length || (uint64_t)at > UINT64_MAX - length ||
             (uint64_t)at + length <= cursor || (tag >= 0 && info.user_tag != (unsigned)tag) ||
-            (protection >= 0 && info.protection != protection) || info.offset > UINT64_MAX - (cursor - (uint64_t)at)) {
-            free(snapshot); return 0;
+            (protection >= 0 && info.protection != protection)) return 0;
+        if (materialize) {
+            unsigned char zero = 0;
+            /* Do this while the COMPLETE fresh allocation is still RW.
+             * Protecting a single page first would split an objectless entry
+             * and could create a separate object for every 16 KiB page. */
+            if (info.protection != (VM_PROT_READ | VM_PROT_WRITE) ||
+                vm_write(mach_task_self(), (vm_address_t)cursor,
+                           (vm_offset_t)(uintptr_t)&zero, 1) != KERN_SUCCESS ||
+                jit_required_region(cursor, &at, &length, &info) != KERN_SUCCESS ||
+                (uint64_t)at > cursor || !length || (uint64_t)at > UINT64_MAX - length ||
+                (uint64_t)at + length <= cursor || info.user_tag != (unsigned)tag ||
+                info.protection != (VM_PROT_READ | VM_PROT_WRITE) || !info.object_id)
+                return 0;
         }
+        if (info.offset > UINT64_MAX - (cursor - (uint64_t)at)) return 0;
         next = (uint64_t)at + length;
         if (next > end) next = end;
         entry = &snapshot->entries[snapshot->count++];
@@ -1284,8 +1306,25 @@ static int jit_required_snapshot_capture(uint64_t address, uint64_t size, int ta
         entry->tag = info.user_tag;
         cursor = next;
     }
-    if (cursor != end) { free(snapshot); return 0; }
-    free(*result);
+    return cursor == end;
+}
+
+static int jit_required_snapshot_capture(uint64_t address, uint64_t size, int tag,
+                                         vm_prot_t protection,
+                                         struct jit_required_snapshot **result)
+{
+    unsigned capacity = (unsigned)(size / JIT_REQUIRED_PAGE + 64);
+    struct jit_required_snapshot *snapshot;
+    if (!address || !size || size > UINT64_MAX - address || !result) return 0;
+    snapshot = calloc(1, sizeof(*snapshot));
+    if (!snapshot) return 0;
+    snapshot->heap_owned = 1;
+    snapshot->capacity = capacity;
+    snapshot->entries = calloc(capacity, sizeof(snapshot->entries[0]));
+    if (!snapshot->entries || !jit_required_snapshot_fill(address, size, tag, protection, 0, snapshot)) {
+        jit_required_snapshot_free(snapshot); return 0;
+    }
+    jit_required_snapshot_free(*result);
     *result = snapshot;
     return 1;
 }
@@ -1328,6 +1367,27 @@ static int jit_required_snapshot_matches(uint64_t address, uint64_t size, int ta
     return expected == size;
 }
 
+static int jit_required_snapshots_share(const struct jit_required_snapshot *a,
+                                        const struct jit_required_snapshot *b, uint64_t size)
+{
+    unsigned ai = 0, bi = 0;
+    uint64_t cursor = 0;
+    if (!a || !b || !a->count || !b->count) return 0;
+    while (cursor < size && ai < a->count && bi < b->count) {
+        const struct jit_required_snapshot_entry *x = &a->entries[ai], *y = &b->entries[bi];
+        uint64_t xe = x->offset + x->length, ye = y->offset + y->length;
+        uint64_t next = xe < ye ? xe : ye;
+        if (x->offset > cursor || y->offset > cursor || next <= cursor || next > size ||
+            x->object != y->object ||
+            x->backing_offset + cursor - x->offset != y->backing_offset + cursor - y->offset)
+            return 0;
+        cursor = next;
+        if (cursor == xe) ai++;
+        if (cursor == ye) bi++;
+    }
+    return cursor == size;
+}
+
 static int jit_required_allowed(uint64_t address, uint64_t size,
                                 uint64_t map_min, uint64_t map_max,
                                 uint64_t exe_base, uint64_t exe_size)
@@ -1357,7 +1417,8 @@ static int jit_required_reserve_gap(uint64_t start, uint64_t end, uint64_t size,
 {
     const uint64_t step = UINT64_C(16) << 20;
     unsigned attempts = 0;
-    uint64_t at = (start + JIT_REQUIRED_PAGE - 1) & ~(JIT_REQUIRED_PAGE - 1);
+    uint64_t alignment = tag == JIT_REQUIRED_FEX_TAG ? UINT64_C(0x10000) : JIT_REQUIRED_PAGE;
+    uint64_t at = (start + alignment - 1) & ~(alignment - 1);
     while (at < end && size <= end - at && attempts++ < 8192) {
         unsigned i;
         vm_address_t address;
@@ -1365,14 +1426,14 @@ static int jit_required_reserve_gap(uint64_t start, uint64_t end, uint64_t size,
         int skip = 0;
         if (!jit_required_allowed(at, size, map_min, map_max, exe_base, exe_size)) {
             if (jit_required_overlap(at, size, exe_base, exe_size)) {
-                at = (exe_base + exe_size + JIT_REQUIRED_PAGE - 1) & ~(JIT_REQUIRED_PAGE - 1);
+                at = (exe_base + exe_size + alignment - 1) & ~(alignment - 1);
                 continue;
             }
             return 0;
         }
         for (i = 0; i < avoid_count; i++)
             if (jit_required_overlap(at, size, avoid[i].address, avoid[i].size)) {
-                at = (avoid[i].address + avoid[i].size + JIT_REQUIRED_PAGE - 1) & ~(JIT_REQUIRED_PAGE - 1);
+                at = (avoid[i].address + avoid[i].size + alignment - 1) & ~(alignment - 1);
                 skip = 1; break;
             }
         if (skip) continue;
@@ -1389,23 +1450,22 @@ static int jit_required_reserve_gap(uint64_t start, uint64_t end, uint64_t size,
                 if (*last_error == KERN_SUCCESS) *result = 0;
                 return 0;
             }
-            /* A zero-backed untouched reservation can report object_id=0.
-             * Materialize only one fresh page so its later ownership checks
-             * bind a real unique object, not an indistinguishable zero object.
-             * At most three 16 KiB pages are charged for the early group. */
             {
-                unsigned char zero = 0;
-                kr = vm_write(mach_task_self(), address, (vm_offset_t)(uintptr_t)&zero, 1);
+                struct jit_required_snapshot *snapshot = jit_required_early_snapshot(tag);
+                if (snapshot && jit_required_snapshot_fill(at, size, tag,
+                        VM_PROT_READ | VM_PROT_WRITE, 1, snapshot)) {
+                    kr = vm_protect(mach_task_self(), address, (vm_size_t)size, FALSE, VM_PROT_NONE);
+                    if (kr == KERN_SUCCESS && jit_required_snapshot_matches(at, size, tag, VM_PROT_NONE, snapshot)) {
+                        *result = at;
+                        return 1;
+                    }
+                } else kr = KERN_FAILURE;
+                *last_error = kr == KERN_SUCCESS ? KERN_FAILURE : kr;
+                if (!snapshot || !jit_required_snapshot_matches(at, size, tag, -1, snapshot) ||
+                    vm_deallocate(mach_task_self(), address, (vm_size_t)size) != KERN_SUCCESS)
+                    return -1;
+                jit_required_snapshot_free(snapshot);
             }
-            if (kr == KERN_SUCCESS)
-                kr = vm_protect(mach_task_self(), address, (vm_size_t)size, FALSE, VM_PROT_NONE);
-            if (kr == KERN_SUCCESS && jit_required_range(at, size, tag, VM_PROT_NONE, NULL)) {
-                *result = at;
-                return 1;
-            }
-            *last_error = kr == KERN_SUCCESS ? KERN_FAILURE : kr;
-            if (vm_deallocate(mach_task_self(), address, (vm_size_t)size) != KERN_SUCCESS)
-                return -1;
             *result = 0;
         }
         /* A concurrent allocation can win between the snapshot and this
@@ -1483,9 +1543,9 @@ static int jit_required_hold(struct jit_required_pool *pool, uint64_t size,
     uint64_t map_min = 0, map_max = 0;
     int found;
     memset(pool, 0, sizeof(*pool));
-    pool->rx_tag = JIT_REQUIRED_RX_TAG;
-    pool->rw_tag = JIT_REQUIRED_RW_TAG;
     pool->size = size;
+    pool->rx_snapshot = jit_required_early_snapshot(JIT_REQUIRED_RX_TAG);
+    pool->rw_snapshot = jit_required_early_snapshot(JIT_REQUIRED_RW_TAG);
     if (!jit_task_map_range(&map_min, &map_max) || map_min >= map_max ||
         map_max > INT64_MAX || size > (map_max - map_min) / 2) {
         *error = KERN_FAILURE; return 0;
@@ -1494,26 +1554,27 @@ static int jit_required_hold(struct jit_required_pool *pool, uint64_t size,
                                      JIT_REQUIRED_RX_TAG, avoid, avoid_count, &pool->rx, error);
     if (found <= 0) return found;
     pool->size = size;
-    if (!jit_required_capture(pool->rx, size, JIT_REQUIRED_RX_TAG, VM_PROT_NONE, &pool->rx_object) || !pool->rx_object) {
+    if (!jit_required_snapshot_matches(pool->rx, size, JIT_REQUIRED_RX_TAG, VM_PROT_NONE, pool->rx_snapshot)) {
         *error = KERN_INVALID_ADDRESS; return -1;
     }
+    pool->rx_object = pool->rx_snapshot->entries[0].object;
     found = jit_required_reserve_one(size, map_min, map_max, exe_base, exe_size,
                                      JIT_REQUIRED_RW_TAG, avoid, avoid_count, &pool->rw, error);
     if (found <= 0) {
-        if (!jit_required_range(pool->rx, size, JIT_REQUIRED_RX_TAG, VM_PROT_NONE, &pool->rx_object) ||
-            vm_deallocate(mach_task_self(), (vm_address_t)pool->rx, (vm_size_t)size) != KERN_SUCCESS)
-            return -1;
+        if (!jit_required_drop(pool)) return -1;
         memset(pool, 0, sizeof(*pool));
         return found;
     }
-    if (!jit_required_capture(pool->rw, size, JIT_REQUIRED_RW_TAG, VM_PROT_NONE, &pool->rw_object) || !pool->rw_object) {
+    if (!jit_required_snapshot_matches(pool->rw, size, JIT_REQUIRED_RW_TAG, VM_PROT_NONE, pool->rw_snapshot)) {
         *error = KERN_INVALID_ADDRESS; return -1;
     }
+    pool->rw_object = pool->rw_snapshot->entries[0].object;
     if (pool->rx >= UINT64_C(0x7c00000000) || pool->rw >= UINT64_C(0x7c00000000)) {
         /* Protect a genuinely contiguous FEX home in the same early
          * transaction, rather than merely counting 13.75 GiB of free space.
          * The slot is adopted by Wine with no later release/reallocation. */
         pool->fex_size = UINT64_C(8) << 30;
+        pool->fex_snapshot = jit_required_early_snapshot(JIT_REQUIRED_FEX_TAG);
         found = jit_required_reserve_band(UINT64_C(0x7c00000000), UINT64_C(0x8000000000),
                                           pool->fex_size, map_min, map_max,
                                           exe_base, exe_size, JIT_REQUIRED_FEX_TAG,
@@ -1523,10 +1584,11 @@ static int jit_required_hold(struct jit_required_pool *pool, uint64_t size,
             memset(pool, 0, sizeof(*pool));
             return found;
         }
-        if (!jit_required_capture(pool->fex, pool->fex_size, JIT_REQUIRED_FEX_TAG,
-                                  VM_PROT_NONE, &pool->fex_object) || !pool->fex_object) {
+        if (!jit_required_snapshot_matches(pool->fex, pool->fex_size, JIT_REQUIRED_FEX_TAG,
+                                           VM_PROT_NONE, pool->fex_snapshot)) {
             *error = KERN_INVALID_ADDRESS; return -1;
         }
+        pool->fex_object = pool->fex_snapshot->entries[0].object;
     }
     pool->state = 1;
     return 1;
@@ -1536,39 +1598,32 @@ static int jit_required_drop(struct jit_required_pool *pool)
 {
     int ok = 1;
     if (pool->fex) {
-        if (!jit_required_range(pool->fex, pool->fex_size, JIT_REQUIRED_FEX_TAG, -1, &pool->fex_object) ||
+        if (!jit_required_snapshot_matches(pool->fex, pool->fex_size, JIT_REQUIRED_FEX_TAG, -1, pool->fex_snapshot) ||
             vm_deallocate(mach_task_self(), (vm_address_t)pool->fex, (vm_size_t)pool->fex_size) != KERN_SUCCESS)
             ok = 0;
-        else pool->fex = 0;
+        else { pool->fex = 0; jit_required_snapshot_free(pool->fex_snapshot); pool->fex_snapshot = NULL; }
     }
     if (pool->temporary) {
-        uint64_t object = pool->temporary_object;
         if (!pool->temporary_owned ||
-            !jit_required_range(pool->temporary, pool->size, (int)pool->temporary_tag,
-                                -1, &object) ||
+            !jit_required_snapshot_matches(pool->temporary, pool->size, -1,
+                                            -1, pool->temporary_snapshot) ||
             vm_deallocate(mach_task_self(), (vm_address_t)pool->temporary, (vm_size_t)pool->size) != KERN_SUCCESS)
             ok = 0;
-        else pool->temporary = 0;
+        else { pool->temporary = 0; jit_required_snapshot_free(pool->temporary_snapshot); pool->temporary_snapshot = NULL; }
     }
     if (pool->rw) {
-        int owned = pool->rw_snapshot ?
-                    jit_required_snapshot_matches(pool->rw, pool->size, -1,
-                                                   -1, pool->rw_snapshot) :
-                    jit_required_range(pool->rw, pool->size, (int)pool->rw_tag, -1, &pool->rw_object);
+        int owned = jit_required_snapshot_matches(pool->rw, pool->size, -1, -1, pool->rw_snapshot);
         if (!owned ||
             vm_deallocate(mach_task_self(), (vm_address_t)pool->rw, (vm_size_t)pool->size) != KERN_SUCCESS)
             ok = 0;
-        else { pool->rw = 0; free(pool->rw_snapshot); pool->rw_snapshot = NULL; }
+        else { pool->rw = 0; jit_required_snapshot_free(pool->rw_snapshot); pool->rw_snapshot = NULL; }
     }
     if (pool->rx) {
-        int owned = pool->rx_snapshot ?
-                    jit_required_snapshot_matches(pool->rx, pool->size, -1,
-                                                   -1, pool->rx_snapshot) :
-                    jit_required_range(pool->rx, pool->size, (int)pool->rx_tag, -1, &pool->rx_object);
+        int owned = jit_required_snapshot_matches(pool->rx, pool->size, -1, -1, pool->rx_snapshot);
         if (!owned ||
             vm_deallocate(mach_task_self(), (vm_address_t)pool->rx, (vm_size_t)pool->size) != KERN_SUCCESS)
             ok = 0;
-        else { pool->rx = 0; free(pool->rx_snapshot); pool->rx_snapshot = NULL; }
+        else { pool->rx = 0; jit_required_snapshot_free(pool->rx_snapshot); pool->rx_snapshot = NULL; }
     }
     return ok;
 }
@@ -1591,21 +1646,51 @@ bool jit_required_pool_release_early(void)
     return ok != 0;
 }
 
-bool jit_required_pool_fex_reservation(uint64_t *base, uint64_t *size, uint64_t *object_id)
+static int jit_required_build_fex_receipt(const struct jit_required_pool *pool)
+{
+    size_t used;
+    unsigned i;
+    int count;
+    jit_required_fex_receipt[0] = 0;
+    if (!pool->fex) return 1;
+    if ((pool->fex & UINT64_C(0xffff)) || pool->fex_size != (UINT64_C(8) << 30) ||
+        !pool->fex_snapshot || pool->fex_snapshot->count > JIT_REQUIRED_EARLY_ROWS ||
+        !jit_required_snapshot_matches(pool->fex, pool->fex_size, JIT_REQUIRED_FEX_TAG,
+                                        VM_PROT_NONE, pool->fex_snapshot)) return 0;
+    count = snprintf(jit_required_fex_receipt, sizeof(jit_required_fex_receipt),
+                      "2:%llx:%llx:%x", (unsigned long long)pool->fex,
+                      (unsigned long long)pool->fex_size, pool->fex_snapshot->count);
+    if (count < 0 || (size_t)count >= sizeof(jit_required_fex_receipt)) return 0;
+    used = (size_t)count;
+    for (i = 0; i < pool->fex_snapshot->count; i++) {
+        const struct jit_required_snapshot_entry *entry = &pool->fex_snapshot->entries[i];
+        if (!entry->object || entry->tag != JIT_REQUIRED_FEX_TAG ||
+            (entry->maximum & (VM_PROT_READ | VM_PROT_WRITE)) != (VM_PROT_READ | VM_PROT_WRITE)) return 0;
+        count = snprintf(jit_required_fex_receipt + used, sizeof(jit_required_fex_receipt) - used,
+                          ":%llx:%llx:%x:%llx:%x", (unsigned long long)entry->offset,
+                          (unsigned long long)entry->length, entry->object,
+                          (unsigned long long)entry->backing_offset, entry->maximum);
+        if (count < 0 || (size_t)count >= sizeof(jit_required_fex_receipt) - used) return 0;
+        used += (size_t)count;
+    }
+    return 1;
+}
+
+bool jit_required_pool_fex_reservation(uint64_t *base, uint64_t *size, const char **receipt)
 {
     int valid = 0;
     if (base) *base = 0;
     if (size) *size = 0;
-    if (object_id) *object_id = 0;
-    if (!base || !size || !object_id) return false;
+    if (receipt) *receipt = NULL;
+    if (!base || !size || !receipt) return false;
     pthread_mutex_lock(&jit_required_mutex);
     if (jit_required_pool.state == 3 && jit_required_pool.fex &&
-        jit_required_pool.fex_size == (UINT64_C(8) << 30) &&
-        jit_required_range(jit_required_pool.fex, jit_required_pool.fex_size,
-                            JIT_REQUIRED_FEX_TAG, VM_PROT_NONE, &jit_required_pool.fex_object)) {
+        jit_required_pool.fex_size == (UINT64_C(8) << 30) && jit_required_fex_receipt[0] &&
+        jit_required_snapshot_matches(jit_required_pool.fex, jit_required_pool.fex_size,
+                                       JIT_REQUIRED_FEX_TAG, VM_PROT_NONE, jit_required_pool.fex_snapshot)) {
         *base = jit_required_pool.fex;
         *size = jit_required_pool.fex_size;
-        *object_id = jit_required_pool.fex_object;
+        *receipt = jit_required_fex_receipt; /* Immutable after publication. */
         valid = 1;
     }
     pthread_mutex_unlock(&jit_required_mutex);
@@ -1667,17 +1752,14 @@ bool jit_required_pool_create(uint64_t size, uint64_t exe_base, uint64_t exe_siz
     for (attempt = 0; attempt < 3; attempt++) {
         vm_prot_t current = 0, maximum = 0;
         vm_address_t address;
-        vm_address_t source;
-        vm_size_t length;
-        vm_region_submap_info_data_64_t info;
         kern_return_t kr;
         int held;
         if (!pool.rx || !pool.rw || pool.size != size ||
             !jit_task_map_range(&map_min, &map_max) ||
             !jit_required_allowed(pool.rx, size, map_min, map_max, exe_base, exe_size) ||
             !jit_required_allowed(pool.rw, size, map_min, map_max, exe_base, exe_size) ||
-            !jit_required_range(pool.rx, size, JIT_REQUIRED_RX_TAG, VM_PROT_NONE, &pool.rx_object) ||
-            !jit_required_range(pool.rw, size, JIT_REQUIRED_RW_TAG, VM_PROT_NONE, &pool.rw_object)) {
+            !jit_required_snapshot_matches(pool.rx, size, JIT_REQUIRED_RX_TAG, VM_PROT_NONE, pool.rx_snapshot) ||
+            !jit_required_snapshot_matches(pool.rw, size, JIT_REQUIRED_RW_TAG, VM_PROT_NONE, pool.rw_snapshot)) {
             if ((pool.rx || pool.rw) && !jit_required_drop(&pool)) {
                 *stage = 9; *error = KERN_FAILURE; goto failed;
             }
@@ -1703,28 +1785,26 @@ bool jit_required_pool_create(uint64_t size, uint64_t exe_base, uint64_t exe_siz
              * unrelated address. Never deallocate that alleged source. */
             *error = KERN_INVALID_ADDRESS; goto attempt_failed;
         }
-        kr = jit_required_region(pool.temporary, &source, &length, &info);
-        if (kr != KERN_SUCCESS ||
-            (uint64_t)source > pool.temporary || (uint64_t)source + length < pool.temporary + size ||
-            !length || (uint64_t)source > UINT64_MAX - length) {
-            *error = kr == KERN_SUCCESS ? KERN_INVALID_ADDRESS : kr; goto attempt_failed;
-        }
-        pool.temporary_tag = info.user_tag;
-        pool.temporary_object = info.object_id;
-        if (!jit_required_range(pool.temporary, size, (int)pool.temporary_tag,
-                                 info.protection, &pool.temporary_object)) {
+        if (!jit_required_snapshot_capture(pool.temporary, size, -1, -1, &pool.temporary_snapshot)) {
             *error = KERN_INVALID_ADDRESS; goto attempt_failed;
         }
-        /* The trusted allocation-only RPC grants this exact fresh range. Keep
-         * that receipt even if its actual permissions are unusable, so failure
-         * releases it instead of silently allocating another 1152 MiB source. */
+        /* The allocation-only RPC owns this whole new extent, including any
+         * initially objectless 128 MiB leaves. Bind every leaf; never infer the
+         * whole request from the first Mach region or one object identifier. */
         pool.temporary_owned = 1;
-        if (info.protection != (VM_PROT_READ | VM_PROT_EXECUTE) ||
-            !(info.max_protection & VM_PROT_WRITE)) {
+        if (!jit_required_snapshot_matches(pool.temporary, size, -1,
+                                            VM_PROT_READ | VM_PROT_EXECUTE, pool.temporary_snapshot)) {
             *error = KERN_PROTECTION_FAILURE; goto attempt_failed;
         }
+        {
+            unsigned ti;
+            for (ti = 0; ti < pool.temporary_snapshot->count; ti++)
+                if (!(pool.temporary_snapshot->entries[ti].maximum & VM_PROT_WRITE)) {
+                    *error = KERN_PROTECTION_FAILURE; goto attempt_failed;
+                }
+        }
         *stage = 4;
-        if (!jit_required_range(pool.rx, size, JIT_REQUIRED_RX_TAG, VM_PROT_NONE, &pool.rx_object)) {
+        if (!jit_required_snapshot_matches(pool.rx, size, JIT_REQUIRED_RX_TAG, VM_PROT_NONE, pool.rx_snapshot)) {
             *error = KERN_INVALID_ADDRESS; goto attempt_failed;
         }
         address = (vm_address_t)pool.rx;
@@ -1735,19 +1815,14 @@ bool jit_required_pool_create(uint64_t size, uint64_t exe_base, uint64_t exe_siz
         *error = kr;
         if (kr != KERN_SUCCESS || (uint64_t)address != pool.rx) goto attempt_failed;
         pool.rx_installed = 1;
-        /* User remap flags cannot request a VM alias tag. Record the actual
-         * tag of this known atomic replacement (some kernels inherit the
-         * source tag, others use their own), then bind its object identity. */
-        kr = jit_required_region(pool.rx, &source, &length, &info);
-        if (kr != KERN_SUCCESS || (uint64_t)source > pool.rx) {
-            *error = kr == KERN_SUCCESS ? KERN_INVALID_ADDRESS : kr; goto attempt_failed;
-        }
-        pool.rx_tag = info.user_tag;
-        if (!jit_required_capture(pool.rx, size, (int)pool.rx_tag,
-                                  VM_PROT_READ | VM_PROT_EXECUTE, &pool.rx_object) ||
-            !jit_required_capture(pool.temporary, size, (int)pool.temporary_tag,
-                                  VM_PROT_READ | VM_PROT_EXECUTE, &pool.temporary_object) ||
-            pool.rx_object != pool.temporary_object) {
+        /* A shared remap can materialize the source's previously objectless
+         * leaves. Capture both authorized outcomes, with their actual tags,
+         * and compare their entire object/offset maps. */
+        if (!jit_required_snapshot_capture(pool.rx, size, -1, -1, &pool.rx_snapshot) ||
+            !jit_required_snapshot_capture(pool.temporary, size, -1, -1, &pool.temporary_snapshot) ||
+            !jit_required_snapshot_matches(pool.rx, size, -1, VM_PROT_READ | VM_PROT_EXECUTE, pool.rx_snapshot) ||
+            !jit_required_snapshot_matches(pool.temporary, size, -1, VM_PROT_READ | VM_PROT_EXECUTE, pool.temporary_snapshot) ||
+            !jit_required_snapshots_share(pool.rx_snapshot, pool.temporary_snapshot, size)) {
             *error = KERN_FAILURE; goto attempt_failed;
         }
         *stage = 7;
@@ -1782,7 +1857,7 @@ bool jit_required_pool_create(uint64_t size, uint64_t exe_base, uint64_t exe_siz
             }
         }
         *stage = 5;
-        if (!jit_required_range(pool.rw, size, JIT_REQUIRED_RW_TAG, VM_PROT_NONE, &pool.rw_object) ||
+        if (!jit_required_snapshot_matches(pool.rw, size, JIT_REQUIRED_RW_TAG, VM_PROT_NONE, pool.rw_snapshot) ||
             !jit_required_snapshot_matches(pool.rx, size, -1,
                                             VM_PROT_READ | VM_PROT_EXECUTE, pool.rx_snapshot)) {
             *error = KERN_INVALID_ADDRESS; goto attempt_failed;
@@ -1796,12 +1871,6 @@ bool jit_required_pool_create(uint64_t size, uint64_t exe_base, uint64_t exe_siz
         if (kr != KERN_SUCCESS || (uint64_t)address != pool.rw) goto attempt_failed;
         /* Until the protect succeeds, this destination still has RX rights. */
         pool.rw_installed = 2;
-        kr = jit_required_region(pool.rw, &source, &length, &info);
-        if (kr != KERN_SUCCESS || (uint64_t)source > pool.rw) {
-            *error = kr == KERN_SUCCESS ? KERN_INVALID_ADDRESS : kr; goto attempt_failed;
-        }
-        pool.rw_tag = info.user_tag;
-        pool.rw_object = info.object_id;
         /* vm_remap may materialize shadow objects. Both snapshots describe the
          * result of this known atomic operation, not a guessed single object. */
         if (!jit_required_snapshot_capture(pool.rx, size, -1, -1, &pool.rx_snapshot) ||
@@ -1809,7 +1878,8 @@ bool jit_required_pool_create(uint64_t size, uint64_t exe_base, uint64_t exe_siz
             !jit_required_snapshot_matches(pool.rx, size, -1,
                                             VM_PROT_READ | VM_PROT_EXECUTE, pool.rx_snapshot) ||
             !jit_required_snapshot_matches(pool.rw, size, -1,
-                                            VM_PROT_READ | VM_PROT_EXECUTE, pool.rw_snapshot)) {
+                                            VM_PROT_READ | VM_PROT_EXECUTE, pool.rw_snapshot) ||
+            !jit_required_snapshots_share(pool.rx_snapshot, pool.rw_snapshot, size)) {
             *error = KERN_FAILURE; goto attempt_failed;
         }
         *stage = 6;
@@ -1832,20 +1902,24 @@ bool jit_required_pool_create(uint64_t size, uint64_t exe_base, uint64_t exe_siz
         if (!jit_required_execute_pages(pool.rx, pool.rw, pool.size)) {
             *error = KERN_PROTECTION_FAILURE; goto attempt_failed;
         }
+        if (!jit_required_build_fex_receipt(&pool)) {
+            *error = KERN_INVALID_ADDRESS; goto attempt_failed;
+        }
         *stage = 9;
-        if (!jit_required_range(pool.temporary, size, (int)pool.temporary_tag,
-                                VM_PROT_READ | VM_PROT_EXECUTE, &pool.temporary_object)) {
+        if (!jit_required_snapshot_matches(pool.temporary, size, -1,
+                                            VM_PROT_READ | VM_PROT_EXECUTE, pool.temporary_snapshot)) {
             *error = KERN_INVALID_ADDRESS; goto attempt_failed;
         }
         kr = vm_deallocate(mach_task_self(), (vm_address_t)pool.temporary, (vm_size_t)size);
         *error = kr;
         if (kr != KERN_SUCCESS) goto attempt_failed;
         pool.temporary = 0;
+        jit_required_snapshot_free(pool.temporary_snapshot); pool.temporary_snapshot = NULL;
         /* Startup-only exact ownership metadata is no longer needed: published
          * pools are never reclaimed by this module. Keep its steady footprint
          * independent of how many VM objects debugger preparation produced. */
-        free(pool.rx_snapshot); pool.rx_snapshot = NULL;
-        free(pool.rw_snapshot); pool.rw_snapshot = NULL;
+        jit_required_snapshot_free(pool.rx_snapshot); pool.rx_snapshot = NULL;
+        jit_required_snapshot_free(pool.rw_snapshot); pool.rw_snapshot = NULL;
         pool.state = 3;
         pthread_mutex_lock(&jit_required_mutex);
         jit_required_pool = pool;
@@ -1915,7 +1989,8 @@ unsigned madeira_early_intruder_tag, madeira_early_intruder_prot;
 
 /* BEGIN LEGACY POOL OWNERSHIP */
 #define JIT_LEGACY_POOL_TAG 250
-static uint64_t jit_legacy_pool_object;
+static uint64_t jit_legacy_pool_object; /* first leaf, diagnostic only */
+static struct jit_required_snapshot *jit_legacy_pool_snapshot;
 static unsigned jit_legacy_pool_state;
 
 bool jit_legacy_pool_release_owned(int32_t *error)
@@ -1928,17 +2003,20 @@ bool jit_legacy_pool_release_owned(int32_t *error)
         pthread_mutex_unlock(&jit_required_mutex);
         return true;
     }
-    if (jit_legacy_pool_state != 1 || !jit_legacy_pool_object ||
-        !jit_required_range((uint64_t)madeira_early_pool_base,
-                             (uint64_t)madeira_early_pool_size,
-                             JIT_LEGACY_POOL_TAG, VM_PROT_NONE, &jit_legacy_pool_object)) {
+    if (jit_legacy_pool_state != 1 ||
+        !jit_required_snapshot_matches((uint64_t)madeira_early_pool_base,
+                                        (uint64_t)madeira_early_pool_size,
+                                        JIT_LEGACY_POOL_TAG, VM_PROT_NONE, jit_legacy_pool_snapshot)) {
         *error = KERN_INVALID_ADDRESS;
         ok = 0;
     } else {
         *error = vm_deallocate(mach_task_self(), (vm_address_t)madeira_early_pool_base,
                                 (vm_size_t)madeira_early_pool_size);
-        if (*error == KERN_SUCCESS) jit_legacy_pool_state = 2;
-        else ok = 0;
+        if (*error == KERN_SUCCESS) {
+            jit_legacy_pool_state = 2;
+            jit_required_snapshot_free(jit_legacy_pool_snapshot);
+            jit_legacy_pool_snapshot = NULL;
+        } else ok = 0;
     }
     pthread_mutex_unlock(&jit_required_mutex);
     return ok != 0;
@@ -1974,25 +2052,25 @@ __attribute__((constructor(101), used)) static void madeira_early_va_claim(void)
         a = win + winsz;
         if (vm_allocate(mach_task_self(), &a, sz,
                          VM_FLAGS_FIXED | VM_MAKE_TAG((unsigned)JIT_LEGACY_POOL_TAG)) == KERN_SUCCESS && a == win + winsz) {
-            unsigned char zero = 0;
-            kern_return_t kr = vm_write(mach_task_self(), a, (vm_offset_t)(uintptr_t)&zero, 1);
-            if (kr == KERN_SUCCESS &&
-                jit_required_capture((uint64_t)a, (uint64_t)sz, JIT_LEGACY_POOL_TAG,
-                                      VM_PROT_READ | VM_PROT_WRITE, &jit_legacy_pool_object) &&
-                jit_legacy_pool_object &&
+            jit_legacy_pool_snapshot = jit_required_early_snapshot(JIT_LEGACY_POOL_TAG);
+            if (jit_required_snapshot_fill((uint64_t)a, (uint64_t)sz, JIT_LEGACY_POOL_TAG,
+                                            VM_PROT_READ | VM_PROT_WRITE, 1, jit_legacy_pool_snapshot) &&
                 vm_protect(mach_task_self(), a, sz, 0, VM_PROT_NONE) == KERN_SUCCESS &&
-                jit_required_range((uint64_t)a, (uint64_t)sz, JIT_LEGACY_POOL_TAG,
-                                    VM_PROT_NONE, &jit_legacy_pool_object)) {
+                jit_required_snapshot_matches((uint64_t)a, (uint64_t)sz, JIT_LEGACY_POOL_TAG,
+                                                VM_PROT_NONE, jit_legacy_pool_snapshot)) {
                 madeira_early_pool_base = a; madeira_early_pool_size = sz;
+                jit_legacy_pool_object = jit_legacy_pool_snapshot->entries[0].object;
                 jit_legacy_pool_state = 1;
                 break;
             }
-            /* A newly allocated but unverified extent is never advertised as
-             * an owned legacy placeholder or retried over somebody's mapping. */
-            if (jit_legacy_pool_object &&
-                jit_required_range((uint64_t)a, (uint64_t)sz, JIT_LEGACY_POOL_TAG,
-                                    -1, &jit_legacy_pool_object) &&
-                vm_deallocate(mach_task_self(), a, sz) == KERN_SUCCESS) continue;
+            /* The complete multi-leaf receipt is required for rollback too. */
+            if (jit_required_snapshot_matches((uint64_t)a, (uint64_t)sz, JIT_LEGACY_POOL_TAG,
+                                                -1, jit_legacy_pool_snapshot) &&
+                vm_deallocate(mach_task_self(), a, sz) == KERN_SUCCESS) {
+                jit_required_snapshot_free(jit_legacy_pool_snapshot);
+                jit_legacy_pool_snapshot = NULL;
+                continue;
+            }
             madeira_early_pool_base = a; madeira_early_pool_size = sz;
             jit_legacy_pool_state = 3;
             break;

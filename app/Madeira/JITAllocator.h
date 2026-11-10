@@ -100,7 +100,7 @@ bool jit_pool_alias_layout_valid(uint64_t rx, uint64_t rw, uint64_t size,
 // Required-size pool transaction. Both virtual destinations are reserved before
 // debugger allocation and are replaced only while still demonstrably owned.
 // No live pool is resized. On failure outputs are zero; stage/error describe the
-// first real failure. Both aliases share the debugger-created VM object.
+// first real failure. Both aliases share the debugger-created backing objects.
 bool jit_required_pool_create(uint64_t size, uint64_t exe_base, uint64_t exe_size,
                               uint64_t *rx, uint64_t *rw, uint32_t *stage,
                               int32_t *error);
@@ -110,7 +110,7 @@ bool jit_required_pool_release_early(void);
 bool jit_legacy_pool_release_owned(int32_t *error);
 // Published high-host pools also retain an early 8 GiB PROT_NONE FEX arena.
 // Wine adopts this exact owned reservation without an unmap/reallocate gap.
-bool jit_required_pool_fex_reservation(uint64_t *base, uint64_t *size, uint64_t *object_id);
+bool jit_required_pool_fex_reservation(uint64_t *base, uint64_t *size, const char **receipt);
 
 // Versioned debugger protocol; old scripts return zero for the capability call.
 uint64_t jit26_pool_capabilities(void);

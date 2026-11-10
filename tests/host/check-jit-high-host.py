@@ -22,10 +22,14 @@ def function(signature):
 helpers=''.join(function(name) for name in (
     'static int ios_native_jit_number(',
     'static int ios_native_jit_span_has_protection(',
+    'static int ios_native_fex_receipt_word(',
     'static int ios_native_fex_hold_description(',
+    'static int ios_native_fex_receipts_equal(',
+    'static int ios_native_fex_receipt_matches(',
     'static void ios_publish_native_high_jit_pool(',
     'static int ios_native_high_jit_intersects(',
 ))
+receipt_types=source[source.index('/* BEGIN NATIVE FEX RECEIPT V2 */'):source.index('/* END NATIVE FEX RECEIPT V2 */')]
 registration=function('static int mmap_add_fex_reserved_area(')
 adoption=function('static NTSTATUS ios_adopt_early_fex_arena(')
 fixed=function('void *anon_mmap_fixed(')
@@ -62,6 +66,7 @@ harness=r'''
 #define RW (HIGH+FULL)
 #define FEX (HIGH+2*FULL)
 #define FEX_SIZE ((size_t)8<<30)
+#define VM_PROT_NONE 0
 #define VM_PROT_READ 1
 #define VM_PROT_WRITE 2
 #define VM_PROT_EXECUTE 4
@@ -92,7 +97,7 @@ typedef unsigned natural_t,mach_msg_type_number_t;
 typedef int kern_return_t,vm_prot_t;
 typedef int *vm_region_recurse_info_t,*task_info_t;
 typedef struct {uint64_t min_address,max_address;} task_vm_info_data_t;
-typedef struct {unsigned is_submap,user_tag;int protection,max_protection;uint64_t object_id;} vm_region_submap_info_data_64_t;
+typedef struct {unsigned is_submap,user_tag;int protection,max_protection;uint64_t object_id,offset;} vm_region_submap_info_data_64_t;
 static void* ios_jit_rx_base_global;
 static void* ios_jit_rw_base_global;
 static size_t ios_jit_pool_size_global;
@@ -100,17 +105,18 @@ static int ios_native_high_jit_pool;
 static NTSTATUS ios_native_required_pool_status;
 static uintptr_t ios_native_fex_hold_base;
 static size_t ios_native_fex_hold_size;
-static uint64_t ios_native_fex_hold_object;
+@RECEIPT_TYPES@
+static struct ios_native_fex_receipt ios_native_fex_hold_receipt;
 static int ios_native_fex_hold_pending;
 static uintptr_t ios_fex_arena_base_unix,ios_fex_arena_end_unix;
 static uintptr_t ios_layerkit_lo,ios_layerkit_hi;
 static size_t host_page_mask=0x3fff,granularity_mask=0xffff;
 static long long config_cap;
 static unsigned map_calls,malloc_calls,find_calls;
-static int malloc_failure,fail_env_at,env_calls,task_failure,region_failure,submap_loop,fex_second_object;
+static int malloc_failure,fail_env_at,env_calls,task_failure,region_failure,submap_loop,real_submap,fex_second_object;
 static uint64_t fex_kernel_object=1;
-struct region {uintptr_t base;size_t size;unsigned tag;int prot,max;};
-static struct region regions[8];static unsigned region_count;
+struct region {uintptr_t base;size_t size;unsigned tag;int prot,max;uint64_t object,offset;};
+static struct region regions[300];static unsigned region_count;
 static int mach_task_self(void){return 1;}
 static int task_info(int task,int kind,task_info_t out,mach_msg_type_number_t* count){
  CHECK(task==1&&kind==TASK_VM_INFO&&*count==TASK_VM_INFO_COUNT);
@@ -123,13 +129,14 @@ static int mach_vm_region_recurse(int task,mach_vm_address_t* address,mach_vm_si
  if(region_failure)return 5;
  vm_region_submap_info_data_64_t* info=(void*)out;
  if(submap_loop){*size=16*GB;*info=(vm_region_submap_info_data_64_t){1,0,0,0,0};return 0;}
+ if(real_submap&&!*depth){*address=HIGH;*size=16*GB;*info=(vm_region_submap_info_data_64_t){1,0,0,0,0};return 0;}
  int selected=-1;
  for(unsigned i=0;i<region_count;i++)if(regions[i].base+regions[i].size>*address&&
     (selected<0||regions[i].base<regions[selected].base))selected=(int)i;
  if(selected<0)return KERN_INVALID_ADDRESS;
  struct region r=regions[selected];*address=r.base;*size=r.size;
  *info=(vm_region_submap_info_data_64_t){0,r.tag,r.prot,r.max,
-  r.base>=FEX&&r.base<FEX+FEX_SIZE?(fex_second_object&&r.base>FEX?2:fex_kernel_object):1};(void)depth;return 0;
+  r.object?r.object:(r.base>=FEX&&r.base<FEX+FEX_SIZE?(fex_second_object&&r.base>FEX?2:fex_kernel_object):1),r.offset};(void)depth;return 0;
 }
 static long long madeira_cfg_int(const char* key,int fallback){CHECK(!strcmp(key,"arena-mb")&&!fallback);return config_cap;}
 static uintptr_t wow_base;
@@ -178,18 +185,18 @@ static NTSTATUS reserve_route(void){static int done;static NTSTATUS result;
  return 0x12345678;
 }
 static void setup(int high){
- const char* keys[]={"WINE_IOS_JIT_PAIR_V1","WINE_IOS_JIT_RX","WINE_IOS_JIT_RW","WINE_IOS_JIT_SIZE","WINE_IOS_FEX_EARLY_V1",
+ const char* keys[]={"WINE_IOS_JIT_PAIR_V1","WINE_IOS_JIT_RX","WINE_IOS_JIT_RW","WINE_IOS_JIT_SIZE","WINE_IOS_FEX_EARLY_V1","WINE_IOS_FEX_EARLY_V2",
  "WINE_IOS_FEX_ARENA_BASE","WINE_IOS_FEX_ARENA_SIZE","WINE_IOS_FEX_ARENA_END","WINE_IOS_FEX_ARENA_VERSION","MADEIRA_FEX_ARENA"};
  for(unsigned i=0;i<sizeof(keys)/sizeof(*keys);i++)unsetenv(keys[i]);
  setenv("WINE_IOS_JIT_PAIR_V1","1",1);setenv("WINE_IOS_JIT_SIZE","48000000",1);
- if(high){setenv("WINE_IOS_JIT_RX","7c00000000",1);setenv("WINE_IOS_JIT_RW","7c48000000",1);setenv("WINE_IOS_FEX_EARLY_V1","7c90000000:200000000:1",1);
+ if(high){setenv("WINE_IOS_JIT_RX","7c00000000",1);setenv("WINE_IOS_JIT_RW","7c48000000",1);setenv("WINE_IOS_FEX_EARLY_V2","2:7c90000000:200000000:1:0:200000000:1:0:7",1);
   regions[0]=(struct region){RX,FULL,251,5,7};regions[1]=(struct region){RW,FULL,252,3,7};regions[2]=(struct region){FEX,FEX_SIZE,253,0,7};region_count=3;
  }else{setenv("WINE_IOS_JIT_RX","300000000",1);setenv("WINE_IOS_JIT_RW","348000000",1);
   regions[0]=(struct region){0x300000000ULL,FULL,251,5,7};regions[1]=(struct region){0x348000000ULL,FULL,252,3,7};region_count=2;
  }
 }
 static void success_case(int limited){
- setup(1);if(limited)regions[2].max=3;ios_publish_native_high_jit_pool();CHECK(!ios_native_required_pool_status&&ios_native_high_jit_pool&&ios_native_fex_hold_pending);
+ setup(1);if(limited){regions[2].max=3;setenv("WINE_IOS_FEX_EARLY_V2","2:7c90000000:200000000:1:0:200000000:1:0:3",1);}ios_publish_native_high_jit_pool();CHECK(!ios_native_required_pool_status&&ios_native_high_jit_pool&&ios_native_fex_hold_pending);
  CHECK(ios_jit_rx_base_global==(void*)RX&&ios_jit_rw_base_global==(void*)RW&&ios_jit_pool_size_global==FULL);
  errno=0;CHECK(anon_mmap_fixed((void*)RX,PAGE,3,0)==MAP_FAILED&&errno==EEXIST&&!map_calls);
  CHECK(anon_mmap_fixed((void*)(RW+PAGE),PAGE,3,0)==MAP_FAILED&&!map_calls);
@@ -229,8 +236,8 @@ static void invalid_pair(int mode){
 static void invalid_adoption(int mode){
  setup(1);ios_publish_native_high_jit_pool();CHECK(ios_native_fex_hold_pending);
  switch(mode){
- case 0:unsetenv("WINE_IOS_FEX_EARLY_V1");break;
- case 1:setenv("WINE_IOS_FEX_EARLY_V1","7ca0000000:200000000:1",1);break;
+ case 0:unsetenv("WINE_IOS_FEX_EARLY_V2");break;
+ case 1:setenv("WINE_IOS_FEX_EARLY_V2","2:7ca0000000:200000000:1:0:200000000:1:0:7",1);break;
  case 2:regions[2].tag=252;break;
  case 3:regions[2].prot=1;break;
  case 4:regions[2].max=1;break;
@@ -241,9 +248,9 @@ static void invalid_adoption(int mode){
  case 9:config_cap=4096;break;
  case 10:setenv("MADEIRA_FEX_ARENA","0",1);break;
  case 11:fex_kernel_object=2;break; /* same tag/protection, different kernel object */
- case 12:setenv("WINE_IOS_FEX_EARLY_V1","7c90000000:200000000:2",1);break;
+ case 12:setenv("WINE_IOS_FEX_EARLY_V2","2:7c90000000:200000000:1:0:200000000:2:0:7",1);break;
  case 13:regions[2].size=FEX_SIZE/2;regions[3]=(struct region){FEX+FEX_SIZE/2,FEX_SIZE/2,253,0,7};region_count=4;fex_second_object=1;break;
- case 14:fex_kernel_object=2;setenv("WINE_IOS_FEX_EARLY_V1","7c90000000:200000000:2",1);break;
+ case 14:fex_kernel_object=2;setenv("WINE_IOS_FEX_EARLY_V2","2:7c90000000:200000000:1:0:200000000:2:0:7",1);break;
  }
  NTSTATUS result=reserve_route();CHECK(result&&ios_native_fex_hold_pending&&!ios_fex_arena_base_unix&&!map_calls);
  CHECK(!getenv("WINE_IOS_FEX_ARENA_BASE"));
@@ -257,11 +264,12 @@ static void publication_failure(int at){
 }
 static void no_hold(int mode){
  setup(1);
- if(mode==0)unsetenv("WINE_IOS_FEX_EARLY_V1");if(mode==1)regions[2].tag=0;if(mode==2)regions[2].prot=3;
- if(mode==3)setenv("WINE_IOS_FEX_EARLY_V1","7c00000000:200000000:1",1);
- if(mode==4)setenv("WINE_IOS_FEX_EARLY_V1","7c90000000:200000000:0",1);
- if(mode==5)setenv("WINE_IOS_FEX_EARLY_V1","7c90000000:200000000:100000000",1);
- if(mode==6)setenv("WINE_IOS_FEX_EARLY_V1","7c90000000:200000000:1:2",1);
+ if(mode==0)unsetenv("WINE_IOS_FEX_EARLY_V2");if(mode==1)regions[2].tag=0;if(mode==2)regions[2].prot=3;
+ if(mode==3)setenv("WINE_IOS_FEX_EARLY_V2","2:7c00000000:200000000:1:0:200000000:1:0:7",1);
+ if(mode==4)setenv("WINE_IOS_FEX_EARLY_V2","2:7c90000000:200000000:1:0:200000000:0:0:7",1);
+ if(mode==5)setenv("WINE_IOS_FEX_EARLY_V2","2:7c90000000:200000000:1:0:200000000:100000000:0:7",1);
+ if(mode==6)setenv("WINE_IOS_FEX_EARLY_V2","2:7c90000000:200000000:1:0:200000000:1:0:7:2",1);
+ if(mode==7){unsetenv("WINE_IOS_FEX_EARLY_V2");setenv("WINE_IOS_FEX_EARLY_V1","7c90000000:200000000:1",1);}
  ios_publish_native_high_jit_pool();CHECK(ios_native_high_jit_pool&&!ios_native_fex_hold_pending);
  CHECK(reserve_route()==STATUS_INVALID_ADDRESS&&!area_count()&&!map_calls);
 }
@@ -271,12 +279,12 @@ static void baseline(int mode){
  CHECK(reserve_route()==0x12345678&&!area_count()&&!map_calls);
 }
 static void parsers(void){
- uintptr_t value=123,base;size_t length;uint64_t object;
+ uintptr_t value=123;struct ios_native_fex_receipt receipt;
  const char* invalid[]={"","0","-1","+1","fffffffffffffffff","7c00000000z"};
  for(unsigned i=0;i<sizeof(invalid)/sizeof(*invalid);i++){setenv("TEST_NUMBER",invalid[i],1);CHECK(!ios_native_jit_number("TEST_NUMBER",&value));}
  unsetenv("TEST_NUMBER");CHECK(!ios_native_jit_number("TEST_NUMBER",&value));setenv("TEST_NUMBER","7c00000000",1);CHECK(ios_native_jit_number("TEST_NUMBER",&value)&&value==HIGH);
  const char* bad[]={"", "-1:200000000", "7c90000000:-1", "7c90000001:200000000", "7c90000000:100000000", "7fff000000:200000000", "7c90000000:200000000junk", "7c90000000200000000"};
- for(unsigned i=0;i<sizeof(bad)/sizeof(*bad);i++){setenv("WINE_IOS_FEX_EARLY_V1",bad[i],1);CHECK(!ios_native_fex_hold_description(&base,&length,&object));}
+ for(unsigned i=0;i<sizeof(bad)/sizeof(*bad);i++){setenv("WINE_IOS_FEX_EARLY_V2",bad[i],1);CHECK(!ios_native_fex_hold_description(&receipt));}
 }
 static void register_boundaries(void){
  add_area(FEX-PAGE,PAGE);add_area(FEX+FEX_SIZE,PAGE);
@@ -302,10 +310,142 @@ static void wow_hardware(int disabled){
  CHECK(!ios_native_high_jit_intersects(result,16<<20));
 }
 
+/* These are real XNU anonymous-map leaf sizes, not one fictitious object for
+ * an entire 8 GiB reservation. Only the Mach answers are modelled; parsing,
+ * caching, leaf traversal, adoption and all rejection policy remain literal
+ * production functions above. */
+static void write_receipt(const struct ios_native_fex_receipt* receipt){
+ char text[IOS_NATIVE_FEX_RECEIPT_BYTES+1];
+ int n=snprintf(text,sizeof(text),"2:%llx:%llx:%x",
+  (unsigned long long)receipt->base,(unsigned long long)receipt->size,receipt->count);
+ CHECK(n>0&&(size_t)n<sizeof(text));size_t used=(size_t)n;
+ for(unsigned i=0;i<receipt->count;i++){
+  const struct ios_native_fex_segment* s=&receipt->segments[i];
+  n=snprintf(text+used,sizeof(text)-used,":%llx:%llx:%llx:%llx:%x",
+   (unsigned long long)s->offset,(unsigned long long)s->length,
+   (unsigned long long)s->object,(unsigned long long)s->backing_offset,s->maximum);
+  CHECK(n>0&&(size_t)n<sizeof(text)-used);used+=(size_t)n;
+ }
+ CHECK(!setenv("WINE_IOS_FEX_EARLY_V2",text,1));
+}
+static void chunked_setup(unsigned count,int limited){
+ CHECK(count&&count<=IOS_NATIVE_FEX_RECEIPT_MAX);setup(1);
+ struct ios_native_fex_receipt receipt={.base=FEX,.size=FEX_SIZE,.count=count};
+ uint64_t length=FEX_SIZE/count;CHECK(!(length&(PAGE-1)));
+ for(unsigned i=0;i<count;i++){
+  uint64_t offset=(uint64_t)i*length,object=100+i;
+  receipt.segments[i]=(struct ios_native_fex_segment){offset,length,object,0,limited?3:7};
+  regions[2+i]=(struct region){FEX+offset,length,253,0,limited?3:7,object,0};
+ }
+ region_count=2+count;write_receipt(&receipt);
+}
+static void chunks_success(int mode){
+ unsigned count=mode==1?256:64;chunked_setup(count,mode==4);
+ struct ios_native_fex_receipt parsed;CHECK(ios_native_fex_hold_description(&parsed));
+ CHECK(parsed.count==count&&parsed.base==FEX&&parsed.size==FEX_SIZE);
+ if(mode==2){
+  /* VM entry splits retain the same object and correct backing offsets. */
+  for(int i=(int)count-1;i>=0;i--){
+   struct region r=regions[2+i];r.size/=2;regions[2+2*i]=r;
+   r.base+=r.size;r.offset+=r.size;regions[3+2*i]=r;
+  }
+  region_count=2+2*count;
+ }
+ if(mode==3){
+  /* Conversely, one kernel entry may cover adjacent receipt leaves. */
+  parsed.count=2;parsed.segments[0]=(struct ios_native_fex_segment){0,FEX_SIZE/2,1,0,7};
+  parsed.segments[1]=(struct ios_native_fex_segment){FEX_SIZE/2,FEX_SIZE/2,1,FEX_SIZE/2,7};
+  write_receipt(&parsed);regions[2]=(struct region){FEX,FEX_SIZE,253,0,7,1,0};region_count=3;
+ }
+ if(mode==5)real_submap=1; /* Recurse from cursor, not returned parent base. */
+ CHECK(ios_native_fex_receipt_matches(&parsed));
+ ios_publish_native_high_jit_pool();CHECK(ios_native_fex_hold_pending&&!ios_native_required_pool_status);
+ struct ios_native_fex_receipt original=ios_native_fex_hold_receipt;
+ CHECK(reserve_route()==STATUS_SUCCESS&&area_count()==1&&!map_calls);
+ CHECK(ios_native_fex_receipts_equal(&original,&ios_native_fex_hold_receipt));
+ CHECK(!ios_native_fex_hold_pending&&ios_fex_arena_base_unix==FEX&&ios_fex_arena_end_unix==FEX+FEX_SIZE);
+}
+static void chunks_changed(int mode){
+ chunked_setup(64,0);ios_publish_native_high_jit_pool();CHECK(ios_native_fex_hold_pending);
+ struct ios_native_fex_receipt original=ios_native_fex_hold_receipt,changed=original;
+ switch(mode){
+ case 0:regions[65].object++;break;
+ case 1:regions[33].prot=1;break;
+ case 2:regions[33].max=3;break;
+ case 3:regions[33].tag=252;break;
+ case 4:regions[33].offset=PAGE;break;
+ case 5:regions[33].base+=PAGE;regions[33].size-=PAGE;break;
+ case 6:regions[33].object=0;fex_kernel_object=0;break;
+ case 7:changed.segments[31].object++;regions[33].object++;write_receipt(&changed);break;
+ case 8:changed.segments[31].maximum=3;regions[33].max=3;write_receipt(&changed);break;
+ case 9:changed.segments[31].backing_offset=PAGE;regions[33].offset=PAGE;write_receipt(&changed);break;
+ }
+ CHECK(reserve_route()==STATUS_INVALID_ADDRESS&&ios_native_fex_hold_pending&&!area_count()&&!map_calls);
+ CHECK(!ios_fex_arena_base_unix&&!getenv("WINE_IOS_FEX_ARENA_BASE"));
+ CHECK(!memcmp(&original,&ios_native_fex_hold_receipt,sizeof(original)));
+ CHECK(ios_native_high_jit_intersects((void*)FEX,PAGE));
+}
+static void receipt_invalid(int mode){
+ chunked_setup(64,0);struct ios_native_fex_receipt receipt;
+ CHECK(ios_native_fex_hold_description(&receipt));
+ switch(mode){
+ case 0:receipt.base+=PAGE;break;
+ case 1:receipt.base=HIGH;break; /* syntactically valid, but overlaps RX */
+ case 2:receipt.size-=PAGE;break;
+ case 3:receipt.segments[30].offset+=PAGE;break;
+ case 4:receipt.segments[30].offset-=PAGE;break;
+ case 5:receipt.segments[30].length=0;break;
+ case 6:receipt.segments[30].length++;break;
+ case 7:receipt.segments[30].object=0;break;
+ case 8:receipt.segments[30].object=0x100000000ULL;break;
+ case 9:receipt.segments[30].backing_offset=1;break;
+ case 10:receipt.segments[30].backing_offset=UINT64_MAX-PAGE+1;break;
+ case 11:receipt.segments[30].maximum=1;break;
+ case 12:receipt.count--;break;
+ }
+ write_receipt(&receipt);
+ if(mode==1){
+  ios_publish_native_high_jit_pool();CHECK(ios_native_high_jit_pool&&!ios_native_fex_hold_pending);
+  CHECK(reserve_route()==STATUS_INVALID_ADDRESS&&!map_calls&&!area_count());return;
+ }
+ struct ios_native_fex_receipt parsed;CHECK(!ios_native_fex_hold_description(&parsed));
+ CHECK(!ios_native_fex_receipt_matches(&receipt));
+}
+static void receipt_text_invalid(void){
+ static const char* bad[]={
+  "7c90000000:200000000:1", /* v1 never upgrades to ownership */
+  "1:7c90000000:200000000:1:0:200000000:1:0:7",
+  "2:7c90000000:200000000:0:0:200000000:1:0:7",
+  "2:7c90000000:200000000:101:0:200000000:1:0:7",
+  "2:7c90000000:200000000:1:0:200000000:1:0:100000007",
+  "2:7c90000000:200000000:1:0:200000000:1:0:7:",
+  "2:7c90000000:200000000:1:0:200000000:1:0:7:dead",
+  "2:7c90000000:200000000:1:0:200000000:+1:0:7",
+  "2:7c90000000:200000000:1:0:200000000:fffffffffffffffff:0:7",
+  "2:7c90000000:200000000:1:0:200000000:1:0:",
+ };
+ struct ios_native_fex_receipt receipt;
+ for(unsigned i=0;i<sizeof(bad)/sizeof(*bad);i++){
+  setenv("WINE_IOS_FEX_EARLY_V2",bad[i],1);CHECK(!ios_native_fex_hold_description(&receipt));
+ }
+ char oversized[IOS_NATIVE_FEX_RECEIPT_BYTES+2];memset(oversized,'0',sizeof(oversized)-1);oversized[sizeof(oversized)-1]=0;
+ setenv("WINE_IOS_FEX_EARLY_V2",oversized,1);CHECK(!ios_native_fex_hold_description(&receipt));
+ /* Each field, including the zero offset, participates in cached identity. */
+ chunked_setup(64,0);CHECK(ios_native_fex_hold_description(&receipt));
+ struct ios_native_fex_receipt changed=receipt;
+ CHECK(ios_native_fex_receipts_equal(&receipt,&changed));
+ changed.segments[1].offset++;CHECK(!ios_native_fex_receipts_equal(&receipt,&changed));changed=receipt;
+ changed.segments[1].length--;CHECK(!ios_native_fex_receipts_equal(&receipt,&changed));changed=receipt;
+ changed.segments[1].object++;CHECK(!ios_native_fex_receipts_equal(&receipt,&changed));changed=receipt;
+ changed.segments[1].backing_offset+=PAGE;CHECK(!ios_native_fex_receipts_equal(&receipt,&changed));changed=receipt;
+ changed.segments[1].maximum=3;CHECK(!ios_native_fex_receipts_equal(&receipt,&changed));
+}
+
 static void execute_case(int category,int value){
  pid_t child=fork();CHECK(child>=0);
  if(!child){if(category==0)success_case(value);if(category==1)invalid_pair(value);if(category==2)invalid_adoption(value);
- if(category==3)publication_failure(value);if(category==4)no_hold(value);if(category==5)baseline(value);if(category==6)parsers();if(category==7)register_boundaries();if(category==8)wow_hardware(value);_exit(0);}
+ if(category==3)publication_failure(value);if(category==4)no_hold(value);if(category==5)baseline(value);if(category==6)parsers();if(category==7)register_boundaries();if(category==8)wow_hardware(value);
+ if(category==9)chunks_success(value);if(category==10)chunks_changed(value);if(category==11)receipt_invalid(value);if(category==12)receipt_text_invalid();_exit(0);}
  int status;CHECK(waitpid(child,&status,0)==child);if(!WIFEXITED(status)||WEXITSTATUS(status)){fprintf(stderr,"failed category=%d value=%d status=%d\n",category,value,status);exit(1);}
 }
 int main(void){
@@ -313,21 +453,26 @@ int main(void){
  for(int i=0;i<11;i++)execute_case(1,i);
  for(int i=0;i<15;i++)execute_case(2,i);
  for(int i=1;i<=4;i++)execute_case(3,i);
- for(int i=0;i<7;i++)execute_case(4,i);
+ for(int i=0;i<8;i++)execute_case(4,i);
  for(int i=0;i<3;i++)execute_case(5,i);
  execute_case(6,0);execute_case(7,0);execute_case(8,0);execute_case(8,1);
+ for(int i=0;i<6;i++)execute_case(9,i);
+ for(int i=0;i<10;i++)execute_case(10,i);
+ for(int i=0;i<13;i++)execute_case(11,i);
+ execute_case(12,0);
  puts("PASS actual Wine high-host pair publication, whole-span rights/limits/one-shot status, native RX/RW fixed-map exclusion, pending FEX hold guard and no-release adoption");
  puts("PASS actual FEX-only registration, both-neighbor overlap refusal/adjacency, generic exclusion and contained/legacy-WoW exact-band clipping inside the owned8GiB; opt-out/non-WoW/wider bounds rejected");
  puts("PASS actual failed metadata/region/tag/permissions/registration/config/publication handling propagates honest status and retains pending ownership; low/legacy routing unchanged");
+ puts("PASS V2 full 8GiB receipts: 64 real-size 128MiB leaves and 256 bounded leaves; split/merged kernel regions preserve exact object/backing offsets; altered cached fields remain rejected without unmapping");
  return 0;
 }
 '''
-for token,value in {'HELPERS':helpers,'REGISTRATION':registration,'ADOPTION':adoption,'FIXED':fixed,'COVER':cover,'PLACEMENT':placement,'ROUTE':route}.items():
+for token,value in {'RECEIPT_TYPES':receipt_types,'HELPERS':helpers,'REGISTRATION':registration,'ADOPTION':adoption,'FIXED':fixed,'COVER':cover,'PLACEMENT':placement,'ROUTE':route}.items():
     harness=harness.replace('@'+token+'@',value)
 with tempfile.TemporaryDirectory(prefix='madeira-jit-high-host-') as tmp:
     cfile=Path(tmp)/'actual.c';binary=Path(tmp)/'actual'
     cfile.write_text(harness)
-    subprocess.run([os.environ.get('CC','cc'),'-std=c11','-Wall','-Wextra','-Werror','-Wno-misleading-indentation',
+    subprocess.run([os.environ.get('CC','cc'),'-std=c11','-Wall','-Wextra','-Werror','-Wno-misleading-indentation','-Wno-missing-field-initializers',
                     '-fsanitize=address,undefined','-fno-sanitize-recover=all','-fno-omit-frame-pointer',str(cfile),'-o',str(binary)],check=True,timeout=120)
     subprocess.run([str(binary)],check=True,timeout=30)
 print('PASS loader tests retain genuine NTSTATUS failure and stop the affected Wine startup instead of starting FEX without its required arena')

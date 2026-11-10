@@ -50,10 +50,14 @@ typedef struct {unsigned user_tag;vm_prot_t protection,max_protection;unsigned i
 #define VM_MAKE_TAG(x) ((unsigned)(x)<<24)
 #define VM_INHERIT_NONE 2
 #define FALSE 0
-struct region {uint64_t base,size,object;int fd,prot;unsigned tag,mapped,owned;};
-static struct region regions[256];static unsigned count;static uint64_t serial=100;
+/* XNU vm_map_enter chunks large anonymous allocations at ANON_CHUNK_SIZE.
+ * Each leaf starts without an object; touching one leaf cannot bind its peers.
+ * file_offset is only our POSIX backing boundary, offset is Mach object offset. */
+#define ANON_CHUNK (UINT64_C(128)<<20)
+struct region {uint64_t base,size,object,offset,file_offset,group;int fd,prot;unsigned tag,mapped,owned;};
+static struct region regions[512];static unsigned count;static uint64_t serial=100,group_serial;
 static uint64_t map_min=0x100ab8000ULL,map_max=0x8000000000ULL;
-static unsigned allocation_calls,debug_allocations,preparations,remaps,deallocations,executions,expected_debug=1,expected_preparations=1;
+static unsigned allocation_calls,debug_allocations,preparations,remaps,deallocations,executions,expected_debug=1,expected_preparations=1,materialized_leaves;
 static int query_error,lose_first,remap_fail,protect_fail,missing_markers,wrong_return,bad_backing,cleanup_fail,cow_prepare,multi_objects,multi_active,fresh_zero,cap_supported=1;
 static int prepare_blocks,cap_entered,cap_release,deep_submap,one_submap;
 static pthread_mutex_t boundary_mutex=PTHREAD_MUTEX_INITIALIZER;
@@ -78,31 +82,48 @@ static int reserve_actual(uint64_t base,uint64_t size){
  return p==MAP_FAILED?-1:((uint64_t)(uintptr_t)p==base?0:-1);
 #endif
 }
-static void add_system(uint64_t base,uint64_t size){CHECK(count<256);regions[count++]=(struct region){base,size,++serial,-1,0,0,0,0};}
+static void add_system(uint64_t base,uint64_t size){CHECK(count<512);regions[count++]=(struct region){.base=base,.size=size,.object=++serial,.fd=-1};}
+static void append_chunks(uint64_t base,uint64_t size,unsigned tag,int prot,int fd,uint64_t group){
+ for(uint64_t offset=0;offset<size;offset+=ANON_CHUNK){
+  uint64_t length=size-offset<ANON_CHUNK?size-offset:ANON_CHUNK;CHECK(count<512);
+  regions[count++]=(struct region){.base=base+offset,.size=length,.file_offset=offset,.group=group,
+    .fd=fd<0?-1:dup(fd),.prot=prot,.tag=tag,.mapped=1,.owned=1};
+ }
+}
+static int span_owned(uint64_t base,uint64_t size,int prot){
+ uint64_t cursor=base,end=base+size;if(!size||end<base)return 0;
+ while(cursor<end){int i=index_at(cursor);if(i<0||regions[i].base!=cursor||!regions[i].owned||
+   regions[i].size>end-cursor||(prot>=0&&regions[i].prot!=prot))return 0;cursor+=regions[i].size;}
+ return cursor==end;
+}
+static void erase_span(uint64_t base,uint64_t size){
+ for(unsigned i=0;i<count;){if(regions[i].base>=base&&regions[i].base-base<size){
+   if(regions[i].fd>=0)CHECK(!close(regions[i].fd));regions[i]=regions[--count];
+  }else i++;}
+}
 static int vm_allocate(int task,vm_address_t* address,vm_size_t size,int flags){
  CHECK(task==1&&size&&!(size&(PAGE-1))&&!((unsigned)flags&VM_FLAGS_OVERWRITE));allocation_calls++;
  pthread_mutex_lock(&boundary_mutex);
  for(unsigned i=0;i<count;i++)if(overlap(*address,size,regions[i].base,regions[i].size)){pthread_mutex_unlock(&boundary_mutex);return KERN_NO_SPACE;}
- if(lose_first){lose_first=0;CHECK(!reserve_actual(*address,PAGE));CHECK(count<256);
-  regions[count++]=(struct region){*address,PAGE,++serial,-1,3,99,1,0};
+ if(lose_first){lose_first=0;CHECK(!reserve_actual(*address,PAGE));CHECK(count<512);
+  regions[count++]=(struct region){.base=*address,.size=PAGE,.object=++serial,.fd=-1,.prot=3,.tag=99,.mapped=1};
   *(uint32_t*)(uintptr_t)*address=0x1234abcd;pthread_mutex_unlock(&boundary_mutex);return KERN_NO_SPACE;}
  if(reserve_actual(*address,size)){pthread_mutex_unlock(&boundary_mutex);return KERN_NO_SPACE;}
- CHECK(count<256);regions[count++]=(struct region){*address,size,fresh_zero?0:++serial,-1,3,(unsigned)flags>>24,1,1};
+ append_chunks(*address,size,(unsigned)flags>>24,3,-1,++group_serial);
  pthread_mutex_unlock(&boundary_mutex);return 0;
 }
 static int vm_protect(int task,vm_address_t address,vm_size_t size,int maximum,int prot){
- CHECK(task==1&&!maximum);pthread_mutex_lock(&boundary_mutex);int i=index_at(address);
- CHECK(i>=0&&regions[i].base==address&&regions[i].size==size&&regions[i].owned);
+ CHECK(task==1&&!maximum);pthread_mutex_lock(&boundary_mutex);CHECK(span_owned(address,size,-1));
  if(protect_fail&&prot==3){protect_fail--;pthread_mutex_unlock(&boundary_mutex);return KERN_PROTECTION_FAILURE;}
- CHECK(!mprotect((void*)(uintptr_t)address,size,prot));regions[i].prot=prot;
+ CHECK(!mprotect((void*)(uintptr_t)address,size,prot));
+ for(unsigned i=0;i<count;i++)if(regions[i].base>=address&&regions[i].base-address<size)regions[i].prot=prot;
  pthread_mutex_unlock(&boundary_mutex);return 0;
 }
 static int vm_deallocate(int task,vm_address_t address,vm_size_t size){
- CHECK(task==1);pthread_mutex_lock(&boundary_mutex);int i=index_at(address);
- CHECK(i>=0&&regions[i].base==address&&regions[i].size==size&&regions[i].owned);
+ CHECK(task==1);pthread_mutex_lock(&boundary_mutex);CHECK(span_owned(address,size,-1));
  if(cleanup_fail){pthread_mutex_unlock(&boundary_mutex);return KERN_FAILURE;}
- CHECK(!munmap((void*)(uintptr_t)address,size));if(regions[i].fd>=0)close(regions[i].fd);
- regions[i]=regions[--count];deallocations++;pthread_mutex_unlock(&boundary_mutex);return 0;
+ CHECK(!munmap((void*)(uintptr_t)address,size));erase_span(address,size);
+ deallocations++;pthread_mutex_unlock(&boundary_mutex);return 0;
 }
 static int vm_region_recurse_64(int task,vm_address_t* address,vm_size_t* size,natural_t* depth,
  vm_region_recurse_info_t information,mach_msg_type_number_t* length){
@@ -119,35 +140,42 @@ static int vm_region_recurse_64(int task,vm_address_t* address,vm_size_t* size,n
  for(unsigned i=0;i<count;i++)if(regions[i].base+regions[i].size>*address&&(best<0||regions[i].base<regions[best].base))best=(int)i;
  if(best<0){pthread_mutex_unlock(&boundary_mutex);return KERN_INVALID_ADDRESS;}
  struct region r=regions[best];uint64_t requested=*address;*address=r.base;*size=r.size;
- *info=(vm_region_submap_info_data_64_t){r.tag,r.prot,7,0,r.object,0};
- if(multi_active&&(r.base==last_rx||r.base==last_rw)){
+ *info=(vm_region_submap_info_data_64_t){r.tag,r.prot,7,0,r.object,r.offset};
+ if(multi_active&&((r.base>=last_rx&&r.base-last_rx<FULL)||(r.base>=last_rw&&r.base-last_rw<FULL))){
   uint64_t page=requested>r.base?(requested-r.base)/PAGE:0;
-  *address=r.base+page*PAGE;*size=PAGE;info->object_id=r.object+page;info->offset=0;
+  *address=r.base+page*PAGE;*size=PAGE;info->object_id=r.object*100000+page;info->offset=0;
  }
  pthread_mutex_unlock(&boundary_mutex);return 0;
 }
 static int vm_remap(int task,vm_address_t* address,vm_size_t size,uint64_t mask,int flags,
  int source_task,vm_address_t source,int copy,vm_prot_t* current,vm_prot_t* maximum,int inherit){
  CHECK(task==1&&source_task==1&&!mask&&!copy&&inherit==2&&((unsigned)flags&VM_FLAGS_OVERWRITE));
- /* Actual XNU user remap flags exclude VM_FLAGS_ALIAS_MASK. A tag is legal
-  * for vm_allocate, not for vm_remap. Do not let a permissive stub hide this. */
  if((unsigned)flags&0xff000000u){puts("KERNEL_CONTROL rejected VM_FLAGS_ALIAS_MASK in vm_remap");return KERN_INVALID_ARGUMENT;}
  pthread_mutex_lock(&boundary_mutex);remaps++;int destination=index_at(*address),origin=index_at(source);
- CHECK(destination>=0&&origin>=0);struct region d=regions[destination],s=regions[origin];
- CHECK(d.owned&&d.base==*address&&d.size==size&&d.prot==0&&s.fd>=0&&s.base==source&&s.size==size);
- CHECK(d.tag==251||d.tag==252);
- if(d.tag==251)last_rx=*address;else last_rw=*address;
- if(!s.object){s.object=++serial;regions[origin].object=s.object;}
+ CHECK(destination>=0&&origin>=0&&span_owned(*address,size,0)&&span_owned(source,size,-1));
+ struct region d=regions[destination],source_leaves[512];unsigned source_count=0;
+ CHECK(d.tag==251||d.tag==252);if(d.tag==251)last_rx=*address;else last_rw=*address;
  if(remap_fail){if(remap_fail>0)remap_fail--;pthread_mutex_unlock(&boundary_mutex);return KERN_FAILURE;}
- int fd=bad_backing&&d.tag==252?backing():dup(s.fd);CHECK(fd>=0);
- void* mapped=mmap((void*)(uintptr_t)*address,size,s.prot,MAP_SHARED|MAP_FIXED,fd,0);
- CHECK(mapped==(void*)(uintptr_t)*address);
- regions[destination]=(struct region){*address,size,bad_backing&&d.tag==252?++serial:s.object,fd,s.prot,s.tag,1,1};
- *current=s.prot;*maximum=7;pthread_mutex_unlock(&boundary_mutex);return 0;
+ for(uint64_t cursor=source;cursor-source<size;){int i=index_at(cursor);CHECK(i>=0&&regions[i].fd>=0);
+  if(!regions[i].object)regions[i].object=++serial;
+  source_leaves[source_count++]=regions[i];cursor+=regions[i].size;}
+ int replacement=bad_backing&&d.tag==252?backing():-1;
+ for(unsigned j=0;j<source_count;j++){struct region leaf=source_leaves[j];
+  uint64_t target=*address+leaf.base-source;int fd=replacement>=0?replacement:leaf.fd;
+  CHECK(mmap((void*)(uintptr_t)target,leaf.size,leaf.prot,MAP_SHARED|MAP_FIXED,fd,leaf.file_offset)==(void*)(uintptr_t)target);
+ }
+ erase_span(*address,size);
+ for(unsigned j=0;j<source_count;j++){struct region leaf=source_leaves[j];CHECK(count<512);
+  leaf.base=*address+leaf.base-source;leaf.group=d.group;leaf.fd=dup(replacement>=0?replacement:leaf.fd);CHECK(leaf.fd>=0);
+  if(replacement>=0)leaf.object=++serial;regions[count++]=leaf;
+ }
+ if(replacement>=0)CHECK(!close(replacement));*current=source_leaves[0].prot;*maximum=7;
+ pthread_mutex_unlock(&boundary_mutex);return 0;
 }
 static int vm_write(int task,vm_address_t address,vm_offset_t input,mach_msg_type_number_t size){
- CHECK(task==1);int i=index_at(address);CHECK(i>=0&&regions[i].owned&&regions[i].prot==3);
- memcpy((void*)(uintptr_t)address,(const void*)(uintptr_t)input,size);if(!regions[i].object)regions[i].object=++serial;return 0;
+ CHECK(task==1);int i=index_at(address);CHECK(i>=0&&regions[i].owned&&regions[i].prot==3&&size<=regions[i].size-(address-regions[i].base));
+ memcpy((void*)(uintptr_t)address,(const void*)(uintptr_t)input,size);
+ if(!regions[i].object){regions[i].object=++serial;materialized_leaves++;}return 0;
 }
 static int vm_read_overwrite(int task,vm_address_t address,vm_size_t size,vm_address_t out,vm_size_t* copied){
  CHECK(task==1);memcpy((void*)(uintptr_t)out,(void*)(uintptr_t)address,size);*copied=size;return 0;
@@ -163,22 +191,22 @@ static void* jit26_pool_allocate(size_t size){
  pthread_mutex_lock(&boundary_mutex);for(unsigned i=0;i<count;i++)CHECK(!overlap(target,size,regions[i].base,regions[i].size));
  CHECK(!reserve_actual(target,size));int fd=backing();
  CHECK(mmap((void*)(uintptr_t)target,size,5,MAP_SHARED|MAP_FIXED,fd,0)==(void*)(uintptr_t)target);
- CHECK(count<256);regions[count++]=(struct region){target,size,++serial,fd,5,42,1,1};
+ append_chunks(target,size,42,5,fd,++group_serial);CHECK(!close(fd));
  pthread_mutex_unlock(&boundary_mutex);return(void*)(uintptr_t)target;
 }
 static void* jit26_pool_prepare(void* pointer,size_t size){
  CHECK(size==FULL);preparations++;if(wrong_return)return(void*)((uintptr_t)pointer+PAGE);
  if(missing_markers==1)return pointer;
  pthread_mutex_lock(&boundary_mutex);int i=index_at((uint64_t)(uintptr_t)pointer);CHECK(i>=0&&regions[i].prot==5&&regions[i].fd>=0);
- if(cow_prepare){
-  int previous=regions[i].fd, replacement=backing();
-  CHECK(mmap(pointer,size,5,MAP_SHARED|MAP_FIXED,replacement,0)==pointer);
-  regions[i].fd=replacement;regions[i].object=++serial;close(previous);
+ uint64_t group=regions[i].group;int fd=dup(regions[i].fd);CHECK(fd>=0);
+ if(cow_prepare){CHECK(!close(fd));fd=backing();CHECK(mmap(pointer,size,5,MAP_SHARED|MAP_FIXED,fd,0)==pointer);
+  for(unsigned j=0;j<count;j++)if(regions[j].group==group){CHECK(!close(regions[j].fd));regions[j].fd=dup(fd);CHECK(regions[j].fd>=0);regions[j].object=++serial;}
  }
- int fd=regions[i].fd;void* write=mmap(NULL,size,3,MAP_SHARED,fd,0);CHECK(write!=MAP_FAILED);
+ void* write=mmap(NULL,size,3,MAP_SHARED,fd,0);CHECK(write!=MAP_FAILED);
  uint64_t end=missing_markers==2?PAGE:size;
  for(uint64_t offset=0;offset<end;offset+=PAGE)((unsigned char*)write)[offset]=0x69;
- CHECK(!munmap(write,size));if(multi_objects)multi_active=1;pthread_mutex_unlock(&boundary_mutex);return pointer;
+ for(unsigned j=0;j<count;j++)if(regions[j].group==group&&!regions[j].object&&regions[j].base-(uint64_t)(uintptr_t)pointer<end)regions[j].object=++serial;
+ CHECK(!munmap(write,size));CHECK(!close(fd));if(multi_objects)multi_active=1;pthread_mutex_unlock(&boundary_mutex);return pointer;
 }
 /* Linux's x86 kernel cannot execute ARM64 code. Actual ARM64 guarded execution
  * is compiled unchanged in the separate real Mach integration on Apple CI. */
@@ -190,8 +218,8 @@ static int jit_required_execute_pages(uint64_t rx,uint64_t rw,uint64_t size){
 
 static void clear_all(void){
  for(unsigned i=0;i<count;i++){if(regions[i].mapped)CHECK(!munmap((void*)(uintptr_t)regions[i].base,regions[i].size));if(regions[i].fd>=0)close(regions[i].fd);}
- count=0;madeira_early_pool_base=madeira_early_pool_size=jit_legacy_pool_object=jit_legacy_pool_state=0;free(jit_required_pool.rx_snapshot);free(jit_required_pool.rw_snapshot);memset(&jit_required_pool,0,sizeof(jit_required_pool));
- allocation_calls=debug_allocations=preparations=remaps=deallocations=executions=0;expected_debug=1;expected_preparations=1;
+ count=0;madeira_early_pool_base=madeira_early_pool_size=jit_legacy_pool_object=jit_legacy_pool_state=0;jit_required_snapshot_free(jit_legacy_pool_snapshot);jit_legacy_pool_snapshot=NULL;jit_required_snapshot_free(jit_required_pool.rx_snapshot);jit_required_snapshot_free(jit_required_pool.rw_snapshot);jit_required_snapshot_free(jit_required_pool.fex_snapshot);jit_required_snapshot_free(jit_required_pool.temporary_snapshot);memset(&jit_required_pool,0,sizeof(jit_required_pool));
+ allocation_calls=debug_allocations=preparations=remaps=deallocations=executions=materialized_leaves=0;expected_debug=1;expected_preparations=1;
  query_error=lose_first=remap_fail=protect_fail=missing_markers=wrong_return=bad_backing=cleanup_fail=cow_prepare=multi_objects=multi_active=fresh_zero=0;last_rx=last_rw=0;
  prepare_blocks=cap_entered=cap_release=deep_submap=one_submap=0;cap_supported=1;
 }
@@ -211,22 +239,33 @@ static void setup(int high){
 static void legacy_setup(void){
  setup(1);vm_address_t address=0x148000000ULL;uint8_t zero=0;
  CHECK(vm_allocate(1,&address,624*MB,VM_FLAGS_FIXED|VM_MAKE_TAG(250u))==KERN_SUCCESS);
- CHECK(vm_write(1,address,(vm_offset_t)(uintptr_t)&zero,1)==KERN_SUCCESS);
- CHECK(jit_required_capture(address,624*MB,250,3,&jit_legacy_pool_object)&&jit_legacy_pool_object);
+ (void)zero;jit_legacy_pool_snapshot=jit_required_early_snapshot(250);
+ CHECK(jit_required_snapshot_fill(address,624*MB,250,3,1,jit_legacy_pool_snapshot));
+ CHECK(jit_legacy_pool_snapshot->count==5&&materialized_leaves==5);
+ jit_legacy_pool_object=jit_legacy_pool_snapshot->entries[0].object;CHECK(jit_legacy_pool_object);
  CHECK(vm_protect(1,address,624*MB,0,0)==KERN_SUCCESS);
+ CHECK(jit_required_snapshot_matches(address,624*MB,250,0,jit_legacy_pool_snapshot));
  madeira_early_pool_base=address;madeira_early_pool_size=624*MB;jit_legacy_pool_state=1;
 }
-static unsigned owned_count(void){unsigned result=0;for(unsigned i=0;i<count;i++)result+=regions[i].owned;return result;}
+static unsigned owned_count(void){unsigned result=0;
+ for(unsigned i=0;i<count;i++)if(regions[i].owned){unsigned j;
+  for(j=0;j<i;j++)if(regions[j].owned&&regions[j].group==regions[i].group)break;
+  if(j==i)result++;
+ }return result;
+}
 static int create(uint64_t* rx,uint64_t* rw,uint32_t* stage,int32_t* error){return jit_required_pool_create(FULL,0x140000000ULL,128*MB,rx,rw,stage,error);}
 static void successful(int high){
- uint64_t rx=0,rw=0,fex=0,fex_size=0,fex_object=0;uint32_t stage=0;int32_t error=0;
+ uint64_t rx=0,rw=0,fex=0,fex_size=0;const char* fex_receipt=NULL;uint32_t stage=0;int32_t error=0;
  CHECK(create(&rx,&rw,&stage,&error));CHECK(stage==10&&!error&&jit_required_pool.state==3);
  CHECK(rx!=rw&&jit_required_pool.size==FULL&&debug_allocations==expected_debug&&preparations==expected_preparations&&executions==1);
  CHECK(jit_required_range(rx,FULL,-1,5,NULL)&&jit_required_range(rw,FULL,-1,3,NULL));
  CHECK(!jit_required_pool_release_early());
- if(high){CHECK(rx>=HOST&&rw>=HOST);CHECK(jit_required_pool_fex_reservation(&fex,&fex_size,&fex_object));CHECK(fex_size==8*GB&&fex>=HOST);
+ if(high){CHECK(rx>=HOST&&rw>=HOST);CHECK(jit_required_pool_fex_reservation(&fex,&fex_size,&fex_receipt));CHECK(fex_size==8*GB&&fex>=HOST&&fex_receipt&&strlen(fex_receipt)<16384);
+  unsigned version,leaves;unsigned long long receipt_base,receipt_size;
+  CHECK(sscanf(fex_receipt,"%u:%llx:%llx:%x",&version,&receipt_base,&receipt_size,&leaves)==4);
+  CHECK(version==2&&receipt_base==fex&&receipt_size==8*GB&&leaves==64);
   CHECK(!overlap(rx,FULL,fex,fex_size)&&!overlap(rw,FULL,fex,fex_size));CHECK(owned_count()==3);
- }else{CHECK(rx==12*GB&&rw==12*GB+FULL);CHECK(!jit_required_pool_fex_reservation(&fex,&fex_size,&fex_object));CHECK(owned_count()==2);}
+ }else{CHECK(rx==12*GB&&rw==12*GB+FULL);CHECK(!jit_required_pool_fex_reservation(&fex,&fex_size,&fex_receipt));CHECK(owned_count()==2);}
  for(uint64_t offset=0;offset<FULL;offset+=PAGE)CHECK(*(unsigned char*)(uintptr_t)(rw+offset)==0x69);
  CHECK(*(uint32_t*)(uintptr_t)(rw+4)==0&&*(uint32_t*)(uintptr_t)(rw+FULL-4)==0);
  uint64_t second_rx=1,second_rw=1;CHECK(!create(&second_rx,&second_rw,&stage,&error));CHECK(!second_rx&&!second_rw&&stage==11&&debug_allocations==expected_debug);
@@ -234,9 +273,9 @@ static void successful(int high){
 static void* creator_thread(void* value){uint64_t rx,rw;uint32_t stage;int32_t error;*(int*)value=create(&rx,&rw,&stage,&error);return NULL;}
 int main(void){
  uint64_t rx,rw;uint32_t stage;int32_t error;
- setup(0);jit_required_early_hold();CHECK(jit_required_pool.state==1&&owned_count()==2);CHECK(!debug_allocations);
+ setup(0);jit_required_early_hold();CHECK(jit_required_pool.state==1&&owned_count()==2);CHECK(!debug_allocations&&materialized_leaves==18);
  successful(0);puts("PASS literal production legacy63GiB placement: full1152MiB paired early holds; shared RX/RW; published range cannot be released/reallocated");
- setup(1);jit_required_early_hold();CHECK(jit_required_pool.state==1&&jit_required_pool.rx==HOST&&owned_count()==3);
+ setup(1);jit_required_early_hold();CHECK(jit_required_pool.state==1&&jit_required_pool.rx==HOST&&owned_count()==3&&materialized_leaves==82);
  cap_supported=0;CHECK(!create(&rx,&rw,&stage,&error));CHECK(stage==1&&error==KERN_NOT_SUPPORTED&&!debug_allocations&&jit_required_pool.state==1&&owned_count()==3);
  cap_supported=1;successful(1);puts("PASS literal production iOS27-shaped low fragmentation: both full aliases plus8GiB FEX held before debugger; old protocol rejected without allocating");
  setup(1);jit_required_early_hold();CHECK(jit_required_pool_release_early());CHECK(!owned_count()&&!jit_required_pool.state&&!debug_allocations);
@@ -255,7 +294,7 @@ int main(void){
  setup(1);jit_required_early_hold();cow_prepare=1;multi_objects=1;successful(1);
  puts("PASS all73728 per-page COW object/offset snapshots are retained through remap/protection and released after publication");
  setup(1);fresh_zero=1;jit_required_early_hold();CHECK(jit_required_pool.rx_object&&jit_required_pool.rw_object&&jit_required_pool.fex_object);
- successful(1);puts("PASS initially objectless holds acquire nonzero ownership identities from only their first zero-written page");
+ successful(1);puts("PASS initially objectless holds bind all82 anonymous leaves with82 bounded page materializations;9-leaf temporary source remains fully tracked");
 
  for(int mode=0;mode<4;mode++){
   setup(1);jit_required_early_hold();
@@ -272,14 +311,19 @@ int main(void){
  setup(1);jit_required_early_hold();uint64_t foreign=jit_required_pool.rx;int ix=index_at(foreign);CHECK(ix>=0);
  CHECK(!mprotect((void*)(uintptr_t)foreign,PAGE,3));regions[ix].prot=3;regions[ix].tag=99;regions[ix].owned=0;
  *(uint32_t*)(uintptr_t)foreign=0x87654321;CHECK(!create(&rx,&rw,&stage,&error));
- CHECK(stage==9&&jit_required_pool.state==4&&!owned_count()&&*(uint32_t*)(uintptr_t)foreign==0x87654321);
+ CHECK(stage==9&&jit_required_pool.state==4&&owned_count()==1&&*(uint32_t*)(uintptr_t)foreign==0x87654321);
  CHECK(!create(&rx,&rw,&stage,&error)&&stage==11&&!debug_allocations);
  puts("PASS a replaced/foreign reservation is never overwritten or deallocated; it quarantines reuse and preserves unrelated bytes");
 
  setup(1);jit_required_early_hold();foreign=jit_required_pool.rx;ix=index_at(foreign);CHECK(ix>=0);
  regions[ix].object=++serial;regions[ix].owned=0; /* A foreign reallocation reused the same public tag/protection. */
- CHECK(!create(&rx,&rw,&stage,&error));CHECK(stage==9&&jit_required_pool.state==4&&!debug_allocations&&!owned_count());
+ CHECK(!create(&rx,&rw,&stage,&error));CHECK(stage==9&&jit_required_pool.state==4&&!debug_allocations&&owned_count()==1);
  puts("PASS same-tag/protection ABA cannot authorize overwriting or cleanup of a foreign VM object");
+ setup(1);jit_required_early_hold();foreign=jit_required_pool.rx+ANON_CHUNK;ix=index_at(foreign);CHECK(ix>=0);
+ regions[ix].offset=PAGE;regions[ix].owned=0;
+ CHECK(!create(&rx,&rw,&stage,&error));CHECK(stage==9&&jit_required_pool.state==4&&!debug_allocations&&owned_count()==1);
+ CHECK(index_at(foreign)>=0&&regions[index_at(foreign)].offset==PAGE);
+ puts("PASS changed backing offset in a later128MiB leaf preserves the foreign mapping and quarantines the incomplete group");
 
  setup(1);jit_required_early_hold();cleanup_fail=1;CHECK(!jit_required_pool_release_early());CHECK(jit_required_pool.state==4);
  CHECK(!create(&rx,&rw,&stage,&error)&&stage==11&&!debug_allocations);

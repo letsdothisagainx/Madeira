@@ -201,6 +201,21 @@ int test_darwin_fixed_reserve(uint64_t base,uint64_t size) {
     refusal = subprocess.run([str(bad_binary)], capture_output=True, text=True, timeout=30)
     assert refusal.returncode == 1 and 'KERNEL_CONTROL rejected VM_FLAGS_ALIAS_MASK' in refusal.stdout, refusal
     print('PASS mutation control: reintroducing unsupported tagged-remap flags makes the actual transaction fail honestly')
+    # Real Darwin caught an anonymous-allocation contract missed by an earlier
+    # flat-object fixture. Reintroduce first-leaf-only materialization in the
+    # literal production walk: the 128 MiB-chunk boundary must reject it.
+    assert block.count('if (materialize) {') == 1
+    first_only = block.replace('if (materialize) {', 'if (materialize && !snapshot->count) {')
+    short = directory / 'first-leaf-only.c'; short_binary = directory / 'first-leaf-only'
+    short.write_text((ROOT / 'tests/host/jit_full_pool_fixture.c').read_text().replace(
+        '/* ACTUAL PRODUCTION PLACEMENT INSERTED HERE */', first_only + support))
+    run([os.environ.get('CC','cc'),'-std=c11','-Wall','-Wextra','-Werror',
+         '-Wno-misleading-indentation','-fsanitize=undefined','-fno-sanitize-recover=all',
+         '-pthread',str(short),*extra,'-o',str(short_binary)])
+    incomplete = subprocess.run([str(short_binary)], capture_output=True, text=True, timeout=30)
+    assert incomplete.returncode == 1 and ('materialized_leaves==18' in incomplete.stderr or
+        'jit_required_pool.state==1&&owned_count()==2' in incomplete.stderr), incomplete
+    print('PASS mutation control: one touched leaf cannot bind an entire multi-object anonymous reservation')
 
 
 
@@ -226,6 +241,10 @@ def native_mach(directory, required):
     fixture = fixture.replace('/* ACTUAL TASK MAP QUERY INSERTED HERE */', source_function(source, 'bool jit_task_map_range('))
     fixture = fixture.replace('/* ACTUAL POLICY GETTERS INSERTED HERE */', ''.join(
         source_function(source, name) for name in ('uint64_t jit_cs2_image_arena_mb(', 'uint64_t jit_cs2_code_tail_limit_mb(')))
+    wine = (ROOT / 'build/ntdll-unix/virtual_ios.c').read_text()
+    receipt_types = wine[wine.index('/* BEGIN NATIVE FEX RECEIPT V2 */'):wine.index('/* END NATIVE FEX RECEIPT V2 */')]
+    fixture = fixture.replace('/* ACTUAL WINE RECEIPT PARSER INSERTED HERE */', receipt_types + ''.join(
+        source_function(wine, name) for name in ('static int ios_native_fex_receipt_word(', 'static int ios_native_fex_hold_description(')))
     cfile, binary = directory / 'real-mach.c', directory / 'real-mach'
     cfile.write_text(fixture)
     run([os.environ.get('CC','cc'),'-std=c11','-D_DARWIN_C_SOURCE','-Wall','-Wextra','-Werror',
