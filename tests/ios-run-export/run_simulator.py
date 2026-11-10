@@ -7,6 +7,7 @@ import plistlib
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -17,6 +18,8 @@ import zipfile
 HERE = Path(__file__).resolve().parent
 BUNDLE = 'com.madeira.tests.RunExportUIHost'
 EVIDENCE = HERE / 'simulator-evidence'
+RUN_STARTED_AT = time.time()
+PAYLOAD = b'Owned run export UI fixture\n'
 
 
 def call(*args):
@@ -108,6 +111,49 @@ def owned_container_from_metadata(device, data_path=None):
     return matches[0] if len(matches) == 1 else None
 
 
+def native_saved_archive(documents):
+    """Find the actual native filename, including Files' allowed renaming.
+
+    The producer never writes Documents. Only a fresh, uniquely identifiable
+    native copy beneath this exact owned container can satisfy the CRC gate.
+    """
+    if documents.is_symlink() or not documents.is_dir() or documents.stat().st_uid != os.getuid():
+        raise RuntimeError('The owned Documents root must be a regular owned directory')
+    pending = [(documents, 0)]
+    inspected = 0
+    valid = []
+    while pending:
+        directory, depth = pending.pop()
+        for candidate in directory.iterdir():
+            inspected += 1
+            if inspected > 128: raise RuntimeError('Owned Documents catalog exceeds the bounded fixture limit')
+            attributes = candidate.lstat()
+            relative = str(candidate.relative_to(documents))
+            regular = stat.S_ISREG(attributes.st_mode)
+            owned = attributes.st_uid == os.getuid()
+            fresh = attributes.st_ctime >= RUN_STARTED_AT - 2
+            record = {'relative': relative, 'bytes': attributes.st_size,
+                      'regular': regular, 'owned': owned, 'fresh': fresh}
+            if stat.S_ISDIR(attributes.st_mode) and owned and depth < 2:
+                pending.append((candidate, depth + 1))
+            if candidate.name.startswith('RunExportFixture'):
+                acceptable = False
+                if regular and owned and fresh and attributes.st_size < 4096:
+                    try:
+                        with zipfile.ZipFile(candidate) as contents:
+                            info = contents.infolist()
+                            acceptable = (len(info) == 1 and info[0].filename == 'run.txt' and
+                                          info[0].file_size == len(PAYLOAD) and
+                                          contents.testzip() is None and contents.read('run.txt') == PAYLOAD)
+                    except (OSError, ValueError, RuntimeError, zipfile.BadZipFile):
+                        acceptable = False
+                record['crcAndPayloadValid'] = acceptable
+                if acceptable: valid.append(candidate)
+            print('OWNED_EXPORT_DOCUMENTS_ENTRY ' + json.dumps(record), flush=True)
+    if len(valid) > 1: raise RuntimeError('Ambiguous multiple fresh native Files fixture copies')
+    return valid[0] if valid else None
+
+
 def collect(device, verify, selected_test='', data_path=None):
     evidence = EVIDENCE
     evidence.mkdir(exist_ok=True)
@@ -147,15 +193,12 @@ def collect(device, verify, selected_test='', data_path=None):
         raise AssertionError('Actual file supplied to UIKit was not retained or was unavailable')
     # Only the native Save to Files extension can create this destination.
     # Host.swift's producer writes its separate tmp file, never Documents.
-    saved_archive = container / 'Documents/RunExportFixture.zip'
-    native_saved = saved_archive.is_file() and not saved_archive.is_symlink()
+    saved_archive = native_saved_archive(container / 'Documents')
+    native_saved = saved_archive is not None
     print('OWNED_EXPORT_NATIVE_FILES_DESTINATION exists=' + str(native_saved) +
           ' bytes=' + str(saved_archive.stat().st_size if native_saved else 0), flush=True)
     if native_saved:
         assert saved_archive.stat().st_size < 4096
-        with zipfile.ZipFile(saved_archive) as contents:
-            assert contents.testzip() is None and contents.namelist() == ['run.txt']
-            assert contents.read('run.txt') == b'Owned run export UI fixture\n'
         shutil.copyfile(saved_archive, evidence / 'native-files-saved.zip')
     elif verify:
         raise AssertionError('Native Save to Files did not create the CRC-openable owned Documents archive')
