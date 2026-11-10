@@ -12,16 +12,21 @@ Only Darwin region/thread queries and unrelated platform callbacks are supplied
 by the harness. Real shared file mappings check the RX/RW alias relationship.
 No Wine/game execution or assertion of a successful device launch is implied.
 
-The default matrix keeps historical exact-address controls separate from
-current-policy returned-handle replays of every older lifecycle. The November
-10 capture has 45 grants, an interval-censored clock boundary, and genuine
-embree/client failure. Baseline and promotion-only controls must still fail;
-combined production must preserve live code, retain safe future image space,
-and survive bounded image/rotation stress at unchanged pool budgets.
+The default matrix keeps historical exact-address controls and legacy512
+allocator replays separate from the current disjoint-arena contract. The dd36
+capture exposes overlapping in-flight allocations: its failure control resumes
+two already-spent wait budgets, and a real pthread regression demonstrates why
+starting those calls only at completion had produced an optimistic projection.
+Current positive cases link literal staged FEX manager/CodeBuffer methods to
+the native allocator. They allocate the measured preclient high-water footprint
+through the real image API, then client/embree,15 historical later image sizes
+and48MiB explicitly synthetic images, with no invented free pockets. Actual
+module initialization, rendering and a successful device launch are unverified.
 """
 from pathlib import Path
 import json
 import hashlib
+import importlib.util
 import os
 import re
 import subprocess
@@ -30,6 +35,7 @@ import tempfile
 
 root = Path(__file__).resolve().parents[2]
 native = Path(os.environ.get('MADEIRA_POOL_SOURCE', root / 'build/ntdll-unix/virtual_ios.c')).read_text()
+native_input_sha256 = hashlib.sha256(native.encode()).hexdigest()
 allocator = (root / 'app/Madeira/JITAllocator.c').read_text()
 content = (root / 'app/Madeira/ContentView.swift').read_text()
 swift = (root / 'app/Madeira/StikJITHelper.swift').read_text()
@@ -42,6 +48,102 @@ def function(source, signature):
     return source[start:source.index('\n}', start) + 2] + '\n'
 
 
+def build_actual_producer(directory):
+    """Link literal staged FEX manager/CodeBuffer methods to the C VM fixture."""
+    staged = directory / 'staged-fex'
+    subprocess.run([sys.executable, str(root / 'tools/build/stage-fex-compat.py'),
+                    'stage', str(staged), '--backend', 'both'], check=True)
+    spec = importlib.util.spec_from_file_location('pool_fex_producer', root / 'tests/host/check-fex-guarded-code-producer.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    p = module.producer_parts(staged)
+    source = r'''
+#include <algorithm>
+#include <atomic>
+#include <cassert>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <memory>
+#include <mutex>
+#include <vector>
+#define FEX_IOS_HOST 1
+#define _WIN32 1
+#undef __linux__
+#include "fex_code_buffer_abi.h"
+extern "C" void* madeira_test_fex_allocate(size_t,int);
+extern "C" void madeira_test_fex_free(void*,size_t);
+extern "C" int madeira_test_fex_guard(void*,size_t);
+using DWORD=uint32_t;
+static constexpr unsigned MemExtendedParameterAttributeFlags=5;
+static constexpr unsigned MEM_EXTENDED_PARAMETER_EC_CODE=0x40;
+static constexpr unsigned MEM_COMMIT=0x1000,MEM_RESERVE=0x2000;
+static constexpr unsigned PAGE_EXECUTE_READWRITE=0x40,PAGE_NOACCESS=1;
+static constexpr unsigned PAGE_READONLY=2,PAGE_READWRITE=4,PAGE_EXECUTE_READ=0x20;
+struct MEM_EXTENDED_PARAMETER{uint64_t Type;union{uint64_t ULong64;uint32_t ULong;};};
+static void* VirtualAlloc2(void* process,void* base,size_t size,unsigned flags,unsigned prot,
+                          MEM_EXTENDED_PARAMETER* parameters,unsigned count){
+ assert(!process&&!base&&flags==(MEM_COMMIT|MEM_RESERVE)&&prot==PAGE_EXECUTE_READWRITE);
+ assert(count==2&&parameters[0].Type==MemExtendedParameterAttributeFlags&&parameters[0].ULong64==MEM_EXTENDED_PARAMETER_EC_CODE);
+ assert(parameters[1].Type==MADEIRA_FEX_CODE_PARAMETER_TYPE&&parameters[1].ULong64==MADEIRA_FEX_CODE_GUARD_ABI_V1);
+ return madeira_test_fex_allocate(size,1);
+}
+static int VirtualProtect(void* pointer,size_t size,unsigned prot,DWORD* old){
+ assert(prot==PAGE_NOACCESS&&old);*old=PAGE_EXECUTE_READWRITE;return madeira_test_fex_guard(pointer,size);
+}
+struct TestAllocationFailure{};
+namespace LogMan::Msg{template<class...T>void EFmt(const char*,T...){}}
+#define LOGMAN_THROW_A_FMT(value,...) assert(value)
+#define LOGMAN_MSG_A_FMT(...) do{}while(0)
+namespace fextl{
+template<class T>using unique_ptr=std::unique_ptr<T>;
+template<class T>using shared_ptr=std::shared_ptr<T>;
+using std::make_unique;using std::make_shared;
+[[noreturn]]static void ReportAllocationFailure(size_t,size_t){throw TestAllocationFailure{};}
+}
+template<class T>static T AlignDown(T value,size_t alignment){return value&~(T)(alignment-1);}
+namespace FEXCore{
+using ForkableUniqueMutex=std::mutex;
+namespace Utils{constexpr size_t FEX_PAGE_SIZE=4096;}
+namespace Config{static bool Get_ENABLECODECACHINGWIP(){return false;}}
+struct GuestToHostMap{};
+namespace Allocator{
+enum class ProtectOptions:unsigned{None=0,Read=1,Write=2,Exec=4};
+constexpr ProtectOptions operator|(ProtectOptions a,ProtectOptions b){return(ProtectOptions)((unsigned)a|(unsigned)b);}
+enum class THPControl{Enable};
+static void* VirtualAlloc(size_t size,bool exec){assert(exec);return madeira_test_fex_allocate(size,0);}
+static void VirtualFree(void* pointer,size_t size){madeira_test_fex_free(pointer,size);}
+static void VirtualName(const char*,void*,size_t){}
+static void VirtualTHPControl(void*,size_t,THPControl){}
+''' + p['virtual_alloc'] + '\n' + p['virtual_protect'] + r'''
+}
+namespace CPU{
+''' + p['code_buffer'] + '\n' + p['manager'] + '\n' + p['constants'] + r'''
+static std::atomic<uint64_t> IosCodeBufferGenCounter{0};
+__attribute__((no_sanitize("alignment")))
+''' + p['ctor'] + '\n' + p['dtor'] + '\n' + p['allocate'] + '\n' + p['getlatest'] + '\n' + p['grow'] + r'''
+}}
+struct ManagerHandle{FEXCore::CPU::CodeBufferManager manager;std::shared_ptr<FEXCore::CPU::CodeBuffer> held;};
+extern "C" void* madeira_test_fex_manager_create(){return new ManagerHandle;}
+extern "C" size_t madeira_test_fex_latest(void* pointer,uintptr_t* output){
+ auto& h=*(ManagerHandle*)pointer;try{h.held=h.manager.GetLatest();}catch(TestAllocationFailure&){return 0;}
+ *output=(uintptr_t)h.held->Ptr;return h.held->AllocatedSize;
+}
+extern "C" size_t madeira_test_fex_grow(void* pointer,uintptr_t* output){
+ auto& h=*(ManagerHandle*)pointer;assert(h.held);h.manager.LatestOffset=h.held->UsableSize()-32;
+ try{h.held=h.manager.StartLargerCodeBuffer();}catch(TestAllocationFailure&){return 0;}
+ *output=(uintptr_t)h.held->Ptr;return h.held->AllocatedSize;
+}
+extern "C" void madeira_test_fex_manager_destroy(void* pointer){delete(ManagerHandle*)pointer;}
+'''
+    unit, obj = directory / 'actual-producer.cpp', directory / 'actual-producer.o'
+    unit.write_text(source)
+    subprocess.run([os.environ.get('CXX', 'c++'), '-std=c++20', '-Wall', '-Wextra', '-Werror',
+                    '-fsanitize=address,undefined', '-fno-sanitize-recover=all', '-pthread',
+                    '-I', str(root / 'build/ntdll-unix'), '-c', str(unit), '-o', str(obj)], check=True)
+    return obj
+
+
 # Test-only mutation of the extracted selector; the checked-out runtime source
 # is never modified. Used only to prove that candidate producer wiring changes.
 test_selector = os.environ.get('MADEIRA_POOL_TEST_SELECTOR_MB')
@@ -49,6 +151,13 @@ if test_selector is not None:
     assert test_selector in ('448', '512')
     selector = function(allocator, 'uint64_t jit_cs2_code_tail_limit_mb(')
     changed, count = re.subn(r'return\s+\d+;', 'return ' + test_selector + ';', selector)
+    assert count == 1
+    allocator = allocator.replace(selector, changed, 1)
+test_image_arena = os.environ.get('MADEIRA_POOL_TEST_IMAGE_ARENA_MB')
+if test_image_arena is not None:
+    assert test_image_arena == '704'
+    selector = function(allocator, 'uint64_t jit_cs2_image_arena_mb(')
+    changed, count = re.subn(r'return\s+\d+;', 'return ' + test_image_arena + ';', selector)
     assert count == 1
     allocator = allocator.replace(selector, changed, 1)
 
@@ -72,7 +181,7 @@ if variant in ('historical', 'baseline', 'promotion') and 'static size_t ios_poo
     native = native.replace(original, empty, 1)
 if (variant in ('historical', 'baseline', 'promotion') or os.environ.get('MADEIRA_POOL_035900_EXPECT_BASELINE')) and 'static unsigned ios_pool_recent_retired_code_wait(' in native:
     original = function(native, 'static unsigned ios_pool_recent_retired_code_wait(')
-    empty = original[:original.index('{') + 1] + '''
+    empty = original[:original.index('{') + 1] + ('\n    (void)guarded;' if 'int guarded' in original[:original.index('{')] else '') + '''
     (void)carves;(void)n;(void)want;(void)total;(void)now;
     return 0; /* explicit installed-e02 no-wait policy control */
 }
@@ -84,6 +193,14 @@ carve_start = native.index('#define IOS_TAIL_CARVE_MAX ')
 carve_table = native[carve_start:native.index('\n\n', carve_start)]
 ec_start = native.index('size_t alloc_size = (*size_ptr + 0x3FFF) & ~0x3FFFUL;')
 ec = native[ec_start:native.index('\n    }\n#endif', ec_start)]
+# The dd36 negative control resumes the allocation already waiting since
+# native line9551. Its recorded completion13212 has exhausted the ORIGINAL
+# 30-step budget while other processes ran. This is continuation state, not
+# a fresh API call at completion; the concurrent test below proves that path.
+if os.environ.get('MADEIRA_POOL_051624_ONLY'):
+    assert ec.count('unsigned retired_waited = 0;') == 1
+    ec = ec.replace('unsigned retired_waited = 0;',
+                    'unsigned retired_waited = recorded_continuation_waited;', 1)
 release_start = native.index('    if ((type & MEM_RELEASE) && ios_jit_rx_base_global && ios_jit_pool_size_global &&')
 release_end = native.index('\n    }\n', native.index('/* pool address but not a live tail carve', release_start)) + 7
 release = native[release_start:release_end]
@@ -96,10 +213,15 @@ failure = native[failure_start:native.index('\n            /* Copy ENTIRE PE ima
 loader_start = native.index('            if (ios_jit_copy_refused)\n', native.index('if (ios_resource_only_map('))
 loader_failure = native[loader_start:native.index('\n#endif', loader_start)]
 reserve_start = native.index('                ios_pool_head_reserve = ios_pool_parse_head_reserve( getenv( "MADEIRA_POOL_HEAD_RESERVE_MB" ) );')
-reserve_init = native[reserve_start:native.index('                dprintf(', reserve_start)]
+reserve_end = native.index('                dprintf(', reserve_start)
+if '                if (ios_pool_image_limit)' in native[reserve_start:reserve_end]:
+    reserve_end = native.index('                if (ios_pool_image_limit)', reserve_start)
+reserve_init = native[reserve_start:reserve_end]
 budget_helpers = function(allocator, 'bool jit_cs2_pool_plan(') + function(allocator, 'bool jit_pool_alias_layout_valid(')
 if 'uint64_t jit_cs2_code_tail_limit_mb(' in allocator:
     budget_helpers += function(allocator, 'uint64_t jit_cs2_code_tail_limit_mb(')
+if 'uint64_t jit_cs2_image_arena_mb(' in allocator:
+    budget_helpers += function(allocator, 'uint64_t jit_cs2_image_arena_mb(')
 assert 'return STATUS_NO_MEMORY;' in ec and 'ios_pool_tail_unreserve(' in ec
 assert image_chain.count('ios_pool_low_image_range(') == 1
 assert image_chain.count('ios_pool_recycle_code_range(') == 1
@@ -107,6 +229,9 @@ assert 'ios_jit_copy_refused = 1;' in failure and 'return -1;' in failure
 assert 'status = STATUS_NO_MEMORY;' in loader_failure and 'goto done;' in loader_failure
 
 helper_signatures = (
+    'static int ios_pool_image_range_fits(',
+    'static int ios_pool_partition_allows_code(',
+    'static size_t ios_pool_parse_image_limit(',
     'static size_t ios_pool_hole_head_place(',
     'static size_t ios_pool_hole_tail_start(',
     'static size_t ios_pool_hole_between(',
@@ -138,6 +263,8 @@ helper_signatures = (
     'static void ios_pool_failure_census(',
     'static size_t ios_pool_take_freed_for_tail(',
     'static int ios_tail_carve_in_low(',
+    'static int ios_pool_code_carve_matches(',
+    'static int ios_fex_code_guard_confirm(',
     'static int ios_pool_preserve_code_carve(',
     'static size_t ios_pool_code_carve_preserve_span(',
     'static int ios_pool_code_carve_better(',
@@ -174,6 +301,11 @@ november8_trace = json.loads((root / 'tests/host/fixtures/pool-cs2-095621-tail.j
 fbb4_trace = json.loads((root / 'tests/host/fixtures/pool-cs2-fbb4-dep-tail.json').read_text())
 november10_trace = json.loads((root / 'tests/host/fixtures/pool-cs2-011804-tail.json').read_text())
 november10_late_trace = json.loads((root / 'tests/host/fixtures/pool-cs2-035900-tail.json').read_text())
+november10_dd36_trace = json.loads((root / 'tests/host/fixtures/pool-cs2-051624-tail.json').read_text())
+assert november10_dd36_trace['installed_commit'] == 'dd36b4a2ef0cad1169a613644fb63bdf9a5e03aa'
+if os.environ.get('MADEIRA_POOL_SOURCE') and os.environ.get('MADEIRA_POOL_051624_ONLY'):
+    assert native_input_sha256 == november10_dd36_trace['native_source_sha256'], '051624 exact-source control requires the installed native source'
+assert sum(e['op'] == 'allocate' for e in november10_dd36_trace['events']) == 45
 historical_menu_trace = json.loads((root / 'tests/host/fixtures/pool-cs2-menu-post-embree.json').read_text())
 historical_menu_requests = historical_menu_trace['requests']
 assert len(historical_menu_requests) == 15
@@ -219,6 +351,7 @@ tail_replay += '#define REPLAY_MAIN_TRANSFER %d\n' % ('static int ios_pool_recyc
 tail_replay += '#define REPLAY_CODE_TIE %d\n' % ('static int ios_pool_code_carve_better(' in native)
 tail_replay += '#define REPLAY_CERTIFIED_SPAN %d\n' % ('static size_t ios_pool_code_carve_preserve_span(' in native)
 tail_replay += '#define REPLAY_LEGACY_ONLY %d\n' % (os.environ.get('MADEIRA_POOL_LEGACY_REPLAY_ONLY') == '1')
+tail_replay += '#define REPLAY_CURRENT_PARTITION %d\n' % bool(os.environ.get('MADEIRA_POOL_PARTITION_ONLY'))
 tail_replay += 'static const struct captured_tail_event captured_embree_tail_events[] = {\n' + captured_rows(embree_trace) + '\n};\n'
 
 tail_replay += 'static const struct captured_tail_event captured_november8_tail_events[] = {\n' + captured_rows(november8_trace) + '\n};\n'
@@ -226,6 +359,7 @@ tail_replay += 'static const struct captured_tail_event captured_fbb4_tail_event
 tail_replay += 'static const size_t captured_fbb4_foreign_copy_sizes[] = {\n' + ','.join(e['requested'] for e in dep_sweep['copies']) + '\n};\n'
 tail_replay += 'static const struct captured_tail_event captured_november10_tail_events[] = {\n' + captured_rows(november10_trace) + '\n};\n'
 tail_replay += 'static const struct captured_tail_event captured_035900_tail_events[] = {\n' + captured_rows(november10_late_trace) + '\n};\n'
+tail_replay += 'static const struct captured_tail_event captured_051624_tail_events[] = {\n' + captured_rows(november10_dd36_trace) + '\n};\n'
 tail_replay += 'static const struct { const char *module; size_t size; } historical_menu_requests[] = {\n' + '\n'.join(
     '    {%s, %s},' % (json.dumps(e['module']), hex(e['alloc_size']))
     for e in historical_menu_requests) + '\n};\n'
@@ -239,6 +373,9 @@ assert '!StikJITHelper.poolTaken && measured && jit_cs2_pool_plan(' in scope
 assert 'setenv("WINE_IOS_JIT_HEAD_RESERVE_MB", String(imageReserveMB), 1)' in scope
 assert 'let codeTailLimitMB = jit_cs2_code_tail_limit_mb()' in scope
 assert 'setenv("WINE_IOS_JIT_CODE_TAIL_LIMIT_MB", String(codeTailLimitMB), 1)' in scope
+assert 'let imageArenaMB = jit_cs2_image_arena_mb()' in scope
+assert 'setenv("WINE_IOS_JIT_IMAGE_ARENA_MB", String(imageArenaMB), 1)' in scope
+assert 'setenv("WINE_IOS_FEX_CODE_GUARD_V1", "1", 1)' in scope
 assert 'minimumPoolSize = poolSizeMB * 1024 * 1024' in scope
 assert content.index('unsetenv("WINE_IOS_JIT_HEAD_RESERVE_MB")') < scope_start
 assert content.index('unsetenv("WINE_IOS_JIT_CODE_TAIL_LIMIT_MB")') < scope_start
@@ -295,6 +432,7 @@ static int capture_dprintf(int fd,const char *format,...)
 #define dprintf capture_dprintf
 #define STATUS_SUCCESS 0
 #define STATUS_NO_MEMORY ((int)0xc0000017u)
+#define STATUS_INVALID_PARAMETER ((int)0xc000000du)
 #define FALL_THROUGH 7
 #define MEM_RELEASE 0x8000
 #define IOS_POOL_BIG_MIN (64u * 1024 * 1024)
@@ -311,6 +449,8 @@ static int ios_pool_free_count, ios_pool_ledger_count, ios_pool_last_alloc_reuse
 static __thread int ios_pool_last_same_image;
 static void *ios_jit_rx_base_global, *ios_jit_rw_base_global;
 static size_t ios_jit_pool_size_global, jit_pool_offset, ios_pool_head_reserve, ios_pool_code_tail_limit;
+static size_t ios_pool_image_limit;
+static int ios_pool_code_guards;
 static volatile size_t ios_jit_tail_reserved, ios_jit_low_reserved;
 static size_t ios_jit_hole_off, ios_jit_hole_end, ios_jit_hole_off_eff, ios_jit_hole_end_eff;
 static size_t ios_jit_hole2_off, ios_jit_hole2_end;
@@ -327,6 +467,10 @@ static void *ios_jit_alias_pushback_peb;
 static void (*ios_jit_alias_pushback_cb)(void);
 static void *arm64ec_view;
 static uintptr_t owner;
+static __thread uintptr_t concurrent_thread_owner;
+static __thread int concurrent_thread_owner_set;
+static unsigned recorded_continuation_waited;
+static unsigned requested_allocation_attributes;
 static __thread unsigned schedule_role, carve_lock_depth, pool_lock_depth;
 static struct { void *owner; unsigned long long lease; int quiescent; } test_leases[64];
 static unsigned test_lease_count;
@@ -355,11 +499,23 @@ unsigned long long ios_thread_process_quiescent_lease(void *peb)
 }
 static time_t fake_now = 100;
 static unsigned grace_sleep_count,grace_sleep_ns;
+static pthread_mutex_t continuation_lock=PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t continuation_cond=PTHREAD_COND_INITIALIZER;
+static int continuation_mode;
+static unsigned continuation_step,continuation_permit;
 static int controlled_grace_sleep(const struct timespec *delay,struct timespec *remaining)
 {
     (void)remaining;
     CHECK(!carve_lock_depth&&!pool_lock_depth);
     CHECK(delay->tv_sec>=0&&delay->tv_sec<=3&&delay->tv_nsec>=0&&delay->tv_nsec<1000000000);
+    if(continuation_mode&&concurrent_thread_owner_set)
+    {
+        CHECK(!delay->tv_sec&&delay->tv_nsec==100000000);
+        pthread_mutex_lock(&continuation_lock);
+        continuation_step++;grace_sleep_count++;pthread_cond_broadcast(&continuation_cond);
+        while(continuation_permit<continuation_step)pthread_cond_wait(&continuation_cond,&continuation_lock);
+        pthread_mutex_unlock(&continuation_lock);return 0;
+    }
     grace_sleep_count++;fake_now+=delay->tv_sec;grace_sleep_ns+=(unsigned)delay->tv_nsec;
     fake_now+=grace_sleep_ns/1000000000;grace_sleep_ns%=1000000000;
     return 0;
@@ -367,7 +523,7 @@ static int controlled_grace_sleep(const struct timespec *delay,struct timespec *
 #define nanosleep controlled_grace_sleep
 static time_t fake_time(time_t *t) { if (t) *t = fake_now; return fake_now; }
 #define time fake_time
-static void *ios_jit_current_peb(void) { return (void *)owner; }
+static void *ios_jit_current_peb(void) { return (void *)(concurrent_thread_owner_set?concurrent_thread_owner:owner); }
 static uintptr_t ios_wow_base(void) { return 0; }
 static unsigned aliases_retired;
 static void ios_mono_alias_retire(uintptr_t va) { CHECK(va); aliases_retired++; }
@@ -403,6 +559,7 @@ typedef struct { unsigned user_tag, share_mode; } vm_region_extended_info_data_t
 #define VM_PROT_READ 1
 #define VM_PROT_WRITE 2
 #define VM_PROT_EXECUTE 4
+#define VM_PROT_NONE 0
 #define arm_thread_state64_get_pc(st) ((st).pc)
 static uintptr_t scanned_pc;
 static int state_query_fail, thread_list_fail, region_query_fail;
@@ -497,16 +654,30 @@ static int scheduled_mutex_unlock(pthread_mutex_t *lock)
 }
 #define pthread_mutex_lock scheduled_mutex_lock
 #define pthread_mutex_unlock scheduled_mutex_unlock
-''' + budget_helpers + helpers + r'''
+''' + (r'''
+static kern_return_t mach_vm_protect(mach_port_t task,mach_vm_address_t addr,mach_vm_size_t size,int maximum,int protection)
+{
+    (void)task;CHECK(!maximum&&protection==VM_PROT_NONE);
+    return mprotect((void *)addr,size,PROT_NONE)?1:KERN_SUCCESS;
+}
+#include "fex_code_guards.h"
+static void use_guard_query(void){(void)ios_fex_code_guard_is_armed;}
+''' if 'static int ios_pool_code_carve_matches(' in native else '') + budget_helpers + helpers + r'''
 
 static void initialize_head_reserve(void)
 {
     size_t jit_pool_size = ios_jit_pool_size_global; (void)jit_pool_size;
+    (void)ios_pool_code_guards;
+#if defined(MADEIRA_FEX_CODE_GUARDS_H)
+    use_guard_query();
+    (void)ios_fex_code_guard_confirm;
+#endif
 ''' + reserve_init + r'''
 }
 
 static int allocate_code(size_t *size_ptr, void **ret)
 {
+    unsigned attributes=requested_allocation_attributes;(void)attributes;
 ''' + ec + r'''
 }
 static int release_code(void *base, unsigned type, void **addr_ptr, size_t *size_ptr)
@@ -624,6 +795,7 @@ static void reset(size_t total, size_t reserve)
     CHECK(total <= mapped_size);
     ios_jit_rx_base_global = rx_memory; ios_jit_rw_base_global = rw_memory;
     ios_jit_pool_size_global = total; ios_pool_head_reserve = reserve; ios_pool_code_tail_limit = 0;
+    ios_pool_image_limit=0;ios_pool_code_guards=0;
     jit_pool_offset = rotation_head; ios_jit_tail_reserved = tail_before;
     ios_jit_hole_off = ios_jit_hole_end = ios_jit_hole_off_eff = ios_jit_hole_end_eff = 0;
     ios_jit_hole2_off = ios_jit_hole2_end = ios_pool_big_size = 0;
@@ -663,13 +835,27 @@ static void reset_current_cs2_policy(void)
     CHECK(jit_cs2_pool_plan(1024,5120*MB,1024*MB,8192*MB,0x100000000,0xfc0000000,&selected,&reserve));
     reset(selected*MB,reserve*MB);
     uint64_t selected_limit=jit_cs2_code_tail_limit_mb(); /* candidate policy wiring */
-    char head_text[32],code_text[32];
+    uint64_t selected_image=jit_cs2_image_arena_mb();
+    char head_text[32],code_text[32],image_text[32];
     CHECK(snprintf(head_text,sizeof(head_text),"%llu",(unsigned long long)reserve)>0);
     CHECK(snprintf(code_text,sizeof(code_text),"%llu",(unsigned long long)selected_limit)>0);
+    CHECK(snprintf(image_text,sizeof(image_text),"%llu",(unsigned long long)selected_image)>0);
     unsetenv("MADEIRA_POOL_HEAD_RESERVE_MB");
     CHECK(!setenv("WINE_IOS_JIT_HEAD_RESERVE_MB",head_text,1));
     CHECK(!setenv("WINE_IOS_JIT_CODE_TAIL_LIMIT_MB",code_text,1));
+    CHECK(!setenv("WINE_IOS_JIT_IMAGE_ARENA_MB",image_text,1));
+    CHECK(!setenv("WINE_IOS_FEX_CODE_GUARD_V1","1",1));
     initialize_head_reserve();CHECK(ios_pool_head_reserve==reserve*MB);
+    fake_now=1000;grace_sleep_count=grace_sleep_ns=0;
+}
+
+/* Previous captures used the soft240/512 policy. Keep their exact-address
+ * controls, and allocator-lifecycle checks under that historical policy,
+ * separate from the current disjoint arenas and geometric FEX producer. */
+static void reset_legacy512_capture_policy(void)
+{
+    reset(1152*MB,240*MB);ios_pool_code_tail_limit=512*MB;
+    unsetenv("WINE_IOS_JIT_IMAGE_ARENA_MB");unsetenv("WINE_IOS_FEX_CODE_GUARD_V1");
     fake_now=1000;grace_sleep_count=grace_sleep_ns=0;
 }
 
@@ -1733,7 +1919,7 @@ static void check_prior_capture_current(const char *name,const struct captured_t
     struct ios_tail_carve pinned[3];unsigned pins=0,changes=0;
     size_t server=(size_t)-1,client=(size_t)-1,embree=(size_t)-1;
     int copied=0;
-    reset_current_cs2_policy();CHECK(ios_pool_code_tail_limit==jit_cs2_code_tail_limit_mb()*MB);
+    reset_legacy512_capture_policy();CHECK(ios_pool_code_tail_limit==512*MB);
     jit_pool_offset=ios_jit_tail_reserved=0;ios_pool_free_count=ios_pool_ledger_count=ios_tail_carve_n=0;
     memset(ios_tail_carves,0,sizeof ios_tail_carves);
     for(unsigned i=0;i<count;i++)
@@ -1793,7 +1979,7 @@ static void check_prior_capture_current(const char *name,const struct captured_t
         CHECK(*(uint64_t *)((char *)rx_memory+pinned[n].off)==0xbabe000000000000ULL+n);
         CHECK(*(uint64_t *)((char *)rx_memory+pinned[n].off+pinned[n].size-8)==0xface000000000000ULL+n);
     }
-    printf("PASS current-production older-capture %s: %u events returned-handles=%u altered grants,3live128 intact,server%s and4later rotations;geometry head=%zx tail=%zx\n",name,count,changes,dependencies?"/client/embree":"",jit_pool_offset,(size_t)ios_jit_tail_reserved);
+    printf("PASS legacy512 current-allocator older-capture %s: %u events returned-handles=%u altered grants,3live128 intact,server%s and4later rotations;geometry head=%zx tail=%zx\n",name,count,changes,dependencies?"/client/embree":"",jit_pool_offset,(size_t)ios_jit_tail_reserved);
 }
 static void check_all_prior_captures_current(void)
 {
@@ -1816,7 +2002,7 @@ static void check_captured_november10_tail_history(void)
     if(getenv("MADEIRA_POOL_NOV10_EXPECT_BASELINE")||getenv("MADEIRA_POOL_NOV10_EXPECT_FAILURE"))
     { reset(1152*MB,240*MB);ios_pool_code_tail_limit=512*MB; /* explicit historical512 controls */ }
     else
-    { reset_current_cs2_policy();CHECK(ios_pool_code_tail_limit==jit_cs2_code_tail_limit_mb()*MB); }
+    { reset_legacy512_capture_policy();CHECK(ios_pool_code_tail_limit==512*MB); }
     jit_pool_offset=ios_jit_tail_reserved=0;ios_pool_free_count=ios_pool_ledger_count=ios_tail_carve_n=0;
     memset(ios_tail_carves,0,sizeof ios_tail_carves);
     for(unsigned i=0;i<ARRAY_SIZE(captured_november10_tail_events);i++)
@@ -1961,7 +2147,7 @@ static void check_captured_november10_tail_history(void)
         for(int i=0;i<ios_pool_free_count;i++)
         { total_free+=ios_pool_freelist[i].size;if(ios_pool_freelist[i].size>largest)largest=ios_pool_freelist[i].size; }
         printf("November10 post-bounded-synthetic-stress: accepted=%uMiB of at most24MiB; image-freelist-plus-virgin=%zx largest=%zx head=%zx tail=%zx\n",extras*8,total_free,largest,jit_pool_offset,(size_t)ios_jit_tail_reserved);
-        printf("PASS current011804 projection: client/embree plus%u synthetic8MiB images,4FEX rotations AFTER images(8total);20/40MiB probes reporthonestoutcomes; no grace/proof relaxation\n",extras);
+        printf("PASS legacy512011804 allocator projection: client/embree plus%u synthetic8MiB images,4FEX rotations AFTER images(8total);20/40MiB probes reporthonestoutcomes; no grace/proof relaxation\n",extras);
         set_process_lease((void *)owner,31,1);ios_jit_reclaim_process((void *)owner);
         CHECK(!ios_pool_ledger_holds(client,0x29a8000,(void *)owner)&&!ios_pool_ledger_holds(embree,0x1524000,(void *)owner));
     }
@@ -1982,7 +2168,7 @@ static void check_captured_035900_tail_history(void)
     void *handles[64]={0};size_t sizes[64]={0};struct ios_tail_carve pinned[3];
     unsigned grants=0,pins=0,changes=0,max_wait_steps=0;
     int baseline=getenv("MADEIRA_POOL_035900_EXPECT_BASELINE")!=NULL;
-    reset_current_cs2_policy();CHECK(ios_pool_code_tail_limit==jit_cs2_code_tail_limit_mb()*MB);
+    reset_legacy512_capture_policy();CHECK(ios_pool_code_tail_limit==512*MB);
     jit_pool_offset=ios_jit_tail_reserved=0;ios_pool_free_count=ios_pool_ledger_count=ios_tail_carve_n=0;
     memset(ios_tail_carves,0,sizeof ios_tail_carves);
     for(unsigned i=0;i<ARRAY_SIZE(captured_035900_tail_events);i++)
@@ -2121,7 +2307,7 @@ static void check_captured_035900_tail_history(void)
             CHECK(*(const uint64_t *)(rx+historical_menu_requests[i].size-8)==0xdecafbad12345678ULL);
             int (*run)(void)=(int (*)(void))(uintptr_t)rx;CHECK(run()==42);
         }
-        printf("PASS035900 controlled-wait projection:45returnedhandles changed=%u total-model-sleep100ms-steps=%u max-steps-per-code-request=%u tail=%zx head=%zx client=%zx historical-embree=%zx historical-menu-images=%zu/%zxbytes synthetic8MiB-images=%u,4FEXrotationsAFTERimages;notondeviceconfirmation\n",changes,grace_sleep_count,max_wait_steps,(size_t)ios_jit_tail_reserved,jit_pool_offset,client,embree,ARRAY_SIZE(historical_menu_requests),menu_bytes,extras);
+        printf("PASS legacy512035900 controlled-wait allocator projection:45returnedhandles changed=%u total-model-sleep100ms-steps=%u max-steps-per-code-request=%u tail=%zx head=%zx client=%zx historical-embree=%zx historical-menu-images=%zu/%zxbytes synthetic8MiB-images=%u,4FEXrotationsAFTERimages;notondeviceconfirmation\n",changes,grace_sleep_count,max_wait_steps,(size_t)ios_jit_tail_reserved,jit_pool_offset,client,embree,ARRAY_SIZE(historical_menu_requests),menu_bytes,extras);
     }
     CHECK(ios_pool_ledger_holds(server,0x2580000,(void *)owner));
     check_code_image_nonoverlap();
@@ -2131,6 +2317,304 @@ static void check_captured_035900_tail_history(void)
         CHECK(*(uint64_t *)((char *)rx_memory+pinned[i].off)==0x3500000000000000ULL+i);
         CHECK(*(uint64_t *)((char *)rx_memory+pinned[i].off+pinned[i].size-8)==0x3590000000000000ULL+i);
     }
+}
+
+#if REPLAY_CURRENT_PARTITION
+extern void *madeira_test_fex_manager_create(void);
+extern size_t madeira_test_fex_latest(void *,uintptr_t *);
+extern size_t madeira_test_fex_grow(void *,uintptr_t *);
+extern void madeira_test_fex_manager_destroy(void *);
+void *madeira_test_fex_allocate(size_t size,int guarded)
+{
+    CHECK(guarded&&ios_pool_code_guards&&madeira_fex_code_buffer_class_valid(size));
+    requested_allocation_attributes=IOS_FEX_CODE_GUARDED_ATTRIBUTE;
+    void *result=NULL;size_t got=size;int status=allocate_code(&got,&result);
+    requested_allocation_attributes=0;
+    if(status!=STATUS_SUCCESS){CHECK(status==STATUS_NO_MEMORY&&!result);return NULL;}
+    CHECK(got==size);return result;
+}
+void madeira_test_fex_free(void *pointer,size_t size)
+{
+    void *released=NULL;size_t bytes=0;
+    CHECK(release_code(pointer,MEM_RELEASE,&released,&bytes)==STATUS_SUCCESS);
+    CHECK(released==pointer&&bytes==size);
+}
+int madeira_test_fex_guard(void *pointer,size_t size)
+{
+    return ios_fex_code_guard_confirm((uintptr_t)pointer,size);
+}
+
+static void partition_actor(unsigned actor)
+{
+    owner=0x70000000+actor*0x10000;
+    set_process_lease((void *)owner,100+actor,0);
+}
+static void check_partition_code(uintptr_t pointer,size_t size)
+{
+    size_t off=pointer-(uintptr_t)rx_memory;
+    CHECK(off>=ios_pool_image_limit&&size<=ios_jit_pool_size_global-off);
+    CHECK(ios_fex_code_guard_confirm(pointer+size-0x4000,0x4000));
+    CHECK(ios_fex_code_guard_confirm((uintptr_t)rw_memory+off+size-0x4000,0x4000));
+    /* Code classes can be adjacent to another permanent guard. Touch only
+     * this class's usable range rather than reading either neighbour. */
+#if defined(__x86_64__)
+    const unsigned char stub[]={0xb8,42,0,0,0,0xc3};
+#else
+    const uint32_t stub[]={0x52800540,0xd65f03c0};
+#endif
+    memcpy((char *)rw_memory+off,stub,sizeof stub);
+    __builtin___clear_cache((char *)pointer,(char *)pointer+sizeof stub);
+    int (*run)(void)=(int (*)(void))pointer;CHECK(run()==42);
+    *(uint64_t *)((char *)rw_memory+off+size-0x4000-8)=0xdecafbad12345678ULL;
+    CHECK(*(const uint64_t *)((const char *)rx_memory+off+size-0x4000-8)==0xdecafbad12345678ULL);
+    for(unsigned mode=0;mode<4;mode++)
+    {
+        pid_t child=fork();CHECK(child>=0);
+        if(!child)
+        {
+            uintptr_t target=mode==0?pointer:mode==1?(uintptr_t)rw_memory+off:
+                             (mode==2?pointer:(uintptr_t)rw_memory+off)+size-0x4000;
+            __atomic_store_n(&alias_expected_fault_address,target,__ATOMIC_RELAXED);
+            struct sigaction action;memset(&action,0,sizeof action);
+            action.sa_sigaction=alias_permission_fault;action.sa_flags=SA_SIGINFO;
+            if(sigemptyset(&action.sa_mask)||sigaction(SIGSEGV,&action,NULL)||sigaction(SIGBUS,&action,NULL))_exit(93);
+            if(!mode)*(volatile unsigned char *)target=0;
+            else if(mode==1){int (*execute)(void)=(int (*)(void))target;(void)execute();}
+            else{volatile unsigned char byte=*(volatile unsigned char *)target;(void)byte;}
+            _exit(91);
+        }
+        int status=0;CHECK(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==77);
+    }
+    check_code_image_nonoverlap();
+    CHECK(ios_jit_tail_reserved<=ios_jit_pool_size_global-ios_pool_image_limit);
+}
+static void partition_prefix(void)
+{
+    partition_actor(40);size_t first=(size_t)-1,prefix=(size_t)-1;
+    CHECK(!allocate_image(0x4000,&first)&&first==0);
+    CHECK(!allocate_image(0x278ec000,&prefix)&&prefix==0x4000);
+    CHECK(jit_pool_offset==0x278f0000);
+    check_owned_executable_image(prefix,0x278ec000);
+}
+static void partition_remaining_images(size_t *client,size_t *embree,size_t *menu)
+{
+    partition_actor(3);
+    CHECK(!allocate_image(0x29a8000,client));check_owned_executable_image(*client,0x29a8000);
+    CHECK(!allocate_image(0x1524000,embree));check_owned_executable_image(*embree,0x1524000);
+    for(unsigned i=0;i<ARRAY_SIZE(historical_menu_requests);i++)
+    {
+        CHECK(!allocate_image(historical_menu_requests[i].size,menu+i));
+        check_owned_executable_image(menu[i],historical_menu_requests[i].size);
+        CHECK(ios_pool_ledger_holds(menu[i],historical_menu_requests[i].size,(void *)owner));
+    }
+    CHECK(jit_pool_offset==0x2c408000);check_code_image_nonoverlap();
+}
+static void check_current_partition_with_actual_producer(void)
+{
+    const char *order=getenv("MADEIRA_POOL_PARTITION_ONLY");CHECK(order);
+    reset_current_cs2_policy();
+    CHECK(ios_pool_image_limit==768*MB&&ios_pool_code_tail_limit==384*MB&&ios_pool_code_guards);
+    jit_pool_offset=ios_jit_tail_reserved=0;ios_pool_free_count=ios_pool_ledger_count=ios_tail_carve_n=0;
+    memset(ios_tail_carves,0,sizeof ios_tail_carves);
+    size_t client=0,embree=0,menu[ARRAY_SIZE(historical_menu_requests)]={0};
+    void *managers[4]={0};uintptr_t code[4]={0};size_t bytes[4]={0};
+    if(!strcmp(order,"image-first")){partition_prefix();partition_remaining_images(&client,&embree,menu);}
+    else CHECK(!strcmp(order,"code-first")||!strcmp(order,"interleaved"));
+    /* Seventeen simultaneously retained tiny dispatchers conservatively cover
+     * the capture's fresh misc count. Every reservation is a real EC request. */
+    for(unsigned i=0;i<17;i++)
+    {
+        partition_actor(4+i);size_t size=0x4000;void *misc=NULL;
+        CHECK(allocate_code(&size,&misc)==STATUS_SUCCESS&&size==0x4000&&misc);
+        CHECK((uintptr_t)misc-(uintptr_t)rx_memory>=ios_pool_image_limit);
+    }
+    for(unsigned i=0;i<4;i++)
+    {
+        partition_actor(i);managers[i]=madeira_test_fex_manager_create();CHECK(managers[i]);
+        bytes[i]=madeira_test_fex_latest(managers[i],code+i);CHECK(bytes[i]);
+        check_partition_code(code[i],bytes[i]);
+    }
+    if(!strcmp(order,"interleaved"))partition_prefix();
+    for(unsigned round=0;round<3;round++)for(unsigned i=1;i<4;i++)
+    {
+        partition_actor(i);size_t got=madeira_test_fex_grow(managers[i],code+i);CHECK(got);
+        bytes[i]=got;check_partition_code(code[i],bytes[i]);
+    }
+    if(!strcmp(order,"code-first"))partition_prefix();
+    if(strcmp(order,"image-first"))partition_remaining_images(&client,&embree,menu);
+    CHECK(ios_jit_tail_reserved<=384*MB&&jit_pool_offset<ios_pool_image_limit);
+    /* No image borrows retired code or its permanent guards. An actually
+     * oversized request fails even though a different arena can have space. */
+    expect_failed_image(64*MB);
+    /* Additional capacity is explicitly synthetic. Keep both allocations
+     * alive during continued compilation rather than merely probing a fit. */
+    partition_actor(3);size_t synthetic32=0,synthetic16=0;
+    CHECK(!allocate_image(32*MB,&synthetic32));check_owned_executable_image(synthetic32,32*MB);
+    CHECK(!allocate_image(16*MB,&synthetic16));check_owned_executable_image(synthetic16,16*MB);
+    CHECK(jit_pool_offset==0x2f408000);check_code_image_nonoverlap();
+    expect_failed_image(16*MB);
+    size_t stable=0,previous_tail=ios_jit_tail_reserved;
+    for(unsigned n=0;n<32;n++)
+    {
+        partition_actor(3);size_t got=madeira_test_fex_grow(managers[3],code+3);CHECK(got);
+        bytes[3]=got;check_partition_code(code[3],got);
+        stable=ios_jit_tail_reserved==previous_tail?stable+1:0;previous_tail=ios_jit_tail_reserved;
+        for(unsigned i=0;i<3;i++)
+        {
+            const uint64_t *last=(const uint64_t *)(code[i]+bytes[i]-0x4000-8);
+            CHECK(*last==0xdecafbad12345678ULL);
+        }
+    }
+    CHECK(stable>=4);
+    partition_actor(3);CHECK(ios_pool_ledger_holds(client,0x29a8000,(void *)owner));
+    CHECK(ios_pool_ledger_holds(embree,0x1524000,(void *)owner));
+    CHECK(ios_pool_ledger_holds(synthetic32,32*MB,(void *)owner));
+    CHECK(ios_pool_ledger_holds(synthetic16,16*MB,(void *)owner));
+    for(unsigned i=0;i<ARRAY_SIZE(historical_menu_requests);i++)
+        CHECK(ios_pool_ledger_holds(menu[i],historical_menu_requests[i].size,(void *)owner));
+    size_t tail=ios_jit_tail_reserved;
+    for(unsigned i=0;i<4;i++)
+    {
+        partition_actor(i);madeira_test_fex_manager_destroy(managers[i]);
+        set_process_lease((void *)owner,100+i,1);ios_jit_reclaim_process((void *)owner);
+    }
+    fake_now+=3;partition_actor(30);
+    void *successor=madeira_test_fex_manager_create();uintptr_t successor_code=0;
+    size_t successor_size=madeira_test_fex_latest(successor,&successor_code);
+    CHECK(successor_size&&ios_jit_tail_reserved==tail);
+    check_partition_code(successor_code,successor_size);madeira_test_fex_manager_destroy(successor);
+    CHECK(ios_pool_ledger_holds(0x4000,0x278ec000,(void *)(uintptr_t)(0x70000000+40*0x10000)));
+    printf("PASS current partition order=%s actual-staged-FEX-manager;17live-misc,4processes,client+embree+15historicalcopies+48MiBsynthetic;historical-image-head=2c408000 stressed-image-head=%zx virgin=%zx code-reserved=%zx last-live-classes=%zu/%zu/%zu/%zuMiB;32growths+quiescent-reclaim+successor-reuse,64/16MiBtrueOOM;notdeviceconfirmation\n",order,jit_pool_offset,ios_pool_image_limit-jit_pool_offset,(size_t)ios_jit_tail_reserved,bytes[0]/MB,bytes[1]/MB,bytes[2]/MB,bytes[3]/MB);
+}
+#endif
+
+struct continuation_request { void *result; size_t size; int status; };
+static void *continuation_allocate(void *opaque)
+{
+    struct continuation_request *request=opaque;
+    concurrent_thread_owner=0xabc0;concurrent_thread_owner_set=1;
+    request->size=16*MB;request->status=allocate_code(&request->size,&request->result);
+    return NULL;
+}
+
+/* Reproduce the source-level concurrency hidden by the old completion-order
+ * projection: a waiting request spends its budget while another real thread
+ * acquires and retires the candidate it was waiting for. */
+static void check_concurrent_retired_wait_continuation(void)
+{
+    reset_legacy512_capture_policy();
+    jit_pool_offset=64*MB;ios_jit_tail_reserved=16*MB;
+    ios_pool_free_count=ios_pool_ledger_count=0;ios_tail_carve_n=1;
+    memset(ios_tail_carves,0,sizeof ios_tail_carves);
+    const size_t retired_off=ios_jit_pool_size_global-16*MB;
+    ios_tail_carves[0]=(struct ios_tail_carve){.off=retired_off,.size=16*MB,.free=1,.retired=1,.freed_at=100,.allocation_lease=1,.retired_lease=1};
+    set_process_lease((void *)0xabc0,2,0);set_process_lease((void *)0xdef0,3,0);
+    fake_now=100;grace_sleep_ns=600000000;grace_sleep_count=0;
+    continuation_step=continuation_permit=0;continuation_mode=1;
+    struct continuation_request request={0};pthread_t worker;
+    CHECK(!pthread_create(&worker,NULL,continuation_allocate,&request));
+    for(unsigned step=1;step<=30;step++)
+    {
+        pthread_mutex_lock(&continuation_lock);
+        while(continuation_step<step)pthread_cond_wait(&continuation_cond,&continuation_lock);
+        CHECK(continuation_step==step);
+        grace_sleep_ns+=100000000;fake_now+=grace_sleep_ns/1000000000;grace_sleep_ns%=1000000000;
+        if(step==24)
+        {
+            CHECK(fake_now==103);owner=0xdef0;
+            size_t bytes=16*MB;void *code=NULL;
+            CHECK(allocate_code(&bytes,&code)==STATUS_SUCCESS&&bytes==16*MB);
+            CHECK((uintptr_t)code-(uintptr_t)rx_memory==retired_off);
+            void *released=NULL;size_t freed=0;
+            CHECK(release_code(code,MEM_RELEASE,&released,&freed)==STATUS_SUCCESS&&released==code&&freed==16*MB);
+            set_process_lease((void *)owner,3,1);ios_tail_carves_owner_died((void *)owner);
+            CHECK(ios_tail_carves[0].free&&ios_tail_carves[0].retired&&ios_tail_carves[0].retired_lease==3&&ios_tail_carves[0].freed_at==103);
+        }
+        continuation_permit=step;pthread_cond_broadcast(&continuation_cond);pthread_mutex_unlock(&continuation_lock);
+    }
+    CHECK(!pthread_join(worker,NULL));continuation_mode=0;
+    CHECK(request.status==STATUS_SUCCESS&&request.size==16*MB);
+    CHECK(grace_sleep_count==30&&fake_now==103);
+    CHECK((uintptr_t)request.result-(uintptr_t)rx_memory==ios_jit_pool_size_global-32*MB);
+    CHECK(ios_tail_carves[0].free&&ios_tail_carves[0].retired);
+    /* A fresh call made only at the completion timestamp gets a new budget
+     * and a different result, demonstrating why that old projection lied. */
+    ios_tail_carve_n=1;ios_jit_tail_reserved=16*MB;owner=0xabc0;grace_sleep_count=0;
+    size_t bytes=16*MB;void *code=NULL;
+    CHECK(allocate_code(&bytes,&code)==STATUS_SUCCESS&&bytes==16*MB);
+    CHECK((uintptr_t)code-(uintptr_t)rx_memory==retired_off&&grace_sleep_count>0);
+    puts("PASS concurrent wait continuation: original request exhausts30steps as another thread reuses/retires candidate; completion-only fresh call incorrectly gains a new budget");
+}
+
+/* Installed dd36 capture, negative control only. Recorded high-water snapshots
+ * are constraints reproducing the failed run, not predictions for a repair. */
+static void check_captured_051624_failure(void)
+{
+    void *handles[64]={0};size_t sizes[64]={0};struct ios_tail_carve pinned[3];
+    unsigned grants=0,pins=0;
+    reset_legacy512_capture_policy();
+    jit_pool_offset=ios_jit_tail_reserved=0;ios_pool_free_count=ios_pool_ledger_count=ios_tail_carve_n=0;
+    memset(ios_tail_carves,0,sizeof ios_tail_carves);
+    for(unsigned i=0;i<ARRAY_SIZE(captured_051624_tail_events);i++)
+    {
+        const struct captured_tail_event *e=&captured_051624_tail_events[i];owner=e->owner;
+        if(fake_now<(time_t)(1000+e->seconds))fake_now=1000+e->seconds;
+        set_process_lease((void *)owner,e->lease,e->op==2);
+        if(e->op==2){ios_tail_carves_owner_died((void *)owner);continue;}
+        if(e->op==1)
+        {
+            void *released=NULL;size_t bytes=0;CHECK(handles[e->handle]);
+            CHECK(release_code(handles[e->handle],MEM_RELEASE,&released,&bytes)==STATUS_SUCCESS);
+            CHECK(released==handles[e->handle]&&bytes==sizes[e->handle]);continue;
+        }
+        if(e->head>jit_pool_offset)jit_pool_offset=e->head;
+        size_t got=e->ask;
+        recorded_continuation_waited=(e->line==13212||e->line==16113)?30:0;
+        if(e->rotation||e->ask==128*MB)got=rotate(&handles[e->handle]);
+        else CHECK(allocate_code(&got,&handles[e->handle])==STATUS_SUCCESS);
+        recorded_continuation_waited=0;
+        size_t off=(uintptr_t)handles[e->handle]-(uintptr_t)rx_memory;
+        if(got!=e->observed||off!=e->observed_off)
+            fprintf(stderr,"051624 baseline mismatch line%u size=%zx/%zx off=%zx/%zx recorded-second=%u model-second=%lld\n",e->line,got,e->observed,off,e->observed_off,e->seconds,(long long)fake_now-1000);
+        CHECK(got==e->observed&&off==e->observed_off);sizes[e->handle]=got;grants++;
+        if(e->ask==128*MB&&!e->rotation)
+        {
+            CHECK(pins<3&&got==128*MB);pinned[pins]=ios_tail_carves[find_carve(off)];
+            *(uint64_t *)((char *)rw_memory+off)=0x0516240000000000ULL+pins;
+            *(uint64_t *)((char *)rw_memory+off+got-8)=0x0516250000000000ULL+pins;pins++;
+        }
+    }
+    CHECK(grants==45&&pins==3&&ios_jit_tail_reserved==0x1e044000);
+    CHECK(jit_pool_offset==0x278f0000);
+    owner=0x11260c000;set_process_lease((void *)owner,31,0);
+    if(fake_now<1105)fake_now=1105;
+    /* Logged server grant: one known reuse extent, not added head capacity. */
+    ios_pool_freelist[0]=(struct ios_pool_free){0x18a58000,0x2580000,1089,1,0};ios_pool_free_count=1;
+    size_t server=(size_t)-1;CHECK(!allocate_image(0x2580000,&server)&&server==0x18a58000);
+    check_owned_executable_image(server,0x2580000);
+    CHECK(jit_pool_offset==0x278f0000);
+    /* The six remaining image extents have logged aggregates but not all
+     * positions. These disconnected synthetic offsets are used ONLY for this
+     * failure control: no extent can satisfy the41.65625MiB client request. */
+    static const size_t holes[]={0x5e4000,0xc000,0x8000,0x8000,0x4000,0x8000};
+    size_t sum=0;ios_pool_free_count=0;
+    for(unsigned i=0;i<ARRAY_SIZE(holes);i++)
+    {ios_pool_freelist[i]=(struct ios_pool_free){(i+1)*8*MB,holes[i],0,1,0};sum+=holes[i];ios_pool_free_count++;}
+    CHECK(sum==0x60c000&&ios_pool_free_count==6);
+    CHECK(ios_jit_pool_size_global-jit_pool_offset-ios_jit_tail_reserved==0x26cc000);
+    expect_failed_image(0x29a8000);
+    CHECK(strstr(recycle_report,"aged-receipts=16")&&strstr(recycle_report,"aged-bytes=0x3034000"));
+    CHECK(strstr(recycle_report,"largest=0x2000000")&&strstr(recycle_report,"missing-proof=1"));
+    CHECK(ios_pool_ledger_holds(server,0x2580000,(void *)owner));expect_failed_image(0x29a8000);
+    CHECK(jit_pool_offset==0x278f0000&&ios_jit_tail_reserved==0x1e044000);
+    check_code_image_nonoverlap();
+    for(unsigned i=0;i<pins;i++)
+    {
+        CHECK(!memcmp(&ios_tail_carves[find_carve(pinned[i].off)],&pinned[i],sizeof pinned[i]));
+        CHECK(*(uint64_t *)((char *)rx_memory+pinned[i].off)==0x0516240000000000ULL+i);
+        CHECK(*(uint64_t *)((char *)rx_memory+pinned[i].off+pinned[i].size-8)==0x0516250000000000ULL+i);
+    }
+    puts("PASS051624 installed-dd36 failure control:45grants;head278f0000/tail1e044000;client29a8000honestlyfails;16proofs3034000/largest2000000;recordedheadsONLYnegativeinputs;noUIclaim");
 }
 
 struct scheduled_request { unsigned role; size_t size, limit, off; void *ret; int status; };
@@ -2272,12 +2756,22 @@ int main(void)
         CHECK(ios_pool_code_tail_limit==jit_cs2_code_tail_limit_mb()*MB);
         CHECK(!munmap(rx_memory,mapped_size)&&!munmap(rw_memory,mapped_size));CHECK(!fclose(backing));return 0;
     }
+#if REPLAY_CURRENT_PARTITION
+    check_current_partition_with_actual_producer();
+    CHECK(!munmap(rx_memory,mapped_size)&&!munmap(rw_memory,mapped_size));CHECK(!fclose(backing));return 0;
+#endif
     if (REPLAY_LEGACY_ONLY)
     {
         check_captured_november8_tail_history(208*MB,0,0);
         CHECK(!munmap(rx_memory,mapped_size)&&!munmap(rw_memory,mapped_size));
         CHECK(!fclose(backing));
         return 0;
+    }
+    if(getenv("MADEIRA_POOL_051624_ONLY"))
+    {
+        check_concurrent_retired_wait_continuation();
+        check_captured_051624_failure();
+        CHECK(!munmap(rx_memory,mapped_size)&&!munmap(rw_memory,mapped_size));CHECK(!fclose(backing));return 0;
     }
     if(getenv("MADEIRA_POOL_035900_ONLY"))
     {
@@ -2323,24 +2817,29 @@ int main(void)
 
 if __name__ == '__main__':
     if '--verify-policy-wiring' in sys.argv[1:]:
-        for selected, expected, broken in ((None, '128', False), ('448', '64', False), ('448', '64', True)):
+        for selected, image_arena, expected, broken in ((None, None, '8', False),
+                                                       ('448', None, '8', False),
+                                                       ('448', '704', '64', False),
+                                                       ('448', '704', '64', True)):
             environment = dict(os.environ, MADEIRA_POOL_REPLAY_VARIANT='current', MADEIRA_POOL_SELECTOR_PROBE=expected)
             if selected is not None:
                 environment['MADEIRA_POOL_TEST_SELECTOR_MB'] = selected
+            if image_arena is not None:
+                environment['MADEIRA_POOL_TEST_IMAGE_ARENA_MB'] = image_arena
             if broken:
                 environment['MADEIRA_POOL_TEST_DISCONNECT_SELECTOR'] = '1'
             result = subprocess.run([sys.executable, __file__], env=environment, capture_output=True, text=True)
             if broken:
-                assert result.returncode != 0 and 'selected=448 effective=512 grant=128 expected=64' in result.stdout, result.stdout + result.stderr
+                assert result.returncode != 0 and 'selected=448 effective=512 grant=64 expected=64' in result.stdout, result.stdout + result.stderr
             else:
                 print(result.stdout, end='')
                 if result.returncode:
                     print(result.stderr, end='');result.check_returncode()
-        print('PASS complete EC_CODE policy wiring: selector448 mutation changes the real grant; disconnected literal512 is rejected after allocation')
+        print('PASS complete EC_CODE policy wiring: actual384/768 partition bounds grant; paired448/704 mutation changes real grant; disconnected literal512 rejected after allocation')
         raise SystemExit(0)
     if not any(os.environ.get(key) for key in ('MADEIRA_POOL_REPLAY_VARIANT', 'MADEIRA_POOL_SOURCE',
                                                'MADEIRA_POOL_NOV10_ONLY', 'MADEIRA_POOL_CURRENT_PRIOR',
-                                               'MADEIRA_POOL_LEGACY_REPLAY_ONLY', 'MADEIRA_POOL_SELECTOR_PROBE', 'MADEIRA_POOL_035900_ONLY')):
+                                               'MADEIRA_POOL_LEGACY_REPLAY_ONLY', 'MADEIRA_POOL_SELECTOR_PROBE', 'MADEIRA_POOL_035900_ONLY', 'MADEIRA_POOL_051624_ONLY', 'MADEIRA_POOL_PARTITION_ONLY')):
         # Historical exact-address controls and current returned-handle
         # projections are distinct executions, never interchangeable claims.
         runs = [('historical', {}),
@@ -2348,7 +2847,9 @@ if __name__ == '__main__':
                 ('promotion', {'MADEIRA_POOL_NOV10_ONLY': '1', 'MADEIRA_POOL_NOV10_EXPECT_FAILURE': '1'}),
                 ('current', {'MADEIRA_POOL_CURRENT_PRIOR': '1'}),
                 ('current', {'MADEIRA_POOL_035900_ONLY': '1', 'MADEIRA_POOL_035900_EXPECT_BASELINE': '1'}),
-                ('current', {'MADEIRA_POOL_035900_ONLY': '1'})]
+                ('current', {'MADEIRA_POOL_035900_ONLY': '1'}),
+                ('current', {'MADEIRA_POOL_051624_ONLY': '1'})]
+        runs += [('current', {'MADEIRA_POOL_PARTITION_ONLY': order}) for order in ('code-first','image-first','interleaved')]
         runs += [('current', {'MADEIRA_POOL_NOV10_ONLY': '1', 'MADEIRA_POOL_NOV10_CLOCK_SHIFT': str(shift)})
                  for shift in (0, -1, 1)]
         for selected, settings in runs:
@@ -2366,10 +2867,18 @@ if __name__ == '__main__':
             assert producer_fixture.count(wire) == 1
             producer_fixture = producer_fixture.replace(wire, 'uint64_t selected_limit=512; /* deliberate negative wiring control */', 1)
         unit.write_text(producer_fixture)
-        subprocess.run([os.environ.get('CC', 'cc'), '-std=c11', '-D_POSIX_C_SOURCE=200809L',
+        compile_command = [os.environ.get('CC', 'cc'), '-std=c11', '-D_POSIX_C_SOURCE=200809L',
                         '-Wall', '-Wextra', '-Werror', '-fsanitize=address,undefined',
                         '-fno-sanitize-recover=all', '-fno-omit-frame-pointer', '-pthread',
-                        str(unit), '-o', str(binary)], check=True)
+                        '-I', str(root / 'build/ntdll-unix')]
+        if os.environ.get('MADEIRA_POOL_PARTITION_ONLY'):
+            producer_object=build_actual_producer(temporary)
+            native_object=temporary/'native-pool.o'
+            subprocess.run(compile_command+['-c',str(unit),'-o',str(native_object)],check=True)
+            subprocess.run([os.environ.get('CXX','c++'),'-fsanitize=address,undefined','-pthread',
+                            str(native_object),str(producer_object),'-o',str(binary)],check=True)
+        else:
+            subprocess.run(compile_command+[str(unit),'-o',str(binary)],check=True)
         try:
             result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=90)
         except subprocess.TimeoutExpired as error:

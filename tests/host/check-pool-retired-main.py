@@ -433,6 +433,7 @@ with tempfile.TemporaryDirectory(prefix='madeira-pool-retired-main-') as directo
     subprocess.run([os.environ.get('CC', 'cc'), '-std=c11', '-D_POSIX_C_SOURCE=200809L',
                     '-Wall', '-Wextra', '-Werror', '-fsanitize=address,undefined',
                     '-fno-sanitize-recover=all', '-fno-omit-frame-pointer', '-pthread',
+                    '-I' + str(root / 'build/ntdll-unix'),
                     str(unit), '-o', str(binary)], check=True)
     result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=30)
     print(result.stdout, end='')

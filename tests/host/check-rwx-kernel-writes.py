@@ -34,6 +34,10 @@ server = (root / 'build/ntdll-unix/server_ios.c').read_text()
 virtual = (root / 'build/ntdll-unix/virtual_ios.c').read_text()
 
 
+# Compile the actual lock-free guard query with an empty legacy bitmap.
+g = (root / 'build/ntdll-unix/fex_code_guards.h').read_text()
+guard_bitmap = (root / 'build/ntdll-unix/fex_code_buffer_abi.h').read_text() + '\n' + g.replace('#include "fex_code_buffer_abi.h"', '')
+
 def function(source, signature):
     start = source.index(signature)
     return source[start:source.index('\n}', start) + 2] + '\n'
@@ -87,8 +91,15 @@ typedef struct { int protection; } vm_region_basic_info_data_64_t;
 #define VM_REGION_BASIC_INFO_COUNT_64 1
 #define VM_PROT_READ 1
 #define VM_PROT_WRITE 2
+#define VM_PROT_NONE 0
 #define MACH_PORT_NULL 0
 static fake_task_t mach_task_self( void ) { return 1; }
+static kern_return_t mach_vm_protect(fake_task_t task, mach_vm_address_t address,
+                                     mach_vm_size_t size, int maximum, int protection)
+{
+    (void)task; assert(!maximum && protection == VM_PROT_NONE);
+    return mprotect((void *)(uintptr_t)address, size, PROT_NONE);
+}
 #endif
 typedef int BOOL;
 typedef int NTSTATUS;
@@ -158,6 +169,7 @@ static void server_leave_uninterrupted_section( int *m, sigset_t *s ) { (void)m;
 static NTSTATUS check_write_access( void *addr, size_t size, BOOL *ww ) { (void)addr; (void)size; *ww = FALSE; return 0; }
 static void update_write_watches( void *addr, size_t size, size_t accessed ) { (void)addr; (void)size; (void)accessed; }
 '''
+code += guard_bitmap
 code += upto(virtual, '#define IOS_JIT_MAX_ANON_ALIASES', 'static volatile int ios_jit_anon_alias_tombstones = 0;')
 code += function(virtual, 'uintptr_t ios_jit_anon_alias_lookup(uintptr_t fault_addr)\n{')
 code += function(virtual, 'int ios_jit_anon_alias_find_cover(void *user_va, size_t size, void **rw_out, void **rx_out)\n{')
@@ -170,8 +182,20 @@ code += function(virtual, 'ssize_t virtual_locked_recvmsg( int fd, struct msghdr
 code += function(server, 'static BOOL read_reply_data( void *buffer, size_t size )\n{')
 code += span(server, '#define IOS_REPLY_PAGE', 'static BOOL ios_read_reply_guest(')
 code += r'''
-#define VIEW 0x10000   /* a multiple of every host page size */
+#define VIEW 0x100000   /* minimum real CodeBuffer class, including its guard */
 static unsigned char pattern[3 * VIEW];
+
+static char *aligned_view(int fd, int prot)
+{
+    char *space = mmap(NULL, VIEW + 0x4000, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    assert(space != MAP_FAILED);
+    uintptr_t base = ((uintptr_t)space + 0x3fff) & ~(uintptr_t)0x3fff;
+    size_t before = base - (uintptr_t)space, after = 0x4000 - before;
+    if (before) assert(!munmap(space,before));
+    if (after) assert(!munmap((void *)(base + VIEW),after));
+    assert(mmap((void *)base, VIEW, prot, MAP_SHARED | MAP_FIXED, fd, 0) == (void *)base);
+    return (char *)base;
+}
 
 static void make_view( char **rx, char **rw )   /* one object, a read-only "RX" view and a read-write alias */
 {
@@ -180,8 +204,8 @@ static void make_view( char **rx, char **rw )   /* one object, a read-only "RX" 
     assert( f );
     fd = fileno( f );
     assert( !ftruncate( fd, VIEW ) );
-    *rx = mmap( NULL, VIEW, PROT_READ, MAP_SHARED, fd, 0 );
-    *rw = mmap( NULL, VIEW, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0 );
+    *rx = aligned_view( fd, PROT_READ );
+    *rw = aligned_view( fd, PROT_READ | PROT_WRITE );
     assert( *rx != MAP_FAILED && *rw != MAP_FAILED );
     fclose( f );
     fake_add( *rx, VIEW, VM_PROT_READ );
@@ -361,6 +385,30 @@ int main( void )
     assert( mono_retired == 3 && ios_jit_anon_alias_live == 1 );
     assert( !ios_jit_anon_alias_lookup( 0x7000010000ull ) && !ios_jit_anon_alias_lookup( 0x7000030000ull ) );
     puts( "release: the aliases that start inside the range are retired, the others stay" );
+
+    /* A real permanent guard cannot be bypassed by either reply or kernel
+     * write aliases, even when the request begins on its readable neighbour. */
+    assert(ios_fex_code_guard_arm(0, VIEW));
+    assert(ios_fex_code_guard_is_armed(VIEW - 0x4000));
+    for (unsigned alias_index = 0; alias_index < 2; alias_index++)
+    {
+        char *target = (alias_index ? pool_rw : pool_rx) + VIEW - 0x4000;
+        assert(ios_jit_code_guard_contains((uintptr_t)target, 0x4000));
+        assert(!ios_reply_rw_alias((uintptr_t)target));
+        assert(!ios_reply_host_writable((uintptr_t)target, 100));
+        new_pipe(fds); put(fds[1],pattern,0x1000); put(fds[1],"next-reply-12345",16);
+        fault=FALSE;
+        assert(ios_read_reply_guest(target-0x800,0x1000,47,&fault) && fault);
+        assert(!memcmp(target-0x800,pattern,0x800));
+        next_marker(fds[0]);
+        put(fds[1],pattern,0x1000);
+        errno=0;
+        assert(virtual_locked_read(fds[0],target-0x800,0x1000)==-1 && errno==EFAULT);
+        assert(read(fds[0],buf,sizeof(buf))==(ssize_t)sizeof(buf));
+        static char drain[0x1000];
+        assert(read(fds[0],drain,0x1000-sizeof(buf))==0x1000-(ssize_t)sizeof(buf));
+    }
+    puts("PASS actual permanent RX/RW guards: crossing reply destinations fault and drain exactly; kernel reads reject before consuming bytes");
     return 0;
 }
 '''

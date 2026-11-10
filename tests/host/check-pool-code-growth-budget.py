@@ -42,6 +42,7 @@ helpers = '\n'.join(function(native, name) for name in (
     'static size_t ios_pool_holes_tail_start(',
     'static size_t ios_pool_code_growth_cap(',
     'static int ios_pool_code_growth_fits(',
+    'static int ios_pool_partition_allows_code(',
 ))
 reservation = function(native, 'static int ios_pool_reserve_code_tail(')
 # Interleave immediately before the actual atomic compare/exchange. The wrapper
@@ -57,6 +58,7 @@ producer += '\n' + function(backend, '  CodeBuffer::~CodeBuffer()')
 structure = header[header.index('  struct CodeBuffer {'):]
 structure = structure[:structure.index('\n  };') + 5]
 plan_limit = function(allocator, 'uint64_t jit_cs2_code_tail_limit_mb(')
+plan_image = function(allocator, 'uint64_t jit_cs2_image_arena_mb(')
 
 code = r'''
 #include <algorithm>
@@ -80,6 +82,7 @@ code = r'''
 #define IOS_POOL_REUSE_GRACE_SEC 3
 #define FEX_IOS_HOST 1
 static size_t ios_pool_code_tail_limit;
+static size_t ios_pool_image_limit;
 ''' + helpers + r'''
 static std::barrier<>* cas_barrier;
 static thread_local bool interleaved;
@@ -87,7 +90,7 @@ static int interleaved_cas(volatile size_t* pointer,size_t expected,size_t desir
   if(cas_barrier&&!interleaved) { interleaved=true;cas_barrier->arrive_and_wait(); }
   return __sync_bool_compare_and_swap(pointer,expected,desired);
 }
-''' + reservation + '\n' + fresh + '\n' + plan_limit + '\n' + carve + r'''
+''' + reservation + '\n' + fresh + '\n' + plan_limit + '\n' + plan_image + '\n' + carve + r'''
 static int ios_tail_carve_in_low(size_t) {return 0;}
 ''' + ready + '\n' + better + r'''
 static const size_t total=1152*MB;
@@ -103,6 +106,7 @@ static volatile sig_atomic_t expect_oom,expect_permission;
 static uintptr_t expected_fault_lo,expected_fault_hi;
 static void select_production_code_limit() {
   ios_pool_code_tail_limit=jit_cs2_code_tail_limit_mb()*MB;
+  ios_pool_image_limit=jit_cs2_image_arena_mb()*MB;
 }
 
 static void signal_handler(int signal,siginfo_t* info,void*) {
@@ -225,7 +229,7 @@ static void native_permissions(const CodeBuffer& buffer) {
   }
 }
 static void policy_tests() {
-  assert(jit_cs2_code_tail_limit_mb()==512);
+  assert(jit_cs2_code_tail_limit_mb()==384&&jit_cs2_image_arena_mb()==768);
   assert(ios_pool_parse_code_tail_limit("512",total)==512*MB);
   for(const char* invalid:{"","0","15","1153","-1","512x","99999999999999999999999999"})
     assert(!ios_pool_parse_code_tail_limit(invalid,total));
@@ -286,18 +290,23 @@ static void atomic_reservation_tests() {
 int main(int argc,char** argv) {
   if(argc==3&&!strcmp(argv[1],"selector-probe")) {
     initialize_aliases();select_production_code_limit();
-    tail=0x1701c000;image_head=0x144f0000;attempts.clear();
+    tail=368*MB;image_head=0x144f0000;attempts.clear();
     auto buffer=std::make_shared<CodeBuffer>(128*MB);
     size_t expected=(size_t)strtoul(argv[2],nullptr,10);
-    printf("[producer-selector-probe] selected=%llu effective=%zu grant=%zu expected=%zu attempts=%zu\n",
-           (unsigned long long)jit_cs2_code_tail_limit_mb(),ios_pool_code_tail_limit/MB,
+    printf("[producer-selector-probe] selected=%llu image=%llu effective=%zu effective-image=%zu grant=%zu expected=%zu attempts=%zu\n",
+           (unsigned long long)jit_cs2_code_tail_limit_mb(),(unsigned long long)jit_cs2_image_arena_mb(),
+           ios_pool_code_tail_limit/MB,ios_pool_image_limit/MB,
            buffer->AllocatedSize/MB,expected,attempts.size());fflush(stdout);
     assert(buffer->AllocatedSize==expected*MB);
     assert(ios_pool_code_tail_limit==jit_cs2_code_tail_limit_mb()*MB);
+    assert(ios_pool_image_limit==jit_cs2_image_arena_mb()*MB);
     put_code(*buffer);return 0;
   }
   policy_tests();atomic_reservation_tests();initialize_aliases();
-  select_production_code_limit();
+  /* Retain the historical unpartitioned512 trace as a named baseline. The
+   * production hard384/768 selector is exercised through the real constructor
+   * separately below, never substituted by this baseline assignment. */
+  ios_pool_code_tail_limit=512*MB;ios_pool_image_limit=0;
   if(argc==2&&!strcmp(argv[1],"oom")) {
     tail=0;image_head=total-MB/2;attempts.clear();expect_oom=1;
     auto impossible=std::make_shared<CodeBuffer>(128*MB);(void)impossible;return 88;
@@ -374,18 +383,23 @@ with tempfile.TemporaryDirectory(prefix='madeira-code-growth-') as directory:
         result = subprocess.run([str(executable), 'oom'], timeout=30)
         assert result.returncode == 86, 'The real producer must retain its genuine final allocation-failure trap'
         print('PASS actual FEX producer true exhaustion: all eight128-to1MiB requests fail honestly and the original fatal path remains observable')
-    subprocess.run([str(executable), 'selector-probe', '128'], check=True, timeout=30)
-    assert plan_limit.count('return 512;') == 1, 'Update the explicit selector mutation control when the production policy changes'
-    mutated = code.replace(plan_limit, plan_limit.replace('return 512;', 'return 448;', 1), 1)
+    subprocess.run([str(executable), 'selector-probe', '16'], check=True, timeout=30)
+    assert plan_limit.count('return 384;') == 1 and plan_image.count('return 768;') == 1, 'Update paired hard-partition controls when production changes'
+    mutated = code.replace(plan_limit, plan_limit.replace('return 384;', 'return 448;', 1), 1)
+    mutated = mutated.replace(plan_image, plan_image.replace('return 768;', 'return 704;', 1), 1)
     source.write_text(mutated)
     subprocess.run(command, check=True)
     subprocess.run([str(executable), 'selector-probe', '64'], check=True, timeout=30)
-    # Reproduce PR9's disconnected test wiring. The actual constructor must
-    # expose128MiB, not silently pass the expected64MiB candidate assertion.
+    # Reproduce disconnected test wiring with both effective arena inputs at
+    # the old512/640 split. The constructor must expose128MiB, not silently
+    # pass the paired448/704 selector's expected64MiB assertion.
     wire = 'ios_pool_code_tail_limit=jit_cs2_code_tail_limit_mb()*MB;'
     assert mutated.count(wire) == 1
-    source.write_text(mutated.replace(wire, 'ios_pool_code_tail_limit=512*MB; /* negative wiring control */', 1))
+    image_wire = 'ios_pool_image_limit=jit_cs2_image_arena_mb()*MB;'
+    assert mutated.count(image_wire) == 1
+    broken_source = mutated.replace(wire, 'ios_pool_code_tail_limit=512*MB; /* negative wiring control */', 1)
+    source.write_text(broken_source.replace(image_wire, 'ios_pool_image_limit=640*MB; /* negative partition wiring */', 1))
     subprocess.run(command, check=True)
     broken = subprocess.run([str(executable), 'selector-probe', '64'], capture_output=True, text=True, timeout=30)
-    assert broken.returncode != 0 and 'selected=448 effective=512 grant=128 expected=64' in broken.stdout, broken.stdout + broken.stderr
-    print('PASS actual FEX producer selector wiring: production512->128MiB, in-memory selector448->64MiB; disconnected512 test wiring is rejected after real allocation')
+    assert broken.returncode != 0 and 'selected=448 image=704 effective=512 effective-image=640 grant=128 expected=64' in broken.stdout, broken.stdout + broken.stderr
+    print('PASS actual FEX producer hard-partition selector wiring: production384/768->16MiB, in-memory448/704->64MiB; disconnected512/640 wiring is rejected after actual allocation')

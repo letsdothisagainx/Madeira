@@ -86,8 +86,9 @@ bool jit_cs2_pool_plan(uint64_t requested_pool_mb, uint64_t available_bytes,
                        uint64_t map_min, uint64_t map_max,
                        uint64_t *pool_mb, uint64_t *head_reserve_mb);
 
-// Fresh large-code growth budget for the verified CS2 startup pool.
-// Does not change backing size or restrict reuse of existing code buffers.
+// Hard low-image/high-code partition of the verified 1152MB CS2 startup pool.
+// Native placement also constrains reuse and minimum-size code allocations.
+uint64_t jit_cs2_image_arena_mb(void);
 uint64_t jit_cs2_code_tail_limit_mb(void);
 
 // Validate the actual single-region mapping before accepting its aliases.

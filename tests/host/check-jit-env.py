@@ -29,11 +29,14 @@ def function(text, signature):
 
 
 create = function(source, 'NTSTATUS WINAPI NtCreateUserProcess(')
-call = 'ios_env_with( params->Environment, jit_names, 3, getenv, &len, &added );'
+call = 'ios_env_with( params->Environment, jit_names, 5, getenv, &len, &added );'
 assert call in create
-assert '{ "WINE_IOS_JIT_RX", "WINE_IOS_JIT_SIZE", "WINE_IOS_JIT_RW" }' in create
+assert '{ "WINE_IOS_JIT_RX", "WINE_IOS_JIT_SIZE", "WINE_IOS_JIT_RW",' in create
+assert '"WINE_IOS_JIT_IMAGE_ARENA_MB", "WINE_IOS_FEX_CODE_GUARD_V1" };' in create
 assert 'const char *keep = getenv( "MADEIRA_JIT_ENV_INHERIT" );' in create
-site = create[create.index(call):][:900]
+assert 'ios_env_with(params->Environment,jit_names+3,2,getenv,&len,&added)' in create
+assert 'if (partition && !env) return STATUS_NO_MEMORY;' in create
+site = create[create.index(call):][:1400]
 assert 'params->Environment = env;' in site and 'params->EnvironmentSize = len * sizeof(WCHAR);' in site
 assert '[jit-env] %s starts without the JIT pool' in site
 # before the block is measured and copied into the new_process request
@@ -46,16 +49,23 @@ code = r'''
 #include <string.h>
 typedef unsigned short WCHAR;
 typedef size_t SIZE_T;
+static int fail_malloc;
+static void *checked_malloc(size_t size) {return fail_malloc ? NULL : malloc(size);}
+#define malloc checked_malloc
 '''
 code += function(source, 'static WCHAR *ios_env_with(')
 code += r'''
+#undef malloc
 static const char *const names[] = { "WINE_IOS_JIT_RX", "WINE_IOS_JIT_SIZE", "WINE_IOS_JIT_RW" };
-static int no_size;
+static const char *const private_names[] = { "WINE_IOS_JIT_RX", "WINE_IOS_JIT_SIZE", "WINE_IOS_JIT_RW", "WINE_IOS_JIT_IMAGE_ARENA_MB", "WINE_IOS_FEX_CODE_GUARD_V1" };
+static int no_size, private_active;
 static char *get( const char *name )
 {
     if (!strcmp( name, "WINE_IOS_JIT_RX" )) return "148000000";
     if (!strcmp( name, "WINE_IOS_JIT_SIZE" )) return no_size ? NULL : "38000000";
     if (!strcmp( name, "WINE_IOS_JIT_RW" )) return "7918c00000";
+    if (!strcmp( name, "WINE_IOS_JIT_IMAGE_ARENA_MB" )) return private_active ? "768" : NULL;
+    if (!strcmp( name, "WINE_IOS_FEX_CODE_GUARD_V1" )) return private_active ? "1" : NULL;
     return NULL;
 }
 /* "A=1|B=2|" -> a WCHAR multi-sz (| ends an entry), with the final NUL */
@@ -123,6 +133,29 @@ int main( void )
     if (!r || added != 7 || len != strlen( t ) + 1)
         FAIL( "NULL block: %s (added %u, len %zu)\n", t, added, len );
     free( r );
+    private_active=1;
+    r=ios_env_with(block("PATH=kept|WINE_IOS_JIT_RX=caller-rx|WINE_IOS_JIT_SIZE=caller-size|WINE_IOS_JIT_RW=caller-rw|wine_ios_jit_image_arena_mb=0|WINE_IOS_FEX_CODE_GUARD_V1=0|WINE_IOS_FEX_CODE_GUARD_V1=9|WINE_IOS_FEX_CODE_GUARD_V1_EXTRA=kept|"),private_names,5,get,&len,&added);
+    t=r ? text(r,len) : "NULL";
+    if(!r || added!=24 || strcmp(t,"PATH=kept|WINE_IOS_JIT_RX=caller-rx|WINE_IOS_JIT_SIZE=caller-size|WINE_IOS_JIT_RW=caller-rw|WINE_IOS_FEX_CODE_GUARD_V1_EXTRA=kept|WINE_IOS_JIT_IMAGE_ARENA_MB=768|WINE_IOS_FEX_CODE_GUARD_V1=1|"))
+        FAIL("private policy replacement changed aliases/foreign entries: %s added=%u\n",t,added);
+    free(r);
+    /* Disabling ordinary alias inheritance does not disable the private hard
+     * partition. The caller retains all three original alias values. */
+    r=ios_env_with(block("WINE_IOS_JIT_RX=caller|WINE_IOS_FEX_CODE_GUARD_V1=0|"),private_names+3,2,get,&len,&added);
+    t=r ? text(r,len) : "NULL";
+    if(!r || added!=3 || strcmp(t,"WINE_IOS_JIT_RX=caller|WINE_IOS_JIT_IMAGE_ARENA_MB=768|WINE_IOS_FEX_CODE_GUARD_V1=1|"))
+        FAIL("private-only inheritance: %s added=%u\n",t,added);
+    free(r);
+    r=ios_env_with(NULL,private_names,5,get,&len,&added);
+    if(!r || added!=31 || !strstr(text(r,len),"WINE_IOS_JIT_IMAGE_ARENA_MB=768|WINE_IOS_FEX_CODE_GUARD_V1=1|"))
+        FAIL("registry service with no block did not receive private policy\n");
+    free(r);
+    fail_malloc=1;
+    if(ios_env_with(NULL,private_names,5,get,&len,&added) || added)
+        FAIL("failed environment allocation published a partial private policy\n");
+    fail_malloc=0;private_active=0;
+    if(ios_env_with(block("WINE_IOS_JIT_RX=caller|WINE_IOS_JIT_SIZE=caller|WINE_IOS_JIT_RW=caller|WINE_IOS_FEX_CODE_GUARD_V1=0|"),private_names,5,get,&len,&added) || added)
+        FAIL("nonpartition caller environment was rewritten\n");
     return 0;
 }
 '''
@@ -141,4 +174,4 @@ with tempfile.TemporaryDirectory(prefix='madeira-jit-env-') as directory:
     r = subprocess.run([str(exe)], capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
 print('PASS: a child whose environment lacks WINE_IOS_JIT_RX/SIZE/RW (a service) gets the app\'s values; '
-      'present ones (any case) and look-alike names are left alone')
+      'present aliases and look-alike names are preserved; active CS2 private image/guard fields replace stale/duplicate registry values, private-only inheritance survives the generic opt-out, and allocation failure publishes nothing')

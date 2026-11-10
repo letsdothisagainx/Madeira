@@ -1,8 +1,63 @@
-# FEX code-buffer guard: confirmed unsupported protection
+# FEX code-buffer guard contracts
 
-This guard is **not fixed**. The current Wine bridge honestly rejects its
-protection request. An allocator build or a passing host test does not prove
-that the iPhone has an effective code-buffer guard.
+The legacy 4 KiB guard request remains unsupported for direct pool carves.
+The new, explicitly scoped partitioned session implements a different contract:
+a permanent 16 KiB physical guard in both aliases. The supplied `e02` and
+`dd36` device captures precede this implementation. A passing host test does
+not prove that the new guard works on the iPhone.
+
+## Implemented partitioned-session contract
+
+Only an automatically selected session with `WINE_IOS_FEX_CODE_GUARD_V1=1`
+uses the new contract. Other games retain their previous allocation, 4 KiB
+bounds, growth policy and honest guard-failure behavior. This is not a request
+for users to edit configuration.
+
+The owned `code-buffer-guard.patch` stages a per-object `GuardSize`, matching
+constructor protection, usable bounds and address classification. The FEX
+guest page size stays 4096. Guarded code buffers use a versioned, private
+allocation parameter; an old or incompatible consumer must return failure
+rather than silently supply an unguarded pointer.
+
+The native factory arms the last 16 KiB as `NOACCESS` in both RX and RW aliases
+before publishing a successful pointer. It records denial bits before changing
+permissions, and a separate successful-arm certificate only after both kernel
+operations succeed. Confirmation additionally requires the exact terminal
+range, a live guarded allocation, and the current matching owner and lease.
+A partial failure stays quarantined and cannot manufacture a successful
+confirmation from its denial bit.
+
+Guard pages are permanent: exact-class reuse fills only the executable body,
+and never restores a guard's execute or write permission. The hard image/code
+separation prevents images from claiming guarded code ranges. Fault emulation,
+execute recovery and pool scanning must respect these intentional holes.
+
+For these guarded objects, the producer grows from the previous **actual**
+allocation: 16 → 32 → 64 → 128 MiB, with existing honest allocation degradation.
+A previous degraded 16 MiB grant therefore asks for 32 MiB next. Existing
+shared references retain older generations until their users release them;
+the change does not free live code. A bounded producer record reports previous
+actual bytes, previous used bytes, requested bytes and guard bytes.
+
+Run the new production contract regression with:
+
+```sh
+python3 tests/host/check-fex-guarded-code-producer.py
+```
+
+It compiles the actual staged producer, private allocator wrapper, native guard
+arming/bitmap code and native owner/lease confirmation. Its explicit OS-backed
+allocation fixture provides real shared RX/RW mappings. The checks execute
+valid body code and verify read, write and execution faults at both guards;
+exercise growth/degradation, retained references and exact-class reuse; and
+reject partial-arm, foreign-owner, stale-lease and invalid confirmations.
+The fixture does not run the FEX compiler, sweeper, Wine application or game.
+Separate full allocator tests cover the real allocation branch and image chain.
+
+Actual iPhone acceptance still requires successful native guard records,
+continued compilation and genuine Steam/CS2 progress. If the first physical
+guard operation is unsupported, the native factory must fail honestly. No RX
+restoration capability after debugger detachment is assumed or required.
 
 ## Device evidence
 
@@ -92,8 +147,9 @@ The existing `preserve-pool-rx-v1` policy deliberately keeps debugger-blessed
 original RX pages executable throughout their lifetime. Historical execute
 recovery code also records that restoring RX can fail on iOS. Neither the
 current capture nor a Linux/macOS host test proves that disabling execute on a
-guard and restoring it later is safe on this device. Physical RX guard changes
-remain deferred pending that capability and lifecycle proof.
+guard and restoring it later is safe on this device. That is why the new
+contract uses permanent guard holes and separate code capacity, rather than
+adding a restore operation to the legacy carve recycler.
 
 This finding does not establish that a guard overflow caused the Steam/CS2
 failure. It establishes why these protection requests fail and what cannot

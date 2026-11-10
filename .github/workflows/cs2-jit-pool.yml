@@ -11,6 +11,7 @@ on:
       - build/ntdll-unix/virtual_ios.c
       - build/ntdll-unix/process_ios.c
       - build/ntdll-unix/native_fex_diagnostics_alias.h
+      - build/ntdll-unix/fex_code_*.h
       - tests/host/*fex*native*diagnostics*
       - tests/host/check-fex-cb-summary.py
       - tests/host/check-dep-process-isolation.py
@@ -26,7 +27,9 @@ on:
       - build/ntdll-unix/signal_arm64_ios.c
       - tests/host/check-jit-alias-*.py
       - tests/host/check-pool-*.py
-      - tests/host/check-fex-code-guard-contract.py
+      - tests/host/check-fex-code-guard*.py
+      - tests/host/check-fex-guarded-code-producer.py
+      - tests/host/check-code-guard-fault.py
       - tests/host/check-native-build-provenance.py
       - tests/host/check-dock-packaging.py
       - tools/build/package-ipa.sh
@@ -60,6 +63,7 @@ on:
       - build/ntdll-unix/virtual_ios.c
       - build/ntdll-unix/process_ios.c
       - build/ntdll-unix/native_fex_diagnostics_alias.h
+      - build/ntdll-unix/fex_code_*.h
       - tests/host/*fex*native*diagnostics*
       - tests/host/check-fex-cb-summary.py
       - tests/host/check-dep-process-isolation.py
@@ -75,7 +79,9 @@ on:
       - build/ntdll-unix/signal_arm64_ios.c
       - tests/host/check-jit-alias-*.py
       - tests/host/check-pool-*.py
-      - tests/host/check-fex-code-guard-contract.py
+      - tests/host/check-fex-code-guard*.py
+      - tests/host/check-fex-guarded-code-producer.py
+      - tests/host/check-code-guard-fault.py
       - tests/host/check-native-build-provenance.py
       - tests/host/check-dock-packaging.py
       - tools/build/package-ipa.sh
@@ -149,6 +155,9 @@ jobs:
           python3 tests/host/check-pool-free-grace.py
           python3 tests/host/check-pool-recent-code-wait.py
           python3 tests/host/check-fex-code-guard-contract.py
+          python3 tests/host/check-fex-code-guard-parameters.py
+          python3 tests/host/check-fex-guarded-code-producer.py
+          python3 tests/host/check-code-guard-fault.py
           python3 tests/host/check-native-build-provenance.py
           python3 tests/host/check-dock-packaging.py
           python3 tests/host/check-loader-import-failure-retention.py

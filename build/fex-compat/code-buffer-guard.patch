@@ -1,0 +1,151 @@
+--- a/FEXCore/include/FEXCore/Utils/AllocatorHooks.h
++++ b/FEXCore/include/FEXCore/Utils/AllocatorHooks.h
+@@ -26,6 +26,11 @@
+ #include <cstdint>
+ #include <cstring>
+ #include <sys/types.h>
++
++#if defined(FEX_IOS_HOST) && defined(_WIN32)
++#include <FEXCore/Utils/TypeDefines.h>
++#include MADEIRA_FEX_CODE_BUFFER_ABI_HEADER
++#endif
+ 
+ namespace FEXCore::Allocator {
+ enum class ProtectOptions : uint32_t {
+@@ -267,6 +272,26 @@
+ }
+ 
+ #endif
++
++// Only native CodeBuffer allocations opt into permanent guarded classes.
++// A missing/old consumer must fail; falling back to an unguarded allocation
++// would manufacture the guarantee the caller uses for its usable bound.
++inline void* VirtualAllocCodeBuffer(size_t Size, size_t GuardBytes) {
++#if defined(FEX_IOS_HOST) && defined(_WIN32)
++  if (GuardBytes == FEXCore::Utils::FEX_PAGE_SIZE) return VirtualAlloc(Size, true);
++  if (GuardBytes != MADEIRA_FEX_CODE_GUARD_BYTES || !madeira_fex_code_buffer_class_valid(Size)) return nullptr;
++  MEM_EXTENDED_PARAMETER Parameters[2] {};
++  Parameters[0].Type = MemExtendedParameterAttributeFlags;
++  Parameters[0].ULong64 = MEM_EXTENDED_PARAMETER_EC_CODE;
++  Parameters[1].Type = MADEIRA_FEX_CODE_PARAMETER_TYPE;
++  Parameters[1].ULong64 = MADEIRA_FEX_CODE_GUARD_ABI_V1;
++  return ::VirtualAlloc2(nullptr, nullptr, Size, MEM_COMMIT | MEM_RESERVE,
++                         PAGE_EXECUTE_READWRITE, Parameters, 2);
++#else
++  (void)GuardBytes;
++  return VirtualAlloc(Size, true);
++#endif
++}
+ 
+ /* iOS-Madeira ml362: zero a region without dirtying pages that are already
+  * zero. The defensive full memsets added for stale-content bugs (LookupCache
+--- a/FEXCore/Source/Interface/Core/CPUBackend.h
++++ b/FEXCore/Source/Interface/Core/CPUBackend.h
+@@ -16,6 +16,10 @@
+ #include <FEXCore/fextl/map.h>
+ 
+ #include <cstdint>
++#if defined(FEX_IOS_HOST) && defined(_WIN32)
++#include <FEXCore/Utils/TypeDefines.h>
++#include MADEIRA_FEX_CODE_BUFFER_ABI_HEADER
++#endif
+ #ifdef FEX_IOS_HOST
+ #include <atomic>
+ #include <mutex>
+@@ -56,6 +60,7 @@
+     size_t AllocatedSize; // including guard page; see UsableSize()
+ 
+     fextl::unique_ptr<GuestToHostMap> LookupCache;
++    size_t GuardSize {FEXCore::Utils::FEX_PAGE_SIZE};
+ 
+     CodeBuffer(size_t Size);
+     CodeBuffer(const CodeBuffer&) = delete;
+@@ -67,7 +72,7 @@
+ 
+     /// Returns the number of bytes available for storing code
+     size_t UsableSize() const {
+-      return AllocatedSize - FEXCore::Utils::FEX_PAGE_SIZE;
++      return AllocatedSize - GuardSize;
+     }
+   };
+ 
+--- a/FEXCore/Source/Interface/Core/CPUBackend.cpp
++++ b/FEXCore/Source/Interface/Core/CPUBackend.cpp
+@@ -507,7 +507,10 @@
+ 
+   CodeBuffer::CodeBuffer(size_t Size)
+     : AllocatedSize(Size) {
+-    Ptr = static_cast<uint8_t*>(FEXCore::Allocator::VirtualAlloc(Size, true));
++#if defined(FEX_IOS_HOST) && defined(_WIN32)
++    if (madeira_fex_code_guard_enabled()) GuardSize = MADEIRA_FEX_CODE_GUARD_BYTES;
++#endif
++    Ptr = static_cast<uint8_t*>(FEXCore::Allocator::VirtualAllocCodeBuffer(Size, GuardSize));
+ #ifdef FEX_IOS_HOST
+     /* iOS-Madeira ml364: exec allocations come from the finite JIT pool, and
+      * ml363 died exactly here — the pool was exhausted (bump 858/896MB,
+@@ -519,7 +522,7 @@
+      * fault pipeline reports it instead of a random-looking wild write. */
+     while (!Ptr && Size > 0x100000) {
+       Size >>= 1;
+-      Ptr = static_cast<uint8_t*>(FEXCore::Allocator::VirtualAlloc(Size, true));
++      Ptr = static_cast<uint8_t*>(FEXCore::Allocator::VirtualAllocCodeBuffer(Size, GuardSize));
+     }
+     if (Ptr && Size != AllocatedSize) {
+       LogMan::Msg::EFmt("[code-buffer] rev=ml364 exec alloc degraded 0x{:x} -> 0x{:x} (pool pressure)", AllocatedSize, Size);
+@@ -533,10 +536,20 @@
+     LOGMAN_THROW_A_FMT(!!Ptr, "Couldn't allocate code buffer");
+ 
+     // Protect the last page of the allocated buffer to trigger SIGSEGV on write access
+-    uintptr_t LastPageAddr = AlignDown(reinterpret_cast<uintptr_t>(Ptr) + Size - 1, FEXCore::Utils::FEX_PAGE_SIZE);
+-    if (!FEXCore::Allocator::VirtualProtect(reinterpret_cast<void*>(LastPageAddr), FEXCore::Utils::FEX_PAGE_SIZE,
++    uintptr_t LastPageAddr = AlignDown(reinterpret_cast<uintptr_t>(Ptr) + Size - 1, GuardSize);
++    if (!FEXCore::Allocator::VirtualProtect(reinterpret_cast<void*>(LastPageAddr), GuardSize,
+                                             FEXCore::Allocator::ProtectOptions::None)) {
+       LogMan::Msg::EFmt("Failed to mprotect last page of code buffer.");
++#if defined(FEX_IOS_HOST) && defined(_WIN32)
++      // The tagged allocation already armed both aliases. Failure of this
++      // idempotent verification is a broken native contract, never a usable
++      // CodeBuffer. Freeing retains its permanent guard and class geometry.
++      if (GuardSize == MADEIRA_FEX_CODE_GUARD_BYTES) {
++        FEXCore::Allocator::VirtualFree(Ptr, AllocatedSize);
++        Ptr = nullptr;
++        fextl::ReportAllocationFailure(GuardSize, AllocatedSize);
++      }
++#endif
+     }
+ 
+     FEXCore::Allocator::VirtualName("FEXMemJIT", reinterpret_cast<void*>(Ptr), Size);
+@@ -662,10 +675,21 @@
+ 
+     auto NewCodeBufferSize = GetLatest()->AllocatedSize;
+ #ifdef FEX_IOS_HOST
+-    // ml1052: tail carves are fixed-size and never coalesce, so a 16->32->64->128
+-    // ladder strands 112MB of odd-sized carves. A process that fills its first
+-    // buffer is hot: go straight to the maximum (refusal halves it down).
++#if defined(_WIN32)
++    // Grow from the previous ACTUAL grant. A full 16MB buffer establishes
++    // demand for its successor, not an unconditional eightfold reservation.
++    const auto PreviousSize = NewCodeBufferSize;
++    const auto PreviousGuard = GetLatest()->GuardSize;
++    NewCodeBufferSize = PreviousGuard == MADEIRA_FEX_CODE_GUARD_BYTES
++                         ? madeira_fex_code_buffer_next_size(PreviousSize) : MAX_CODE_SIZE;
++    static std::atomic<unsigned> GrowthLogCount {0};
++    if (PreviousGuard == MADEIRA_FEX_CODE_GUARD_BYTES && GrowthLogCount.fetch_add(1, std::memory_order_relaxed) < 64) {
++      LogMan::Msg::EFmt("[code-buffer-grow-v1] previous_actual=0x{:x} previous_used=0x{:x} requested=0x{:x} guard=0x{:x}",
++                        PreviousSize, LatestOffset, NewCodeBufferSize, PreviousGuard);
++    }
++#else
+     NewCodeBufferSize = MAX_CODE_SIZE;
++#endif
+ #else
+     NewCodeBufferSize = std::min<size_t>(NewCodeBufferSize * 2, MAX_CODE_SIZE);
+ #endif
+@@ -881,7 +905,7 @@
+     auto CheckCodeBuffer = [](CodeBuffer& Buffer, uintptr_t Address) {
+       // The last page of the code buffer is protected, so we need to exclude it from the valid range
+       // when checking if the address is in the code buffer.
+-      uintptr_t LastPageAddr = AlignDown(reinterpret_cast<uintptr_t>(Buffer.Ptr) + Buffer.AllocatedSize - 1, FEXCore::Utils::FEX_PAGE_SIZE);
++      uintptr_t LastPageAddr = AlignDown(reinterpret_cast<uintptr_t>(Buffer.Ptr) + Buffer.AllocatedSize - 1, Buffer.GuardSize);
+       return (Address >= reinterpret_cast<uintptr_t>(Buffer.Ptr) && Address < LastPageAddr);
+     };
+ 

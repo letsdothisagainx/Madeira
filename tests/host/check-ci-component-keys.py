@@ -29,6 +29,8 @@ cases = {
     # Native Unix is rebuilt in each app job; only complete IPA reuse owns it.
     'native-provenance-generator': ('tools/build/native-provenance.py', {'ipa'}),
     'native-provenance-parser': ('build/native_build_provenance.h', {'ipa'}),
+    'native-code-buffer-abi': ('build/ntdll-unix/fex_code_buffer_abi.h', {'ipa'}),
+    'native-code-guard-registry': ('build/ntdll-unix/fex_code_guards.h', {'ipa'}),
     'fex': ('pin:FEX', {'fex', 'ipa'}),
     'wine': ('pin:wine', {'wine-host', 'i386', 'dxmt', 'ipa'}),
     'dxmt': ('pin:dxmt', {'i386', 'dxmt', 'ipa'}),

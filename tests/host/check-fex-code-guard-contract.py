@@ -209,7 +209,7 @@ int main() {
   emit_return_42(buffer.UsableSize()-16);
   rw[bytes-8]=0x5a;assert(rx[bytes-8]==0x5a);
   emit_return_42(bytes-4096+16); // Known limitation: the failed guard stays executable.
-  puts("KNOWN LIMITATION: actual FEX code guard fails c000000d before set_protection because the direct carve has no Wine view; RX/RW remain accessible");
+  puts("HISTORICAL UNTAGGED CONTROL: 4KB FEX guard fails c000000d before set_protection because the direct carve has no Wine view; RX/RW remain accessible");
   puts("PASS boundary proof: 12 KiB of valid FEX code shares the final 16 KiB host page; last usable code executes, so rounding the 4 KiB request down is unsafe");
   DWORD previous=0;void* region=rx;size_t length=4096;
   ordinary={rx,bytes,0,true};callback_status=STATUS_SUCCESS;
@@ -224,7 +224,7 @@ int main() {
   puts("PASS literal Wine decision: an ordinary committed view reaches set_protection; uncommitted and failed protections retain their real status");
   backend.CurrentCodeBuffer.reset();assert(frees==1);
   for(void* reservation:reservations)assert(!munmap(reservation,bytes+host_quantum));
-  puts("NOT FIXED BY THIS TEST: no physical guard or iOS RX restoration is implemented or claimed");
+  puts("CONTROL ONLY: new guarded producer/native factory and physical guards are tested by check-fex-guarded-code-producer.py");
 }
 '''
     source = directory / 'guard-contract.cpp'

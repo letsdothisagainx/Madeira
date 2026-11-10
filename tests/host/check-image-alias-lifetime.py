@@ -4,6 +4,10 @@ import os,re,subprocess,tempfile
 from pathlib import Path
 root=Path(__file__).resolve().parents[2]
 s=(root/'build/ntdll-unix/virtual_ios.c').read_text()
+# Compile the actual lock-free guard query with an empty legacy bitmap.
+g = (root / 'build/ntdll-unix/fex_code_guards.h').read_text()
+guard_bitmap = (root / 'build/ntdll-unix/fex_code_buffer_abi.h').read_text() + '\n' + g[g.index('#define IOS_CODE_GUARD_MAX_POOL'):g.index('static uint64_t ios_code_guard_armed')]
+
 def body(source,marker):
  a=source.index(marker);b=source.index('{',a);n=0
  for t in re.finditer(r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"|[{}]',source[b:],re.S):
@@ -138,6 +142,7 @@ int main(void){
  puts("PASS actual delete_view/retire/lookup: old guest NULL slot reproduced;128 cryptnet-shaped reloads rebind shared storage before swaps;4KiB tail/16KiB host rounding;sibling writes/alias retained;invalidation precedes retirement and backing replacement;errno preserved;pool storage retained");
 }
 '''
+code = code.replace('#include <stdint.h>', '#include <stdint.h>\n#include <stddef.h>\nstatic void *ios_jit_rx_base_global, *ios_jit_rw_base_global;\nstatic size_t ios_jit_pool_size_global;\n' + guard_bitmap, 1)
 with tempfile.TemporaryDirectory() as d:
  p=Path(d)/'check.c';p.write_text(code);exe=Path(d)/'check'
  subprocess.run([os.environ.get('CC','cc'),'-std=gnu11','-g','-O1','-pthread','-fsanitize=address,undefined','-fno-sanitize-recover=all',str(p),'-o',str(exe)],check=True)

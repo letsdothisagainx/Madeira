@@ -29,13 +29,14 @@ def function(source, signature, closing='\n}'):
 
 ec = native[native.index('size_t alloc_size = (*size_ptr + 0x3FFF) & ~0x3FFFUL;'):]
 ec = ec[:ec.index('size_t reserve_offset, tail_added, tail_skipped = 0;')]
-assert 'int low_ok = ios_jit_low_size_global && !ios_wow_base();' in ec
-assert ec.count('goto retry_code_carve_reuse;') == 3
+assert 'int low_ok = !ios_pool_image_limit && ios_jit_low_size_global && !ios_wow_base();' in ec
+assert ec.count('goto retry_code_carve_reuse;') == 4
 assert ec.count('ios_tail_carve_ready( &ios_tail_carves[') == 2, 'cap lift and reuse share one readiness rule'
 assert 'if (kept_large_carve && !reuse_all_carves)' in ec
 assert 'reuse_all_carves = 1;\n                low_fits = 0;' in ec
 assert ec.count('(low_ok || !ios_tail_carve_in_low( ios_tail_carves[') == 2
 helpers = ''.join(function(native, signature) for signature in (
+    'static int ios_pool_partition_allows_code(',
     'static size_t ios_pool_hole_tail_start(',
     'static size_t ios_pool_hole_between(',
     'static size_t ios_pool_code_cap(',
@@ -43,6 +44,7 @@ helpers = ''.join(function(native, signature) for signature in (
     'int ios_jit_low_contains(',
     'static int ios_pool_low_take(',
     'static int ios_tail_carve_in_low(',
+    'static int ios_pool_code_carve_matches(',
     'static int ios_pool_code_carve_better(',
     'static size_t ios_pool_code_carve_preserve_span(',
     'static int ios_pool_preserve_code_carve(',
@@ -55,7 +57,7 @@ helpers = ''.join(function(native, signature) for signature in (
 carve_start = native.index('#define IOS_TAIL_CARVE_MAX ')
 carve_table = native[carve_start:native.index('\n\n', carve_start)]
 
-c_fixture = r'''
+c_fixture = (root / 'build/ntdll-unix/fex_code_buffer_abi.h').read_text() + r'''
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -66,6 +68,7 @@ c_fixture = r'''
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "failed line %d: %s\n", __LINE__, #c); exit(1); } } while (0)
 #define STATUS_SUCCESS 0
 #define STATUS_NO_MEMORY -1
+#define STATUS_INVALID_PARAMETER -2
 #define FALLBACK_TAIL 2
 #define IOS_POOL_LOW_CARVE_MAX 0x8000000u
 #define IOS_POOL_REUSE_GRACE_SEC 3
@@ -77,6 +80,8 @@ static size_t jit_pool_offset, ios_jit_tail_reserved, ios_pool_head_reserve, ios
 static size_t ios_jit_hole_off_eff, ios_jit_hole_end_eff;
 static size_t ios_jit_hole2_off, ios_jit_hole2_end;
 static int ios_jit_low_full_logged, wow, lose_race;
+static unsigned attributes;
+static size_t ios_pool_image_limit;
 static unsigned ios_tail_carve_n;
 static pthread_mutex_t ios_tail_carve_lock = PTHREAD_MUTEX_INITIALIZER;
 ''' + carve_table + r'''
@@ -86,6 +91,10 @@ unsigned long long ios_thread_process_lease(void *peb, int create)
 { (void)create; return (uintptr_t)peb; }
 static int ios_tail_carve_scan(const void *base, size_t size, int strict)
 { (void)base; (void)size; (void)strict; return 0; }
+static int ios_pool_recycle_main_range_ready(size_t off, size_t size)
+{ (void)off; (void)size; CHECK(0); return 0; }
+static int ios_fex_code_guard_arm(size_t off, size_t size)
+{ (void)off; (void)size; CHECK(0); return 0; }
 ''' + helpers + r'''
 static int racing_low_take(volatile size_t *used, size_t total, size_t want, size_t *off)
 {
@@ -233,6 +242,9 @@ assert 'MadeiraConfig.gameValue("pool-page-fit")' in page_option
 assert 'MadeiraConfig.get("pool-page-fit")' in page_option
 assert swift.count('private static func takeSecondRegion(') == 1
 assert swift.count('want: requestedPoolSize - poolSize, pageFit: pageFit,') == 2
+minimum_gate = swift.index('if poolSize < minimumPoolSize {')
+assert minimum_gate < swift.index('pairSecond = takeSecondRegion('), 'a reduced first region cannot obtain a split CS2 pool after bypassing its full-size requirement'
+assert 'return nil' in swift[minimum_gate:swift.index('for attempt in 0..<3 {', minimum_gate)], 'the complete single-region minimum fails before debugger allocation or split fallback'
 take = function(swift, 'private static func takeSecondRegion(', '\n    }')
 assert 'let size = poolRunSize(available: best.size, wanted: vm_address_t(want), pageFit: pageFit)' in take
 assert 'let ceiling: vm_address_t = 0x180000000' in take

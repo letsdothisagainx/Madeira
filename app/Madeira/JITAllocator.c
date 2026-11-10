@@ -474,9 +474,10 @@ bool jit_memory_snapshot(uint64_t *available_bytes, uint64_t *footprint_bytes) {
  * adding 128MB lets the next FEX generation consume that whole increase.
  * Pair 1152MB with 240MB of image headroom. The November 8 rotation arrives
  * earlier than the November 7 replay: 208MB still admits another 32MB code
- * generation. The separate 512MB large-code growth budget below prevents that
- * reservation even if image loading moves earlier or later. Existing code
- * reuse and FEX's minimum-buffer fallback remain available. These are startup
+ * generation. CS2 now partitions the existing 1152MB pool into a low 768MB
+ * image arena and a high 384MB code arena. The native allocator enforces that
+ * boundary for fresh allocations, reuse and minimum-size fallbacks. The 240MB
+ * legacy image-headroom target is retained separately. These are startup
  * choices, never a request to resize a live pool.
  *
  * All bytes are charged once physically, even though RX/RW need two virtual
@@ -510,13 +511,16 @@ bool jit_cs2_pool_plan(uint64_t requested_pool_mb, uint64_t available_bytes,
     return true;
 }
 
-/* The observed three 128MB generations and their initial small carves occupy
- * 496.109375MB. Keep them intact while preventing a further fresh 32MB growth
- * from consuming image capacity, independently of the image-head cursor.
- * This limits large fresh growth, not reusable code or required <=16MB units.
- * It does not reserve physical memory or guarantee arbitrary future images. */
+/* Hard arena sizes inside the same verified 1152MB physical backing. Code,
+ * including private dispatcher pages and 16KB guards, cannot enter the image
+ * arena; retired code reservations remain code reservations. Native placement
+ * enforces this policy, rather than relying on a large-allocation-only limit. */
+uint64_t jit_cs2_image_arena_mb(void) {
+    return 768;
+}
+
 uint64_t jit_cs2_code_tail_limit_mb(void) {
-    return 512;
+    return 384;
 }
 
 bool jit_pool_alias_layout_valid(uint64_t rx, uint64_t rw, uint64_t size,

@@ -73,6 +73,7 @@ static int dladdr(const void *address,Dl_info *info) {(void)address;info->dli_fb
     source += function(virtual, 'ios_virtual_build_provenance') + '\n'
     source += function(allocator, 'jit_allocator_build_provenance') + '\n'
     source += function(allocator, 'jit_cs2_code_tail_limit_mb') + '\n'
+    source += function(allocator, 'jit_cs2_image_arena_mb') + '\n'
     source += uuid_reader() + '\n'
     source += r'''
 int main(void) {
@@ -111,6 +112,7 @@ int main(void) {
     }
     puts(ios_virtual_build_provenance());puts(jit_allocator_build_provenance());
     printf("%llu\n",(unsigned long long)jit_cs2_code_tail_limit_mb());
+    printf("%llu\n",(unsigned long long)jit_cs2_image_arena_mb());
 }
 '''
     (temp / 'fixture.c').write_text(source)
@@ -120,6 +122,8 @@ int main(void) {
                     '-o', str(temp / 'fixture')], check=True)
     records = subprocess.check_output([str(temp / 'fixture')], text=True).splitlines()
     assert int(records[2]) == expected['expectedJITCodeTailLimitMB']
+    assert int(records[3]) == expected['expectedJITImageArenaMB']
+    assert int(records[2]) == 384 and int(records[3]) == 768
     identity = uuid.UUID('12345678-1234-5678-90ab-123456789abc')
     image = (struct.pack('<8I', 0xfeedfacf, 0x100000c, 0, 6, 1, 24, 0, 0) +
              struct.pack('<II', 0x1b, 24) + identity.bytes +

@@ -35,6 +35,7 @@ code = r'''
 #include <string.h>
 #include <time.h>
 #define MB ((size_t)1 << 20)
+static size_t ios_pool_image_limit; /* Legacy grace behavior remains unpartitioned. */
 #define IOS_POOL_REUSE_GRACE_SEC 3
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "failed line %d: %s\n", __LINE__, #c); exit(1); } } while (0)
 ''' + record + r'''
@@ -43,7 +44,7 @@ static size_t poisoned_off = SIZE_MAX;
 static unsigned clean_calls;
 static int clean(size_t off, size_t size)
 { CHECK(size); clean_calls++; return off != poisoned_off; }
-''' + merge + baseline + body('static int ios_pool_best_fit(') + r'''
+''' + merge + baseline + body('static int ios_pool_image_range_fits(') + body('static int ios_pool_best_fit(') + r'''
 
 static void recent_image_neighbour(void)
 {

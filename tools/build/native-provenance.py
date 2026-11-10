@@ -83,10 +83,14 @@ def expectations(root, package_revision):
     match = re.search(r'uint64_t\s+jit_cs2_code_tail_limit_mb\(void\)\s*\{\s*return\s+([0-9]+)\s*;\s*\}', allocator)
     if not match:
         raise ValueError('cannot identify the compiled JIT startup policy')
+    image_arena = re.search(r'uint64_t\s+jit_cs2_image_arena_mb\(void\)\s*\{\s*return\s+([0-9]+)\s*;\s*\}', allocator)
+    if not image_arena:
+        raise ValueError('cannot identify the compiled JIT image-arena policy')
     return dict(format=1, packageSourceRevision=revision(package_revision),
                 expectedVirtualSourceSHA256=source_hash(root, 'virtual'),
                 expectedJITAllocatorSourceSHA256=source_hash(root, 'jitallocator'),
-                expectedJITCodeTailLimitMB=int(match[1]))
+                expectedJITCodeTailLimitMB=int(match[1]),
+                expectedJITImageArenaMB=int(image_arena[1]))
 
 
 def verified_manifest(root, package_revision, image):

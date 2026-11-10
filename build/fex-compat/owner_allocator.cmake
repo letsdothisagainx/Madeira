@@ -14,6 +14,7 @@ endif()
 # Do not copy or modify this helper in the vendor tree. Its path also becomes
 # an ordinary compiler dependency for both native PE backends.
 add_compile_definitions(MADEIRA_FEX_NATIVE_DIAGNOSTICS_HEADER="${CMAKE_CURRENT_LIST_DIR}/native_diagnostics.h")
+add_compile_definitions(MADEIRA_FEX_CODE_BUFFER_ABI_HEADER="${CMAKE_CURRENT_LIST_DIR}/../ntdll-unix/fex_code_buffer_abi.h")
 set_property(GLOBAL PROPERTY MADEIRA_FEX_OWNER_ALLOCATOR_DIR "${CMAKE_CURRENT_LIST_DIR}")
 
 function(madeira_fex_owner_allocator)

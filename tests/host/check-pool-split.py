@@ -52,6 +52,7 @@ helpers = ''.join(function(native, sig) for sig in (
     'static size_t ios_pool_holes_between(',
     'static int ios_pool_skip_pieces(',
     'static int ios_pool_code_growth_fits(',
+    'static int ios_pool_partition_allows_code(',
     'static int ios_pool_reserve_code_tail(',
     'static void ios_pool_tail_unreserve(',
 ))
@@ -95,7 +96,9 @@ assert 'jit_pool_offset = cand + alloc_size;' in bump
 assert 'ios_pool_freelist[ios_pool_free_count].off = poff[k];' in bump
 
 warmer = function(native, 'static void *ios_pool_warmer_thread(')
-assert warmer.count('if (IOS_POOL_IN_HOLE(o)) continue;') == 4, 'all four warmer loops skip the hole'
+assert warmer.count('if (IOS_POOL_IN_HOLE(o) || ios_jit_code_guard_contains(') == 4, 'all four warmer loops skip native holes and permanent guards'
+assert warmer.index('pthread_mutex_lock( &ios_pool_lock )') < warmer.index('head = jit_pool_offset;'), 'guard-mode warming serializes its cursor snapshot with fresh guard publication'
+assert warmer.index('pthread_mutex_unlock( &ios_pool_lock )') > warmer.rindex('sink += rx[o];'), 'both aliases remain protected from concurrent guard creation through the final read'
 
 tail_start = native.index('size_t reserve_offset, tail_added, tail_skipped = 0;')
 tail_end = native.index('\n    }\n#endif\n\n    if (process != NtCurrentProcess())', tail_start)
@@ -105,7 +108,9 @@ assert 'ios_pool_holes_tail_start( total, cur, want, h1_off, h1_end, h2_off, h2_
 assert '__sync_bool_compare_and_swap( reserved, cur, start + want )' in reserve
 assert 'ios_pool_code_growth_fits( start, want, limit )' in reserve
 assert 'ios_pool_reserve_code_tail( &ios_jit_tail_reserved, ios_jit_pool_size_global, alloc_size,' in tail
-assert tail.count('ios_pool_tail_unreserve( &ios_jit_tail_reserved, reserve_offset + alloc_size, tail_added,') == 3
+assert tail.count('ios_pool_tail_unreserve( &ios_jit_tail_reserved, reserve_offset + alloc_size, tail_added,') == 4
+partition_refusal = tail[tail.index('if (ios_pool_image_limit)'):tail.index('/* The tiny-request preference')]
+assert 'ios_pool_tail_unreserve(' in partition_refusal and 'return STATUS_NO_MEMORY;' in partition_refusal
 preference_retry = tail[tail.index('if (kept_large_carve && !reuse_all_carves)'):tail.index('/* ml1039: before refusing')]
 assert preference_retry.count('ios_pool_tail_unreserve(') == 1
 assert preference_retry.index('ios_pool_tail_unreserve(') < preference_retry.index('reuse_all_carves = 1;')
@@ -222,6 +227,7 @@ harness = r'''
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+static size_t ios_pool_image_limit; /* Legacy split-pool model, not CS2 partition. */
 static size_t ios_jit_hole_off, ios_jit_hole_end;
 static size_t ios_jit_hole2_off, ios_jit_hole2_end;
 ''' + macro + helpers + runs_typedef + runs + r'''

@@ -37,6 +37,7 @@ __attribute__((visibility("default"))) const char *ios_virtual_build_provenance(
     return "MadeiraNativeVirtual:v1:" MADEIRA_NATIVE_VIRTUAL_SOURCE_SHA256 ":" MADEIRA_NATIVE_BUILD_REVISION;
 }
 #include "cs2_observation.h"
+#include "fex_code_buffer_abi.h"
 #endif
 #include "../madeira_cfg.h"   /* ml1095: one config file */
 #include <malloc/malloc.h>
@@ -276,9 +277,28 @@ static int ios_pool_big_taken;
 static time_t ios_pool_big_freed_at;
 #define IOS_POOL_BIG_MIN (64u * 1024 * 1024)
 static size_t ios_pool_head_reserve = 48u * 1024 * 1024;
-/* Startup-pool policy: 0 preserves normal growth. Existing code carves and
- * region C are not charged again; required <=16MB units retain their fallback. */
+/* Legacy startup growth policy: 0 preserves normal growth. Existing code
+ * carves and region C are not charged again; <=16MB units retain that soft
+ * budget's fallback. A selected hard image/code partition overrides it. */
 static size_t ios_pool_code_tail_limit;
+/* A launch-selected image arena is a hard ownership boundary, established
+ * before either allocator starts. Code can fail and use FEX's smaller-buffer
+ * path; it can never spend bytes reserved for later PE images. Zero keeps the
+ * shared-arena policy used by other sessions. */
+static size_t ios_pool_image_limit;
+static int ios_pool_code_guards;
+
+static int ios_pool_image_range_fits( size_t off, size_t size )
+{
+    return !ios_pool_image_limit ||
+           (off <= ios_pool_image_limit && size <= ios_pool_image_limit - off);
+}
+
+static int ios_pool_partition_allows_code( size_t total, size_t tail, size_t want, size_t image_limit )
+{
+    return !image_limit || (image_limit < total && tail <= total - image_limit &&
+                           want <= total - image_limit - tail);
+}
 
 /* A slot may sit on either side of the native hole. The default is still above
  * it; MADEIRA_POOL_BIG_SLOT_BELOW=1 opts into the lower side, leaving the upper
@@ -329,6 +349,17 @@ static size_t ios_pool_parse_code_tail_limit( const char *value, size_t total )
     if (!value || *value < '0' || *value > '9') return 0;
     mb = strtoul( value, &end, 10 );
     if (*end || mb < 16 || mb > (total >> 20)) return 0;
+    return (size_t)mb << 20;
+}
+
+static size_t ios_pool_parse_image_limit( const char *value, size_t total )
+{
+    char *end;
+    unsigned long mb;
+
+    if (!value || *value < '0' || *value > '9') return 0;
+    mb = strtoul( value, &end, 10 );
+    if (*end || mb < 256 || mb >= (total >> 20) || (total >> 20) - mb < 16) return 0;
     return (size_t)mb << 20;
 }
 
@@ -721,6 +752,7 @@ static void ios_image_lowalias_register( unsigned long long pref_base, unsigned 
 static void ios_image_lowalias_retire( unsigned long long real_base );
 extern void *ios_jit_rw_base_global;  /* defined below */
 extern void *ios_jit_rx_base_global;  /* defined below */
+int ios_jit_code_guard_contains( uintptr_t addr, size_t size );
 
 /* ml90 (task #35): walk the Mach map and report every free gap >= 1GB, so we
  * size the jumbo-reserve problem against real numbers instead of guesses.
@@ -1152,21 +1184,28 @@ static void *ios_pool_warmer_thread( void *arg )
         size_t total = ios_jit_pool_size_global;
         if (rw && total)
         {
-            size_t head = jit_pool_offset;               /* snapshot; only grows */
-            size_t tail = ios_jit_tail_reserved;
+            size_t head, tail;
             size_t o, touched = 0;
             volatile char sink = 0;
+            /* Fresh guarded publication owns this lock from reservation
+             * through both protection changes. Keep the snapshot and loads
+             * coherent with it: a bitmap test alone could race a new guard
+             * between the test and the dereference. Reused guards stay armed. */
+            if (ios_pool_code_guards) pthread_mutex_lock( &ios_pool_lock );
+            head = jit_pool_offset;
+            tail = ios_jit_tail_reserved;
             if (head > total) head = total;
             if (tail > total) tail = total;
             /* madeira-bcd split pool: the hole is not pool memory (its RW side
              * is PROT_NONE, its RX side the main thread's stack) -- skip it. */
-            for (o = 0; o < head; o += 0x4000) { if (IOS_POOL_IN_HOLE(o)) continue; sink += rw[o]; touched++; }
-            for (o = total - tail; o < total; o += 0x4000) { if (IOS_POOL_IN_HOLE(o)) continue; sink += rw[o]; touched++; }
+            for (o = 0; o < head; o += 0x4000) { if (IOS_POOL_IN_HOLE(o) || ios_jit_code_guard_contains( (uintptr_t)rw + o, 1 )) continue; sink += rw[o]; touched++; }
+            for (o = total - tail; o < total; o += 0x4000) { if (IOS_POOL_IN_HOLE(o) || ios_jit_code_guard_contains( (uintptr_t)rw + o, 1 )) continue; sink += rw[o]; touched++; }
             if (rx)
             {
-                for (o = 0; o < head; o += 0x4000) { if (IOS_POOL_IN_HOLE(o)) continue; sink += rx[o]; touched++; }
-                for (o = total - tail; o < total; o += 0x4000) { if (IOS_POOL_IN_HOLE(o)) continue; sink += rx[o]; touched++; }
+                for (o = 0; o < head; o += 0x4000) { if (IOS_POOL_IN_HOLE(o) || ios_jit_code_guard_contains( (uintptr_t)rx + o, 1 )) continue; sink += rx[o]; touched++; }
+                for (o = total - tail; o < total; o += 0x4000) { if (IOS_POOL_IN_HOLE(o) || ios_jit_code_guard_contains( (uintptr_t)rx + o, 1 )) continue; sink += rx[o]; touched++; }
             }
+            if (ios_pool_code_guards) pthread_mutex_unlock( &ios_pool_lock );
             /* madeira-bcd pool-low: region C's carved part holds FEX code buffers
              * exactly like the tail -- warm both of its aliases too. */
             if (ios_jit_low_size_global)
@@ -2949,6 +2988,7 @@ static int ios_pool_best_fit( const struct ios_pool_free *fl, int n, size_t want
     {
         size_t o = fl[i].off;
         if (fl[i].size < want) continue;
+        if (!ios_pool_image_range_fits( o, want )) continue;
         if (now - fl[i].freed_at < IOS_POOL_REUSE_GRACE_SEC) continue;
         if (anchor_off != (size_t)-1 && (o > anchor_off ? o + want - anchor_off : anchor_off - o) > max_dist) continue;
         if (best < 0 || fl[i].size < fl[best].size) best = i;
@@ -2999,10 +3039,13 @@ static size_t ios_pool_alloc_range_ex( size_t alloc_size, size_t pool_limit,
     }
 
 #define IOS_POOL_IN_REACH(o) \
-    (anchor_off == (size_t)-1 || \
-     ((o) > anchor_off ? (o) + alloc_size - anchor_off : anchor_off - (o)) <= max_dist)
+    (ios_pool_image_range_fits( (o), alloc_size ) && \
+     (anchor_off == (size_t)-1 || \
+      ((o) > anchor_off ? (o) + alloc_size - anchor_off : anchor_off - (o)) <= max_dist))
 
     pthread_mutex_lock( &ios_pool_lock );
+    if (pool_limit && ios_pool_image_limit && pool_limit > ios_pool_image_limit)
+        pool_limit = ios_pool_image_limit;
 
     /* A caller may have sampled its main-pool limit before waiting for this
      * lock. A tiny fresh-tail reservation can have reduced that limit since.
@@ -3615,7 +3658,7 @@ static size_t ios_pool_low_image_range( size_t alloc_size )
     size_t off = (size_t)-1, cur = 0;
     void *peb;
 
-    if (!env || strcmp( env, "1" ) || ios_wow_base() ||
+    if (ios_pool_image_limit || !env || strcmp( env, "1" ) || ios_wow_base() ||
         !ios_jit_low_size_global || !ios_jit_rx_base_global || !ios_jit_low_rw_global ||
         !alloc_size || (alloc_size & 0x3fff) || alloc_size > 16u * 1024 * 1024 ||
         ios_jit_low_size_global < reserve) return off;
@@ -3735,9 +3778,11 @@ done:
  * never be reclaimed out from under FEX when some pseudo-process exits. */
 static size_t ios_pool_take_freed_for_tail( size_t alloc_size )
 {
-    size_t off = ios_pool_alloc_range_ex( alloc_size, 0, (size_t)-1, 0, 0 );
+    size_t off;
     int i;
 
+    if (ios_pool_image_limit) return (size_t)-1;
+    off = ios_pool_alloc_range_ex( alloc_size, 0, (size_t)-1, 0, 0 );
     if (off == (size_t)-1) return off;
     pthread_mutex_lock( &ios_pool_lock );
     for (i = ios_pool_ledger_count - 1; i >= 0; i--)
@@ -3782,10 +3827,18 @@ struct ios_tail_carve
     int    retired;   /* madeira-bcd: freed because that process exited, not by FEX */
     unsigned long long allocation_lease; /* process identity at handout, 0 = unknown */
     unsigned long long retired_lease;    /* matching quiescent identity, 0 = unproved */
+    unsigned guarded; /* 0 legacy/misc, 1 permanent terminal guard, 2 quarantined */
 };
 static struct ios_tail_carve ios_tail_carves[IOS_TAIL_CARVE_MAX];
 extern unsigned long long ios_thread_process_lease(void *owner, int create);
 extern unsigned long long ios_thread_process_quiescent_lease(void *owner);
+
+static int ios_pool_code_carve_matches( const struct ios_tail_carve *carve, size_t want, int guarded )
+{
+    return carve->guarded == (unsigned)guarded && carve->size >= want &&
+           (!guarded || (carve->size == want && (!carve->retired ||
+                        (carve->allocation_lease && carve->allocation_lease == carve->retired_lease))));
+}
 
 /* madeira-bcd pool-low: 1 for a carve offset in region C (`off` is its wrapping
  * distance from the pool's RX base, see ios_jit_low_rx_global). */
@@ -3885,8 +3938,9 @@ static int ios_pool_preserve_code_carve( size_t available, size_t want, int fres
 /* A current-gap headroom target alone can admit the same oversized generation
  * earlier in DLL loading. Bound additional large MAIN-tail growth using its
  * retained reservations, independently of the head cursor. Preserve the
- * existing 16MB minimum: this policy must not invent successful allocations or
- * prevent FEX from trying its normal smaller-buffer/reuse path. */
+ * existing 16MB minimum in the legacy shared arena. A separate hard partition
+ * bounds every fresh unit, including that fallback, without inventing success
+ * or preventing FEX from trying its normal smaller-buffer/reuse path. */
 static size_t ios_pool_code_growth_cap( size_t tail, size_t limit )
 {
     size_t cap = 0x1000000, room;
@@ -3920,7 +3974,8 @@ static int ios_pool_reserve_code_tail( volatile size_t *reserved, size_t total, 
         cur = __atomic_load_n( reserved, __ATOMIC_ACQUIRE );
         start = ios_pool_holes_tail_start( total, cur, want, h1_off, h1_end, h2_off, h2_end );
         if (start > SIZE_MAX - want || start < cur ||
-            !ios_pool_code_growth_fits( start, want, limit )) return 0;
+            !ios_pool_code_growth_fits( start, want, limit ) ||
+            !ios_pool_partition_allows_code( total, start, want, ios_pool_image_limit )) return 0;
     } while (!__sync_bool_compare_and_swap( reserved, cur, start + want ));
     *offset = start;
     *added = start + want - cur;
@@ -3939,6 +3994,7 @@ static int ios_pool_fresh_tail_fits( size_t total, size_t head, size_t tail, siz
     if (!want || head > total || tail > total || want > total - tail) return 0;
     start = ios_pool_holes_tail_start( total, tail, want, h1_off, h1_end, h2_off, h2_end );
     if (!ios_pool_code_growth_fits( start, want, ios_pool_code_tail_limit )) return 0;
+    if (!ios_pool_partition_allows_code( total, start, want, ios_pool_image_limit )) return 0;
     if (start > total || want > total - start || start + want > (total / 4) * 3) return 0;
     return total - start - want >= head;
 }
@@ -4284,7 +4340,7 @@ static int ios_tail_carve_ready( const struct ios_tail_carve *carve, time_t now 
  * the carve lock and retries the original selector and strict thread scan.
  * Unknown identities, future timestamps and region C do not justify waiting. */
 static unsigned ios_pool_recent_retired_code_wait( const struct ios_tail_carve *carves, unsigned n,
-                                                   size_t want, size_t total, time_t now )
+                                                   size_t want, size_t total, time_t now, int guarded )
 {
     unsigned i, remaining = 0;
 
@@ -4295,7 +4351,8 @@ static unsigned ios_pool_recent_retired_code_wait( const struct ios_tail_carve *
         unsigned seconds;
         time_t age;
 
-        if (!c->free || !c->retired || !c->allocation_lease ||
+        if (!ios_pool_code_carve_matches( c, want, guarded ) ||
+            !c->free || !c->retired || !c->allocation_lease ||
             c->allocation_lease != c->retired_lease || c->size != want ||
             (c->off & 0x3fff) || (c->size & 0x3fff) || c->off >= total || c->size > total - c->off ||
             c->freed_at <= 0 || c->freed_at > now) continue;
@@ -4449,7 +4506,7 @@ static int ios_pool_recycle_main_code_range( size_t want )
     size_t off = 0, size = 0, eligible_bytes = 0, largest = 0;
     time_t now = time( NULL ), freed_at = 0;
 
-    if (!ios_jit_rx_base_global || !ios_jit_rw_base_global || !want ||
+    if (ios_pool_image_limit || !ios_jit_rx_base_global || !ios_jit_rw_base_global || !want ||
         (want & 0x3fff) || want > limit) return 0;
     pthread_mutex_lock( &ios_tail_carve_lock );
     for (i = 0; i < ios_tail_carve_n; i++)
@@ -4457,7 +4514,7 @@ static int ios_pool_recycle_main_code_range( size_t want )
         const struct ios_tail_carve *c = &ios_tail_carves[i];
         size_t end;
 
-        if (!c->free || !c->size || (c->off & 0x3fff) || (c->size & 0x3fff) ||
+        if (c->guarded || !c->free || !c->size || (c->off & 0x3fff) || (c->size & 0x3fff) ||
             c->off >= ios_jit_pool_size_global || c->size > ios_jit_pool_size_global - c->off ||
             c->size > limit) continue;
         end = c->off + c->size;
@@ -4570,6 +4627,7 @@ static int ios_pool_recycle_code_range( size_t want )
     time_t now = time( NULL ), freed_at = 0;
     int transferred = 0;
 
+    if (ios_pool_image_limit) return 0;
     if (env && strcmp( env, "1" )) return 0; /* preserve explicit opt-out, including unknown values */
     if (ios_pool_recycle_main_code_range( want )) return 1;
     if (!env || strcmp( env, "1" ) || ios_wow_base() ||
@@ -4579,6 +4637,7 @@ static int ios_pool_recycle_code_range( size_t want )
     pthread_mutex_lock( &ios_tail_carve_lock );
     for (i = 0; i < ios_tail_carve_n; i++)
     {
+        if (ios_tail_carves[i].guarded) continue;
         uintptr_t rx = (uintptr_t)ios_jit_rx_base_global + ios_tail_carves[i].off;
         size_t loff = rx - ios_jit_low_rx_global;
         size_t n = ios_tail_carves[i].size;
@@ -4704,6 +4763,7 @@ int ios_fex_code_owner_matches(uintptr_t pc, void *expected_owner)
 {
     uintptr_t base = 0;
     size_t size = 0;
+    if (ios_jit_code_guard_contains( pc, 1 )) return 0;
     void *owner = NULL;
     int released = 1;
     return expected_owner && ios_guard_carve_snapshot(pc, &base, &size, &owner, &released) == 1 &&
@@ -4754,6 +4814,36 @@ void ios_pool_va_warn( const char *who, const void *addr, size_t size )
 void *ios_jit_rx_base_global = NULL;
 void *ios_jit_rw_base_global = NULL;
 size_t ios_jit_pool_size_global = 0;
+#include "fex_code_guards.h"
+
+/* The no-access confirmation is tied to the successful factory result and
+ * current allocation identity, not merely to a bitmap bit. Quarantined partial
+ * failures deliberately retain their fault-routing bits without this receipt. */
+static int ios_fex_code_guard_confirm( uintptr_t addr, size_t size )
+{
+    void *owner = ios_jit_current_peb();
+    unsigned long long lease = ios_thread_process_lease( owner, 0 );
+    unsigned i;
+    int result = 0;
+
+    if (!owner || !lease || size != MADEIRA_FEX_CODE_GUARD_BYTES ||
+        (addr & (MADEIRA_FEX_CODE_GUARD_BYTES - 1))) return 0;
+    pthread_mutex_lock( &ios_tail_carve_lock );
+    for (i = 0; i < ios_tail_carve_n; i++)
+    {
+        const struct ios_tail_carve *c = &ios_tail_carves[i];
+        size_t guard;
+        if (c->guarded != 1 || c->free || c->peb != owner || c->allocation_lease != lease ||
+            !madeira_fex_code_buffer_class_valid( c->size ) || c->off > ios_jit_pool_size_global ||
+            c->size > ios_jit_pool_size_global - c->off) continue;
+        guard = c->off + c->size - MADEIRA_FEX_CODE_GUARD_BYTES;
+        if ((addr == (uintptr_t)ios_jit_rx_base_global + guard ||
+             addr == (uintptr_t)ios_jit_rw_base_global + guard) && ios_fex_code_guard_is_armed( guard ))
+        { result = 1; break; }
+    }
+    pthread_mutex_unlock( &ios_tail_carve_lock );
+    return result;
+}
 unsigned long long ios_last_footprint_mb = 0;   /* ml668: latest phys_footprint MB (decl above) */
 int ios_fast_footprint = 0;                    /* ml670: set when d3d11 loads */
 
@@ -5904,6 +5994,8 @@ int ios_jit_anon_alias_add(void *user_va, size_t size, void *jit_rw_alias)
 {
     int idx = -1, i;
 
+    if (ios_jit_code_guard_contains( (uintptr_t)user_va, size ) ||
+        ios_jit_code_guard_contains( (uintptr_t)jit_rw_alias, size )) return 0;
     /* Task #25: reuse slots cleared by pool reclamation (user_va==0) — FEX
      * children each add aliases and the 32-slot table used to only grow.
      * Serialized by the pool lock (adds are rare: CodeBuffer allocations).
@@ -6125,6 +6217,8 @@ int ios_jit_anon_alias_find_cover(void *user_va, size_t size, void **rw_out, voi
         if (!base) continue;
         if (lo < base || hi > ios_jit_anon_aliases[i].user_va_end) continue;
         if (!ios_jit_anon_aliases[i].jit_rx_alias) continue; /* incomplete registration */
+        if (ios_jit_code_guard_contains( ios_jit_anon_aliases[i].jit_rw_alias + (lo - base), size ) ||
+            ios_jit_code_guard_contains( ios_jit_anon_aliases[i].jit_rx_alias + (lo - base), size )) return 0;
         if (rw_out) *rw_out = (void *)(ios_jit_anon_aliases[i].jit_rw_alias + (lo - base));
         if (rx_out) *rx_out = (void *)(ios_jit_anon_aliases[i].jit_rx_alias + (lo - base));
         return 1;
@@ -6138,6 +6232,8 @@ void ios_jit_anon_alias_set_rx(void *user_va, void *jit_rx_alias)
     int i;
     for (i = 0; i < n; i++) {
         if ((uintptr_t)user_va == ios_jit_anon_aliases[i].user_va) {
+            if (ios_jit_code_guard_contains( (uintptr_t)jit_rx_alias,
+                    ios_jit_anon_aliases[i].user_va_end - ios_jit_anon_aliases[i].user_va )) return;
             ios_jit_anon_aliases[i].jit_rx_alias = (uintptr_t)jit_rx_alias;
             return;
         }
@@ -6151,8 +6247,9 @@ uintptr_t ios_jit_anon_alias_lookup(uintptr_t fault_addr)
     for (i = 0; i < n; i++) {
         if (fault_addr >= ios_jit_anon_aliases[i].user_va &&
             fault_addr <  ios_jit_anon_aliases[i].user_va_end) {
-            return ios_jit_anon_aliases[i].jit_rw_alias +
-                   (fault_addr - ios_jit_anon_aliases[i].user_va);
+            uintptr_t alias = ios_jit_anon_aliases[i].jit_rw_alias +
+                              (fault_addr - ios_jit_anon_aliases[i].user_va);
+            return ios_jit_code_guard_contains( alias, 1 ) ? 0 : alias;
         }
     }
     return 0;
@@ -6166,8 +6263,9 @@ uintptr_t ios_jit_anon_alias_lookup_rx(uintptr_t fault_addr)
         if (fault_addr >= ios_jit_anon_aliases[i].user_va &&
             fault_addr <  ios_jit_anon_aliases[i].user_va_end) {
             if (!ios_jit_anon_aliases[i].jit_rx_alias) return 0;
-            return ios_jit_anon_aliases[i].jit_rx_alias +
-                   (fault_addr - ios_jit_anon_aliases[i].user_va);
+            uintptr_t alias = ios_jit_anon_aliases[i].jit_rx_alias +
+                              (fault_addr - ios_jit_anon_aliases[i].user_va);
+            return ios_jit_code_guard_contains( alias, 1 ) ? 0 : alias;
         }
     }
     return 0;
@@ -7125,6 +7223,7 @@ int ios_jit_pool_mapping_snapshot(uintptr_t address, struct ios_fault_mapping_me
 unsigned long long ios_jit_pool_access_token( uintptr_t addr, size_t bytes, void *owner, int executable )
 {
     int i, count = __atomic_load_n( &ios_jit_mapping_count, __ATOMIC_ACQUIRE );
+    if (ios_jit_code_guard_contains( addr, bytes )) return 0;
     if (!bytes || addr > UINTPTR_MAX - (bytes - 1) || count < 0 || count > IOS_JIT_MAX_MAPPINGS) return 0;
     for (i = 0; i < count; i++)
     {
@@ -19200,6 +19299,15 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
                 }
                 ios_pool_code_tail_limit = ios_pool_parse_code_tail_limit(
                     getenv( "WINE_IOS_JIT_CODE_TAIL_LIMIT_MB" ), jit_pool_size );
+                ios_pool_image_limit = ios_pool_parse_image_limit(
+                    getenv( "WINE_IOS_JIT_IMAGE_ARENA_MB" ), jit_pool_size );
+                ios_pool_code_guards = ios_pool_image_limit && madeira_fex_code_guard_enabled() &&
+                                       jit_pool_size <= IOS_CODE_GUARD_MAX_POOL;
+                if (ios_pool_image_limit)
+                    dprintf( 2, "[pool-partition-v1] images=[0,0x%lx) code=[0x%lx,0x%lx) "
+                                "code-head-borrow=disabled code-to-image=disabled\n",
+                             (unsigned long)ios_pool_image_limit, (unsigned long)ios_pool_image_limit,
+                             (unsigned long)jit_pool_size );
                 dprintf( 2, "[pool-head] code-buffer budget targets %lu MB of image headroom (region C and recycled buffers unchanged)\n",
                          (unsigned long)(ios_pool_head_reserve >> 20) );
                 /* Actual parser outputs, separate from the app's compiled
@@ -19213,8 +19321,9 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
                          getenv("WINE_IOS_JIT_CODE_TAIL_LIMIT_MB") ? "present" : "unset" );
                 if (ios_pool_code_tail_limit)
                     dprintf( 2, "[pool-head] fresh MAIN code growth budget=%lu MB; existing buffers, "
-                             "region C and <=16MB fallback unchanged\n",
-                             (unsigned long)(ios_pool_code_tail_limit >> 20) );
+                             "%s\n", (unsigned long)(ios_pool_code_tail_limit >> 20),
+                             ios_pool_image_limit ? "all fresh classes bounded by the code arena; region C disabled"
+                                                  : "region C and <=16MB fallback unchanged" );
                 /* madeira-bcd pool-low: region C (see ios_jit_low_rx_global). Taken only
                  * when its RX side is mapped executable, its RW side read-write, and a
                  * word written through the RW side reads back through the RX side --
@@ -29050,6 +29159,7 @@ static uintptr_t ios_kw_rw_alias( uintptr_t addr )
     uintptr_t rx = (uintptr_t)ios_jit_rx_base_global, rw = (uintptr_t)ios_jit_rw_base_global;
     size_t pool = ios_jit_pool_size_global;
 
+    if (ios_jit_code_guard_contains( addr, 1 )) return 0;
     if (rx && rw && pool && addr >= rx && addr - rx < pool) return rw + (addr - rx);
     return ios_jit_anon_alias_lookup( addr );
 }
@@ -29058,6 +29168,7 @@ static uintptr_t ios_kw_rw_alias( uintptr_t addr )
  * is going to fail consumes no data (Windows fails it without reading). */
 static BOOL ios_kw_dest_ok( const char *dst, size_t n )
 {
+    if (ios_jit_code_guard_contains( (uintptr_t)dst, n )) return FALSE;
     while (n)
     {
         size_t chunk = IOS_KW_PAGE - ((uintptr_t)dst & (IOS_KW_PAGE - 1));
@@ -29074,6 +29185,7 @@ static BOOL ios_kw_dest_ok( const char *dst, size_t n )
  * page is writable. FALSE as soon as a page is neither. */
 static BOOL ios_kw_store( char *dst, const char *src, size_t n )
 {
+    if (ios_jit_code_guard_contains( (uintptr_t)dst, n )) return FALSE;
     while (n)
     {
         size_t chunk = IOS_KW_PAGE - ((uintptr_t)dst & (IOS_KW_PAGE - 1));
@@ -32575,6 +32687,9 @@ static NTSTATUS get_extended_params( const MEM_EXTENDED_PARAMETER *parameters, U
                                      ULONG *attributes, USHORT *machine )
 {
     ULONG i, present = 0;
+#ifdef WINE_IOS
+    int guarded_code = 0;
+#endif
 
     if (count && !parameters) return STATUS_INVALID_PARAMETER;
 
@@ -32663,8 +32778,21 @@ static NTSTATUS get_extended_params( const MEM_EXTENDED_PARAMETER *parameters, U
         }
 
         case MemExtendedParameterAttributeFlags:
+#ifdef WINE_IOS
+            /* This bit is an internal result of the versioned private
+             * parameter. AttributeFlags alone cannot forge a guard request. */
+            if (parameters[i].ULong64 & IOS_FEX_CODE_GUARDED_ATTRIBUTE) return STATUS_INVALID_PARAMETER;
+#endif
             *attributes = parameters[i].ULong;
             break;
+
+#ifdef WINE_IOS
+        case MADEIRA_FEX_CODE_PARAMETER_TYPE:
+            if (parameters[i].Reserved || parameters[i].ULong64 != MADEIRA_FEX_CODE_GUARD_ABI_V1)
+                return STATUS_INVALID_PARAMETER;
+            guarded_code = 1;
+            break;
+#endif
 
         case MemExtendedParameterImageMachine:
             *machine = parameters[i].ULong;
@@ -32681,6 +32809,9 @@ static NTSTATUS get_extended_params( const MEM_EXTENDED_PARAMETER *parameters, U
             return STATUS_INVALID_PARAMETER;
         }
     }
+#ifdef WINE_IOS
+    if (guarded_code) *attributes |= IOS_FEX_CODE_GUARDED_ATTRIBUTE;
+#endif
     return STATUS_SUCCESS;
 }
 
@@ -33158,6 +33289,13 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
     if (!*size_ptr) return STATUS_INVALID_PARAMETER;
 
 #ifdef WINE_IOS
+    /* The private request is accepted only by the local, address-free,
+     * executable CodeBuffer path. It must never become an ordinary mapping. */
+    if ((attributes & IOS_FEX_CODE_GUARDED_ATTRIBUTE) &&
+        (process != NtCurrentProcess() || attributes != (IOS_FEX_CODE_GUARDED_ATTRIBUTE | 0x40) ||
+         protect != PAGE_EXECUTE_READWRITE || *ret || !ios_pool_code_guards ||
+         type != (MEM_COMMIT | MEM_RESERVE) || limit_low || limit_high || align || machine ||
+         !madeira_fex_code_buffer_class_valid( *size_ptr ))) return STATUS_INVALID_PARAMETER;
     /* iOS-Madeira: For FEX-style EC_CODE RWX allocations, allocate from the
      * JIT pool RX range directly. This avoids the cross-region RIP-relative
      * addressing problem: when emit_VA == execute_VA (both are the JIT pool
@@ -33178,11 +33316,12 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
         ios_jit_pool_size_global)
     {
         size_t alloc_size = (*size_ptr + 0x3FFF) & ~0x3FFFUL;
+        int guarded = !!(attributes & IOS_FEX_CODE_GUARDED_ATTRIBUTE);
         /* madeira-bcd pool-low: region C (ios_jit_low_rx_global) serves this carve
          * first when it still has room; the pool's budget cap below only applies to
          * what goes to the tail. Never for a WoW64 process: its FEX refuses an
          * executable allocation outside the pool span. */
-        int low_ok = ios_jit_low_size_global && !ios_wow_base();
+        int low_ok = !ios_pool_image_limit && ios_jit_low_size_global && !ios_wow_base();
         int low_fits = low_ok && alloc_size <= IOS_POOL_LOW_CARVE_MAX &&
                        alloc_size <= ios_jit_low_size_global &&
                        ios_jit_low_reserved <= ios_jit_low_size_global - alloc_size;
@@ -33191,6 +33330,7 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
         size_t tail_cap = ~(size_t)0, budget_cap = ~(size_t)0;
         void *carve_peb = ios_jit_current_peb();   /* madeira-bcd: the carve's owner, see ios_tail_carve_ready */
         unsigned long long carve_lease = ios_thread_process_lease( carve_peb, 0 );
+        if (guarded && (!carve_peb || !carve_lease)) return STATUS_INVALID_PARAMETER;
         /* ml459 (#75): cap a single EC code buffer at 16MB. FEX asks for 32MB
          * once its buffers get hot, but an old generation stays pinned by any
          * thread still referencing it (see [pool-tail] PIN) — and a 32MB
@@ -33238,6 +33378,10 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
                                             ios_pool_hole_between( ios_jit_pool_size_global, head_now, tail_now,
                                                                    ios_jit_hole2_off, ios_jit_hole2_end ) );
             size_t growth_cap = ios_pool_code_growth_cap( tail_now, ios_pool_code_tail_limit );
+            /* Images own their entire fixed arena already. The moving head
+             * and its legacy reserve do not further ration the disjoint code
+             * arena; the hard reservation check below still charges every byte. */
+            if (ios_pool_image_limit) cap = IOS_POOL_LOW_CARVE_MAX;
             if (growth_cap < cap) cap = growth_cap;
             /* A retired generation of this size already sitting on the carve
              * free-list costs the pool nothing new: never refuse that. */
@@ -33248,7 +33392,8 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
                 time_t now = time( NULL );
                 pthread_mutex_lock( &ios_tail_carve_lock );
                 for (fi = 0; fi < ios_tail_carve_n; fi++)
-                    if (ios_tail_carve_ready( &ios_tail_carves[fi], now ) && ios_tail_carves[fi].size >= alloc_size &&
+                    if (ios_tail_carve_ready( &ios_tail_carves[fi], now ) &&
+                        ios_pool_code_carve_matches( &ios_tail_carves[fi], alloc_size, guarded ) &&
                         (low_ok || !ios_tail_carve_in_low( ios_tail_carves[fi].off ))) { cap = alloc_size; break; }
                 pthread_mutex_unlock( &ios_tail_carve_lock );
             }
@@ -33287,14 +33432,15 @@ retry_code_carve_reuse:
                     ios_jit_tail_reserved, alloc_size, ios_jit_hole_off_eff, ios_jit_hole_end_eff,
                     ios_jit_hole2_off, ios_jit_hole2_end ) ));
             for (i = 0; i < ios_tail_carve_n; i++)
-                if (ios_tail_carve_ready( &ios_tail_carves[i], now ) && ios_tail_carves[i].size >= alloc_size &&
+                if (ios_tail_carve_ready( &ios_tail_carves[i], now ) &&
+                    ios_pool_code_carve_matches( &ios_tail_carves[i], alloc_size, guarded ) &&
                     (low_ok || !ios_tail_carve_in_low( ios_tail_carves[i].off )) &&   /* madeira-bcd pool-low */
                     (best == ~0u || ios_pool_code_carve_better( &ios_tail_carves[i], &ios_tail_carves[best] )))
                     best = i;
             if (best == ~0u && !low_ok && !retired_busy &&
                 retired_waited < IOS_POOL_REUSE_GRACE_SEC * 10)
                 grace_wait = ios_pool_recent_retired_code_wait( ios_tail_carves, ios_tail_carve_n,
-                                                               alloc_size, ios_jit_pool_size_global, now );
+                                                               alloc_size, ios_jit_pool_size_global, now, guarded );
             if (grace_wait)
             {
                 struct timespec delay = { 0, 100 * 1000 * 1000 };
@@ -33310,7 +33456,7 @@ retry_code_carve_reuse:
                 goto retry_code_carve_reuse;
             }
             if (best != ~0u) preserve_size = ios_tail_carves[best].size;
-            if (best != ~0u && !reuse_all_carves && fresh_fits && alloc_size <= 0x10000)
+            if (best != ~0u && !ios_pool_image_limit && !reuse_all_carves && fresh_fits && alloc_size <= 0x10000)
             {
                 size_t span = ios_pool_code_carve_preserve_span( ios_tail_carves, ios_tail_carve_n, best,
                     ios_jit_pool_size_global, ios_jit_hole_off_eff, ios_jit_hole_end_eff,
@@ -33353,6 +33499,15 @@ retry_code_carve_reuse:
                 void *jit_rw = (char *)ios_jit_rw_base_global + ios_tail_carves[best].off;
                 size_t got = ios_tail_carves[best].size;
                 int was_retired = ios_tail_carves[best].retired;
+                if (guarded && !ios_pool_recycle_main_range_ready( ios_tail_carves[best].off,
+                                            got - MADEIRA_FEX_CODE_GUARD_BYTES ))
+                {
+                    ios_tail_carves[best].guarded = 2;
+                    ios_tail_carves[best].free = 0;
+                    ios_tail_carves[best].peb = NULL;
+                    pthread_mutex_unlock( &ios_tail_carve_lock );
+                    goto retry_code_carve_reuse;
+                }
                 ios_tail_carves[best].free = 0;
                 ios_tail_carves[best].retired = 0;
                 ios_tail_carves[best].peb = carve_peb;
@@ -33361,8 +33516,16 @@ retry_code_carve_reuse:
                 pthread_mutex_unlock( &ios_tail_carve_lock );
                 {
                     volatile uint32_t *rw_words = (volatile uint32_t *)jit_rw;
-                    size_t nwords = got / sizeof(uint32_t);
+                    size_t nwords = (got - (guarded ? MADEIRA_FEX_CODE_GUARD_BYTES : 0)) / sizeof(uint32_t);
                     for (size_t i2 = 0; i2 < nwords; i2++) rw_words[i2] = 0xd503201fu;  /* NOP-prefill, same as fresh carves */
+                }
+                if (guarded && !ios_fex_code_guard_arm( ios_tail_carves[best].off, got ))
+                {
+                    pthread_mutex_lock( &ios_tail_carve_lock );
+                    ios_tail_carves[best].guarded = 2;
+                    ios_tail_carves[best].peb = NULL;
+                    pthread_mutex_unlock( &ios_tail_carve_lock );
+                    return STATUS_NO_MEMORY;
                 }
                 *ret = jit_rx;
                 *size_ptr = got;
@@ -33412,6 +33575,7 @@ retry_code_carve_reuse:
                     ios_tail_carves[ios_tail_carve_n].retired = 0;
                     ios_tail_carves[ios_tail_carve_n].allocation_lease = carve_lease;
                     ios_tail_carves[ios_tail_carve_n].retired_lease = 0;
+                    ios_tail_carves[ios_tail_carve_n].guarded = 0;
                     ios_tail_carve_n++;
                 }
                 pthread_mutex_unlock( &ios_tail_carve_lock );
@@ -33458,21 +33622,23 @@ retry_code_carve_reuse:
         size_t reserve_offset, tail_added, tail_skipped = 0;
         size_t skip_off[3], skip_size[3];
         int skip_n = 0;
-        int preserved_carve_locked = kept_large_carve && !reuse_all_carves && !low_ok;
+        int preserved_carve_locked = ios_pool_image_limit ||
+                                     (kept_large_carve && !reuse_all_carves && !low_ok);
         if (preserved_carve_locked)
         {
-            /* Only the new tiny-main preference takes this path. Reserve its
+            /* The fixed partition and tiny-main preference reserve their
              * metadata slot through publication; a capacity snapshot alone
-             * could let two tiny requests both consume the last table slot.
+             * could let two requests both consume the last table slot.
              * Both allocator locks then cover the real head collision check
-             * and at most the existing 64KB prefill/publication. This uses the
-             * same carve -> pool order as retired region-C transfer. Ordinary
-             * and region-C allocations retain their existing locking. */
+             * and prefill/publication. This uses the
+             * same carve -> pool order as retired region-C transfer. Legacy
+             * ordinary and region-C allocations retain their existing locking. */
             pthread_mutex_lock( &ios_tail_carve_lock );
             if (ios_tail_carve_n >= IOS_TAIL_CARVE_MAX)
             {
                 static unsigned preserve_full_n;
                 pthread_mutex_unlock( &ios_tail_carve_lock );
+                if (ios_pool_image_limit) return STATUS_NO_MEMORY;
                 reuse_all_carves = 1;
                 low_fits = 0;
                 if (__sync_add_and_fetch( &preserve_full_n, 1 ) <= 16)
@@ -33522,6 +33688,14 @@ retry_code_carve_reuse:
         if (reserve_offset + alloc_size > (ios_jit_pool_size_global / 4) * 3 ||
             pool_tail_off < jit_pool_offset)
         {
+            if (ios_pool_image_limit)
+            {
+                ios_pool_tail_unreserve( &ios_jit_tail_reserved, reserve_offset + alloc_size, tail_added,
+                                         ios_jit_hole_end > ios_jit_hole_off );
+                pthread_mutex_unlock( &ios_pool_lock );
+                pthread_mutex_unlock( &ios_tail_carve_lock );
+                return STATUS_NO_MEMORY;
+            }
             /* The tiny-request preference above is not an allocation guard.
              * Another thread can consume the snapshot's room before this real
              * reservation. Roll it back once and retry the original free-list
@@ -33566,6 +33740,7 @@ retry_code_carve_reuse:
                         ios_tail_carves[ios_tail_carve_n].retired = 0;
                         ios_tail_carves[ios_tail_carve_n].allocation_lease = carve_lease;
                         ios_tail_carves[ios_tail_carve_n].retired_lease = 0;
+                        ios_tail_carves[ios_tail_carve_n].guarded = 0;
                         ios_tail_carve_n++;
                     }
                     pthread_mutex_unlock( &ios_tail_carve_lock );
@@ -33629,8 +33804,6 @@ retry_code_carve_reuse:
         {
             void *jit_rx = (char *)ios_jit_rx_base_global + pool_tail_off;
             void *jit_rw = (char *)ios_jit_rw_base_global + pool_tail_off;
-            *ret = jit_rx;
-            *size_ptr = alloc_size;
             /* iOS-Madeira: pre-fill the buffer with NOPs (0xd503201f) via the RW
              * alias. FEX's emitter writes instructions one-at-a-time via
              * memcpy(WritePtr, &Word, 4); on iOS the underlying STR fault is
@@ -33648,7 +33821,7 @@ retry_code_carve_reuse:
              * just spills fewer regs than expected at worst. */
             {
                 volatile uint32_t *rw_words = (volatile uint32_t *)jit_rw;
-                size_t nwords = alloc_size / sizeof(uint32_t);
+                size_t nwords = (alloc_size - (guarded ? MADEIRA_FEX_CODE_GUARD_BYTES : 0)) / sizeof(uint32_t);
                 for (size_t i = 0; i < nwords; i++) rw_words[i] = 0xd503201fu;  /* NOP */
             }
 
@@ -33674,6 +33847,19 @@ retry_code_carve_reuse:
                 ios_tail_carves[ios_tail_carve_n].retired = 0;
                 ios_tail_carves[ios_tail_carve_n].allocation_lease = carve_lease;
                 ios_tail_carves[ios_tail_carve_n].retired_lease = 0;
+                ios_tail_carves[ios_tail_carve_n].guarded = guarded;
+                /* The table slot and both allocator locks stay owned until
+                 * the guard is armed. A partial failure consumes a quarantined
+                 * carve; no pointer escapes and no guard is ever restored. */
+                if (guarded && !ios_fex_code_guard_arm( pool_tail_off, alloc_size ))
+                {
+                    ios_tail_carves[ios_tail_carve_n].guarded = 2;
+                    ios_tail_carves[ios_tail_carve_n].peb = NULL;
+                    ios_tail_carve_n++;
+                    if (preserved_carve_locked) pthread_mutex_unlock( &ios_pool_lock );
+                    pthread_mutex_unlock( &ios_tail_carve_lock );
+                    return STATUS_NO_MEMORY;
+                }
                 ios_tail_carve_n++;
             }
             /* madeira-bcd split pool: this carve went below a hole; the span it
@@ -33692,11 +33878,14 @@ retry_code_carve_reuse:
                     ios_tail_carves[ios_tail_carve_n].retired = 0;
                     ios_tail_carves[ios_tail_carve_n].allocation_lease = 0;
                     ios_tail_carves[ios_tail_carve_n].retired_lease = 0;
+                    ios_tail_carves[ios_tail_carve_n].guarded = 0;
                     ios_tail_carve_n++;
                 }
             }
             if (preserved_carve_locked) pthread_mutex_unlock( &ios_pool_lock );
             pthread_mutex_unlock( &ios_tail_carve_lock );
+            *ret = jit_rx;
+            *size_ptr = alloc_size;
             if (tail_added != alloc_size)
                 dprintf(2, "[jit-pool] split pool: tail carve 0x%lx would overlap the hole [0x%lx,0x%lx) -- "
                         "placed below it at off 0x%lx; 0x%lx above the hole kept as a free carve\n",
@@ -34664,6 +34853,16 @@ NTSTATUS WINAPI NtProtectVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T 
 #ifdef WINE_IOS
     LPVOID ios_patch_requested = addr;
     SIZE_T ios_patch_length = size;
+    /* A guarded CodeBuffer has no Wine view. Its terminal page was made
+     * inaccessible in both aliases before publication and is never reopened.
+     * FEX's constructor may confirm that exact protection idempotently. */
+    if (process == NtCurrentProcess() && ios_jit_code_guard_contains( (uintptr_t)addr, size ))
+    {
+        if (new_prot != PAGE_NOACCESS || !ios_fex_code_guard_confirm( (uintptr_t)addr, size ))
+            return STATUS_ACCESS_DENIED;
+        if (old_prot) *old_prot = PAGE_NOACCESS;
+        return STATUS_SUCCESS;
+    }
     /* ml966: a protection change on a low guest allocation applies to the
      * backing. The whole span is bounds-checked, so a request that runs off
      * the end of the allocation is left alone rather than silently clipped. */
@@ -36586,6 +36785,9 @@ NTSTATUS WINAPI NtMapViewOfSectionEx( HANDLE handle, HANDLE process, PVOID *addr
                                   &align, &attributes, &machine );
     if (status) return status;
 
+#ifdef WINE_IOS
+    if (attributes & IOS_FEX_CODE_GUARDED_ATTRIBUTE) return STATUS_INVALID_PARAMETER;
+#endif
     if (align) return STATUS_INVALID_PARAMETER;
     if (*addr_ptr && (limit_low || limit_high)) return STATUS_INVALID_PARAMETER;
 

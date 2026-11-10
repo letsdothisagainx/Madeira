@@ -33,6 +33,7 @@ static void *ios_jit_alias_pushback_peb;
 static void (*ios_jit_alias_pushback_cb)(unsigned long long, unsigned long long, unsigned long long);
 static void *arm64ec_view;
 static size_t ios_pool_big_size, ios_pool_big_off, jit_pool_offset;
+static size_t ios_pool_image_limit; /* Test the unchanged unpartitioned lifecycle. */
 static int ios_pool_big_taken;
 static time_t ios_pool_big_freed_at;
 static time_t now = 100;

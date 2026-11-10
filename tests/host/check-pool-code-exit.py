@@ -32,6 +32,7 @@ def function(signature):
 
 
 helpers = ''.join(function(signature) for signature in (
+    'static int ios_pool_partition_allows_code(',
     'static size_t ios_pool_hole_tail_start(',
     'static size_t ios_pool_hole_between(',
     'static size_t ios_pool_code_cap(',
@@ -40,6 +41,7 @@ helpers = ''.join(function(signature) for signature in (
     'int ios_jit_low_contains(',
     'static int ios_pool_low_take(',
     'static int ios_tail_carve_in_low(',
+    'static int ios_pool_code_carve_matches(',
     'static int ios_pool_code_carve_better(',
     'static size_t ios_pool_code_carve_preserve_span(',
     'static int ios_pool_preserve_code_carve(',
@@ -73,7 +75,7 @@ assert reclaim.index('ios_tail_carves_owner_died( peb );') > reclaim.rindex('pth
 assert source.count('.retired = 1;') == 1, 'only an exit retires a carve'
 assert source.count('ios_tail_carves[ios_tail_carve_n].retired = 0;') == 4, 'every new carve starts unretired'
 assert source.count('ios_tail_carves[ios_tail_carve_n].peb = carve_peb;') == 3, 'region C, ml1039 and tail carves'
-assert source.count('ios_tail_carves[ios_tail_carve_n].peb = NULL;') == 1, 'a skipped piece has no owner'
+assert source.count('ios_tail_carves[ios_tail_carve_n].peb = NULL;') == 2, 'skipped pieces and failed guards have no owner'
 assert source.count('ios_tail_carves[ios_tail_carve_n].allocation_lease = carve_lease;') == 3, 'each handout records its process identity'
 assert source.count('ios_tail_carves[ios_tail_carve_n].allocation_lease = 0;') == 1, 'a skipped piece has no process identity'
 assert source.count('ios_tail_carves[ios_tail_carve_n].retired_lease = 0;') == 4, 'new carves have no retirement receipt'
@@ -83,7 +85,7 @@ assert ('ios_tail_carve_scan( (char *)ios_jit_rx_base_global + ios_tail_carves[b
         '                                     ios_tail_carves[best].size, 1 )') in ec, 'a strict thread scan'
 assert release_block.index('ios_tail_carve_foreign_release(') < release_block.index('ios_tail_carves[i].free = 1;')
 
-fixture = r'''
+fixture = (root / 'build/ntdll-unix/fex_code_buffer_abi.h').read_text() + r'''
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -95,6 +97,7 @@ fixture = r'''
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "failed line %d: %s\n", __LINE__, #c); exit(1); } } while (0)
 #define STATUS_SUCCESS 0
 #define STATUS_NO_MEMORY -1
+#define STATUS_INVALID_PARAMETER -2
 #define FALLBACK_TAIL 2
 #define FALL_THROUGH 3
 #define MEM_RELEASE 0x8000
@@ -110,6 +113,8 @@ static size_t ios_jit_pool_size_global, jit_pool_offset, ios_pool_head_reserve, 
 static volatile size_t ios_jit_low_reserved, ios_jit_tail_reserved;
 static size_t ios_jit_hole_off_eff, ios_jit_hole_end_eff, ios_jit_hole2_off, ios_jit_hole2_end;
 static int ios_jit_low_full_logged;
+static unsigned attributes;
+static size_t ios_pool_image_limit;
 static unsigned ios_tail_carve_n;
 static pthread_mutex_t ios_tail_carve_lock = PTHREAD_MUTEX_INITIALIZER;
 ''' + carve_table + r'''
@@ -125,6 +130,10 @@ static int ios_tail_carve_scan(const void *base, size_t size, int strict)
 { (void)base; (void)size; CHECK(strict == 1); CHECK(++scans < 64); return scan_busy; }   /* < 64: no retry loop */
 static int ios_tail_carve_occupied(const void *base, size_t size)
 { (void)base; (void)size; return occupied; }
+static int ios_pool_recycle_main_range_ready(size_t off, size_t size)
+{ (void)off; (void)size; CHECK(0); return 0; }
+static int ios_fex_code_guard_arm(size_t off, size_t size)
+{ (void)off; (void)size; CHECK(0); return 0; }
 ''' + helpers + r'''
 static int allocate(size_t *size_ptr, void **ret)
 {

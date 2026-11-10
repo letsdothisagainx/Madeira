@@ -555,9 +555,13 @@ static void madeira_log_native_build_provenance(void)
     id policy = manifest[@"expectedJITCodeTailLimitMB"];
     uint64_t expected_policy = [policy isKindOfClass:NSNumber.class] ? [policy unsignedLongLongValue] : 0;
     uint64_t compiled_policy = jit_cs2_code_tail_limit_mb();
+    id image_policy = manifest[@"expectedJITImageArenaMB"];
+    uint64_t expected_image_policy = [image_policy isKindOfClass:NSNumber.class] ? [image_policy unsignedLongLongValue] : 0;
+    uint64_t compiled_image_policy = jit_cs2_image_arena_mb();
     dprintf(STDERR_FILENO,"[native-build-provenance-v1] package-source=%s native-uuid=%s packaged-uuid=%s uuid-status=%s "
         "virtual-source=%s expected-virtual=%s virtual-build=%s virtual-status=%s "
-        "jit-source=%s expected-jit=%s jit-build=%s jit-status=%s compiled-code-tail-mb=%llu expected-code-tail-mb=%llu policy-status=%s\n",
+        "jit-source=%s expected-jit=%s jit-build=%s jit-status=%s compiled-code-tail-mb=%llu expected-code-tail-mb=%llu policy-status=%s "
+        "compiled-hard-image-arena-mb=%llu expected-hard-image-arena-mb=%llu image-policy-status=%s\n",
         package.UTF8String,image_uuid,packaged_uuid.UTF8String,
         !strcmp(image_uuid,"unknown") || [packaged_uuid isEqualToString:@"unknown"] ? "missing" : !strcmp(image_uuid,packaged_uuid.UTF8String) ? "match" : "mismatch",
         native_ok ? native.source : "unknown",expected_native.UTF8String,native_ok ? native.revision : "unknown",
@@ -565,8 +569,11 @@ static void madeira_log_native_build_provenance(void)
         jit_ok ? allocator.source : "unknown",expected_jit.UTF8String,jit_ok ? allocator.revision : "unknown",
         !jit_ok || [expected_jit isEqualToString:@"unknown"] ? "missing" : !strcmp(allocator.source,expected_jit.UTF8String) ? "match" : "mismatch",
         (unsigned long long)compiled_policy,(unsigned long long)expected_policy,
-        !expected_policy ? "missing" : compiled_policy == expected_policy ? "match" : "mismatch");
-    static const char *const names[] = {"WINE_IOS_JIT_CODE_TAIL_LIMIT_MB", "WINE_IOS_JIT_HEAD_RESERVE_MB", "MADEIRA_POOL_HEAD_RESERVE_MB"};
+        !expected_policy ? "missing" : compiled_policy == expected_policy ? "match" : "mismatch",
+        (unsigned long long)compiled_image_policy,(unsigned long long)expected_image_policy,
+        !expected_image_policy ? "missing" : compiled_image_policy == expected_image_policy ? "match" : "mismatch");
+    static const char *const names[] = {"WINE_IOS_JIT_CODE_TAIL_LIMIT_MB", "WINE_IOS_JIT_HEAD_RESERVE_MB", "MADEIRA_POOL_HEAD_RESERVE_MB",
+        "WINE_IOS_JIT_IMAGE_ARENA_MB", "WINE_IOS_FEX_CODE_GUARD_V1"};
     for (size_t i=0; i<sizeof(names)/sizeof(names[0]); ++i) {
         uint64_t number=0;int state=madeira_build_env_number(getenv(names[i]),&number);
         dprintf(STDERR_FILENO,"[native-build-env-v1] name=%s state=%s numeric-input=%llu meaning=input-not-native-effective-policy\n",

@@ -21,8 +21,8 @@ assert code.count(helper) == 1
 wrapper = r'''
 static int disable_wait;
 static unsigned ios_pool_recent_retired_code_wait(const struct ios_tail_carve *c, unsigned n,
-                                                  size_t want, size_t total, time_t now)
-{ return disable_wait ? 0 : production_recent_wait(c,n,want,total,now); }
+                                                  size_t want, size_t total, time_t now, int guarded)
+{ return disable_wait ? 0 : production_recent_wait(c,n,want,total,now,guarded); }
 '''
 code = code.replace(helper, helper.replace('ios_pool_recent_retired_code_wait(', 'production_recent_wait(', 1) + wrapper)
 code = code.replace('#include <stdint.h>', '#include <stdint.h>\n#include <errno.h>', 1)
@@ -76,15 +76,15 @@ static void helper_guards(void)
 {
     setup();
     struct ios_tail_carve c = ios_tail_carves[0], saved;
-    CHECK(production_recent_wait(&c,1,16*MB,ios_jit_pool_size_global,100) == 1);
-    CHECK(production_recent_wait(&c,1,16*MB,ios_jit_pool_size_global,99) == 2);
-    CHECK(production_recent_wait(&c,1,16*MB,ios_jit_pool_size_global,98) == 3);
-    CHECK(!production_recent_wait(&c,1,16*MB,ios_jit_pool_size_global,101));
-    CHECK(!production_recent_wait(&c,1,0x4000,ios_jit_pool_size_global,100));
-    CHECK(!production_recent_wait(&c,1,32*MB,ios_jit_pool_size_global,100));
-    CHECK(!production_recent_wait(NULL,1,16*MB,ios_jit_pool_size_global,100));
-    CHECK(!production_recent_wait(&c,IOS_TAIL_CARVE_MAX+1,16*MB,ios_jit_pool_size_global,100));
-    CHECK(!production_recent_wait(&c,1,16*MB,0,100));
+    CHECK(production_recent_wait(&c,1,16*MB,ios_jit_pool_size_global,100,0) == 1);
+    CHECK(production_recent_wait(&c,1,16*MB,ios_jit_pool_size_global,99,0) == 2);
+    CHECK(production_recent_wait(&c,1,16*MB,ios_jit_pool_size_global,98,0) == 3);
+    CHECK(!production_recent_wait(&c,1,16*MB,ios_jit_pool_size_global,101,0));
+    CHECK(!production_recent_wait(&c,1,0x4000,ios_jit_pool_size_global,100,0));
+    CHECK(!production_recent_wait(&c,1,32*MB,ios_jit_pool_size_global,100,0));
+    CHECK(!production_recent_wait(NULL,1,16*MB,ios_jit_pool_size_global,100,0));
+    CHECK(!production_recent_wait(&c,IOS_TAIL_CARVE_MAX+1,16*MB,ios_jit_pool_size_global,100,0));
+    CHECK(!production_recent_wait(&c,1,16*MB,0,100,0));
     saved = c;
     for (unsigned kind = 0; kind < 11; ++kind)
     {
@@ -102,7 +102,7 @@ static void helper_guards(void)
         else c.off = SIZE_MAX-0x3fff; /* wrapping region-C offset */
         struct ios_tail_carve untouched;
         memcpy(&untouched,&c,sizeof(c));
-        CHECK(!production_recent_wait(&c,1,16*MB,ios_jit_pool_size_global,100));
+        CHECK(!production_recent_wait(&c,1,16*MB,ios_jit_pool_size_global,100,0));
         CHECK(!memcmp(&c,&untouched,sizeof(c)));
     }
     puts("PASS: only matching, recent, exact16MiB main receipts justify waiting; active, stale, future, invalid and larger classes do not");
