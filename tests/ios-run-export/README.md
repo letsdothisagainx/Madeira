@@ -8,12 +8,17 @@ valid ZIP. Streaming collection/compression has separate production tests.
 The UI tests tap the real `RunExportButton` inside a SwiftUI menu. Cases cover
 landscape presentation over a `normal + 101` controls window, destruction or
 redraw of the originating menu while archive creation is suspended, native
-**Save to Files** destination UI, native cancellation, key-window restoration,
+**Save to Files** destination UI and its actual copy into the isolated host's
+Documents folder, native cancellation, key-window restoration,
 another export after the game controls end, and a useful native disk-full alert.
-The archive actually handed to UIKit is retained and opened with CRC validation.
+Both the archive handed to UIKit and the separate destination created by Apple's
+Save to Files extension are opened with ZIP CRC and exact payload validation.
+The host's archive producer only writes its temporary source; it cannot write
+the destination that the collector requires. A genuine native activity callback
+must report completion before window restoration and a second export are tested.
 No mocked presenter can satisfy these positive tests.
-The Files picker is opened and cancelled; these tests do not claim that a file
-has been saved or opened on the user's iPhone.
+These are simulator measurements using an owned fixture; they do not establish
+that the user's complete run was saved or opened on the actual iPhone.
 
 `fixtures/D6ExportViews.swift` contains the two literal D6 production views.
 Their source revision and body digests are pinned in `fixtures/provenance.json`;
