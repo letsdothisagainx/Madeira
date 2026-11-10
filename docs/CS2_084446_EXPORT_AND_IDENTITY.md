@@ -31,10 +31,12 @@ redaction and omitted/changed-source metadata remain explicit.
 
 The native UI regression compiles the production presenter and exercises the
 actual menu action, disappearing origin, active/ended sessions, landscape,
-native Files picker, cancellation, window restoration and storage failure. Its
+native Files picker, actual save into the owned host's Documents folder,
+cancellation, window restoration and storage failure. Both the supplied ZIP and
+the native saved copy require independent CRC and exact payload validation. Its
 old-UI fixture is pinned to the literal D6 source. The archive producer alone is
-controlled in that test. Opening and cancelling the simulator's Files picker is
-not an actual save on the user's iPhone. See `tests/ios-run-export/README.md`.
+controlled in that test. A simulator save is not a save on the user's iPhone.
+See `tests/ios-run-export/README.md`.
 
 ## Ordinary Windows compatibility defect
 
@@ -46,16 +48,25 @@ query about the retained RX copy could consequently describe a replacement DLL.
 Remote-process queries could also borrow the caller's alias translation.
 
 Public Basic/Region/MappedFilename/Image queries now require a live mapping,
-correct process lease/ownership and unchanged mapping generation before and
-after the underlying query. Real self-process handles are recognized without
-replacing the original handle or bypassing its access checks. Invalid or foreign
-aliases use the real backend's answer. Private Wine protocols, working-set
+correct target-process lease/ownership and unchanged mapping generation before
+and after the underlying query. Authorized remote filename/image queries retain
+the target's genuine mapped-file identity. The canonical target PEB/PID comes
+from Wine's server, before public old-WoW64 PEB presentation adjustments. A
+blocking, read-only registry lookup validates that owner/PID lease without
+adopting the caller into the remote process. No registry lock spans IPC.
+
+Real handles retain their original backend access checks and are rechecked for
+close/reuse after IPC. Invalid or wrong-target aliases use the real backend's
+answer. Caller-specific low/subfloor address translation stays self-only.
+Remote Basic retains its existing target APC path; remote Region remains
+unsupported by the existing backend. No new result is fabricated. Private Wine protocols, working-set
 buffer contracts, generic unwind translation, allocator/protection policy and
 signature/signing-level results are unchanged.
 
 The production-path test executes the pinned old entry point and demonstrates
 incorrect replacement-file identity, then tests the correction, concurrent
-retirement/reload, real/remote handles, backend errors and private protocols.
+retirement/reload, real/remote handles, handle reuse, canonical WoW64 identity,
+registry contention without ownership adoption, backend errors and private protocols.
 This is a demonstrated address-to-file identity bug. No supplied evidence proves
 it causes the VAC popup.
 
@@ -83,6 +94,12 @@ environment. No VAC code, game binaries, module visibility, signatures or trust
 decisions are modified by these changes.
 
 ## Validation and installation
+
+Production files changed: `app/Madeira/RunExportPresentation.swift`,
+`SteamGameDiagnostics.swift`, `ContentView.swift`, `RunDiagnostics.swift`,
+`SavesAndShortcuts.swift` and the Xcode source list;
+`build/ntdll-unix/virtual_ios.c` and `thread_ios.c` for query identity only.
+Tests and the isolated native UI workflow accompany those changes.
 
 The host regressions execute actual production Swift exporter/presentation
 state and Wine query code. The large-source test uses a generated 256 MiB file

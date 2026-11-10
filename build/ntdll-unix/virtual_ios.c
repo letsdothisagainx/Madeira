@@ -36409,8 +36409,35 @@ struct ios_jit_query_identity
     struct ios_jit_mapping *mapping;
     unsigned long long generation, lease;
     void *process_owner, *image_owner, *mapped_by, *pe_base, *rx_base;
+    HANDLE process;
+    unsigned process_id;
+    int self_process;
     size_t size;
 };
+
+extern unsigned long long ios_thread_process_query_lease(void *owner, unsigned pid);
+
+/* Use the same rights-checked server identity underlying ProcessBasicInformation,
+ * before its old-WoW64 presentation adjusts PEB64 to PEB32 (or NULL). Those
+ * adjusted addresses are not native owner-registry keys. */
+static int ios_jit_query_target_process( HANDLE process, void **owner, unsigned *pid )
+{
+    NTSTATUS status;
+    *owner = NULL;
+    *pid = 0;
+    SERVER_START_REQ( get_process_info )
+    {
+        req->handle = wine_server_obj_handle( process );
+        status = wine_server_call( req );
+        if (!status)
+        {
+            *owner = wine_server_get_ptr( reply->peb );
+            *pid = reply->pid;
+        }
+    }
+    SERVER_END_REQ;
+    return !status && *owner && *pid;
+}
 
 /* OpenProcess(self) is a real handle, not necessarily the pseudo-handle.
  * Resolve only its logical process identity; keep that original handle for
@@ -36430,9 +36457,11 @@ static int ios_jit_query_identity_valid( const struct ios_jit_query_identity *id
 {
     const struct ios_jit_mapping *m = identity->mapping;
     if (!m || !identity->generation || !identity->lease ||
-        ios_jit_current_peb() != identity->process_owner ||
-        ios_thread_process_lease( identity->process_owner, 0 ) != identity->lease ||
-        ios_thread_process_quiescent_lease( identity->process_owner ) == identity->lease ||
+        (identity->self_process ?
+            (ios_jit_current_peb() != identity->process_owner ||
+             ios_thread_process_lease( identity->process_owner, 0 ) != identity->lease ||
+             ios_thread_process_quiescent_lease( identity->process_owner ) == identity->lease) :
+            ios_thread_process_query_lease( identity->process_owner, identity->process_id ) != identity->lease) ||
         __atomic_load_n( &m->generation, __ATOMIC_ACQUIRE ) != identity->generation ||
         __atomic_load_n( &m->unmapped, __ATOMIC_RELAXED ) ||
         __atomic_load_n( &m->pe_base, __ATOMIC_RELAXED ) != identity->pe_base ||
@@ -36441,10 +36470,11 @@ static int ios_jit_query_identity_valid( const struct ios_jit_query_identity *id
         __atomic_load_n( &m->owner_peb, __ATOMIC_RELAXED ) != identity->image_owner ||
         __atomic_load_n( &m->map_peb, __ATOMIC_RELAXED ) != identity->mapped_by) return 0;
     return __atomic_load_n( &m->generation, __ATOMIC_ACQUIRE ) == identity->generation &&
-           ios_thread_process_lease( identity->process_owner, 0 ) == identity->lease;
+           (identity->self_process ? ios_thread_process_lease( identity->process_owner, 0 ) :
+            ios_thread_process_query_lease( identity->process_owner, identity->process_id )) == identity->lease;
 }
 
-static LPCVOID ios_jit_query_identity_begin( int self_process, LPCVOID address,
+static LPCVOID ios_jit_query_identity_begin( HANDLE process, int self_process, LPCVOID address,
                                             struct ios_jit_query_identity *identity )
 {
     uintptr_t a = (uintptr_t)address;
@@ -36452,11 +36482,19 @@ static LPCVOID ios_jit_query_identity_begin( int self_process, LPCVOID address,
     memset( identity, 0, sizeof(*identity) );
     /* Legacy reload mode deliberately disables unload invalidation. Without
      * that lifetime evidence, a pool address cannot supply PE file identity. */
-    if (!self_process || !ios_image_reload_mode() ||
+    if (!NtCurrentTeb() || !NtCurrentTeb()->ClientId.UniqueProcess || !ios_image_reload_mode() ||
         ios_jit_code_guard_contains( a, 1 )) return address;
-    identity->process_owner = ios_jit_current_peb();
-    if (!identity->process_owner ||
-        !(identity->lease = ios_thread_process_lease( identity->process_owner, 0 ))) return address;
+    identity->process = process;
+    identity->self_process = self_process;
+    if (self_process)
+    {
+        identity->process_owner = ios_jit_current_peb();
+        identity->process_id = (unsigned)(ULONG_PTR)NtCurrentTeb()->ClientId.UniqueProcess;
+    }
+    else if (!ios_jit_query_target_process( process, &identity->process_owner, &identity->process_id )) return address;
+    if (!identity->process_owner || !(identity->lease = self_process ?
+            ios_thread_process_lease( identity->process_owner, 0 ) :
+            ios_thread_process_query_lease( identity->process_owner, identity->process_id ))) return address;
     count = __atomic_load_n( &ios_jit_mapping_count, __ATOMIC_ACQUIRE );
     if (count < 0 || count > IOS_JIT_MAX_MAPPINGS) return address;
     for (i = 0; i < count; i++)
@@ -36476,7 +36514,7 @@ static LPCVOID ios_jit_query_identity_begin( int self_process, LPCVOID address,
             (identity->image_owner && (identity->image_owner != identity->process_owner ||
                                        identity->mapped_by != identity->process_owner))) continue;
         /* NULL ownership explicitly denotes the default/shared copy. It is
-         * not a private foreign-owner fallback; the real current-process VM
+         * not a private foreign-owner fallback; the real target-process VM
          * query still decides whether its original PE view is mapped. */
         identity->mapping = m;
         if (ios_jit_query_identity_valid( identity )) return (LPCVOID)(pe + (a - rx));
@@ -36488,11 +36526,21 @@ static LPCVOID ios_jit_query_identity_begin( int self_process, LPCVOID address,
 static NTSTATUS ios_jit_query_identity_finish( const struct ios_jit_query_identity *identity,
                                               NTSTATUS status )
 {
+    void *owner;
+    unsigned pid;
     /* Preserve real access/length/server errors. A successful reply from a
      * changed mapping is not evidence about the old executable copy. Slot
      * generations also reject unload/reload ABA at the same PE/RX addresses. */
-    if (identity->mapping && (!status || status == STATUS_BUFFER_OVERFLOW) &&
-        !ios_jit_query_identity_valid( identity )) return STATUS_INVALID_ADDRESS;
+    if (identity->mapping && (!status || status == STATUS_BUFFER_OVERFLOW))
+    {
+        if (!ios_jit_query_identity_valid( identity )) return STATUS_INVALID_ADDRESS;
+        /* A real handle can be closed/reused during IPC. Reconfirm its
+         * canonical target, then the mapping/lease after that server call. */
+        if (identity->process != NtCurrentProcess() &&
+            (!ios_jit_query_target_process( identity->process, &owner, &pid ) ||
+             owner != identity->process_owner || pid != identity->process_id)) return STATUS_INVALID_ADDRESS;
+        if (!ios_jit_query_identity_valid( identity )) return STATUS_INVALID_ADDRESS;
+    }
     return status;
 }
 #endif
@@ -36541,7 +36589,7 @@ NTSTATUS WINAPI NtQueryVirtualMemory( HANDLE process, LPCVOID addr,
         }
         return STATUS_INVALID_ADDRESS;
     }
-    /* Public identity queries require a live current-process alias. Working-
+    /* Public identity queries require a live target-process alias. Working-
      * set queries carry addresses in their buffer, not the addr argument.
      * Preserve the separate private Wine loader protocols' legacy address
      * translation; their pointer contracts are outside this identity query. */
@@ -36550,7 +36598,7 @@ NTSTATUS WINAPI NtQueryVirtualMemory( HANDLE process, LPCVOID addr,
         unsigned long long lo_real = 0;
         int local_aliases = image_query ? self_query : process == NtCurrentProcess();
 
-        if (image_query) addr = ios_jit_query_identity_begin( self_query, addr, &query_identity );
+        if (image_query) addr = ios_jit_query_identity_begin( process, self_query, addr, &query_identity );
         else if (process == NtCurrentProcess()) addr = ios_jit_reverse_translate_addr( addr );
         /* ml966: VirtualQuery on a low guest allocation must describe the
          * backing, otherwise the guest sees "free" for memory it holds. */

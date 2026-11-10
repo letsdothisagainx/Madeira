@@ -17,6 +17,8 @@ root = Path(__file__).resolve().parents[2]
 path = "build/ntdll-unix/virtual_ios.c"
 source = (root / path).read_text()
 previous = (root / "tests/host/fixtures/jit-query-identity-d6.c").read_text()
+self_only = (root / "tests/host/fixtures/jit-query-identity-57.c").read_text()
+thread_source = (root / "build/ntdll-unix/thread_ios.c").read_text()
 
 
 def body(text, marker):
@@ -47,6 +49,14 @@ def dispatch(text, name):
 # actual D6 source object. This is a source fixture, not a simulated decoder.
 previous_entry = body(previous, "NTSTATUS WINAPI NtQueryVirtualMemory(")
 assert hashlib.sha256(previous_entry.encode()).hexdigest() == "2ecf222e5dc7ead4003ea5446af24f18e29d14b3495e29d93b1a8c010fa1e16d"
+self_only_body = self_only[self_only.index('#ifdef WINE_IOS'):].rstrip('\n')
+assert hashlib.sha256(self_only_body.encode()).hexdigest() == "e37a9585c60eafac402e735848899d5450e6a40b2d04418ffd19a2b73cd6d4eb"
+query_lease = body(thread_source, "unsigned long long ios_thread_process_query_lease(")
+assert "pthread_mutex_lock" in query_lease and "trylock" not in query_lease
+assert not re.search(r"ios_native_link|ios_thread_group_locked|SERVER_START_REQ|NtQuery|NtAllocate|mmap", query_lease)
+self_only_helpers = self_only_body[:self_only_body.index('NTSTATUS WINAPI NtQueryVirtualMemory(')]
+self_only_helpers = self_only_helpers.replace('ios_jit_query_', 'previous57_ios_jit_query_')
+self_only_dispatch = dispatch(self_only, "self_only_NtQueryVirtualMemory").replace('ios_jit_query_', 'previous57_ios_jit_query_')
 historical = subprocess.run(["git", "show", "d6d40213695db7b1ab0f7a9b1dd95edbcda0d7ec:" + path], cwd=root, text=True, capture_output=True)
 if historical.returncode == 0:
     assert previous_entry == body(historical.stdout, "NTSTATUS WINAPI NtQueryVirtualMemory(")
@@ -62,9 +72,12 @@ code = r'''
 #include <string.h>
 #include <pthread.h>
 #include <stdatomic.h>
+#include <errno.h>
+#include <sched.h>
 #define WINE_IOS 1
 #define WINAPI
 #define TRACE(...) ((void)(trace_address=(uintptr_t)addr))
+#define ARRAY_SIZE(a) (sizeof(a)/sizeof((a)[0]))
 #define IOS_JIT_MAX_MAPPINGS 512
 #define IOS_JIT_MAX_CODE_RANGES 96
 typedef uint32_t NTSTATUS;
@@ -73,7 +86,7 @@ typedef const void *LPCVOID;
 typedef size_t SIZE_T;
 typedef uintptr_t ULONG_PTR;
 typedef struct { struct { HANDLE UniqueProcess; } ClientId; } TEB;
-typedef struct { ULONG_PTR UniqueProcessId; } PROCESS_BASIC_INFORMATION;
+typedef struct { ULONG_PTR UniqueProcessId; void *PebBaseAddress; } PROCESS_BASIC_INFORMATION;
 #define ProcessBasicInformation 0
 /* Actual Wine/owned private class values; the public ordering is not dense. */
 typedef enum {MemoryBasicInformation=0,MemoryRegionInformation=3,
@@ -94,6 +107,7 @@ typedef enum {MemoryBasicInformation=0,MemoryRegionInformation=3,
 #define PE ((uintptr_t)0x140000000ull)
 #define OWN ((void*)(uintptr_t)0x500310000ull)
 #define OTHER ((void*)(uintptr_t)0x400310000ull)
+#define THIRD ((void*)(uintptr_t)0x600310000ull)
 ''' + mapping + r'''
 static struct ios_jit_mapping ios_jit_mappings[IOS_JIT_MAX_MAPPINGS];
 static int ios_jit_mapping_count;
@@ -102,6 +116,11 @@ static pthread_mutex_t ios_pool_lock=PTHREAD_MUTEX_INITIALIZER;
 static void *current_owner=OWN;
 static TEB current_teb={{(HANDLE)(uintptr_t)0x324}}, *active_teb=&current_teb;
 static unsigned process_info_calls;
+static unsigned canonical_info_calls;
+static void *canonical_owner_override;
+static unsigned canonical_pid_override;
+static unsigned old_wow64_presentation;
+static void *last_pbi_peb;
 static TEB *NtCurrentTeb(void) { return active_teb; }
 static NTSTATUS NtQueryInformationProcess(HANDLE process,unsigned cls,void *out,size_t len,void *retlen) {
  assert(cls==ProcessBasicInformation&&len==sizeof(PROCESS_BASIC_INFORMATION)&&!retlen);
@@ -109,7 +128,32 @@ static NTSTATUS NtQueryInformationProcess(HANDLE process,unsigned cls,void *out,
  if(process==(HANDLE)43)return STATUS_INVALID_HANDLE;
  if(process==(HANDLE)44)return STATUS_ACCESS_DENIED;
  PROCESS_BASIC_INFORMATION *pbi=out;
- pbi->UniqueProcessId=process==(HANDLE)41||process==(HANDLE)45 ? 0x324 : 0x328;
+ pbi->UniqueProcessId=process==(HANDLE)41||process==(HANDLE)45 ? 0x324 : process==(HANDLE)46?0x32c:0x328;
+ pbi->PebBaseAddress=process==(HANDLE)41||process==(HANDLE)45 ? OWN : process==(HANDLE)46?THIRD:OTHER;
+ if(old_wow64_presentation)pbi->PebBaseAddress=process==(HANDLE)46?(void*)((uintptr_t)THIRD+0x1000):NULL;
+ last_pbi_peb=pbi->PebBaseAddress;
+ return STATUS_SUCCESS;
+}
+/* The canonical server identity precedes public PBI's optional old-WoW64
+ * +0x1000/NULL presentation. This request never checks guest PE pointers. */
+struct query_request {HANDLE handle;};
+struct query_reply {uintptr_t peb;unsigned pid;};
+static struct query_reply *active_reply;
+#define SERVER_START_REQ(name) do {struct query_request request={0}, *req=&request;struct query_reply reply_data={0}, *reply=&reply_data;active_reply=reply;
+#define SERVER_END_REQ }while(0)
+static HANDLE wine_server_obj_handle(HANDLE handle){return handle;}
+static void *wine_server_get_ptr(uintptr_t address){return (void*)address;}
+static NTSTATUS wine_server_call(struct query_request *request) {
+ canonical_info_calls++;
+ if(request->handle==(HANDLE)43)return STATUS_INVALID_HANDLE;
+ if(request->handle==(HANDLE)44)return STATUS_ACCESS_DENIED;
+ int self=request->handle==(HANDLE)41||request->handle==(HANDLE)45;
+ active_reply->peb=(uintptr_t)(self?OWN:request->handle==(HANDLE)46?THIRD:OTHER);
+ active_reply->pid=self?0x324:request->handle==(HANDLE)46?0x32c:0x328;
+ if(canonical_owner_override)active_reply->peb=(uintptr_t)canonical_owner_override;
+ if(canonical_pid_override)active_reply->pid=canonical_pid_override;
+ /* Raw server fields intentionally ignore old_wow64_presentation. */
+ (void)old_wow64_presentation;
  return STATUS_SUCCESS;
 }
 static unsigned long long current_lease=23, quiescent_lease;
@@ -132,7 +176,12 @@ static int ios_subfloor_image_translate(unsigned long long a,size_t n,unsigned l
 int ios_subfloor_enum(int idx,unsigned long long *lo,unsigned long long *re,unsigned long long *sz,void **owner) {
  (void)idx;(void)lo;(void)re;(void)sz;(void)owner;return 0;
 }
-''' + body(source, "void *ios_jit_reverse_translate_addr(") + "\n" + body(source, "static void ios_jit_note_image_unmapped(") + r'''
+/* Compile the actual passive production registry lookup as well. No caller
+ * thread adoption or lifecycle implementation is substituted in this test. */
+struct ios_thread_group {void *owner;unsigned long long lease;unsigned pid;int exiting,reclaimed;unsigned native_references;};
+static struct ios_thread_group ios_thread_groups[64];
+static pthread_mutex_t ios_thread_group_mutex=PTHREAD_MUTEX_INITIALIZER;
+''' + body(thread_source, "unsigned long long ios_thread_process_query_lease(") + "\n" + body(source, "void *ios_jit_reverse_translate_addr(") + "\n" + body(source, "static void ios_jit_note_image_unmapped(") + r'''
 /* These are the normal Wine/wineserver query boundary. They deliberately
  * know nothing about RX aliases: only the actual PE interval has a filename
  * and MEM_IMAGE metadata. The host pool has ordinary private reservation
@@ -143,6 +192,7 @@ static uintptr_t queried;
 static HANDLE queried_process;
 static unsigned kernel_calls, forced_status, view_present=1, replacement;
 static unsigned race_kind;
+static unsigned race_group;
 struct working_set { uintptr_t address, attributes; };
 static int working_set_array_mode;
 static struct working_set *expected_working_set;
@@ -182,15 +232,26 @@ static void *invalidate_during_query(void *unused) {
  else if(race_kind==2) {
   __atomic_store_n(&ios_jit_mappings[0].generation,0,__ATOMIC_RELEASE);
   __atomic_store_n(&ios_jit_mappings[0].generation,24,__ATOMIC_RELEASE);
- } else if(race_kind==3) __atomic_store_n(&current_lease,24,__ATOMIC_RELEASE);
- else if(race_kind==4) __atomic_store_n(&quiescent_lease,23,__ATOMIC_RELEASE);
+ } else if(race_kind==3) {
+  __atomic_store_n(&current_lease,24,__ATOMIC_RELEASE);
+  pthread_mutex_lock(&ios_thread_group_mutex);ios_thread_groups[race_group].lease++;pthread_mutex_unlock(&ios_thread_group_mutex);
+ } else if(race_kind==4) {
+  __atomic_store_n(&quiescent_lease,23,__ATOMIC_RELEASE);
+  pthread_mutex_lock(&ios_thread_group_mutex);ios_thread_groups[race_group].exiting=1;ios_thread_groups[race_group].reclaimed=1;pthread_mutex_unlock(&ios_thread_group_mutex);
+ }
  else if(race_kind==5) __atomic_store_n(&ios_jit_mappings[0].owner_peb,OTHER,__ATOMIC_RELEASE);
  else if(race_kind==6) __atomic_store_n(&ios_jit_mappings[0].size,0,__ATOMIC_RELEASE);
+ else if(race_kind==7) {
+  pthread_mutex_lock(&ios_thread_group_mutex);ios_thread_groups[race_group].pid++;pthread_mutex_unlock(&ios_thread_group_mutex);
+ } else if(race_kind==8) {
+  canonical_owner_override=race_group?OWN:OTHER;canonical_pid_override=race_group?0x324:0x328;
+ }
  query_barrier_wait(&changed);return NULL;
 }
 static unsigned query_kernel(HANDLE process,LPCVOID address,void *buffer,SIZE_T len,SIZE_T *retlen,unsigned cls) {
  queried=(uintptr_t)address;queried_process=process;kernel_calls++;
  assert(!pthread_mutex_trylock(&ios_pool_lock));pthread_mutex_unlock(&ios_pool_lock);
+ assert(!pthread_mutex_trylock(&ios_thread_group_mutex));pthread_mutex_unlock(&ios_thread_group_mutex);
  if(forced_status && forced_status!=STATUS_BUFFER_OVERFLOW)return forced_status;
  if(len<sizeof(struct result))return STATUS_INFO_LENGTH_MISMATCH;
  struct result *out=buffer;memset(out,0,sizeof(*out));
@@ -220,22 +281,36 @@ static unsigned get_working_set_ex(HANDLE p,LPCVOID a,void *b,SIZE_T n,SIZE_T *r
  return STATUS_SUCCESS;
 }
 ''' + proof + "\n" + "\n".join(body(source, marker) for marker in [
+    "static int ios_jit_query_target_process(",
     "static int ios_jit_query_self_process(",
     "static int ios_jit_query_identity_valid(",
     "static LPCVOID ios_jit_query_identity_begin(",
     "static NTSTATUS ios_jit_query_identity_finish(",
-]) + "\n" + dispatch(previous, "previous_NtQueryVirtualMemory") + "\n" + dispatch(source, "fixed_NtQueryVirtualMemory") + r'''
+]) + "\n" + self_only_helpers + "\n" + self_only_dispatch + "\n" + dispatch(previous, "previous_NtQueryVirtualMemory") + "\n" + dispatch(source, "fixed_NtQueryVirtualMemory") + r'''
 static void reset(void) {
  memset(ios_jit_mappings,0,sizeof(ios_jit_mappings));ios_jit_mapping_count=1;
  ios_jit_mappings[0]=(struct ios_jit_mapping){.generation=23,.pe_base=(void*)PE,
   .jit_base=(void*)RX,.size=0x10000,.owner_peb=OWN,.map_peb=OWN};
  current_owner=OWN;current_lease=23;quiescent_lease=0;view_present=1;reload_mode=1;
  active_teb=&current_teb;current_teb.ClientId.UniqueProcess=(HANDLE)(uintptr_t)0x324;process_info_calls=0;
+ memset(ios_thread_groups,0,sizeof(ios_thread_groups));
+ ios_thread_groups[0]=(struct ios_thread_group){OWN,23,0x324,0,0,1};
+ ios_thread_groups[1]=(struct ios_thread_group){OTHER,31,0x328,0,0,7};
+ ios_thread_groups[2]=(struct ios_thread_group){THIRD,41,0x32c,0,0,3};
+ canonical_info_calls=0;canonical_owner_override=NULL;canonical_pid_override=old_wow64_presentation=race_group=0;
+ last_pbi_peb=NULL;
  replacement=guarded=low_calls=subfloor_calls=kernel_calls=forced_status=race_kind=0;
  working_set_array_mode=0;expected_working_set=NULL;
 }
 static NTSTATUS query(unsigned cls,struct result *r) {
  SIZE_T len=0;return fixed_NtQueryVirtualMemory(NtCurrentProcess(),(void*)(RX+0x1234),cls,r,sizeof(*r),&len);
+}
+static atomic_uint lease_query_entered, lease_query_done;
+static unsigned long long blocked_lease;
+static void *lease_query_worker(void *unused) {
+ (void)unused;atomic_store(&lease_query_entered,1);
+ blocked_lease=ios_thread_process_query_lease(OTHER,0x328);
+ atomic_store(&lease_query_done,1);return NULL;
 }
 int main(void) {
  struct result out;SIZE_T length;
@@ -257,6 +332,60 @@ int main(void) {
  const unsigned machines[]={0x014c,0x8664,0xa641,0xaa64};
  const unsigned classes[]={MemoryBasicInformation,MemoryMappedFilenameInformation,
   MemoryRegionInformation,MemoryImageInformation,MemoryWorkingSetExInformation};
+ /* Direct remote Filename/Image queries regressed in 57: an authorized
+  * target's own live private alias lost its target image identity. Basic
+  * uses a target APC (which can translate there); remote Region is currently
+  * unsupported. This flat OS fixture does not claim otherwise. */
+ const unsigned remote_classes[]={MemoryMappedFilenameInformation,MemoryImageInformation};
+ for(unsigned c=0;c<2;c++) {
+  reset();ios_jit_mappings[0].owner_peb=OTHER;ios_jit_mappings[0].map_peb=OTHER;
+  assert(!previous_NtQueryVirtualMemory((HANDLE)42,(void*)(RX+0x1234),remote_classes[c],&out,sizeof(out),&length));
+  assert(queried_process==(HANDLE)42&&queried==PE+0x1234&&out.allocation==PE);
+  NTSTATUS regressed=self_only_NtQueryVirtualMemory((HANDLE)42,(void*)(RX+0x1234),remote_classes[c],&out,sizeof(out),&length);
+  assert(queried==RX+0x1234);
+  if(c==0)assert(regressed==STATUS_INVALID_ADDRESS);else assert(!regressed&&!out.allocation);
+  low_calls=subfloor_calls=0;
+  assert(!fixed_NtQueryVirtualMemory((HANDLE)42,(void*)(RX+0x1234),remote_classes[c],&out,sizeof(out),&length));
+  assert(queried_process==(HANDLE)42&&queried==PE+0x1234&&out.allocation==PE&&!low_calls&&!subfloor_calls);
+ }
+ puts("REMOTE BEFORE/AFTER: D6 identifies target live image; 57 self-only loses direct remote Filename/Image identity; corrected target proof preserves actual backend handle and restores identity");
+ for(unsigned old_wow=0;old_wow<2;old_wow++)for(unsigned target=42;target<=46;target+=4) {
+  reset();old_wow64_presentation=old_wow;
+  void *target_owner=target==46?THIRD:OTHER;
+  ios_jit_mappings[0].owner_peb=ios_jit_mappings[0].map_peb=target_owner;
+  assert(!fixed_NtQueryVirtualMemory((HANDLE)(uintptr_t)target,(void*)(RX+0x1234),MemoryMappedFilenameInformation,&out,sizeof(out),&length));
+  assert(queried_process==(HANDLE)(uintptr_t)target&&queried==PE+0x1234&&!low_calls&&!subfloor_calls);
+  if(old_wow)assert(last_pbi_peb==(target==46?(void*)((uintptr_t)THIRD+0x1000):NULL));
+ }
+ /* Missing/foreign/stale owners never inherit the caller's alias rights. */
+ for(unsigned invalid=0;invalid<8;invalid++) {
+  reset();ios_jit_mappings[0].owner_peb=ios_jit_mappings[0].map_peb=OTHER;
+  switch(invalid){case 0:ios_jit_mappings[0].owner_peb=OWN;break;
+   case 1:ios_jit_mappings[0].map_peb=OWN;break;
+   case 2:ios_thread_groups[1].exiting=1;break;
+   case 3:ios_thread_groups[1].reclaimed=1;break;
+   case 4:ios_thread_groups[1].lease=0;break;
+   case 5:canonical_pid_override=0x444;break;
+   case 6:canonical_owner_override=(void*)(uintptr_t)0x777700000;break;
+   case 7:ios_jit_mappings[0].unmapped=1;ios_jit_mappings[0].generation=0;break;}
+  assert(fixed_NtQueryVirtualMemory((HANDLE)42,(void*)(RX+0x1234),MemoryMappedFilenameInformation,&out,sizeof(out),&length)==STATUS_INVALID_ADDRESS);
+  assert(queried==RX+0x1234&&queried_process==(HANDLE)42&&!low_calls&&!subfloor_calls);
+ }
+ reset();ios_jit_mappings[0].owner_peb=NULL;
+ assert(!fixed_NtQueryVirtualMemory((HANDLE)42,(void*)(RX+0x1234),MemoryMappedFilenameInformation,&out,sizeof(out),&length));
+ assert(queried==PE+0x1234&&queried_process==(HANDLE)42);
+ reset();ios_jit_mappings[0].owner_peb=ios_jit_mappings[0].map_peb=OTHER;forced_status=STATUS_ACCESS_DENIED;
+ assert(fixed_NtQueryVirtualMemory((HANDLE)42,(void*)(RX+0x1234),MemoryMappedFilenameInformation,&out,sizeof(out),&length)==STATUS_ACCESS_DENIED);
+ assert(queried==PE+0x1234&&queried_process==(HANDLE)42);
+ /* Registry contention waits for a real passive snapshot; it cannot turn
+  * an active target into a missing image or adopt the caller's thread. */
+ reset();atomic_store(&lease_query_entered,0);atomic_store(&lease_query_done,0);
+ pthread_t lookup;pthread_mutex_lock(&ios_thread_group_mutex);
+ assert(!pthread_create(&lookup,NULL,lease_query_worker,NULL));
+ while(!atomic_load(&lease_query_entered))sched_yield();
+ assert(!atomic_load(&lease_query_done));pthread_mutex_unlock(&ios_thread_group_mutex);
+ assert(!pthread_join(lookup,NULL)&&blocked_lease==31&&atomic_load(&lease_query_done));
+ assert(ios_thread_groups[0].native_references==1&&ios_thread_groups[1].native_references==7);
  for(unsigned m=0;m<4;m++)for(unsigned c=0;c<5;c++) {
   unsigned cls=classes[c];
   reset();ios_jit_mappings[0].machine_cached=machines[m];
@@ -289,8 +418,8 @@ int main(void) {
  for(unsigned invalid=0;invalid<10;invalid++) {
   reset();
   switch(invalid){case 0:ios_jit_mappings[0].owner_peb=OTHER;break;
-   case 1:ios_jit_mappings[0].map_peb=OTHER;break;case 2:current_lease=0;break;
-   case 3:quiescent_lease=23;break;case 4:ios_jit_mappings[0].generation=0;break;
+   case 1:ios_jit_mappings[0].map_peb=OTHER;break;case 2:current_lease=ios_thread_groups[0].lease=0;break;
+   case 3:quiescent_lease=23;ios_thread_groups[0].exiting=ios_thread_groups[0].reclaimed=1;break;case 4:ios_jit_mappings[0].generation=0;break;
    case 5:ios_jit_mappings[0].unmapped=1;break;case 6:ios_jit_mappings[0].size=0;break;
    case 7:guarded=1;break;case 8:ios_jit_mappings[0].pe_base=(void*)(UINTPTR_MAX-0x100);break;
    case 9:current_owner=NULL;break;}
@@ -308,6 +437,10 @@ int main(void) {
   assert(process_info_calls==1&&queried_process==(HANDLE)41&&queried==PE+0x1234);
  }
  reset();assert(!query(MemoryBasicInformation,&out)&&!process_info_calls);
+ /* Preserve the prior self-query contract during nonquiescent exit. The
+  * new remote observer conservatively requires an active registry owner. */
+ reset();ios_thread_groups[0].exiting=1;
+ assert(!query(MemoryMappedFilenameInformation,&out)&&queried==PE+0x1234);
  for(unsigned handle=43;handle<=45;handle++) {
   reset();forced_status=handle==43?STATUS_INVALID_HANDLE:STATUS_ACCESS_DENIED;
   assert(fixed_NtQueryVirtualMemory((HANDLE)(uintptr_t)handle,(void*)(RX+0x1234),MemoryMappedFilenameInformation,&out,sizeof(out),&length)==forced_status);
@@ -332,6 +465,24 @@ int main(void) {
    assert(query(cls,&out)==STATUS_INVALID_ADDRESS);
    assert(!pthread_join(worker,NULL));query_barrier_destroy(&entered);query_barrier_destroy(&changed);
   }
+ /* Remote target handle, PID lease and image generation are revalidated
+  * after the server query, including handle reuse while its reply is pending. */
+ for(unsigned c=0;c<2;c++)for(unsigned race=1;race<=8;race++) {
+  if(race==5)continue; /* assigning OTHER would not change the remote owner */
+  reset();ios_jit_mappings[0].owner_peb=ios_jit_mappings[0].map_peb=OTHER;
+  race_group=1;race_kind=race;pthread_t worker;
+  query_barrier_init(&entered,2);query_barrier_init(&changed,2);
+  assert(!pthread_create(&worker,NULL,invalidate_during_query,NULL));
+  assert(fixed_NtQueryVirtualMemory((HANDLE)42,(void*)(RX+0x1234),remote_classes[c],&out,sizeof(out),&length)==STATUS_INVALID_ADDRESS);
+  assert(!pthread_join(worker,NULL));query_barrier_destroy(&entered);query_barrier_destroy(&changed);
+ }
+ /* A real self handle may also be reused for a foreign target while its
+  * query is pending. Only the pseudo-handle has immutable self identity. */
+ reset();race_kind=8;pthread_t self_reuse;
+ query_barrier_init(&entered,2);query_barrier_init(&changed,2);
+ assert(!pthread_create(&self_reuse,NULL,invalidate_during_query,NULL));
+ assert(fixed_NtQueryVirtualMemory((HANDLE)41,(void*)(RX+0x1234),MemoryMappedFilenameInformation,&out,sizeof(out),&length)==STATUS_INVALID_ADDRESS);
+ assert(!pthread_join(self_reuse,NULL));query_barrier_destroy(&entered);query_barrier_destroy(&changed);
  reset();ios_jit_mapping_count=IOS_JIT_MAX_MAPPINGS+1;assert(query(MemoryMappedFilenameInformation,&out)==STATUS_INVALID_ADDRESS);
  reset();assert(fixed_NtQueryVirtualMemory(NtCurrentProcess(),(void*)0x12340000,MemoryMappedFilenameInformation,&out,sizeof(out),&length)==STATUS_INVALID_ADDRESS&&queried==0x12340000);
  puts("AFTER: production query identity/dispatch PASS: live shared/private and mixed PE architectures; real backend errors/metadata; retired/foreign/guarded/unmapped rejection; remote and working-set isolation; concurrent unload, generation ABA, process lease, owner and size changes");
