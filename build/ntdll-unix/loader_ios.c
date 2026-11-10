@@ -3305,7 +3305,7 @@ HANDLE ios_default_keyed_event(void)
 /***********************************************************************
  *           start_main_thread
  */
-extern void ios_reserve_fex_arena(void);  /* ml756, virtual_ios.c */
+extern NTSTATUS ios_reserve_fex_arena(void);  /* virtual_ios.c */
 
 static void start_main_thread(void)
 {
@@ -3466,7 +3466,18 @@ static void start_main_thread(void)
      * Wine's VM bookkeeping can record the view; load_ntdll() below is the
      * first PE placement. */
     WINE_IOS_LOG("ios_reserve_fex_arena...");
-    ios_reserve_fex_arena();
+    {
+        NTSTATUS arena_status = ios_reserve_fex_arena();
+        if (arena_status)
+        {
+            /* On iOS fatal_error exits only this booting pseudo-process's
+             * native thread. Do not run FEX with an absent required hold, or
+             * terminate the host application and its other Wine processes. */
+            dprintf( STDERR_FILENO, "[fex-arena] required reservation handoff failed status=%08x; stopping Wine startup\n",
+                     (unsigned)arena_status );
+            fatal_error( "required FEX reservation handoff failed (status %x)\n", (unsigned)arena_status );
+        }
+    }
     /* ml997: the guest jumbo holdback runs AFTER the arena, never before.
      * rdr65 held 9216 MB at jit-pool-init and the arena then found nothing in 9
      * candidates ("ml774 NO ARENA RESERVED"), which cost FEX its private band

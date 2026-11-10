@@ -194,6 +194,8 @@ static NTSTATUS ios_af_refuse(const char *s, void *p, size_t n, NTSTATUS st) { r
 static void ios_af_set(int s, int e, void *p, size_t n) {}
 static int ios_arena_guard_refuses(void *p, size_t s, ULONG_PTR l, ULONG_PTR h) { return 0; }
 static NTSTATUS map_fixed_area(void *p, size_t n, int prot) { fixed_calls++; return fixed_status; }
+static ULONG_PTR ios_fex_arena_base_unix, ios_fex_arena_end_unix;
+static int ios_native_high_fex_legacy_request(ULONG_PTR lo, ULONG_PTR hi) { return 0; }
 static int fex_arena_covers(void *lo, void *hi) { return 0; }
 static int ios_stack_spill_enabled(void) { return 0; }
 static void *ios_wow_bias_end(void *lo, void *hi) { return hi; }

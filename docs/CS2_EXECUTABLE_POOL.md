@@ -544,3 +544,57 @@ unbound bootstrap token, a native TEB matching a window without a companion
 TEB, and a genuine I386 caller whose session-global `wow_peb` is NULL. Its
 protection callbacks count boundary calls; they do not execute Wine or replace
 the real pool/RX/RW allocator regressions or the next iPhone run.
+
+## iOS 27 full-size placement and debugger handoff
+
+The November 10 `14:04:01` capture is a pre-Wine placement failure. Its
+reported 512 GiB task map does not establish a usable 512 GiB CPU allocation
+range. The old constructor only tried up to 1024 MiB immediately above the
+fixed Windows image window. The observed 626 MiB gap provided a rounded
+624 MiB placeholder; the later first-fit census could not provide CS2's
+1152 MiB RX allocation. No executable-pool capacity or VAC conclusion follows
+from this run, because Wine never started.
+
+The required-pool path now reserves two complete virtual destinations at
+image load, with runtime Mach region discovery and fixed, non-overwriting
+allocation. It first searches CPU ranges below 16 GiB, leaving the remaining
+low CPU band available for guest/FEX fallback and CoreAnimation growth. On a
+full extended map its final
+fallback is the existing host-only [496,512) GiB band, excluding the guest
+and Chromium [448,496) GiB bands and the GPU [64,448) GiB range. A high pair
+also holds a separate contiguous 8 GiB FEX reservation in the same early
+transaction. Wine adopts that exact held mapping without releasing it first.
+Small-map low guest/FEX windows remain excluded from pool placement.
+
+Both final destinations stay owned while the debugger supplies a temporary
+RX allocation. Shared remapping replaces only verified owned placeholders.
+The final RX address is prepared before its RW alias is established, allowing
+debugger preparation to change backing without leaving the writable view on
+an old copy. The transaction verifies protections, page preparation markers,
+shared writes and actual execution on every 16 KiB page before publishing.
+Temporary mappings are released afterwards. Failure cleanup checks mapping
+identity and bounded alternate attempts exclude failed locations. This does
+not move or reclaim live game code.
+
+The bundled debugger script has a capability handshake and an allocation-only
+command. StikJIT's older preparation helper formats only nine hex address
+digits and ignores individual write-error replies. Low-address preparation
+retains its native batching, followed by the app's complete marker and
+execution checks. High-address preparation uses full-width debugger writes
+and checks each reply. Its serial network cost is measured at runtime; it is
+not assumed equivalent to the low-address batched path. The supplied script
+travels with Madeira's normal StikDebug and built-in JIT requests.
+
+The pool remains **1152 MiB**, with **768 MiB for images** and **384 MiB for
+generated code**. RX and RW share backing; the FEX reservation is virtual
+capacity rather than an additional 8 GiB physical allocation. Neither user
+data nor the existing Wine prefix needs migration. The old 624 MiB shrink
+path is bypassed for the required CS2 pool.
+
+Regression fixtures reproduce the captured old low-gap failure. Positive
+pressure layouts beyond those recorded in the device log are explicitly
+synthetic. Production-function tests and native Mach smoke tests validate
+the implementation at their stated boundaries; they do not establish iOS
+TXM acceptance or successful Steam/CS2 startup. The next iPhone run must
+confirm the full aliases, executable-page checks, healthy FEX arena and
+genuine CS2 launch. VAC and Export Run acceptance remain separate issues.

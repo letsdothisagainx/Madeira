@@ -6489,9 +6489,9 @@ wx_done: ;
                  * the same still-volatile page 5+ times; MADV_FREE_REUSE makes
                  * recovery permanent, the higher cap is a belt for residual
                  * volatility. */
-                /* Correctness guard, NOT a fix for anything observed: this band
-                 * ([496G,512G)) must never claim the JIT pool's own RW alias,
-                 * because pool writes have their own STR-emulation path and this
+                /* This band ([496G,512G)) must never claim either JIT alias.
+                 * Required-pool placement can now use it for native RX too.
+                 * Pool writes have their own STR-emulation path and this
                  * one "recovers" by mapping fresh ZERO pages. It is a no-op at
                  * the default alias placement (0x7000000000 is outside the
                  * band) and exists so a future relocation can't silently couple
@@ -6503,11 +6503,15 @@ wx_done: ;
                  * real coupling is still unidentified; do not cite this as the
                  * explanation. */
                 {
+                    extern void *ios_jit_rx_base_global;
                     extern void *ios_jit_rw_base_global;
                     extern size_t ios_jit_pool_size_global;
+                    uintptr_t rxb = (uintptr_t)ios_jit_rx_base_global;
                     uintptr_t rwb = (uintptr_t)ios_jit_rw_base_global;
-                    if (rwb && ios_jit_pool_size_global &&
-                        ((fa >= rwb && fa < rwb + ios_jit_pool_size_global) ||
+                    if (ios_jit_pool_size_global &&
+                        ((rxb && fa >= rxb && fa - rxb < ios_jit_pool_size_global) ||
+                         (rwb && fa >= rwb && fa - rwb < ios_jit_pool_size_global) ||
+                         ios_jit_low_contains( (uintptr_t)fa ) ||
                          ios_jit_low_rw_contains( (uintptr_t)fa )))   /* madeira-bcd pool-low */
                         goto skip_reclaim_band;
                 }

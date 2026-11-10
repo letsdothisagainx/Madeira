@@ -517,6 +517,117 @@ enum StikJITHelper {
             }
         }
 
+        // CS2's complete pool is an owned, paired reservation. Preparing it
+        // must not release a landing site and hope debugserver's first-fit
+        // allocation chooses that site again. The native transaction keeps
+        // both VA holds, secures a debugger allocation, remaps its shared
+        // backing into those exact owned holds, and verifies both aliases.
+        // This path deliberately bypasses the legacy low-hole shrink ladder.
+        if minimumPoolSize > 0 {
+            let protectedExeSize = max(exeWinSize, vm_address_t(exeWinWantedMB) << 20)
+            var rx: UInt64 = 0, rw: UInt64 = 0
+            var stage: UInt32 = 0
+            var nativeError: Int32 = 0
+            guard jit_required_pool_create(UInt64(requestedPoolSize), UInt64(exeWinBase),
+                                           UInt64(protectedExeSize), &rx, &rw, &stage, &nativeError),
+                  let rxPtr = UnsafeMutableRawPointer(bitPattern: UInt(rx)),
+                  let rwPtr = UnsafeMutableRawPointer(bitPattern: UInt(rw)) else {
+                let detail: String
+                switch stage {
+                case 1:
+                    detail = "The attached debugger does not support this build's full-pool handoff. Enable JIT from Madeira to load its bundled script."
+                case 2:
+                    detail = "The kernel could not reserve a complete mapping pair while preserving Wine's required address ranges."
+                case 7:
+                    detail = "The debugger could not prepare the final executable address range."
+                case 8:
+                    detail = "The required page protections and shared pool contents could not be verified."
+                case 12:
+                    detail = "iOS did not permit real instruction execution from a prepared JIT page."
+                case 9:
+                    detail = "A temporary mapping could not be safely released. Its ownership was left intact."
+                case 11:
+                    detail = "An earlier JIT operation still owns a mapping, so it cannot safely be replaced."
+                default:
+                    detail = "The full-size debugger mapping handoff failed."
+                }
+                poolFailure = detail + " Required pool: \(requestedPoolSize >> 20) MB; stage \(stage), VM error \(nativeError). Wine has not started."
+                LogStore.shared.log("[jit-pool-placement-v2] result=failed requested-mb=\(requestedPoolSize >> 20) "
+                    + "stage=\(stage) error=\(nativeError) minimum-mb=\(minimumPoolSize >> 20)", level: .error)
+                return nil
+            }
+
+            // The full replacement is secured and verified. Only now may the
+            // old low-band placeholder be returned for Wine's later PE views.
+            // A repeated request must never unmap a range which has since
+            // acquired a different owner.
+            if !earlyPoolReleased && madeira_early_pool_base != 0 {
+                let base = vm_address_t(madeira_early_pool_base)
+                let bytes = vm_size_t(madeira_early_pool_size)
+                var releaseError: Int32 = 0
+                let released = jit_legacy_pool_release_owned(&releaseError)
+                if released { earlyPoolReleased = true }
+                LogStore.shared.log(String(format: "[jit-pool-placement-v2] legacy-hold-release base=0x%llx bytes=0x%llx kr=%d",
+                                           UInt64(base), UInt64(bytes), releaseError),
+                                    level: released ? .info : .error)
+            }
+
+            // Honor a deliberately enlarged fixed-image window after its old
+            // adjacent placeholder is gone. The paired planner excluded this
+            // entire requested interval before choosing either alias.
+            if exeWinWantedMB > 0 && windowHeld {
+                var extensionBase = exeWinBase + exeWinSize
+                let extensionBytes = protectedExeSize - exeWinSize
+                let extended = vm_allocate(mach_task_self_, &extensionBase, vm_size_t(extensionBytes), VM_FLAGS_FIXED)
+                if extended == KERN_SUCCESS && extensionBase == exeWinBase + exeWinSize {
+                    let protected = vm_protect(mach_task_self_, extensionBase, vm_size_t(extensionBytes), 0, VM_PROT_NONE)
+                    if protected == KERN_SUCCESS {
+                        exeWinSize = protectedExeSize
+                        setenv("WINE_IOS_EXE_WINDOW", String(format: "%lx:%lx", Int(exeWinBase), Int(exeWinSize)), 1)
+                    } else {
+                        vm_deallocate(mach_task_self_, extensionBase, vm_size_t(extensionBytes))
+                    }
+                    LogStore.shared.log("[exe-window] required-pool extension protection kr=\(protected)",
+                                        level: protected == KERN_SUCCESS ? .info : .error)
+                } else {
+                    if extended == KERN_SUCCESS { vm_deallocate(mach_task_self_, extensionBase, vm_size_t(extensionBytes)) }
+                    LogStore.shared.log("[exe-window] required-pool extension unavailable kr=\(extended)", level: .error)
+                }
+            }
+
+            poolHole = nil
+            poolHole2 = nil
+            poolMid = nil
+            poolLow = nil
+            // Wine adopts the separately owned high-host FEX reservation
+            // without releasing it. ContentView publishes the returned JIT
+            // tuple before Wine starts; Wine validates all real VM spans.
+            var heldFEXBase: UInt64 = 0, heldFEXSize: UInt64 = 0, heldFEXObject: UInt64 = 0
+            if jit_required_pool_fex_reservation(&heldFEXBase, &heldFEXSize, &heldFEXObject) {
+                setenv("WINE_IOS_FEX_EARLY_V1", String(format: "%llx:%llx:%llx", heldFEXBase, heldFEXSize, heldFEXObject), 1)
+            } else {
+                unsetenv("WINE_IOS_FEX_EARLY_V1")
+            }
+            setenv("WINE_IOS_JIT_PAIR_V1", "1", 1)
+            let exempt = jit_make_region_no_footprint(rwPtr, requestedPoolSize, "pool-RW-alias")
+            LogStore.shared.log("[no-footprint] pool applied=\(exempt)", level: exempt ? .success : .error)
+            LogStore.shared.log(String(format: "[jit-pool-placement-v2] result=ready RX=0x%llx RW=0x%llx bytes=0x%llx "
+                + "image-arena-mb=%llu code-arena-mb=%llu backing=shared protections=verified",
+                rx, rw, UInt64(requestedPoolSize), jit_cs2_image_arena_mb(), jit_cs2_code_tail_limit_mb()), level: .success)
+            poolTaken = true
+            return (rx: rxPtr, rw: rwPtr, size: requestedPoolSize)
+        }
+
+        // Other games retain their existing placement policy. Their request
+        // releases only unused native early holds, before the legacy census.
+        guard jit_required_pool_release_early() else {
+            poolFailure = "Madeira could not release its unused early JIT reservation. No Wine session was started."
+            LogStore.shared.log("[jit-pool-placement-v2] unused early-hold release failed", level: .error)
+            return nil
+        }
+        unsetenv("WINE_IOS_JIT_PAIR_V1")
+        unsetenv("WINE_IOS_FEX_EARLY_V1")
+
         let goodLow = 0x119000000
         let guestLo = 0x7000000000
         let guestHi = 0x8000000000
@@ -560,7 +671,13 @@ enum StikJITHelper {
             LogStore.shared.log(String(format: "ml1234: the early pool placeholder 0x%lx+%luMB was released by an earlier pool request in this run; not unmapped again",
                                        Int(earlyPoolBase), Int(earlyPoolSize >> 20)))
         } else if earlyPoolBase != 0 {
-            vm_deallocate(mach_task_self_, earlyPoolBase, vm_size_t(earlyPoolSize))
+            var releaseError: Int32 = 0
+            guard jit_legacy_pool_release_owned(&releaseError) else {
+                poolFailure = "Madeira could not verify ownership of its early JIT placeholder (VM error \(releaseError)). "
+                    + "The mapping was left intact and Wine has not started."
+                LogStore.shared.log("[jit-pool-placement-v2] legacy-hold-release refused error=\(releaseError)", level: .error)
+                return nil
+            }
             earlyPoolReleased = true
             LogStore.shared.log(String(format: "ml1040: released the early pool placeholder 0x%lx+%luMB for the debugger",
                                        Int(earlyPoolBase), Int(earlyPoolSize >> 20)))

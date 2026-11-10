@@ -262,7 +262,8 @@ allocator = (root / 'app/Madeira/JITAllocator.c').read_text()
 prepare = function(allocator, 'void *jit26_prepare_region(')
 assert 'register size_t x1 __asm__("x1") = len;' in prepare
 script = (root / 'app/Madeira/madeira-jit.js').read_text()
-assert 'let prepResp = prepare_memory_region(addr, x1);' in script
+assert 'prepResp = prepare_memory_region(addr, x1);' in script
+assert 'madeiraPoolPrepareOwned(addr, x1)' in script, 'high addresses retain the full byte-length protocol through the strict helper'
 print('PASS: page-fit requires pool-split, reaches B and C requests and preserves region-C margin and native mapping guards')
 
 size_helper = function(swift, 'private static func poolRunSize(', '\n    }')

@@ -1,0 +1,66 @@
+{
+  "schema": "madeira-jit-placement-log-v1",
+  "sourceRevision": "5b20ed22b9a1b2c09cd0d44f54d0b465b67710e3",
+  "device": "iPhone18,3",
+  "os": "iOS 27.0.1 (24A446)",
+  "log": "madeira-log(20261110-140401).txt",
+  "logSHA256": "9a960d0808efe2c6edf218b58a9d077f8568d718fdcadd68ce4a158b0e4d1167",
+  "mapMin": "0x100ab8000",
+  "mapMax": "0x8000000000",
+  "pageBytes": "0x4000",
+  "requestedBytes": "0x48000000",
+  "imageArenaMiB": 768,
+  "codeArenaMiB": 384,
+  "earlyPool": {
+    "base": "0x148000000",
+    "sizeMiB": 624
+  },
+  "intruder": {
+    "base": "0x16f248000",
+    "sizeMiBFloor": 0,
+    "tag": 30,
+    "protection": 0
+  },
+  "census": {
+    "min": "0x119000000",
+    "max": "0x7000000000",
+    "minimumHoleMiB": 64,
+    "holes": [
+      {
+        "base": "0x11da5c000",
+        "sizeMiBFloor": 78
+      },
+      {
+        "base": "0x123000000",
+        "sizeMiBFloor": 74
+      },
+      {
+        "base": "0x12ac00000",
+        "sizeMiBFloor": 340
+      },
+      {
+        "base": "0x148000000",
+        "sizeMiBFloor": 626
+      },
+      {
+        "base": "0x16f834000",
+        "sizeMiBFloor": 263
+      }
+    ]
+  },
+  "result": {
+    "selectedMiB": 624,
+    "debuggerAllocationAttempted": false,
+    "wineStarted": false
+  },
+  "evidenceLimits": [
+    "Hole lengths in the log are integer MiB floors, not exact Mach region lengths.",
+    "No complete Mach region or submap inventory is present.",
+    "Any additional candidate range in tests is explicitly synthetic; successful host tests do not establish this device can reserve it."
+  ],
+  "baselineFixtureSHA256": {
+    "jit-placement-early-5b.c": "046e7c0d2ae763e15bb6279f7660c207fc82e63479406abe5f249b4b4abb5458",
+    "jit-placement-census-5b.swift": "bc25050e3d3e656ed487a0780fda7241c20ae764943128b1c6ef1ef295420dab",
+    "jit-script-5b.js": "71887a1c6dc7549f0d3cef0272a42e8fa4c6678bac556a3eb2b4f24baa58b0e1"
+  }
+}

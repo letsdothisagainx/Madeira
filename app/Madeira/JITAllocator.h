@@ -97,6 +97,26 @@ bool jit_pool_alias_layout_valid(uint64_t rx, uint64_t rw, uint64_t size,
                                  uint64_t map_min, uint64_t map_max,
                                  uint64_t exe_base, uint64_t exe_size);
 
+// Required-size pool transaction. Both virtual destinations are reserved before
+// debugger allocation and are replaced only while still demonstrably owned.
+// No live pool is resized. On failure outputs are zero; stage/error describe the
+// first real failure. Both aliases share the debugger-created VM object.
+bool jit_required_pool_create(uint64_t size, uint64_t exe_base, uint64_t exe_size,
+                              uint64_t *rx, uint64_t *rw, uint32_t *stage,
+                              int32_t *error);
+// Give an unused early full-size pair back before a legacy game's allocation.
+// Refuses an in-progress or already published transaction.
+bool jit_required_pool_release_early(void);
+bool jit_legacy_pool_release_owned(int32_t *error);
+// Published high-host pools also retain an early 8 GiB PROT_NONE FEX arena.
+// Wine adopts this exact owned reservation without an unmap/reallocate gap.
+bool jit_required_pool_fex_reservation(uint64_t *base, uint64_t *size, uint64_t *object_id);
+
+// Versioned debugger protocol; old scripts return zero for the capability call.
+uint64_t jit26_pool_capabilities(void);
+void *jit26_pool_allocate(size_t size);
+void *jit26_pool_prepare(void *address, size_t size);
+
 // iOS 26 BRK-based protocol: Ask attached debugger (StikDebug) to
 // prepare a memory region for JIT execution.
 // Returns the prepared address (may differ from input on allocation).

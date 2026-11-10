@@ -4814,6 +4814,157 @@ void ios_pool_va_warn( const char *who, const void *addr, size_t size )
 void *ios_jit_rx_base_global = NULL;
 void *ios_jit_rw_base_global = NULL;
 size_t ios_jit_pool_size_global = 0;
+
+/* An app-owned required pool may use the native host band above the CEF
+ * slots. Publish that pool before the first Wine reservation, rather than
+ * waiting for the first executable PE protection request. This does not
+ * authorize a mapping: the app's paired transaction already did that, and
+ * the complete native RX/RW spans are checked again here. */
+static int ios_native_high_jit_pool;
+static NTSTATUS ios_native_required_pool_status;
+static uintptr_t ios_native_fex_hold_base;
+static size_t ios_native_fex_hold_size;
+static uint64_t ios_native_fex_hold_object;
+static int ios_native_fex_hold_pending;
+
+static int ios_native_jit_number( const char *name, uintptr_t *value )
+{
+    const char *text = getenv( name );
+    char *end;
+    unsigned long long number;
+
+    if (!text || !*text || *text == '-' || *text == '+') return 0;
+    errno = 0;
+    number = strtoull( text, &end, 16 );
+    if (errno || *end || !number || number > UINTPTR_MAX) return 0;
+    *value = number;
+    return 1;
+}
+
+static int ios_native_jit_span_has_protection( uintptr_t base, size_t size,
+                                              vm_prot_t required, vm_prot_t forbidden,
+                                              unsigned int tag, uint64_t object )
+{
+    mach_vm_address_t cursor = base, end = base + size;
+    size_t visits = 0;
+
+    while (cursor < end && visits++ <= size / 0x4000 + 1)
+    {
+        mach_vm_address_t address = cursor;
+        mach_vm_size_t length = 0;
+        natural_t depth = 0;
+        vm_region_submap_info_data_64_t info;
+        mach_msg_type_number_t count;
+        kern_return_t kr;
+
+        do
+        {
+            count = VM_REGION_SUBMAP_INFO_COUNT_64;
+            kr = mach_vm_region_recurse( mach_task_self(), &address, &length, &depth,
+                                         (vm_region_recurse_info_t)&info, &count );
+            if (kr != KERN_SUCCESS || !length || address > cursor ||
+                length > ~(mach_vm_address_t)0 - address) return 0;
+            if (!info.is_submap) break;
+            if (++depth > 32) return 0;
+        } while (1);
+        if (address + length <= cursor || (info.protection & required) != required ||
+            (info.protection & forbidden) ||
+            (tag && (info.user_tag != tag ||
+                     (info.max_protection & (VM_PROT_READ | VM_PROT_WRITE)) !=
+                         (VM_PROT_READ | VM_PROT_WRITE))) ||
+            (object && info.object_id != object)) return 0;
+        cursor = min( address + length, end );
+    }
+    return cursor == end;
+}
+
+static int ios_native_fex_hold_description( uintptr_t *base, size_t *size, uint64_t *object )
+{
+    const char *text = getenv( "WINE_IOS_FEX_EARLY_V1" );
+    char *separator, *second, *end;
+    unsigned long long address, length, identity;
+
+    if (!text || !*text || *text == '-' || *text == '+') return 0;
+    errno = 0;
+    address = strtoull( text, &separator, 16 );
+    if (errno || separator == text || *separator != ':' || !separator[1] ||
+        separator[1] == '-' || separator[1] == '+') return 0;
+    length = strtoull( separator + 1, &second, 16 );
+    if (errno || second == separator + 1 || *second != ':' || !second[1] ||
+        second[1] == '-' || second[1] == '+') return 0;
+    identity = strtoull( second + 1, &end, 16 );
+    if (errno || end == second + 1 || *end || !identity || identity > UINT32_MAX ||
+        length != 0x200000000ULL || address < 0x7c00000000ULL ||
+        address > 0x8000000000ULL - length || (address & 0xffff)) return 0;
+    *base = address;
+    *size = length;
+    *object = identity;
+    return 1;
+}
+
+static void ios_publish_native_high_jit_pool(void)
+{
+    static int checked;
+    const char *paired = getenv( "WINE_IOS_JIT_PAIR_V1" );
+    const uintptr_t high_lo = 0x7c00000000ULL, high_hi = 0x8000000000ULL;
+    const uintptr_t low_hi = 0x1000000000ULL;
+    uintptr_t rx, rw, size;
+    task_vm_info_data_t info;
+    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+
+    if (checked) return;
+    checked = 1;
+    if (!paired || strcmp( paired, "1" )) return;
+    ios_native_required_pool_status = STATUS_INVALID_ADDRESS;
+    if (!ios_native_jit_number( "WINE_IOS_JIT_RX", &rx ) ||
+        !ios_native_jit_number( "WINE_IOS_JIT_RW", &rw ) ||
+        !ios_native_jit_number( "WINE_IOS_JIT_SIZE", &size ) ||
+        size != 0x48000000 || ((rx | rw | size) & 0x3fff) ||
+        rx > UINTPTR_MAX - size || rw > UINTPTR_MAX - size ||
+        (rx < rw + size && rw < rx + size) ||
+        !((rx >= 0x119000000ULL && rx + size <= low_hi) ||
+          (rx >= high_lo && rx + size <= high_hi)) ||
+        !((rw >= 0x119000000ULL && rw + size <= low_hi) ||
+          (rw >= high_lo && rw + size <= high_hi))) return;
+    if (task_info( mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &count ) != KERN_SUCCESS ||
+        rx < info.min_address || rw < info.min_address ||
+        rx + size > info.max_address || rw + size > info.max_address ||
+        !ios_native_jit_span_has_protection( rx, size, VM_PROT_READ | VM_PROT_EXECUTE, VM_PROT_WRITE, 0, 0 ) ||
+        !ios_native_jit_span_has_protection( rw, size, VM_PROT_READ | VM_PROT_WRITE, VM_PROT_EXECUTE, 0, 0 ))
+        return;
+    ios_native_required_pool_status = STATUS_SUCCESS;
+    if (rx + size <= low_hi && rw + size <= low_hi) return;  /* legacy arena policy */
+
+    ios_jit_rx_base_global = (void *)rx;
+    ios_jit_rw_base_global = (void *)rw;
+    ios_jit_pool_size_global = size;
+    ios_native_high_jit_pool = 1;
+    if (ios_native_fex_hold_description( &ios_native_fex_hold_base, &ios_native_fex_hold_size,
+                                         &ios_native_fex_hold_object ) &&
+        !((ios_native_fex_hold_base < rx + size && ios_native_fex_hold_base + ios_native_fex_hold_size > rx) ||
+          (ios_native_fex_hold_base < rw + size && ios_native_fex_hold_base + ios_native_fex_hold_size > rw)) &&
+        ios_native_jit_span_has_protection( ios_native_fex_hold_base, ios_native_fex_hold_size,
+                                            0, VM_PROT_ALL, 253, ios_native_fex_hold_object ))
+        ios_native_fex_hold_pending = 1;
+    dprintf( 2, "[jit-placement] native host pool published before Wine reservations rx=%p rw=%p size=0x%lx\n",
+             (void *)rx, (void *)rw, (unsigned long)size );
+}
+
+static int ios_native_high_jit_intersects( const void *base, size_t size )
+{
+    uintptr_t address = (uintptr_t)base;
+    uintptr_t rx = (uintptr_t)ios_jit_rx_base_global;
+    uintptr_t rw = (uintptr_t)ios_jit_rw_base_global;
+    size_t span = ios_jit_pool_size_global;
+
+    if (!ios_native_high_jit_pool || !size) return 0;
+    if (size > UINTPTR_MAX - address) return 1;
+    return (address < rx + span && address + size > rx) ||
+           (address < rw + span && address + size > rw) ||
+           (ios_native_fex_hold_pending &&
+            address < ios_native_fex_hold_base + ios_native_fex_hold_size &&
+            address + size > ios_native_fex_hold_base);
+}
 #include "fex_code_guards.h"
 
 /* The no-access confirmation is tied to the successful factory result and
@@ -8774,6 +8925,19 @@ NTSTATUS unixcall_ios_get_fex_arena( void *args )
  * unconstrained request (limit_low 0, limit_high the top of the address space)
  * can never be contained, so generic placement is excluded by construction
  * rather than by a list of call sites someone has to remember to update. */
+static int ios_native_high_fex_legacy_request( ULONG_PTR low, ULONG_PTR high )
+{
+    const char *option;
+
+    if (!ios_native_high_jit_pool || !ios_wow_base() ||
+        low != 0x7c00000000ULL || (high != 0x7fffffffffULL && high != 0x8000000000ULL) ||
+        ios_fex_arena_base_unix < 0x7c00000000ULL ||
+        ios_fex_arena_end_unix <= ios_fex_arena_base_unix ||
+        ios_fex_arena_end_unix > 0x8000000000ULL) return 0;
+    option = getenv( "MADEIRA_WOW_FEX_BAND" );
+    return !option || option[0] != '0';
+}
+
 static int fex_arena_covers( const void *limit_low, const void *limit_high )
 {
     ULONG_PTR lo = (ULONG_PTR)limit_low, hi = (ULONG_PTR)limit_high;
@@ -8807,6 +8971,12 @@ static int fex_arena_covers( const void *limit_low, const void *limit_high )
      * request from the arena; the caller clamps placement to the area, so it
      * stays inside. MADEIRA_WOW_FEX_BAND=0 turns this off. */
     if (wow_band < 0) { const char *e = getenv( "MADEIRA_WOW_FEX_BAND" ); wow_band = !(e && e[0] == '0'); }
+    /* An older WoW64 producer names the whole hardware band. The required
+     * native-pool layout owns only its published 8GB subrange; service the
+     * exact legacy producer request there, with both ends clipped by the
+     * FEX_ONLY reserved-area mapper. No generic or arbitrary wider bounds
+     * qualify and neither JIT alias becomes allocator capacity. */
+    if (ios_native_high_fex_legacy_request( lo, hi )) return 1;
     if (wow_band && lo == 0x7c00000000ULL && lo < ios_fex_arena_base_unix &&
         hi + 1 >= ios_fex_arena_end_unix && hi <= ios_fex_arena_end_unix)
     {
@@ -9616,6 +9786,15 @@ static void ios_jit_range_tripwire( const char *tag, const void *addr, size_t si
 /* mmap() anonymous memory at a fixed address */
 void *anon_mmap_fixed( void *start, size_t size, int prot, int flags )
 {
+    /* Native required-pool aliases and its not-yet-adopted FEX hold are not
+     * Wine free reservations. MAP_FIXED must never replace these owned maps.
+     * Legitimate code-tail carves and their guards use the dedicated pool
+     * allocator and protection calls, not this generic mapping operation. */
+    if (ios_native_high_jit_intersects( start, size ))
+    {
+        errno = EEXIST;
+        return MAP_FAILED;
+    }
     ios_pool_va_warn( "anon_mmap_fixed", start, size );
     assert( !((UINT_PTR)start & host_page_mask) );
     assert( !(size & host_page_mask) );
@@ -10301,12 +10480,19 @@ static int mmap_add_fex_reserved_area( void *addr, SIZE_T size )
 {
     struct reserved_area *area;
     struct list *ptr;
+    uintptr_t start = (uintptr_t)addr, end;
+
+    if (!size || size > UINTPTR_MAX - start) return 0;
+    end = start + size;
 
     LIST_FOR_EACH( ptr, &reserved_areas )
     {
         area = LIST_ENTRY( ptr, struct reserved_area, entry );
-        if (area->base > addr) break;
-        if ((char *)area->base + area->size > (char *)addr)
+        /* The successor can overlap the new range even when it starts above
+         * addr. Only stop once its start reaches the new exclusive end. */
+        if ((uintptr_t)area->base >= end) break;
+        if (area->size > UINTPTR_MAX - (uintptr_t)area->base ||
+            (uintptr_t)area->base + area->size > start)
         {
             ERR( "[fex-arena] ml799 REFUSING to register arena %p+%llx: it overlaps an existing "
                  "reserved range %p+%llx -- two owners again; not registering\n",
@@ -21991,6 +22177,16 @@ static NTSTATUS map_view( struct file_view **view_ret, void *base, size_t size,
     int unix_prot = get_unix_prot( vprot );
     NTSTATUS status;
 
+    /* Clip the exact old WoW64 hardware-band producer at the common entry,
+     * not just inside map_reserved_area_inner. If its owned FEX area is full,
+     * every subsequent free-area/relaxed allocation must still fail inside
+     * these bounds rather than escape into native JIT or host furniture. */
+    if (ios_native_high_fex_legacy_request( limit_low, limit_high ))
+    {
+        limit_low = ios_fex_arena_base_unix;
+        limit_high = ios_fex_arena_end_unix;
+    }
+
     if (!align_mask) align_mask = granularity_mask;
     assert( align_mask >= host_page_mask );
 
@@ -26552,6 +26748,8 @@ void virtual_init(void)
     host_page_mask = host_page_size - 1;
     TRACE( "host page size: %uk\n", (UINT)host_page_size / 1024 );
 #endif
+
+    ios_publish_native_high_jit_pool();
 
 #ifdef _WIN64
     host_addr_space_limit = get_host_addr_space_limit();
@@ -32854,9 +33052,73 @@ static NTSTATUS get_extended_params( const MEM_EXTENDED_PARAMETER *parameters, U
  * selector to behave exactly as before -- a failed reservation must never break
  * a configuration that works today.
  */
-void ios_reserve_fex_arena(void)
+static NTSTATUS ios_adopt_early_fex_arena(void)
+{
+    uintptr_t base;
+    size_t size;
+    uint64_t object;
+    uintptr_t rx = (uintptr_t)ios_jit_rx_base_global, rw = (uintptr_t)ios_jit_rw_base_global;
+    size_t pool_size = ios_jit_pool_size_global;
+    task_vm_info_data_t info;
+    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+    const char *option = getenv( "MADEIRA_FEX_ARENA" );
+    long long cap = madeira_cfg_int( "arena-mb", 0 );
+    char text[32];
+
+    if ((option && option[0] == '0') || (cap > 0 && cap < 8192))
+    {
+        dprintf( 2, "[fex-arena] required native-host JIT layout conflicts with disabled or sub-8GB FEX configuration\n" );
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (!ios_native_fex_hold_pending ||
+        !ios_native_fex_hold_description( &base, &size, &object ) ||
+        base != ios_native_fex_hold_base || size != ios_native_fex_hold_size ||
+        object != ios_native_fex_hold_object ||
+        task_info( mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &count ) != KERN_SUCCESS ||
+        base < info.min_address || size > info.max_address || base > info.max_address - size ||
+        (base < rx + pool_size && base + size > rx) ||
+        (base < rw + pool_size && base + size > rw) ||
+        (ios_layerkit_hi && base < ios_layerkit_hi && base + size > ios_layerkit_lo) ||
+        !ios_native_jit_span_has_protection( base, size, 0, VM_PROT_ALL, 253, object ))
+    {
+        dprintf( 2, "[fex-arena] required early 8GB host reservation is absent, changed, or overlaps another owner; refusing fallback\n" );
+        return STATUS_INVALID_ADDRESS;
+    }
+    /* This is the app's already-owned reservation, not a hint or a free-hole
+     * probe. Never deallocate or remap it, including on a registration error.
+     * The app never releases a published required-pool group. */
+    if (!mmap_add_fex_reserved_area( (void *)base, size ))
+    {
+        dprintf( 2, "[fex-arena] failed to register the app-owned early 8GB reservation; the hold remains owned\n" );
+        return STATUS_NO_MEMORY;
+    }
+    snprintf( text, sizeof(text), "%llx", (unsigned long long)base );
+    if (setenv( "WINE_IOS_FEX_ARENA_BASE", text, 1 )) goto publish_failed;
+    snprintf( text, sizeof(text), "%llx", (unsigned long long)size );
+    if (setenv( "WINE_IOS_FEX_ARENA_SIZE", text, 1 )) goto publish_failed;
+    snprintf( text, sizeof(text), "%llx", (unsigned long long)(base + size) );
+    if (setenv( "WINE_IOS_FEX_ARENA_END", text, 1 ) ||
+        setenv( "WINE_IOS_FEX_ARENA_VERSION", "1", 1 )) goto publish_failed;
+    ios_fex_arena_base_unix = base;
+    ios_fex_arena_end_unix = base + size;
+    ios_native_fex_hold_pending = 0;
+    dprintf( 2, "[fex-arena] PUBLISHED app-owned early reservation [%p,%p) size=0x%lx version=1 handoff=held-v1\n",
+             (void *)base, (void *)(base + size), (unsigned long)size );
+    return STATUS_SUCCESS;
+
+publish_failed:
+    unsetenv( "WINE_IOS_FEX_ARENA_BASE" );
+    unsetenv( "WINE_IOS_FEX_ARENA_SIZE" );
+    unsetenv( "WINE_IOS_FEX_ARENA_END" );
+    unsetenv( "WINE_IOS_FEX_ARENA_VERSION" );
+    dprintf( 2, "[fex-arena] could not publish the app-owned early reservation; the hold remains owned\n" );
+    return STATUS_NO_MEMORY;
+}
+
+NTSTATUS ios_reserve_fex_arena(void)
 {
     static int done;
+    static NTSTATUS result;
     /* Several windows, largest first.
      *
      * The research VM's usable VA windows MOVE between launches, so a single
@@ -32880,8 +33142,24 @@ void ios_reserve_fex_arena(void)
     unsigned long long arena_task_max = 0;
     unsigned long long arena_size_cap = 0;   /* ml995 */
 
-    if (done) return;
+    if (done) return result;
     done = 1;
+
+    /* High native code and FEX share only the dedicated host band. The app
+     * reserved both before framework initialization, so use the proven 8GB
+     * lease instead of competing for a new 16GB mapping or shrinking FEX. */
+    if (ios_native_required_pool_status)
+    {
+        result = ios_native_required_pool_status;
+        dprintf( 2, "[jit-placement] required native pool validation failed before FEX startup status=%08x\n",
+                 (unsigned)result );
+        return result;
+    }
+    if (ios_native_high_jit_pool)
+    {
+        result = ios_adopt_early_fex_arena();
+        return result;
+    }
 
     /* ml757: OPT-IN. This reservation is only half the design.
      *
@@ -32957,7 +33235,7 @@ void ios_reserve_fex_arena(void)
                             "for the process lifetime. The emulator still selects its own band, so "
                             "x64 guests are EXPECTED TO FAIL this run -- this proves the range can "
                             "be taken, nothing more.\n", base, (unsigned long long)size );
-            return;
+            return STATUS_SUCCESS;
         }
 
         /* ml799: ON by default, MADEIRA_FEX_ARENA=0 to disable.
@@ -32974,7 +33252,7 @@ void ios_reserve_fex_arena(void)
         {
             dprintf( 2, "[fex-arena] ml799 disabled by MADEIRA_FEX_ARENA=0 -- FEX selects its "
                         "own band, as before.\n" );
-            return;
+            return STATUS_SUCCESS;
         }
     }
 
@@ -33190,7 +33468,7 @@ void ios_reserve_fex_arena(void)
             dprintf( 2, "[fex-arena] ml774 WARNING: only 0x%llx bytes. Sufficient for small "
                         "guests; heavy titles are expected to exhaust it.\n",
                      (unsigned long long)size );
-        return;
+        return STATUS_SUCCESS;
     }
 
     /* Every candidate failed. On the VM this reliably means the launch is dead:
@@ -33200,6 +33478,7 @@ void ios_reserve_fex_arena(void)
                 "its own band. On the research VM this launch is EXPECTED TO DIE before "
                 "FEX initialises; relaunch rather than diagnosing it.\n",
              (unsigned)ARRAY_SIZE(plan) );
+    return STATUS_SUCCESS;  /* legacy selector fallback remains unchanged */
 }
 
 NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *size_ptr, ULONG type,

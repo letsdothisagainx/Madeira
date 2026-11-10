@@ -151,6 +151,7 @@ run(r'''
 typedef uintptr_t ULONG_PTR;
 typedef struct {struct{uint64_t Self;} Tib; uint64_t Peb;uint64_t TlsSlots[64];} TEB;
 static uint64_t wow=0x400000000, ios_fex_arena_base_unix=0xb40000000,ios_fex_arena_end_unix=0xd40000000;
+static int ios_native_high_jit_pool;
 static ULONG_PTR ios_wow_base(void){return wow;}
 static TEB teb;static uint64_t frame[16],fex;static uint32_t insn;static int owned=1;
 static uint64_t owner=0x400310000;
@@ -165,7 +166,7 @@ static int ios_fault_read(uint64_t a,void* out,size_t n){
 ''' + r'''
 static int ios_g32_read(uint64_t a,void* out,size_t n){return ios_fault_read(a,out,n);}
 #include "guest32_origin.h"
-''' + body(v,'static int fex_arena_covers(') + chr(10) + body(s,'static int ios_verified_guest_breakpoint(') + r'''
+''' + body(v,'static int ios_native_high_fex_legacy_request(') + chr(10) + body(v,'static int fex_arena_covers(') + chr(10) + body(s,'static int ios_verified_guest_breakpoint(') + r'''
 int main(){
  assert(fex_arena_covers((void*)0xc00000000,(void*)0xeffffffff));
  assert(fex_arena_covers((void*)0xc00000000,(void*)0xf00000000));

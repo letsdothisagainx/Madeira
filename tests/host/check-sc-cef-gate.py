@@ -97,7 +97,7 @@ assert '*size_ptr == 0x800000000ULL && !((ULONG_PTR)hint & (0x800000000ULL - 1))
 assert '!sc2 && sc_helper && *size_ptr == 0x800000000ULL' in glue, 'layout 2 routes instead (check-sc-layout)'
 assert 'int sc_helper = ios_sc_cef_enabled() && ios_sc_current_is_helper();' in hinted
 assert 'if (st2 && off)' in hinted and 'else if (st2) for (slot = 0x7C00000000ULL;' in hinted
-arena = function(native, 'void ios_reserve_fex_arena(void)')
+arena = function(native, 'NTSTATUS ios_reserve_fex_arena(void)')
 assert 'if (i == 0 && ios_sc_pa_hold_arena( &addr, &size )) goto sc_arena_placed;' in arena
 assert arena.index('goto sc_arena_placed;') < arena.index('    sc_arena_placed:\n        base = (void *)(ULONG_PTR)addr;')
 assert 'if (ios_sc_brp_layout) { ios_sc_pa_drop_hold(); i--; }' in arena

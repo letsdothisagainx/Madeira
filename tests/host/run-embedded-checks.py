@@ -6,6 +6,9 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[2]
 commands = [
+    ['python3', 'tests/host/check-jit-full-pool-placement.py', '--require-swift', '--require-native-mach'],
+    ['python3', 'tests/host/check-jit-full-pool-protocol.py'],
+    ['python3', 'tests/host/check-jit-high-host.py'],
     ['python3', 'tests/host/check-stale-runtime-links.py'],
     ['python3', 'tests/host/check-steam-integrity-launch.py', '--require-swift'],
     ['python3', 'tests/host/check-cs2-observation.py'],
@@ -199,6 +202,14 @@ commands = [
     ['python3', 'tests/host/check-dock-packaging.py'],
     ['bash', 'madeira-dock/tools/check.sh'],
 ]
+# These kernel/protocol checks are mandatory preflight for this placement
+# change. A failure must stop before packaging; once they pass, the entire
+# historical suite still runs and keeps its existing aggregate annotations.
+placement_preflight = {
+    'tests/host/check-jit-full-pool-placement.py',
+    'tests/host/check-jit-full-pool-protocol.py',
+    'tests/host/check-jit-high-host.py',
+}
 failed_checks = []
 for command in commands:
     print('RUN ' + ' '.join(command), flush=True)
@@ -211,7 +222,11 @@ for command in commands:
         detail = '\n'.join(failures)[-1600:] if failures else result.stdout[-1600:]
         message = detail.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
         print('::error title=Host check failed::' + ' '.join(command) + ': ' + message, flush=True)
-        failed_checks.append((' '.join(command), result.returncode if result.returncode > 0 else 128-result.returncode))
+        code = result.returncode if result.returncode > 0 else 128-result.returncode
+        failed_checks.append((' '.join(command), code))
+        if len(command) > 1 and command[1] in placement_preflight:
+            print('Mandatory JIT placement preflight failed; stopping before remaining checks and packaging', flush=True)
+            raise SystemExit(code)
 if failed_checks:
     print('Failed host checks: ' + ', '.join(name for name, _ in failed_checks), flush=True)
     raise SystemExit(failed_checks[0][1])

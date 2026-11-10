@@ -317,6 +317,7 @@ static _Thread_local void *current_peb;
 static ULONG_PTR ios_fex_arena_base_unix = 0xb40000000ull;
 static ULONG_PTR ios_fex_arena_end_unix = 0xd40000000ull;
 static ULONG_PTR guest_window = 0x500000000ull;
+static int ios_native_high_jit_pool;
 static void *ios_jit_current_peb(void) { return current_peb; }
 static ULONG_PTR ios_wow_base(void) { return guest_window; }
 static struct file_view storage[256];
@@ -433,6 +434,7 @@ static BYTE get_page_vprot(const void *base) {
     return view ? view->protect & 0xff : 0;
 }
 '''
+vad_code += body(virtual, 'static int ios_native_high_fex_legacy_request(') + '\n'
 vad_code += body(virtual, 'static int fex_arena_covers( const void *limit_low, const void *limit_high )') + '\n'
 vad_code += f'#include "{root / "build/ntdll-unix/fex_view_ownership.h"}"\n'
 vad_code += r'''
