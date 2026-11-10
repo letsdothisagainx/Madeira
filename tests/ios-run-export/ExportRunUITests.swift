@@ -134,7 +134,13 @@ final class ExportRunUITests: XCTestCase {
         )).element(boundBy: 0)
         let folderReady = ownedFolder.waitForExistence(timeout: 30)
         if !folderReady { preserveOwnedPickerState(app, context: "owned-folder-not-ready") }
-        XCTAssertTrue(folderReady); ownedFolder.tap()
+        XCTAssertTrue(folderReady)
+        // The observed cell spans both its folder icon and a tall filename
+        // area. Its center tap left the picker at On My iPhone. Tap the actual
+        // observed icon, then retain the strict destination/readback checks.
+        let folderIcon = ownedFolder.images.element(boundBy: 0)
+        if folderIcon.waitForExistence(timeout: 5) && folderIcon.isHittable { folderIcon.tap() }
+        else { ownedFolder.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25)).tap() }
         // FileProvider navigation continues after the tap returns. Saving
         // while its previous root is still active can select On My iPhone
         // rather than this app's Documents. Prove the destination first.
