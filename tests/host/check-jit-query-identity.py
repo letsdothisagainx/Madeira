@@ -146,9 +146,38 @@ static unsigned race_kind;
 struct working_set { uintptr_t address, attributes; };
 static int working_set_array_mode;
 static struct working_set *expected_working_set;
-static pthread_barrier_t entered, changed;
+/* Darwin does not provide pthread_barrier_t. Use a reusable generation
+ * barrier with real mutex/condition synchronization on every host platform;
+ * spurious wakes cannot let a query return before its concurrent mutation. */
+struct query_barrier {
+ pthread_mutex_t mutex;
+ pthread_cond_t condition;
+ unsigned participants, waiting, generation;
+};
+static void query_barrier_init(struct query_barrier *barrier,unsigned participants) {
+ assert(participants>0);
+ assert(!pthread_mutex_init(&barrier->mutex,NULL));
+ assert(!pthread_cond_init(&barrier->condition,NULL));
+ barrier->participants=participants;barrier->waiting=0;barrier->generation=0;
+}
+static void query_barrier_wait(struct query_barrier *barrier) {
+ assert(!pthread_mutex_lock(&barrier->mutex));
+ unsigned generation=barrier->generation;
+ if(++barrier->waiting==barrier->participants) {
+  barrier->waiting=0;barrier->generation++;
+  assert(!pthread_cond_broadcast(&barrier->condition));
+ } else while(generation==barrier->generation)
+  assert(!pthread_cond_wait(&barrier->condition,&barrier->mutex));
+ assert(!pthread_mutex_unlock(&barrier->mutex));
+}
+static void query_barrier_destroy(struct query_barrier *barrier) {
+ assert(!barrier->waiting);
+ assert(!pthread_cond_destroy(&barrier->condition));
+ assert(!pthread_mutex_destroy(&barrier->mutex));
+}
+static struct query_barrier entered, changed;
 static void *invalidate_during_query(void *unused) {
- (void)unused;pthread_barrier_wait(&entered);
+ (void)unused;query_barrier_wait(&entered);
  if(race_kind==1) ios_jit_note_image_unmapped((void*)PE,0x10000);
  else if(race_kind==2) {
   __atomic_store_n(&ios_jit_mappings[0].generation,0,__ATOMIC_RELEASE);
@@ -157,7 +186,7 @@ static void *invalidate_during_query(void *unused) {
  else if(race_kind==4) __atomic_store_n(&quiescent_lease,23,__ATOMIC_RELEASE);
  else if(race_kind==5) __atomic_store_n(&ios_jit_mappings[0].owner_peb,OTHER,__ATOMIC_RELEASE);
  else if(race_kind==6) __atomic_store_n(&ios_jit_mappings[0].size,0,__ATOMIC_RELEASE);
- pthread_barrier_wait(&changed);return NULL;
+ query_barrier_wait(&changed);return NULL;
 }
 static unsigned query_kernel(HANDLE process,LPCVOID address,void *buffer,SIZE_T len,SIZE_T *retlen,unsigned cls) {
  queried=(uintptr_t)address;queried_process=process;kernel_calls++;
@@ -173,7 +202,7 @@ static unsigned query_kernel(HANDLE process,LPCVOID address,void *buffer,SIZE_T 
   out->base=queried&~(uintptr_t)0xfff;out->allocation=RX;out->type=0x20000;out->protect=1;
  }
  if(retlen)*retlen=sizeof(*out);
- if(race_kind){pthread_barrier_wait(&entered);pthread_barrier_wait(&changed);}
+ if(race_kind){query_barrier_wait(&entered);query_barrier_wait(&changed);}
  return forced_status;
 }
 #define QUERY_CALLBACK(name,cls) static unsigned name(HANDLE p,LPCVOID a,void*b,SIZE_T n,SIZE_T*r){return query_kernel(p,a,b,n,r,cls);}
@@ -298,10 +327,10 @@ int main(void) {
   for(unsigned race=1;race<=6;race++) {
    unsigned cls=classes[c];
    reset();race_kind=race;pthread_t worker;
-   assert(!pthread_barrier_init(&entered,NULL,2)&&!pthread_barrier_init(&changed,NULL,2));
+   query_barrier_init(&entered,2);query_barrier_init(&changed,2);
    assert(!pthread_create(&worker,NULL,invalidate_during_query,NULL));
    assert(query(cls,&out)==STATUS_INVALID_ADDRESS);
-   assert(!pthread_join(worker,NULL));pthread_barrier_destroy(&entered);pthread_barrier_destroy(&changed);
+   assert(!pthread_join(worker,NULL));query_barrier_destroy(&entered);query_barrier_destroy(&changed);
   }
  reset();ios_jit_mapping_count=IOS_JIT_MAX_MAPPINGS+1;assert(query(MemoryMappedFilenameInformation,&out)==STATUS_INVALID_ADDRESS);
  reset();assert(fixed_NtQueryVirtualMemory(NtCurrentProcess(),(void*)0x12340000,MemoryMappedFilenameInformation,&out,sizeof(out),&length)==STATUS_INVALID_ADDRESS&&queried==0x12340000);
