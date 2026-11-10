@@ -97,6 +97,15 @@ def collect(device, verify, selected_test=''):
         assert len(records) < 32
         records.append(text)
         shutil.copyfile(file, evidence / file.name)
+    # These records originate only from this isolated test host. Keep a tiny
+    # textual copy even if a subsequent file/CRC assertion fails or the artifact
+    # download service is unavailable. No game or account logs are read here.
+    remaining = 16384
+    for index, record in enumerate(records):
+        if remaining <= 0: break
+        excerpt = record[:remaining]
+        print('OWNED_EXPORT_FIXTURE_EVENTS ' + str(index) + '\n' + excerpt, flush=True)
+        remaining -= len(excerpt)
     archive = container / 'tmp/RunExportUI/RunExportFixture.zip'
     if archive.is_file() and not archive.is_symlink():
         assert archive.stat().st_size < 4096
@@ -110,6 +119,8 @@ def collect(device, verify, selected_test=''):
     # Host.swift's producer writes its separate tmp file, never Documents.
     saved_archive = container / 'Documents/RunExportFixture.zip'
     native_saved = saved_archive.is_file() and not saved_archive.is_symlink()
+    print('OWNED_EXPORT_NATIVE_FILES_DESTINATION exists=' + str(native_saved) +
+          ' bytes=' + str(saved_archive.stat().st_size if native_saved else 0), flush=True)
     if native_saved:
         assert saved_archive.stat().st_size < 4096
         with zipfile.ZipFile(saved_archive) as contents:
@@ -127,14 +138,16 @@ def collect(device, verify, selected_test=''):
             assert any('event=failed' in r and 'stage=archive' in r for r in modern)
             assert any('baseline=1' in r and 'event=factory-created' in r and 'event=share-presented' not in r for r in records)
         print('PASS real UIKit event trails and CRC-openable archive supplied to native sharing; fixture-only evidence')
-    (evidence / 'summary.json').write_text(json.dumps({
+    summary = {
         'schema': 'madeira-export-ui-simulator-v1', 'hostBundle': BUNDLE,
         'nativeUITestsPassed': verify, 'eventFiles': len(records),
         'nativeFilesSavedAndCRCVerified': native_saved,
         'selectedTest': selected_test or 'full-suite',
         'scope': 'production coordinator/UIKit + owned host and archive-production boundary; no game or account data',
         'deviceAcceptance': 'unverified; simulator does not establish operation on the user iPhone',
-    }, indent=2) + '\n')
+    }
+    (evidence / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
+    print('OWNED_EXPORT_FIXTURE_SUMMARY ' + json.dumps(summary), flush=True)
 
 
 def main():
