@@ -246,8 +246,17 @@ def main():
     with tempfile.TemporaryDirectory(prefix='madeira-full-jit-placement-') as tmp:
         before_control(Path(tmp), swiftc)
         if args.before_only: return
-        production_control(Path(tmp))
-        native_mach(Path(tmp), args.require_native_mach)
+        if platform.system() == 'Darwin':
+            # Captured/synthetic virtual addresses are logical fixture input,
+            # not a promise that this Mac has those particular addresses free.
+            # On Apple we MUST run the unchanged transaction against its real
+            # Mach inventory, not overwrite an unrelated native mapping merely
+            # to make a controlled address model pass.
+            native_mach(Path(tmp), True)
+            print('CONTROLLED GEOMETRY: Linux CI exercises the captured-layout/mock-Mach replay; Darwin uses required real Mach above')
+        else:
+            production_control(Path(tmp))
+            native_mach(Path(tmp), args.require_native_mach)
 
 
 if __name__ == '__main__': main()

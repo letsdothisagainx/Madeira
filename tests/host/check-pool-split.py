@@ -35,6 +35,18 @@ import tempfile
 root = Path(__file__).resolve().parents[2]
 native = (root / 'build/ntdll-unix/virtual_ios.c').read_text()
 swift = (root / 'app/Madeira/StikJITHelper.swift').read_text()
+# Keep these historical split/C assertions scoped to the unchanged legacy
+# route. CS2 now returns a separately validated complete native pair earlier.
+owned_start = swift.index("// CS2's complete pool is an owned, paired reservation.")
+owned_end = swift.index('// Other games retain their existing placement policy.', owned_start)
+owned_pair = swift[owned_start:owned_end]
+assert 'jit_required_pool_create(UInt64(requestedPoolSize)' in owned_pair
+assert 'return (rx: rxPtr, rw: rwPtr, size: requestedPoolSize)' in owned_pair
+assert owned_pair.index('jit_required_pool_create(') < owned_pair.index('jit_legacy_pool_release_owned(')
+for field in ('poolHole', 'poolHole2', 'poolMid', 'poolLow'):
+    assert owned_pair.count(field + ' = nil') == 1
+swift = swift[:owned_start] + swift[owned_end:]
+
 content = (root / 'app/Madeira/ContentView.swift').read_text()
 
 

@@ -7,6 +7,7 @@ on:
       - app/Madeira/JITAllocator.c
       - app/Madeira/JITAllocator.h
       - app/Madeira/StikJITHelper.swift
+      - app/Madeira/madeira-jit.js
       - app/Madeira/ContentView.swift
       - build/ntdll-unix/virtual_ios.c
       - build/ntdll-unix/process_ios.c
@@ -26,6 +27,11 @@ on:
       - build/ntdll-unix/steam_session_trace.h
       - build/ntdll-unix/signal_arm64_ios.c
       - tests/host/check-jit-alias-*.py
+      - tests/host/check-jit-full-pool-*.py
+      - tests/host/check-jit-high-host.py
+      - tests/host/jit_full_pool*.c
+      - tests/host/fixtures/jit-placement-*
+      - tests/host/fixtures/jit-script-5b.js
       - tests/host/check-pool-*.py
       - tests/host/check-fex-code-guard*.py
       - tests/host/check-fex-guarded-code-producer.py
@@ -59,6 +65,7 @@ on:
       - app/Madeira/JITAllocator.c
       - app/Madeira/JITAllocator.h
       - app/Madeira/StikJITHelper.swift
+      - app/Madeira/madeira-jit.js
       - app/Madeira/ContentView.swift
       - build/ntdll-unix/virtual_ios.c
       - build/ntdll-unix/process_ios.c
@@ -78,6 +85,11 @@ on:
       - build/ntdll-unix/steam_session_trace.h
       - build/ntdll-unix/signal_arm64_ios.c
       - tests/host/check-jit-alias-*.py
+      - tests/host/check-jit-full-pool-*.py
+      - tests/host/check-jit-high-host.py
+      - tests/host/jit_full_pool*.c
+      - tests/host/fixtures/jit-placement-*
+      - tests/host/fixtures/jit-script-5b.js
       - tests/host/check-pool-*.py
       - tests/host/check-fex-code-guard*.py
       - tests/host/check-fex-guarded-code-producer.py
@@ -122,6 +134,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Validate full-size placement and debugger protocol
+        run: |
+          python3 tests/host/check-jit-full-pool-placement.py
+          python3 tests/host/check-jit-full-pool-protocol.py
+          python3 tests/host/check-jit-high-host.py
       - name: Load pinned Wine and FEX declarations
         run: |
           git submodule update --init --depth 1 wine FEX dxmt
