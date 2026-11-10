@@ -3,7 +3,7 @@ name: Verify Steam browser cache
 on:
   workflow_dispatch:
   push:
-    branches: [main, 'codex/pr-build-*']
+    branches: [main, 'codex/pr-build-*', codex/validate-cs2-integrity-runtime-4b41]
     paths:
       - tests/host/check-steam-browser-transfer.py
       - tests/integration/check-official-steam-browser-upgrade.py

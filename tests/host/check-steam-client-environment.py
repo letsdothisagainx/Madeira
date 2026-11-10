@@ -69,8 +69,8 @@ content=(root/'app/Madeira/ContentView.swift').read_text()
 assert content.count('nativeSteamClient: true')==4
 assert 'runWineFullSequence(nativeSteamClient: true)' in content
 assert 'startLibraryEntry(launch, remember: false, preferences: entry, nativeSteamClient: true)' in content
-assert 'nativeSteamClient: true, nativeSteamBrowser: selected)' in content
-assert 'runWineFullSequence(profile: effectiveProfile, nativeSteamClient: nativeSteamClient, nativeSteamBrowser: nativeSteamBrowser)' in content
+assert 'nativeSteamClient: true, nativeSteamBrowser: selected, standaloneProbe: standaloneProbe)' in content
+assert 'runWineFullSequence(profile: effectiveProfile, nativeSteamClient: nativeSteamClient, nativeSteamBrowser: nativeSteamBrowser, standaloneProbe: standaloneProbe)' in content
 worker=content[content.index('private func runWineFullSequence('):content.index('private func startWineProcess(')]
 assert worker.index('profile.applyEnvironment()') < worker.index('self.startWineProcess(nativeSteamClient: nativeSteamClient)')
 launch=content[content.index('private func startWineProcess('):content.index('private func testDualMapping(')]
