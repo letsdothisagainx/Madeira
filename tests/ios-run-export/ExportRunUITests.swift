@@ -135,6 +135,22 @@ final class ExportRunUITests: XCTestCase {
         let folderReady = ownedFolder.waitForExistence(timeout: 30)
         if !folderReady { preserveOwnedPickerState(app, context: "owned-folder-not-ready") }
         XCTAssertTrue(folderReady); ownedFolder.tap()
+        // FileProvider navigation continues after the tap returns. Saving
+        // while its previous root is still active can select On My iPhone
+        // rather than this app's Documents. Prove the destination first.
+        let destination = files.otherElements.matching(identifier:
+            "DOC.browsingRoot Source: com.apple.FileProvider.LocalStorage, Title: Run Export Host"
+        ).element(boundBy: 0)
+        let destinationReady = destination.waitForExistence(timeout: 30) ||
+            files.navigationBars.staticTexts["Run Export Host"].firstMatch.exists
+        if !destinationReady { preserveOwnedPickerState(app, context: "owned-folder-navigation-pending") }
+        XCTAssertTrue(destinationReady, "The actual native destination must be the owned host folder")
+        let ownEventFile = files.cells.matching(NSPredicate(
+            format: "label BEGINSWITH %@ OR identifier BEGINSWITH %@", "run-export-events-", "run-export-events-"
+        )).element(boundBy: 0)
+        let currentDocumentsVisible = ownEventFile.waitForExistence(timeout: 30)
+        preserveOwnedPickerState(app, context: "owned-documents-before-native-save")
+        XCTAssertTrue(currentDocumentsVisible, "The current host's actual Documents event file must be visible before saving")
         XCTAssertTrue(save.isEnabled); XCTAssertTrue(save.isHittable); save.tap()
         preserveOwnedPickerState(app, context: "immediately-after-native-save")
         let completion = XCTNSPredicateExpectation(
