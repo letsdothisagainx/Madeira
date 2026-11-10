@@ -94,6 +94,28 @@ import Foundation
         try mixed.add(name: names[1], data: payloads[1], compression: .deflate)
         try mixed.add(name: names[2], data: payloads[2], compression: .deflate)
         try mixed.finish()
+        let streamed = try SaveZipWriter(url: root.appendingPathComponent("streamed.zip"))
+        for index in names.indices {
+            let input = try FileHandle(forReadingFrom: root.appendingPathComponent("payload-" + String(index)))
+            try streamed.add(name: names[index], file: input, size: UInt64(payloads[index].count))
+            try input.close()
+        }
+        stats["streamed.zip"] = ["count": UInt64(streamed.count), "offset": streamed.offset]
+        try streamed.finish()
+        let short = try SaveZipWriter(url: root.appendingPathComponent("stream-short-unpublished.zip"))
+        let shortInput = try FileHandle(forReadingFrom: root.appendingPathComponent("payload-0"))
+        fails("short file input") { try short.add(name: "short.txt", file: shortInput, size: UInt64(payloads[0].count + 1)) }
+        fails("short streamed archive cannot finish") { try short.finish() }
+        try shortInput.close()
+        let streamCancel = try SaveZipWriter(url: root.appendingPathComponent("stream-cancel-unpublished.zip"))
+        let cancelInput = try FileHandle(forReadingFrom: root.appendingPathComponent("payload-0"))
+        var polls = 0
+        fails("cancel mid-file entry") {
+            try streamCancel.add(name: "cancel.txt", file: cancelInput, size: UInt64(payloads[0].count), cancelled: { polls += 1; return polls > 5 })
+        }
+        assert(streamCancel.offset > 0 && streamCancel.count == 0)
+        fails("cancelled streamed archive cannot finish") { try streamCancel.finish() }
+        try cancelInput.close()
         // Invalid metadata and pre-compression cancellation have not written
         // any ZIP header. A caller can still complete a new valid entry.
         let bounds = try SaveZipWriter(url: root.appendingPathComponent("bounds-recovered.zip"))
@@ -150,7 +172,7 @@ with tempfile.TemporaryDirectory(prefix='madeira-diagnostic-zip-') as temporary:
     subprocess.run([swift, '-swift-version', '5', '-parse-as-library', '-I', str(p), str(p / 'Writer.swift'), str(p / 'Check.swift'), '-o', str(p / 'check')], check=True)
     subprocess.run([str(p / 'check'), str(p)], check=True)
     stats = json.loads((p / 'writer-stats.json').read_text())
-    for filename, methods in [('stored.zip', [0] * 4), ('deflated.zip', [8] * 4), ('mixed.zip', [0, 8, 8])]:
+    for filename, methods in [('stored.zip', [0] * 4), ('deflated.zip', [8] * 4), ('streamed.zip', [8] * 4), ('mixed.zip', [0, 8, 8])]:
         packed = (p / filename).read_bytes()
         with zipfile.ZipFile(io.BytesIO(packed)) as archive:
             assert archive.testzip() is None
@@ -158,14 +180,18 @@ with tempfile.TemporaryDirectory(prefix='madeira-diagnostic-zip-') as temporary:
             for info, (name, payload), method in zip(archive.infolist(), entries, methods):
                 assert info.compress_type == method
                 assert info.file_size == len(payload) and info.CRC == binascii.crc32(payload)
-                assert info.flag_bits == 0x800 and info.date_time == (1980, 1, 1, 0, 0, 0)
+                assert info.flag_bits == (0x808 if filename == 'streamed.zip' else 0x800)
+                assert info.date_time == (1980, 1, 1, 0, 0, 0)
                 assert archive.read(name) == payload
                 local = struct.unpack_from('<IHHHHHIIIHH', packed, info.header_offset)
                 assert local[0] == 0x04034B50 and local[3] == method
-                assert local[6:9] == (info.CRC, info.compress_size, info.file_size)
+                assert local[6:9] == ((0, 0, 0) if filename == 'streamed.zip' else (info.CRC, info.compress_size, info.file_size))
                 body = info.header_offset + 30 + local[9] + local[10]
                 raw = packed[body:body + info.compress_size]
                 assert (zlib.decompress(raw, -15) if method == 8 else raw) == payload
+                if filename == 'streamed.zip':
+                    descriptor = struct.unpack_from('<IIII', packed, body + info.compress_size)
+                    assert descriptor == (0x08074B50, info.CRC, info.compress_size, info.file_size)
                 if method == 8:
                     assert info.compress_size <= len(payload) + max(1024, len(payload) // 100)
             if filename in stats:

@@ -85,6 +85,10 @@ final class SaveZipWriter {
         handle = try FileHandle(forWritingTo: url)
     }
 
+    /// Takes ownership of an already-created private destination. The run
+    /// exporter retains its exclusive/no-follow descriptor through completion.
+    init(handle: FileHandle) { self.handle = handle }
+
     deinit { if !closed { try? handle.close() } }
 
     private static func le16(_ v: Int) -> Data { var x = UInt16(truncatingIfNeeded: v).littleEndian; return Data(bytes: &x, count: 2) }
@@ -159,6 +163,109 @@ final class SaveZipWriter {
         offset += UInt64(local.count + body.count)
         central += cd
         count += 1
+    }
+
+    /// Compress a sealed, caller-owned file with fixed 64 KiB buffers. ZIP's
+    /// data descriptor carries the final CRC/sizes, so no whole-file Data or
+    /// compression-bound allocation is needed. The caller retains the handle.
+    func add(name: String, file: FileHandle, size: UInt64, cancelled: () -> Bool = { false }) throws {
+        let n = Data(name.utf8), entryOffset = offset
+        guard !closed, !failed, count < Self.maxEntries, n.count <= Int(UInt16.max),
+              size <= UInt64(UInt32.max), offset <= UInt64(UInt32.max) else {
+            throw Failure.message("The zip entry is too large or the archive is closed.")
+        }
+        func checkCancellation() throws {
+            try Task.checkCancellation()
+            if cancelled() { throw CancellationError() }
+        }
+        try checkCancellation()
+        try file.seek(toOffset: 0)
+        var stream = z_stream()
+        guard deflateInit2_(&stream, Z_DEFAULT_COMPRESSION, Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY,
+                            ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size)) == Z_OK else {
+            throw Failure.message("The zip entry could not be compressed.")
+        }
+        defer { deflateEnd(&stream) }
+        var local = Data()
+        local += Self.le32(0x0403_4b50); local += Self.le16(20); local += Self.le16(0x0808)
+        local += Self.le16(Compression.deflate.rawValue); local += Self.le16(0); local += Self.le16(0x21)
+        local += Self.le32(0); local += Self.le32(0); local += Self.le32(0)
+        local += Self.le16(n.count); local += Self.le16(0); local += n
+        var checksum = crc32(0, nil, 0), remaining = size, compressed: UInt64 = 0
+        var output = [UInt8](repeating: 0, count: 64 << 10)
+        func write(_ bytes: Data) throws {
+            guard UInt64(bytes.count) <= UInt64(UInt32.max) - offset else {
+                throw Failure.message("The zip is too large.")
+            }
+            #if canImport(ObjectiveC)
+            try autoreleasepool { try handle.write(contentsOf: bytes) }
+            #else
+            try handle.write(contentsOf: bytes)
+            #endif
+            offset += UInt64(bytes.count)
+        }
+        func pump(_ flush: Int32) throws -> Int32 {
+            try checkCancellation()
+            let result = output.withUnsafeMutableBytes { bytes -> Int32 in
+                stream.next_out = bytes.bindMemory(to: Bytef.self).baseAddress
+                stream.avail_out = uInt(bytes.count)
+                return deflate(&stream, flush)
+            }
+            guard result == Z_OK || result == Z_STREAM_END else {
+                throw Failure.message("The zip entry could not be compressed.")
+            }
+            let written = output.count - Int(stream.avail_out)
+            guard UInt64(written) <= UInt64(UInt32.max) - compressed else {
+                throw Failure.message("The zip entry is too large.")
+            }
+            if written > 0 { try write(Data(output.prefix(written))) }
+            compressed += UInt64(written)
+            return result
+        }
+        do {
+            try write(local)
+            while remaining > 0 {
+                try checkCancellation()
+                let input: Data?
+                #if canImport(ObjectiveC)
+                input = try autoreleasepool { try file.read(upToCount: Int(min(remaining, 64 << 10))) }
+                #else
+                input = try file.read(upToCount: Int(min(remaining, 64 << 10)))
+                #endif
+                guard let input, !input.isEmpty else {
+                    throw Failure.message("The diagnostic input changed while exporting.")
+                }
+                remaining -= UInt64(input.count)
+                checksum = input.withUnsafeBytes { bytes in
+                    crc32(checksum, bytes.bindMemory(to: Bytef.self).baseAddress, uInt(bytes.count))
+                }
+                try input.withUnsafeBytes { bytes in
+                    stream.next_in = UnsafeMutablePointer(mutating: bytes.bindMemory(to: Bytef.self).baseAddress)
+                    stream.avail_in = uInt(bytes.count)
+                    while stream.avail_in > 0 { _ = try pump(Z_NO_FLUSH) }
+                }
+            }
+            stream.next_in = nil; stream.avail_in = 0
+            while try pump(Z_FINISH) != Z_STREAM_END {}
+            guard UInt64(stream.total_in) == size, UInt64(stream.total_out) == compressed else {
+                throw Failure.message("The diagnostic input could not be archived completely.")
+            }
+            var descriptor = Data()
+            descriptor += Self.le32(0x0807_4b50); descriptor += Self.le32(UInt32(checksum))
+            descriptor += Self.le32(UInt32(compressed)); descriptor += Self.le32(UInt32(size))
+            try write(descriptor)
+            var cd = Data()
+            cd += Self.le32(0x0201_4b50); cd += Self.le16(20); cd += Self.le16(20); cd += Self.le16(0x0808)
+            cd += Self.le16(Compression.deflate.rawValue); cd += Self.le16(0); cd += Self.le16(0x21)
+            cd += Self.le32(UInt32(checksum)); cd += Self.le32(UInt32(compressed)); cd += Self.le32(UInt32(size))
+            cd += Self.le16(n.count); cd += Self.le16(0); cd += Self.le16(0)
+            cd += Self.le16(0); cd += Self.le16(0); cd += Self.le32(0)
+            cd += Self.le32(UInt32(entryOffset)); cd += n
+            guard UInt64(central.count) + UInt64(cd.count) <= UInt64(UInt32.max) else {
+                throw Failure.message("The zip is too large.")
+            }
+            central += cd; count += 1
+        } catch { failed = true; throw error }
     }
 
     func finish() throws {
