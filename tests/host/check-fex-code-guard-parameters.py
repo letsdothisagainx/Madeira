@@ -70,7 +70,8 @@ static uintptr_t ios_wow_base(void) { return 0; }
 static int is_wow64(void) { return 0; }
 static ULONG_PTR get_wow_user_space_limit(void) { return UINT64_C(1) << 32; }
 static HANDLE NtCurrentProcess(void) { return (HANDLE)(intptr_t)-1; }
-''' + (root / 'build/ntdll-unix/fex_code_buffer_abi.h').read_text() + '\n' + types + '\n'
+#include "fex_code_buffer_abi.h"
+''' + types + '\n'
 code += function('static NTSTATUS get_extended_params(')
 code += r'''
 static NTSTATUS allocation_gate(HANDLE process, PVOID *ret, SIZE_T *size_ptr, ULONG type,
@@ -101,6 +102,25 @@ int main(void)
     const ULONG tagged = IOS_FEX_CODE_GUARDED_ATTRIBUTE | 0x40;
     const ULONG type = MEM_RESERVE | MEM_COMMIT;
     HANDLE local = NtCurrentProcess();
+    CHECK(!unsetenv(MADEIRA_FEX_CODE_GUARD_ENV));
+    CHECK(!madeira_fex_code_guard_enabled());
+    const char *disabled[] = {"", "0", "01", "true", "2"};
+    for (unsigned i=0;i<sizeof(disabled)/sizeof(disabled[0]);i++) {
+        CHECK(!setenv(MADEIRA_FEX_CODE_GUARD_ENV,disabled[i],1));
+        CHECK(!madeira_fex_code_guard_enabled());
+    }
+    CHECK(!setenv(MADEIRA_FEX_CODE_GUARD_ENV,"1",1));
+    CHECK(madeira_fex_code_guard_enabled());
+    CHECK(!unsetenv(MADEIRA_FEX_CODE_GUARD_ENV));
+    CHECK(!madeira_fex_code_guard_enabled());
+    CHECK(madeira_fex_code_buffer_next_size(0)==16u<<20);
+    CHECK(madeira_fex_code_buffer_next_size(1u<<20)==16u<<20);
+    CHECK(madeira_fex_code_buffer_next_size(8u<<20)==16u<<20);
+    CHECK(madeira_fex_code_buffer_next_size(16u<<20)==32u<<20);
+    CHECK(madeira_fex_code_buffer_next_size(32u<<20)==64u<<20);
+    CHECK(madeira_fex_code_buffer_next_size(64u<<20)==128u<<20);
+    CHECK(madeira_fex_code_buffer_next_size(128u<<20)==128u<<20);
+    CHECK(madeira_fex_code_buffer_next_size(SIZE_MAX)==128u<<20);
     CHECK(sizeof(MEM_EXTENDED_PARAMETER) == 16);
     p[0].Type = MemExtendedParameterAttributeFlags; p[0].ULong64 = 0x40;
     p[1].Type = MADEIRA_FEX_CODE_PARAMETER_TYPE; p[1].ULong64 = MADEIRA_FEX_CODE_GUARD_ABI_V1;
@@ -150,5 +170,6 @@ with tempfile.TemporaryDirectory(prefix='madeira-fex-guard-parameters-') as temp
     binary = directory / 'guard-parameters'
     cfile.write_text(code)
     subprocess.run([os.environ.get('CC', 'cc'), '-std=c11', '-Wall', '-Wextra', '-Werror',
-                    '-fsanitize=address,undefined', '-fno-omit-frame-pointer', str(cfile), '-o', str(binary)], check=True)
+                    '-fsanitize=address,undefined', '-fno-omit-frame-pointer',
+                    '-I' + str(root / 'build/ntdll-unix'), str(cfile), '-o', str(binary)], check=True)
     subprocess.run([str(binary)], check=True)

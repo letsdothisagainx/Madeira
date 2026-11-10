@@ -69,6 +69,10 @@ static int ios_alias_write_is_trapped(uintptr_t address)
 { return !inside(address,1,(uintptr_t)active.rx+COUNTER_RVA,sizeof(struct ios_xp_nt)); }
 static int quiet_dprintf(int fd,const char *format,...)
 { (void)fd;(void)format;return 0; }
+/* This fixture owns counter-data aliases, not private CodeBuffer ranges.
+ * The native permanent-guard registry is empty for every address in this test. */
+static inline int ios_jit_code_guard_contains(uintptr_t address,size_t length)
+{ (void)address;(void)length;return 0; }
 #define dprintf quiet_dprintf
 #include "production-qpc-emulation.h"
 #undef dprintf

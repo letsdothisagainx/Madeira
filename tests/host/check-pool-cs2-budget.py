@@ -2362,9 +2362,13 @@ static void check_partition_code(uintptr_t pointer,size_t size)
 #else
     const uint32_t stub[]={0x52800540,0xd65f03c0};
 #endif
-    memcpy((char *)rw_memory+off,stub,sizeof stub);
-    __builtin___clear_cache((char *)pointer,(char *)pointer+sizeof stub);
-    int (*run)(void)=(int (*)(void))pointer;CHECK(run()==42);
+    /* Clang UBSan inspects function-type metadata at entry-8. The fixture's
+     * generated host stub has no compiler metadata; keep that probe inside
+     * usable code instead of the preceding class's genuine guard page. */
+    const size_t entry_offset=64;
+    memcpy((char *)rw_memory+off+entry_offset,stub,sizeof stub);
+    __builtin___clear_cache((char *)pointer+entry_offset,(char *)pointer+entry_offset+sizeof stub);
+    int (*run)(void)=(int (*)(void))(pointer+entry_offset);CHECK(run()==42);
     *(uint64_t *)((char *)rw_memory+off+size-0x4000-8)=0xdecafbad12345678ULL;
     CHECK(*(const uint64_t *)((const char *)rx_memory+off+size-0x4000-8)==0xdecafbad12345678ULL);
     for(unsigned mode=0;mode<4;mode++)
@@ -2372,7 +2376,7 @@ static void check_partition_code(uintptr_t pointer,size_t size)
         pid_t child=fork();CHECK(child>=0);
         if(!child)
         {
-            uintptr_t target=mode==0?pointer:mode==1?(uintptr_t)rw_memory+off:
+            uintptr_t target=mode==0?pointer+entry_offset:mode==1?(uintptr_t)rw_memory+off+entry_offset:
                              (mode==2?pointer:(uintptr_t)rw_memory+off)+size-0x4000;
             __atomic_store_n(&alias_expected_fault_address,target,__ATOMIC_RELAXED);
             struct sigaction action;memset(&action,0,sizeof action);

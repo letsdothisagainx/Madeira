@@ -73,6 +73,14 @@ static int quiet_dprintf(int fd, const char *fmt, ...)
     (void)fd; (void)fmt;
     return 0;
 }
+/* These fixture-owned PE/data aliases contain no private CodeBuffer guards.
+ * Keep this native-registry boundary explicit before the production helpers;
+ * guarded-pool behavior is exercised by the dedicated code-guard tests. */
+static inline int ios_jit_code_guard_contains(uintptr_t address, size_t length)
+{
+    (void)address; (void)length;
+    return 0;
+}
 #define dprintf quiet_dprintf
 #include "production-atomic-emulation.h"
 #undef dprintf
