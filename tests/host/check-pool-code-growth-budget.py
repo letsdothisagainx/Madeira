@@ -218,7 +218,7 @@ static void native_permissions(const CodeBuffer& buffer) {
   }
 }
 static void policy_tests() {
-  assert(jit_cs2_code_tail_limit_mb()==512);
+  assert(jit_cs2_code_tail_limit_mb()==448);
   assert(ios_pool_parse_code_tail_limit("512",total)==512*MB);
   for(const char* invalid:{"","0","15","1153","-1","512x","99999999999999999999999999"})
     assert(!ios_pool_parse_code_tail_limit(invalid,total));
@@ -239,10 +239,12 @@ static void policy_tests() {
     ios_pool_code_tail_limit=512*MB;
     assert(!ios_pool_fresh_tail_fits(total,early_head,captured_tail,32*MB,0,0,0,0));
   }
-  // 448MiB would downsize the third observed128MiB working-set generation.
-  // 512MiB preserves it while refusing the later extra32MiB reservation.
+  // The November10 production policy intentionally downsizes the third
+  // 128MiB generation to 64MiB so CS2's mandatory client.dll can load.
+  // Retain the old 512MiB behavior below as a historical replay control.
   assert(ios_pool_code_growth_cap(0x1701c000,448*MB)==64*MB);
   assert(!ios_pool_code_growth_fits(0x1701c000,128*MB,448*MB));
+  assert(ios_pool_code_growth_fits(0x1701c000,64*MB,jit_cs2_code_tail_limit_mb()*MB));
   assert(ios_pool_code_growth_cap(0x1701c000,512*MB)==128*MB);
   assert(ios_pool_code_growth_fits(0x1701c000,128*MB,512*MB));
   assert(ios_pool_code_growth_cap(captured_tail,0)==128*MB);
@@ -278,7 +280,9 @@ static void atomic_reservation_tests() {
 }
 int main(int argc,char** argv) {
   policy_tests();atomic_reservation_tests();initialize_aliases();
-  ios_pool_code_tail_limit=jit_cs2_code_tail_limit_mb()*MB;
+  // Historical 3x128MiB producer/lifetime control, independent of the new
+  // CS2 startup selection; the 448MiB limit is asserted in policy_tests().
+  ios_pool_code_tail_limit=512*MB;
   if(argc==2&&!strcmp(argv[1],"oom")) {
     tail=0;image_head=total-MB/2;attempts.clear();expect_oom=1;
     auto impossible=std::make_shared<CodeBuffer>(128*MB);(void)impossible;return 88;
