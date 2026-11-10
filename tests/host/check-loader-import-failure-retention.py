@@ -98,6 +98,7 @@ def main():
     )]
     virtual = (ROOT / "build/ntdll-unix/virtual_ios.c").read_text()
     pool_functions = [extract_entity(virtual, marker) for marker in (
+        "static int ios_pool_image_range_fits( ",
         "static int ios_pool_free_put( ",
         "static int ios_pool_best_fit( ",
         "static int ios_image_reload_mode(void)",

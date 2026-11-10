@@ -4,6 +4,10 @@ from pathlib import Path
 import os, subprocess, tempfile
 root=Path(__file__).resolve().parents[2]
 s=(root/'build/ntdll-unix/virtual_ios.c').read_text()
+# Compile the actual lock-free guard query with an empty legacy bitmap.
+g = (root / 'build/ntdll-unix/fex_code_guards.h').read_text()
+guard_bitmap = '#include "fex_code_buffer_abi.h"\n' + g[g.index('#define IOS_CODE_GUARD_MAX_POOL'):g.index('static uint64_t ios_code_guard_armed')]
+
 def function(marker):
  a=s.index(marker); b=s.index('{',a); depth=1; end=b+1
  while depth:
@@ -142,6 +146,7 @@ int main(void){
 #endif
 }
 '''
+code = code.replace('#include <stdint.h>', '#include <stdint.h>\n#include <stddef.h>\nstatic void *ios_jit_rx_base_global, *ios_jit_rw_base_global;\nstatic size_t ios_jit_pool_size_global;\n' + guard_bitmap, 1)
 with tempfile.TemporaryDirectory() as t:
  p=Path(t)/'check.c';p.write_text(code);exe=Path(t)/'check'
  # Linux memfd models Darwin's existing RX/RW shared backing. Darwin uses shm_open.

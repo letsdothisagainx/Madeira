@@ -58,6 +58,8 @@ static int mach_port_deallocate(int task, int object) { (void)task; (void)object
 #define VM_PROT_WRITE PROT_WRITE
 void *ios_jit_rx_base_global, *ios_jit_rw_base_global;
 size_t ios_jit_pool_size_global;
+/* No private code-guard reservations exist in this legacy recovery fixture. */
+int ios_jit_code_guard_contains(uintptr_t address,size_t length) { (void)address;(void)length;return 0; }
 static uintptr_t anon_rx, anon_rw;
 static size_t anon_size;
 static uintptr_t second_rx, second_rw;

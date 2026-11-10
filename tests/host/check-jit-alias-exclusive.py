@@ -86,6 +86,9 @@ static int permit_teb = 1;
 void *ios_jit_rx_base_global, *ios_jit_rw_base_global;
 size_t ios_jit_pool_size_global;
 static int ios_jit_low_contains(uintptr_t address) { (void)address; return 0; }
+/* Legacy alias fixtures contain no private guarded code reservations. The
+ * native guard registry is an external boundary tested by the guard suite. */
+int ios_jit_code_guard_contains(uintptr_t address,size_t length) { (void)address;(void)length;return 0; }
 uintptr_t ios_jit_anon_alias_lookup(uintptr_t address) { (void)address; return 0; }
 int ios_page_expected_prot(const void *address) { (void)address; return PROT_READ | PROT_WRITE; }
 static int inside(uintptr_t address, size_t length, const void *base)

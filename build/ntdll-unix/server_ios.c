@@ -655,6 +655,7 @@ extern void *ios_jit_rx_base_global, *ios_jit_rw_base_global;
 extern size_t ios_jit_pool_size_global;
 extern uintptr_t ios_jit_anon_alias_lookup( uintptr_t addr );
 extern void ios_jit_anon_alias_note_write( unsigned long long addr );
+extern int ios_jit_code_guard_contains( uintptr_t addr, size_t size );
 
 #define IOS_REPLY_PAGE 0x1000   /* guest page: pool ranges and anonymous-RWX aliases are multiples of it */
 
@@ -664,6 +665,7 @@ static uintptr_t ios_reply_rw_alias( uintptr_t addr )
     uintptr_t rx = (uintptr_t)ios_jit_rx_base_global, rw = (uintptr_t)ios_jit_rw_base_global;
     size_t size = ios_jit_pool_size_global;
 
+    if (ios_jit_code_guard_contains( addr, 1 )) return 0;
     if (rx && rw && size && addr >= rx && addr - rx < size) return rw + (addr - rx);
     return ios_jit_anon_alias_lookup( addr );
 }
@@ -673,6 +675,7 @@ static BOOL ios_reply_host_writable( uintptr_t addr, size_t size )
 {
     mach_vm_address_t a = addr, end = addr + size;
 
+    if (ios_jit_code_guard_contains( addr, size )) return FALSE;
     while (a < end)
     {
         mach_vm_address_t q = a;
@@ -704,7 +707,8 @@ static BOOL ios_read_reply_paged( uintptr_t dst, size_t size, BOOL *fault )
 
         if (n > size) n = size;
         if (!read_reply_data( bounce, n )) return FALSE;
-        if ((rw = ios_reply_rw_alias( dst )))
+        if (ios_jit_code_guard_contains( dst, n )) *fault = TRUE;
+        else if ((rw = ios_reply_rw_alias( dst )))
         {
             memcpy( (void *)rw, bounce, n );
             ios_jit_anon_alias_note_write( dst );
@@ -725,6 +729,10 @@ static BOOL ios_read_reply_guest( void *buffer, size_t size, int req, BOOL *faul
     uintptr_t dst = (uintptr_t)buffer, page, end = dst + size;
     ssize_t ret;
 
+    /* Select the draining path before read() can consume a prefix into the
+     * buffer. Guard pages stay inaccessible in both aliases and report the
+     * normal output-buffer fault while the reply stream remains aligned. */
+    if (ios_jit_code_guard_contains( dst, size )) return ios_read_reply_paged( dst, size, fault );
     for (page = dst & ~(uintptr_t)(IOS_REPLY_PAGE - 1); page < end; page += IOS_REPLY_PAGE)
     {
         if (!ios_reply_rw_alias( page )) continue;

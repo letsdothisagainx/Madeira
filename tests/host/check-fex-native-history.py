@@ -131,6 +131,8 @@ static uintptr_t ios_write_alias(uintptr_t address) {
   return inside(address,1,history_rx(),HISTORY_BYTES)?(uintptr_t)(storage+8)+address-history_rx():0;
 }
 static int ios_alias_write_is_trapped(uintptr_t address) {return !ios_write_alias(address);}
+/* These history data aliases contain no private CodeBuffer guard ranges. */
+int ios_jit_code_guard_contains(uintptr_t address,size_t length) {(void)address;(void)length;return 0;}
 static int ios_fault_read_insn(uint64_t pc,uint32_t *out) {(void)pc;(void)out;return 0;}
 static int quiet_dprintf(int fd,const char *text,...) {(void)fd;(void)text;return 0;}
 #define dprintf quiet_dprintf

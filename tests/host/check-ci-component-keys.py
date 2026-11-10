@@ -17,7 +17,7 @@ recipes = {name: re.search(r'run: echo "key=([^"\n]+)"', jobs[name])[1] for name
 templates = {name: cache_lines[name][0] for name in ['llvm', 'fex', 'i386']}
 for name, marker in [('mingw', 'mingw-'), ('gnutls', '-gnutls-'), ('ffmpeg', '-ffmpeg-'),
                      ('freetype', '-freetype-'), ('rppairing', '-rppairing-'),
-                     ('wine-host', '-wine-host-'), ('dxmt', '-dxmt-ios-')]:
+                     ('wine-host', '-wine-host-'), ('fex-pe', '-fex-pe-'), ('dxmt', '-dxmt-ios-')]:
     matches = [line for line in cache_lines['app'] if marker in line.split('${{ hashFiles', 1)[0]]
     assert len(matches) == 1, (name, matches)
     templates[name] = matches[0]
@@ -26,11 +26,19 @@ assert templates['mingw'] in cache_lines['i386'], 'both MinGW consumers must use
 # Expected dependency edges are independent of the workflow expressions.
 cases = {
     'app': ('app/Madeira/Main.swift', {'ipa'}),
-    'fex': ('pin:FEX', {'fex', 'ipa'}),
+    # Native Unix is rebuilt in each app job; only complete IPA reuse owns it.
+    'native-provenance-generator': ('tools/build/native-provenance.py', {'ipa'}),
+    'native-provenance-parser': ('build/native_build_provenance.h', {'ipa'}),
+    # The private ABI is compiled into the staged PE producer as well as Unix.
+    'native-code-buffer-abi': ('build/ntdll-unix/fex_code_buffer_abi.h', {'fex-pe', 'ipa'}),
+    'native-code-guard-registry': ('build/ntdll-unix/fex_code_guards.h', {'ipa'}),
+    'fex': ('pin:FEX', {'fex', 'fex-pe', 'ipa'}),
+    'fex-code-buffer-producer': ('build/fex-compat/code-buffer-guard.patch', {'fex-pe', 'ipa'}),
+    'fex-pe-recipe': ('tools/build/build-fex-pe-compat.sh', {'fex-pe', 'ipa'}),
     'wine': ('pin:wine', {'wine-host', 'i386', 'dxmt', 'ipa'}),
     'dxmt': ('pin:dxmt', {'i386', 'dxmt', 'ipa'}),
     'llvm': ('tools/build/build-llvm-ios.sh', {'llvm', 'dxmt', 'ipa'}),
-    'mingw': ('tools/build/setup-llvm-mingw.sh', {'mingw', 'wine-host', 'i386', 'ipa'}),
+    'mingw': ('tools/build/setup-llvm-mingw.sh', {'mingw', 'wine-host', 'fex-pe', 'i386', 'ipa'}),
     'crypto': ('build/gnutls-ios/build.sh', {'gnutls', 'ipa'}),
     'media': ('build/ffmpeg/src/ffmpeg-7.1.1.tar.xz', {'ffmpeg', 'ipa'}),
     'fonts': ('build/freetype-ios/build.sh', {'freetype', 'ipa'}),
@@ -93,6 +101,7 @@ def keys(changed):
         values = {'runner.os': 'macOS', 'runner.arch': 'ARM64', 'steps.sdk.outputs.key': 'native',
                   'steps.sdk.outputs.rust': 'rust', 'steps.sdk.outputs.graphics': 'graphics',
                   'steps.sdk.outputs.ipa': 'ipa-env', 'steps.pins.outputs.wine': versions['wine'],
+                  'steps.pins.outputs.fex': versions['FEX'],
                   'steps.pins.outputs.dxmt': versions['dxmt']}
 
         def replace(match):

@@ -11,6 +11,8 @@ commands = [
     ['python3', 'tests/host/check-cs2-observation.py'],
     ['python3', 'tests/host/check-window-geometry.py'],
     ['python3', 'tests/host/check-steam-game-diagnostics.py', '--require-swift'],
+    ['python3', 'tests/host/check-run-diagnostics-zip.py', '--require-swift'],
+    ['python3', 'tests/host/check-run-diagnostics.py', '--require-swift'],
     ['python3', 'tests/host/check-cs2-vac-markers.py', '--require-swift'],
     ['python3', 'tests/host/check-crypt32-root-fd.py'],
     ['python3', 'tests/host/check-process-image-lookup.py'],
@@ -79,6 +81,13 @@ commands = [
     ['python3', 'tests/host/check-pool-cs2-budget.py'],
     ['python3', 'tests/host/check-pool-code-growth-budget.py'],
     ['python3', 'tests/host/check-pool-retired-main.py'],
+    ['python3', 'tests/host/check-pool-free-grace.py'],
+    ['python3', 'tests/host/check-pool-recent-code-wait.py'],
+    ['python3', 'tests/host/check-fex-code-guard-contract.py'],
+    ['python3', 'tests/host/check-fex-code-guard-parameters.py'],
+    ['python3', 'tests/host/check-fex-guarded-code-producer.py'],
+    ['python3', 'tests/host/check-code-guard-fault.py'],
+    ['python3', 'tests/host/check-native-build-provenance.py'],
     ['python3', 'tests/host/check-jit-pool-meter.py'],
     ['python3', 'tests/host/check-pool-failure-census.py'],
     ['python3', 'tests/host/check-pool-owner-accounting.py'],
@@ -187,7 +196,9 @@ commands = [
     ['python3', 'tests/host/check-dock-packaging.py'],
     ['bash', 'madeira-dock/tools/check.sh'],
 ]
+failed_checks = []
 for command in commands:
+    print('RUN ' + ' '.join(command), flush=True)
     result = subprocess.run(command, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                             env=dict(os.environ, PYTHONUNBUFFERED="1"))
     print(result.stdout, end='', flush=True)
@@ -197,4 +208,8 @@ for command in commands:
         detail = '\n'.join(failures)[-1600:] if failures else result.stdout[-1600:]
         message = detail.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
         print('::error title=Host check failed::' + ' '.join(command) + ': ' + message, flush=True)
-        raise SystemExit(result.returncode if result.returncode > 0 else 128-result.returncode)
+        failed_checks.append((' '.join(command), result.returncode if result.returncode > 0 else 128-result.returncode))
+if failed_checks:
+    print('Failed host checks: ' + ', '.join(name for name, _ in failed_checks), flush=True)
+    raise SystemExit(failed_checks[0][1])
+print(f'PASS all {len(commands)} required host checks', flush=True)

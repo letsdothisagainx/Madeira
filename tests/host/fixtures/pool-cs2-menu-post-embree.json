@@ -1,0 +1,557 @@
+{
+  "schema": "madeira-historical-post-embree-v1",
+  "scope": "All successful logged image copies after the first embree3.dll copy through capture end in two earlier user-reported menu runs. This is an observed historical load chain, not proof that every image is mandatory or that a current game version has no further dependencies.",
+  "game_build_id": null,
+  "game_build_id_status": "No CS2 appmanifest/build ID is provided by these logs or the 4a704 diagnostic manifest/summary. Steam client -buildid is not the CS2 build ID.",
+  "allocation_derivation": "For main-pool image rows, alloc_size = logged used - (logged pool copy address - RX base). Production printf reports offset + alloc_size; this includes image rounding, data-alignment reserve and trampoline reserve. It is not raw PE SizeOfImage or a global head high-water delta. Explicit freelist grant sizes provide additional checks.",
+  "rx_base": "0x300000000",
+  "sources": {
+    "4a704": {
+      "installed_commit": "4a70400f02a6892cbef430fd2be4b5c5d309bc4f",
+      "log_sha256": "66d40f1e2d048ff9a45b517f394960277c6e98cf1eba4eebf3d9dbc9552dfcf5",
+      "log_lines": 70350,
+      "pid": "034c",
+      "coverage": "Accepted CS2 module observations sequence122..136 identify each later image as this process, including its audio and crypto worker threads. No raw account names or installation paths are retained."
+    },
+    "8bd": {
+      "installed_commit": "8bd3785c7f4a422ffdb20033510db46ea0fdcd52",
+      "log_sha256": "ca868c13f9124f9c432173b46b4b5f1ddc9e471496910d6e8b1038e8a63d9366",
+      "log_lines": 68260,
+      "pid": "034c",
+      "coverage": "Accepted CS2 module observations sequence122..136 identify each later image as this process, including its audio and crypto worker threads. No raw account names or installation paths are retained."
+    }
+  },
+  "prerequisites": [
+    {
+      "module": "client.dll",
+      "image_size": 43659264,
+      "alloc_size": 43679744,
+      "sources": {
+        "4a704": {
+          "image_line": 48784,
+          "module_observer_line": 48786,
+          "pid": "034c",
+          "tid": "0350",
+          "sequence": 120,
+          "loader_line": 48788,
+          "loader_module_tag": "client.dll-eb5c0d5d42ee912a",
+          "pool_copy_address": "0x32737d000",
+          "logged_used": "0x29d25000"
+        },
+        "8bd": {
+          "image_line": 49103,
+          "module_observer_line": 49105,
+          "pid": "034c",
+          "tid": "0350",
+          "sequence": 120,
+          "loader_line": 49107,
+          "loader_module_tag": "client.dll-eb5c0d5d42ee912a",
+          "pool_copy_address": "0x338fe5000",
+          "logged_used": "0x3b98d000"
+        }
+      }
+    },
+    {
+      "module": "embree3.dll",
+      "image_size": 22163456,
+      "alloc_size": 22167552,
+      "sources": {
+        "4a704": {
+          "image_line": 48793,
+          "module_observer_line": 48795,
+          "pid": "034c",
+          "tid": "0350",
+          "sequence": 121,
+          "loader_line": 48797,
+          "loader_module_tag": "embree3.dll-bfdf794d989662f5",
+          "pool_copy_address": "0x339fe4000",
+          "logged_used": "0x3b508000"
+        },
+        "8bd": {
+          "image_line": 49110,
+          "module_observer_line": 49112,
+          "pid": "034c",
+          "tid": "0350",
+          "sequence": 121,
+          "loader_line": 49114,
+          "loader_module_tag": "embree3.dll-bfdf794d989662f5",
+          "pool_copy_address": "0x327358000",
+          "logged_used": "0x2887c000"
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "module": "MSVCP140.dll",
+      "image_size": 561152,
+      "alloc_size": 589824,
+      "sources": {
+        "4a704": {
+          "image_line": 48802,
+          "module_observer_line": 48804,
+          "pid": "034c",
+          "tid": "0350",
+          "sequence": 122,
+          "loader_line": 48806,
+          "loader_module_tag": "msvcp140.dll-fd95b6e92a18edb4",
+          "pool_copy_address": "0x33b509000",
+          "logged_used": "0x3b599000"
+        },
+        "8bd": {
+          "image_line": 49118,
+          "module_observer_line": 49120,
+          "pid": "034c",
+          "tid": "0350",
+          "sequence": 122,
+          "loader_line": 49125,
+          "loader_module_tag": "msvcp140.dll-fd95b6e92a18edb4",
+          "pool_copy_address": "0x33b98d000",
+          "logged_used": "0x3ba1d000"
+        }
+      },
+      "ordinal": 1
+    },
+    {
+      "module": "VCRUNTIME140.dll",
+      "image_size": 122880,
+      "alloc_size": 147456,
+      "sources": {
+        "4a704": {
+          "image_line": 48811,
+          "module_observer_line": 48813,
+          "pid": "034c",
+          "tid": "0350",
+          "sequence": 123,
+          "loader_line": 48816,
+          "loader_module_tag": "vcruntime140.dll-3d836f4615e504a0",
+          "pool_copy_address": "0x30cd07000",
+          "logged_used": "0xcd2b000"
+        },
+        "8bd": {
+          "image_line": 49129,
+          "module_observer_line": 49131,
+          "pid": "034c",
+          "tid": "0350",
+          "sequence": 123,
+          "loader_line": 49134,
+          "loader_module_tag": "vcruntime140.dll-3d836f4615e504a0",
+          "pool_copy_address": "0x33ba1f000",
+          "logged_used": "0x3ba43000"
+        }
+      },
+      "ordinal": 2
+    },
+    {
+      "module": "VCRUNTIME140_1.dll",
+      "image_size": 49152,
+      "alloc_size": 49152,
+      "sources": {
+        "4a704": {
+          "image_line": 48822,
+          "module_observer_line": 48824,
+          "pid": "034c",
+          "tid": "0350",
+          "sequence": 124,
+          "loader_line": 48826,
+          "loader_module_tag": "vcruntime140_1.dll-5a9959dd5994c948",
+          "pool_copy_address": "0x30cf40000",
+          "logged_used": "0xcf4c000"
+        },
+        "8bd": {
+          "image_line": 49139,
+          "module_observer_line": 49141,
+          "pid": "034c",
+          "tid": "0350",
+          "sequence": 124,
+          "loader_line": 49143,
+          "loader_module_tag": "vcruntime140_1.dll-5a9959dd5994c948",
+          "pool_copy_address": "0x30b760000",
+          "logged_used": "0xb76c000"
+        }
+      },
+      "ordinal": 3
+    },
+    {
+      "module": "libmpg123-0.dll",
+      "image_size": 434176,
+      "alloc_size": 442368,
+      "sources": {
+        "4a704": {
+          "image_line": 48888,
+          "module_observer_line": 48890,
+          "pid": "034c",
+          "tid": "0350",
+          "sequence": 125,
+          "loader_line": 48892,
+          "loader_module_tag": "libmpg123-0.dll-d36cc0356d904ccb",
+          "pool_copy_address": "0x33b598000",
+          "logged_used": "0x3b604000"
+        },
+        "8bd": {
+          "image_line": 49282,
+          "module_observer_line": 49284,
+          "pid": "034c",
+          "tid": "0350",
+          "sequence": 125,
+          "loader_line": 49286,
+          "loader_module_tag": "libmpg123-0.dll-d36cc0356d904ccb",
+          "pool_copy_address": "0x33ba40000",
+          "logged_used": "0x3baac000"
+        }
+      },
+      "ordinal": 4
+    },
+    {
+      "module": "mmdevapi.dll",
+      "image_size": 655360,
+      "alloc_size": 671744,
+      "sources": {
+        "4a704": {
+          "image_line": 48955,
+          "module_observer_line": 48958,
+          "pid": "034c",
+          "tid": "03e0",
+          "sequence": 126,
+          "loader_line": 48961,
+          "loader_module_tag": "mmdevapi.dll-57db4935cb1d4a81",
+          "pool_copy_address": "0x33b604000",
+          "logged_used": "0x3b6a8000"
+        },
+        "8bd": {
+          "image_line": 49342,
+          "module_observer_line": 49345,
+          "pid": "034c",
+          "tid": "03e4",
+          "sequence": 126,
+          "loader_line": 49348,
+          "loader_module_tag": "mmdevapi.dll-57db4935cb1d4a81",
+          "pool_copy_address": "0x33baac000",
+          "logged_used": "0x3bb50000"
+        }
+      },
+      "ordinal": 5
+    },
+    {
+      "module": "avrt.dll",
+      "image_size": 524288,
+      "alloc_size": 540672,
+      "sources": {
+        "4a704": {
+          "image_line": 48968,
+          "module_observer_line": 48971,
+          "pid": "034c",
+          "tid": "03e0",
+          "sequence": 127,
+          "loader_line": 48974,
+          "loader_module_tag": "avrt.dll-cbf6d88ff1151c3b",
+          "pool_copy_address": "0x33b6a8000",
+          "logged_used": "0x3b72c000"
+        },
+        "8bd": {
+          "image_line": 49356,
+          "module_observer_line": 49359,
+          "pid": "034c",
+          "tid": "03e4",
+          "sequence": 127,
+          "loader_line": 49362,
+          "loader_module_tag": "avrt.dll-cbf6d88ff1151c3b",
+          "pool_copy_address": "0x33bb50000",
+          "logged_used": "0x3bbd4000"
+        }
+      },
+      "ordinal": 6
+    },
+    {
+      "module": "cairo.dll",
+      "image_size": 1282048,
+      "alloc_size": 1310720,
+      "sources": {
+        "4a704": {
+          "image_line": 49232,
+          "module_observer_line": 49234,
+          "pid": "034c",
+          "tid": "0350",
+          "sequence": 128,
+          "loader_line": 49236,
+          "loader_module_tag": "cairo.dll-772fd4ce79915bba",
+          "pool_copy_address": "0x33b72d000",
+          "logged_used": "0x3b86d000"
+        },
+        "8bd": {
+          "image_line": 49633,
+          "module_observer_line": 49635,
+          "pid": "034c",
+          "tid": "0350",
+          "sequence": 128,
+          "loader_line": 49637,
+          "loader_module_tag": "cairo.dll-772fd4ce79915bba",
+          "pool_copy_address": "0x33bbd5000",
+          "logged_used": "0x3bd15000"
+        }
+      },
+      "ordinal": 7
+    },
+    {
+      "module": "shfolder.dll",
+      "image_size": 589824,
+      "alloc_size": 606208,
+      "sources": {
+        "4a704": {
+          "image_line": 49308,
+          "module_observer_line": 49310,
+          "pid": "034c",
+          "tid": "0350",
+          "sequence": 129,
+          "loader_line": 49313,
+          "loader_module_tag": "shfolder.dll-36d185cbe4189d30",
+          "pool_copy_address": "0x33b86c000",
+          "logged_used": "0x3b900000"
+        },
+        "8bd": {
+          "image_line": 49705,
+          "module_observer_line": 49707,
+          "pid": "034c",
+          "tid": "0350",
+          "sequence": 129,
+          "loader_line": 49710,
+          "loader_module_tag": "shfolder.dll-36d185cbe4189d30",
+          "pool_copy_address": "0x33bd14000",
+          "logged_used": "0x3bda8000"
+        }
+      },
+      "ordinal": 8
+    },
+    {
+      "module": "msctf.dll",
+      "image_size": 720896,
+      "alloc_size": 737280,
+      "sources": {
+        "4a704": {
+          "image_line": 49641,
+          "module_observer_line": 49645,
+          "pid": "034c",
+          "tid": "0350",
+          "sequence": 130,
+          "loader_line": 49648,
+          "loader_module_tag": "msctf.dll-b02e387aee9ad33b",
+          "pool_copy_address": "0x33b900000",
+          "logged_used": "0x3b9b4000"
+        },
+        "8bd": {
+          "image_line": 49865,
+          "module_observer_line": 49869,
+          "pid": "034c",
+          "tid": "0350",
+          "sequence": 130,
+          "loader_line": 49872,
+          "loader_module_tag": "msctf.dll-b02e387aee9ad33b",
+          "pool_copy_address": "0x33bda8000",
+          "logged_used": "0x3be5c000"
+        }
+      },
+      "ordinal": 9
+    },
+    {
+      "module": "host.dll",
+      "image_size": 1441792,
+      "alloc_size": 1441792,
+      "sources": {
+        "4a704": {
+          "image_line": 49662,
+          "module_observer_line": 49664,
+          "pid": "034c",
+          "tid": "0350",
+          "sequence": 131,
+          "loader_line": 49666,
+          "loader_module_tag": "host.dll-25722789f8571012",
+          "pool_copy_address": "0x33b9b4000",
+          "logged_used": "0x3bb14000"
+        },
+        "8bd": {
+          "image_line": 49986,
+          "module_observer_line": 49988,
+          "pid": "034c",
+          "tid": "0350",
+          "sequence": 131,
+          "loader_line": 49990,
+          "loader_module_tag": "host.dll-25722789f8571012",
+          "pool_copy_address": "0x33be5c000",
+          "logged_used": "0x3bfbc000"
+        }
+      },
+      "ordinal": 10
+    },
+    {
+      "module": "scenefilecache.dll",
+      "image_size": 1437696,
+      "alloc_size": 1458176,
+      "sources": {
+        "4a704": {
+          "image_line": 49674,
+          "module_observer_line": 49676,
+          "pid": "034c",
+          "tid": "0350",
+          "sequence": 132,
+          "loader_line": 49678,
+          "loader_module_tag": "scenefilecache.dll-a135ad267e085089",
+          "pool_copy_address": "0x33bb17000",
+          "logged_used": "0x3bc7b000"
+        },
+        "8bd": {
+          "image_line": 50000,
+          "module_observer_line": 50002,
+          "pid": "034c",
+          "tid": "0350",
+          "sequence": 132,
+          "loader_line": 50004,
+          "loader_module_tag": "scenefilecache.dll-a135ad267e085089",
+          "pool_copy_address": "0x32887f000",
+          "logged_used": "0x289e3000"
+        }
+      },
+      "ordinal": 11
+    },
+    {
+      "module": "matchmaking.dll",
+      "image_size": 2072576,
+      "alloc_size": 2080768,
+      "sources": {
+        "4a704": {
+          "image_line": 49687,
+          "module_observer_line": 49689,
+          "pid": "034c",
+          "tid": "0350",
+          "sequence": 133,
+          "loader_line": 49691,
+          "loader_module_tag": "matchmaking.dll-9e7d9816bb5031f2",
+          "pool_copy_address": "0x33bc78000",
+          "logged_used": "0x3be74000"
+        },
+        "8bd": {
+          "image_line": 50012,
+          "module_observer_line": 50014,
+          "pid": "034c",
+          "tid": "0350",
+          "sequence": 133,
+          "loader_line": 50016,
+          "loader_module_tag": "matchmaking.dll-9e7d9816bb5031f2",
+          "pool_copy_address": "0x3289e0000",
+          "logged_used": "0x28bdc000"
+        }
+      },
+      "ordinal": 12
+    },
+    {
+      "module": "navsystem.dll",
+      "image_size": 1380352,
+      "alloc_size": 1409024,
+      "sources": {
+        "4a704": {
+          "image_line": 49699,
+          "module_observer_line": 49701,
+          "pid": "034c",
+          "tid": "0350",
+          "sequence": 134,
+          "loader_line": 49703,
+          "loader_module_tag": "navsystem.dll-174103d243c57c92",
+          "pool_copy_address": "0x33be77000",
+          "logged_used": "0x3bfcf000"
+        },
+        "8bd": {
+          "image_line": 50026,
+          "module_observer_line": 50028,
+          "pid": "034c",
+          "tid": "0350",
+          "sequence": 134,
+          "loader_line": 50030,
+          "loader_module_tag": "navsystem.dll-174103d243c57c92",
+          "pool_copy_address": "0x328bdf000",
+          "logged_used": "0x28d37000"
+        }
+      },
+      "ordinal": 13
+    },
+    {
+      "module": "schannel.dll",
+      "image_size": 589824,
+      "alloc_size": 606208,
+      "sources": {
+        "4a704": {
+          "image_line": 55192,
+          "module_observer_line": 55195,
+          "pid": "034c",
+          "tid": "0424",
+          "sequence": 135,
+          "loader_line": 55198,
+          "loader_module_tag": "schannel.dll-b6824dedbc2abf6e",
+          "pool_copy_address": "0x329d24000",
+          "logged_used": "0x29db8000"
+        },
+        "8bd": {
+          "image_line": 55019,
+          "module_observer_line": 55022,
+          "pid": "034c",
+          "tid": "0424",
+          "sequence": 135,
+          "loader_line": 55025,
+          "loader_module_tag": "schannel.dll-b6824dedbc2abf6e",
+          "pool_copy_address": "0x328d34000",
+          "logged_used": "0x28dc8000"
+        }
+      },
+      "ordinal": 14
+    },
+    {
+      "module": "rsaenh.dll",
+      "image_size": 786432,
+      "alloc_size": 802816,
+      "sources": {
+        "4a704": {
+          "image_line": 55238,
+          "module_observer_line": 55241,
+          "pid": "034c",
+          "tid": "0424",
+          "sequence": 136,
+          "loader_line": 55244,
+          "loader_module_tag": "rsaenh.dll-6cd5b371ff05d55f",
+          "pool_copy_address": "0x329db8000",
+          "logged_used": "0x29e7c000"
+        },
+        "8bd": {
+          "image_line": 55037,
+          "module_observer_line": 55040,
+          "pid": "034c",
+          "tid": "0424",
+          "sequence": 136,
+          "loader_line": 55043,
+          "loader_module_tag": "rsaenh.dll-6cd5b371ff05d55f",
+          "pool_copy_address": "0x328dc8000",
+          "logged_used": "0x28e8c000"
+        }
+      },
+      "ordinal": 15
+    }
+  ],
+  "current_capture_comparison": {
+    "installed_commit": "e02e86b85c034d0a43f64cf78a5876ad9733e7d6",
+    "log_sha256": "c20b641c36abd757f66e216aaa4dc8aceb11fd8fc82688c538197ac5177ab721",
+    "capture": "035900",
+    "client_copy_status": "failed; no successful client/embree copy or post-embree dependency chain in this capture",
+    "first_client_requested_allocation": 43679744,
+    "allocation_census_line": 47239,
+    "historical_client_requested_allocation_matches": true,
+    "game_build_id": null,
+    "applicability": "Historical projection only. Many earlier successful game module sizes/tags agree, but the current unlaunched post-embree modules and full game build are not established."
+  },
+  "totals": {
+    "request_count": 15,
+    "alloc_size": 12894208,
+    "largest_alloc_size": 2080768,
+    "alloc_mib": 12.296875,
+    "largest_alloc_mib": 1.984375,
+    "all_observed_pid": "034c",
+    "all_15_loader_tags_match_between_historical_sources": true,
+    "loader_tag_interpretation": "A logged loader module tag is not a full cryptographic file hash or proof of the complete CS2 game build."
+  }
+}

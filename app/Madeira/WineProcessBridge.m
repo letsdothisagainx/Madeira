@@ -23,6 +23,7 @@
 #include <dirent.h>
 #include "../../build/madeira_cfg.h"   /* ml1095: one config file */
 #include "../../build/madeira_redact.h"   /* the arguments are logged with credential-like values redacted */
+#include "../../build/native_build_provenance.h"
 #include <sys/stat.h>
 #include <pwd.h>
 #include <limits.h>
@@ -41,6 +42,7 @@
 #include "WineServerBridge.h"
 #include "PrefixExtractor.h"
 #include "FEXBridge.h"  // fex_get_jit_write_offset()
+#include "JITAllocator.h"
 
 /* Write end of the pipe on fd 0, or -1 when stdin was left alone. The app's
  * host writes the guest's keystrokes here. */
@@ -495,23 +497,87 @@ __attribute__((constructor)) static void madeira_docs_dir_ctor(void)
  * LC_UUID of the image this bridge is in: the converter's unix half is linked into it
  * too, so the UUID changes whenever the converter could have, and a cache keyed on
  * the DLL's own build would otherwise keep serving an older converter's output. */
-static void madeira_export_image_uuid(void)
+static int madeira_read_image_uuid(char out[33])
 {
     Dl_info di;
     const struct mach_header_64 *mh;
-    const struct load_command *lc;
-    uint32_t i;
+    size_t offset = 0;
+    int found = 0;
 
-    if (!dladdr((const void *)&madeira_export_image_uuid, &di) || !(mh = di.dli_fbase)) return;
-    lc = (const struct load_command *)(mh + 1);
-    for (i = 0; i < mh->ncmds; i++, lc = (const struct load_command *)((const char *)lc + lc->cmdsize))
+    out[0] = 0;
+    if (!dladdr((const void *)&madeira_read_image_uuid, &di) || !(mh = di.dli_fbase) ||
+        mh->magic != MH_MAGIC_64 || mh->sizeofcmds > 16u * 1024u * 1024u ||
+        mh->ncmds > mh->sizeofcmds / sizeof(struct load_command)) return 0;
+    for (uint32_t i = 0; i < mh->ncmds; ++i)
     {
+        const struct load_command *lc;
+        if (offset > mh->sizeofcmds || mh->sizeofcmds - offset < sizeof(*lc)) return 0;
+        lc = (const struct load_command *)((const char *)(mh + 1) + offset);
+        if (lc->cmdsize < sizeof(*lc) || lc->cmdsize > mh->sizeofcmds - offset) return 0;
+        offset += lc->cmdsize;
         if (lc->cmd != LC_UUID) continue;
+        if (lc->cmdsize != sizeof(struct uuid_command) || found++) return 0;
         const uint8_t *u = ((const struct uuid_command *)lc)->uuid;
-        char hex[33];
-        for (int k = 0; k < 16; k++) snprintf(hex + 2 * k, 3, "%02x", u[k]);
-        setenv("MADEIRA_APP_IMAGE_UUID", hex, 1);
-        return;
+        for (int k = 0; k < 16; k++) snprintf(out + 2 * k, 3, "%02x", u[k]);
+    }
+    return found == 1;
+}
+static void madeira_export_image_uuid(void)
+{
+    char actual_uuid[33];
+    if (madeira_read_image_uuid(actual_uuid)) setenv("MADEIRA_APP_IMAGE_UUID", actual_uuid, 1);
+}
+
+extern const char *ios_virtual_build_provenance(void) __attribute__((weak_import));
+static NSString *madeira_provenance_string(NSDictionary *manifest, NSString *key, NSUInteger size)
+{
+    id value = manifest[key];
+    if (![value isKindOfClass:NSString.class] || [value length] != size ||
+        !madeira_build_hex([value UTF8String], size)) return @"unknown";
+    return value;
+}
+static void madeira_log_native_build_provenance(void)
+{
+    id raw = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"MadeiraNativeBuildProvenance"];
+    NSDictionary *manifest = [raw isKindOfClass:NSDictionary.class] ? raw : @{};
+    struct madeira_build_component native = {{0},{0}}, allocator = {{0},{0}};
+    int native_ok = madeira_build_component_read(ios_virtual_build_provenance ? ios_virtual_build_provenance() : NULL,
+        "MadeiraNativeVirtual:v1:", &native);
+    int jit_ok = madeira_build_component_read(jit_allocator_build_provenance(), "MadeiraJITAllocator:v1:", &allocator);
+    NSString *expected_native = madeira_provenance_string(manifest,@"expectedVirtualSourceSHA256",64);
+    NSString *expected_jit = madeira_provenance_string(manifest,@"expectedJITAllocatorSourceSHA256",64);
+    NSString *package = madeira_provenance_string(manifest,@"packageSourceRevision",40);
+    NSString *packaged_uuid = [manifest[@"nativeImageUUID"] isKindOfClass:NSString.class] ? manifest[@"nativeImageUUID"] : @"";
+    packaged_uuid = [[packaged_uuid stringByReplacingOccurrencesOfString:@"-" withString:@""] lowercaseString];
+    if (packaged_uuid.length != 32 || !madeira_build_hex(packaged_uuid.UTF8String,32)) packaged_uuid = @"unknown";
+    char actual_uuid[33];
+    const char *image_uuid = madeira_read_image_uuid(actual_uuid) ? actual_uuid : "unknown";
+    id policy = manifest[@"expectedJITCodeTailLimitMB"];
+    uint64_t expected_policy = [policy isKindOfClass:NSNumber.class] ? [policy unsignedLongLongValue] : 0;
+    uint64_t compiled_policy = jit_cs2_code_tail_limit_mb();
+    id image_policy = manifest[@"expectedJITImageArenaMB"];
+    uint64_t expected_image_policy = [image_policy isKindOfClass:NSNumber.class] ? [image_policy unsignedLongLongValue] : 0;
+    uint64_t compiled_image_policy = jit_cs2_image_arena_mb();
+    dprintf(STDERR_FILENO,"[native-build-provenance-v1] package-source=%s native-uuid=%s packaged-uuid=%s uuid-status=%s "
+        "virtual-source=%s expected-virtual=%s virtual-build=%s virtual-status=%s "
+        "jit-source=%s expected-jit=%s jit-build=%s jit-status=%s compiled-code-tail-mb=%llu expected-code-tail-mb=%llu policy-status=%s "
+        "compiled-hard-image-arena-mb=%llu expected-hard-image-arena-mb=%llu image-policy-status=%s\n",
+        package.UTF8String,image_uuid,packaged_uuid.UTF8String,
+        !strcmp(image_uuid,"unknown") || [packaged_uuid isEqualToString:@"unknown"] ? "missing" : !strcmp(image_uuid,packaged_uuid.UTF8String) ? "match" : "mismatch",
+        native_ok ? native.source : "unknown",expected_native.UTF8String,native_ok ? native.revision : "unknown",
+        !native_ok || [expected_native isEqualToString:@"unknown"] ? "missing" : !strcmp(native.source,expected_native.UTF8String) ? "match" : "mismatch",
+        jit_ok ? allocator.source : "unknown",expected_jit.UTF8String,jit_ok ? allocator.revision : "unknown",
+        !jit_ok || [expected_jit isEqualToString:@"unknown"] ? "missing" : !strcmp(allocator.source,expected_jit.UTF8String) ? "match" : "mismatch",
+        (unsigned long long)compiled_policy,(unsigned long long)expected_policy,
+        !expected_policy ? "missing" : compiled_policy == expected_policy ? "match" : "mismatch",
+        (unsigned long long)compiled_image_policy,(unsigned long long)expected_image_policy,
+        !expected_image_policy ? "missing" : compiled_image_policy == expected_image_policy ? "match" : "mismatch");
+    static const char *const names[] = {"WINE_IOS_JIT_CODE_TAIL_LIMIT_MB", "WINE_IOS_JIT_HEAD_RESERVE_MB", "MADEIRA_POOL_HEAD_RESERVE_MB",
+        "WINE_IOS_JIT_IMAGE_ARENA_MB", "WINE_IOS_FEX_CODE_GUARD_V1"};
+    for (size_t i=0; i<sizeof(names)/sizeof(names[0]); ++i) {
+        uint64_t number=0;int state=madeira_build_env_number(getenv(names[i]),&number);
+        dprintf(STDERR_FILENO,"[native-build-env-v1] name=%s state=%s numeric-input=%llu meaning=input-not-native-effective-policy\n",
+            names[i],state==0 ? "unset" : state<0 ? "invalid" : "present",(unsigned long long)number);
     }
 }
 
@@ -2566,6 +2632,7 @@ static void *wine_process_thread(void *arg) {
         wine_ios_main_thread = pthread_self();
         wine_ios_exit_initialized = 1;
 
+        madeira_log_native_build_provenance();
         LOG("Calling __wine_main...");
 
         const int steam_session = native_steam || steam_client;

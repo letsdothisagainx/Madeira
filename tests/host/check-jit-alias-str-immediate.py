@@ -50,6 +50,8 @@ static int second_present = 1;
 static uintptr_t protected_page;
 void *ios_jit_rx_base_global, *ios_jit_rw_base_global;
 size_t ios_jit_pool_size_global;
+/* This legacy STR fixture models ordinary aliases, not private code guards. */
+int ios_jit_code_guard_contains(uintptr_t address,size_t length) { (void)address;(void)length;return 0; }
 static int capture(int fd, const char *fmt, ...) { (void)fd; (void)fmt; return 0; }
 #define dprintf capture
 static int ios_jit_low_contains(uintptr_t addr) { (void)addr; return 0; }

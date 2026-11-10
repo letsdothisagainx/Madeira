@@ -1,10 +1,11 @@
 # CS2 executable-pool startup budget
 
-The current November 8 policy is described under "November 8 earlier rotation
-and embree3.dll": the pool stays 1152 MiB, with 240 MiB soft image headroom
-and a separate 512 MiB budget for
-fresh large MAIN-tail growth. Earlier measurements below retain their original
-settings as regression controls.
+The current November 10 architecture uses a **768 MiB image arena and a
+384 MiB code arena within the existing 1152 MiB pool**, with guarded geometric
+FEX code-buffer growth. See [the latest implementation and evidence](CS2_POOL_20261110_051624.md).
+The dated policies and captures below are historical controls, including the
+240 MiB soft headroom / 512 MiB code-growth policy which failed on-device.
+They are not guarantees made by the current allocator.
 
 The `86a0a17` device capture reaches the genuine `cs2.exe -steam -joy` process,
 loads engine2 and initializes DXMT/Metal. It then fails to load the existing

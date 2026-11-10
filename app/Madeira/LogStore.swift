@@ -196,6 +196,26 @@ final class LogStore: ObservableObject {
         }
     }
 
+    /// A broader, compressed run package. Collection is explicit and read-only;
+    /// only sanitized allowlisted logs and bounded diagnostic metadata are read.
+    func exportRunDiagnostics() async throws -> URL {
+        let documents = logFileURL.deletingLastPathComponent()
+        let bundleInfo = Bundle.main.infoDictionary ?? [:]
+        let cancellation = RunDiagnostics.Cancellation()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                DispatchQueue.global(qos: .utility).async {
+                    do {
+                        let url = try RunDiagnostics.export(documents: documents,
+                            temporaryDirectory: FileManager.default.temporaryDirectory, bundleInfo: bundleInfo,
+                            cancelled: cancellation.isCancelled)
+                        continuation.resume(returning: url)
+                    } catch { continuation.resume(throwing: error) }
+                }
+            }
+        } onCancel: { cancellation.cancel() }
+    }
+
     /// Keeps this session's log under the program's name as well:
     /// Documents/logs/<exe>-<yyyy-MM-dd_HH-mm-ss>.txt, e.g.
     /// Crysis64.exe-2026-09-26_12-05-00.txt, so a run can be found and sent

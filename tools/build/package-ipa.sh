@@ -46,6 +46,12 @@ python3 "$ROOT/tools/check-htmlipc-image.py" \
 rm -rf "$DERIVED" "$DIST/Payload"
 mkdir -p "$DIST"
 
+# The JIT allocator is compiled by Xcode, independently of cached native Wine.
+source_revision="${GITHUB_SHA:-$(git -C "$ROOT" rev-parse HEAD)}"
+python3 "$ROOT/tools/build/native-provenance.py" header --root "$ROOT" \
+  --component jitallocator --revision "$source_revision" \
+  --output "$ROOT/app/Madeira/.build-provenance/JITAllocator.generated.h"
+
 xcodebuild \
   -project "$ROOT/app/Madeira.xcodeproj" \
   -scheme Madeira \
@@ -73,6 +79,9 @@ value = plistlib.loads(file.read_bytes())
 value['MadeiraBuild'] = f"v{value['CFBundleShortVersionString']} ({value['CFBundleVersion']}) source={revision}"
 file.write_bytes(plistlib.dumps(value, fmt=plistlib.FMT_BINARY))
 PY_BUILD_STAMP
+
+python3 "$ROOT/tools/build/native-provenance.py" stamp --root "$ROOT" \
+  --revision "$source_revision" --app "$APP"
 
 # Preserve Madeira's requested JIT/debug entitlements in the IPA. SideStore will
 # replace this ad-hoc signature with the user's development signature while
@@ -147,3 +156,6 @@ python3 "$ROOT/tools/check-htmlipc-image.py" \
   --build-report "$ROOT/build/htmlipc/obj/madeira-htmlipc-bridge.build.json" \
   --source-root "$ROOT" \
   --app "$APP" --ipa "$DIST/Madeira.ipa"
+
+python3 "$ROOT/tools/build/native-provenance.py" check --root "$ROOT" \
+  --revision "$source_revision" --app "$APP" --ipa "$DIST/Madeira.ipa"

@@ -970,7 +970,24 @@ static WCHAR *ios_env_with( const WCHAR *env, const char *const *names, int coun
     SIZE_T used, extra = 0, o;
     const WCHAR *p;
     WCHAR *out;
-    int i, k;
+    int i, k, private_policy = 0;
+    unsigned int private_mask = 0;
+
+    /* Only these two app-owned policy values are authoritative. Registry-built
+     * service environments can retain stale copies; ordinary Windows variables
+     * and the original three alias inputs retain their missing-only semantics. */
+    const char *image_policy = get( "WINE_IOS_JIT_IMAGE_ARENA_MB" );
+    const char *guard_policy = get( "WINE_IOS_FEX_CODE_GUARD_V1" );
+    if (image_policy && !strcmp(image_policy,"768") && guard_policy && !strcmp(guard_policy,"1"))
+    {
+        unsigned int have = 0;
+        for (i = 0; i < count && i < 8; ++i)
+        {
+            if (!strcmp(names[i],"WINE_IOS_JIT_IMAGE_ARENA_MB")) { private_mask |= 1u << i; have |= 1; }
+            if (!strcmp(names[i],"WINE_IOS_FEX_CODE_GUARD_V1")) { private_mask |= 1u << i; have |= 2; }
+        }
+        private_policy = have == 3;
+    }
 
     *added = 0;
     for (i = 0; i < count && i < 8; i++)
@@ -978,7 +995,7 @@ static WCHAR *ios_env_with( const WCHAR *env, const char *const *names, int coun
         int n = (int)strlen( names[i] ), found = 0;
 
         if (!(values[i] = get( names[i] ))) continue;
-        for (p = env; p && *p && !found; p++)
+        for (p = env; !(private_policy && (private_mask & (1u << i))) && p && *p && !found; p++)
         {
             for (k = 0; k < n; k++)
             {
@@ -997,8 +1014,35 @@ static WCHAR *ios_env_with( const WCHAR *env, const char *const *names, int coun
     for (p = env; p && *p; p++) while (*p) p++;
     used = env ? (SIZE_T)(p - env) : 0;   /* every entry with its NUL, not the final NUL */
     if (!(out = malloc( (used + extra + 1) * sizeof(WCHAR) ))) { *added = 0; return NULL; }
-    if (used) memcpy( out, env, used * sizeof(WCHAR) );
-    o = used;
+    if (!private_policy)
+    {
+        if (used) memcpy( out, env, used * sizeof(WCHAR) );
+        o = used;
+    }
+    else
+    {
+        o = 0;
+        for (p = env; p && *p; )
+        {
+            const WCHAR *entry = p;
+            int drop = 0;
+            while (*p) ++p;
+            SIZE_T length = ++p - entry;
+            for (i = 0; i < count && i < 8; ++i)
+            {
+                if (!(private_mask & (1u << i))) continue;
+                int n = strlen(names[i]);
+                for (k = 0; k < n && (SIZE_T)k < length; ++k)
+                {
+                    WCHAR c = entry[k];
+                    if (c >= 'a' && c <= 'z') c -= 32;
+                    if (c != (WCHAR)names[i][k]) break;
+                }
+                if (k == n && (SIZE_T)n < length && entry[n] == '=') drop = 1;
+            }
+            if (!drop) { memcpy(out+o,entry,length*sizeof(WCHAR));o += length; }
+        }
+    }
     for (i = 0; i < count && i < 8; i++)
     {
         const char *s;
@@ -2147,12 +2191,23 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
     /* madeira-bcd: a child without the JIT pool's variables gets the app's (see
      * ios_env_with); env.MADEIRA_JIT_ENV_INHERIT=0 leaves its environment alone. */
     {
-        static const char *const jit_names[] = { "WINE_IOS_JIT_RX", "WINE_IOS_JIT_SIZE", "WINE_IOS_JIT_RW" };
+        static const char *const jit_names[] = { "WINE_IOS_JIT_RX", "WINE_IOS_JIT_SIZE", "WINE_IOS_JIT_RW",
+            "WINE_IOS_JIT_IMAGE_ARENA_MB", "WINE_IOS_FEX_CODE_GUARD_V1" };
         const char *keep = getenv( "MADEIRA_JIT_ENV_INHERIT" );   /* 0: a child's environment stays as its creator built it */
+        const char *image_policy = getenv("WINE_IOS_JIT_IMAGE_ARENA_MB"), *guard_policy = getenv("WINE_IOS_FEX_CODE_GUARD_V1");
+        int partition = image_policy && !strcmp(image_policy,"768") && guard_policy && !strcmp(guard_policy,"1");
         unsigned int added = 0;
         SIZE_T len = 0;
-        WCHAR *env = (keep && keep[0] == '0') ? NULL
-                   : ios_env_with( params->Environment, jit_names, 3, getenv, &len, &added );   /* leaks once per start, as above */
+        WCHAR *env;
+        if (keep && keep[0] == '0')
+        {
+            env = partition ? ios_env_with(params->Environment,jit_names+3,2,getenv,&len,&added) : NULL;
+            added <<= 3;
+        }
+        else env = ios_env_with( params->Environment, jit_names, 5, getenv, &len, &added );   /* leaks once per start, as above */
+        /* An active hard partition always republishes its two private values.
+         * A failed environment allocation must not create an unguarded child. */
+        if (partition && !env) return STATUS_NO_MEMORY;
 
         if (env)
         {
@@ -2160,12 +2215,15 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
 
             params->Environment = env;
             params->EnvironmentSize = len * sizeof(WCHAR);
-            if (jit_env_n++ < 16)
+            if (jit_env_n++ < 16 && (added & 7))
                 dprintf( 2, "[jit-env] %s starts without the JIT pool's variables (a service gets its "
                             "environment from the registry): added%s%s%s so its emulator writes code "
                             "through the RW alias (env.MADEIRA_JIT_ENV_INHERIT=0 leaves it)\n",
                          debugstr_us( &params->ImagePathName ), (added & 1) ? " WINE_IOS_JIT_RX" : "",
                          (added & 2) ? " WINE_IOS_JIT_SIZE" : "", (added & 4) ? " WINE_IOS_JIT_RW" : "" );
+            if (partition && jit_env_n <= 16)
+                dprintf(2,"[jit-private-policy-v1] child environment image-arena-mb=768 code-guard-v1=1 action=canonicalized aliases=%s\n",
+                    keep && keep[0]=='0' ? "caller-owned" : "missing-inherited");
         }
     }
 #endif

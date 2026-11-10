@@ -344,7 +344,7 @@ jobs:
       # Cache objects, never skip the shared staging/configure/build/package gates.
       - uses: actions/cache@v4
         with:
-          key: plan19-${{ steps.sdk.outputs.key }}-fex-pe-${{ steps.pins.outputs.fex }}-${{ hashFiles('build/fex-compat/**', 'build/fex-wow64/build.sh', 'build/fex-arm64ec/build.sh', 'tools/build/stage-fex-compat.py', 'tools/build/build-fex-pe-compat.sh', 'tools/build/build-fex-wow64-compat.sh', 'tools/build/build-fex-arm64ec-compat.sh', 'tools/build/setup-llvm-mingw.sh', 'tools/check-io-abi-package.py', 'tools/check-fex-subfloor-atomics.py') }}
+          key: plan19-${{ steps.sdk.outputs.key }}-fex-pe-${{ steps.pins.outputs.fex }}-${{ hashFiles('build/fex-compat/**', 'build/ntdll-unix/fex_code_buffer_abi.h', 'build/fex-wow64/build.sh', 'build/fex-arm64ec/build.sh', 'tools/build/stage-fex-compat.py', 'tools/build/build-fex-pe-compat.sh', 'tools/build/build-fex-wow64-compat.sh', 'tools/build/build-fex-arm64ec-compat.sh', 'tools/build/setup-llvm-mingw.sh', 'tools/check-io-abi-package.py', 'tools/check-fex-subfloor-atomics.py') }}
           path: |
             FEX/build-wow64
             FEX/build-arm64ec
@@ -389,6 +389,7 @@ jobs:
           path: scm-ipa
       - name: Check compiled SCM producer and NDR argument frames
         run: |
+          python3 tools/build/native-provenance.py check --root "$GITHUB_WORKSPACE" --revision "$GITHUB_SHA" --ipa scm-ipa/Madeira.ipa
           python3 -m venv "$RUNNER_TEMP/scm-abi-tools"
           "$RUNNER_TEMP/scm-abi-tools/bin/pip" install -r build/scm-rpc/test-requirements.txt
           unzip -q scm-ipa/Madeira.ipa 'Payload/Madeira.app/arm64ec-windows/*' -d scm-ipa
@@ -420,7 +421,8 @@ jobs:
                          b'[alias-exclusive-add]', b'[native-srw-alias-v1]', b'[startup-app-v1]',
                          b'[startup-timeline-v1]', b'[steam-session-v1]', b'[metal-resource-v1]',
                          b'[metal-api-v1]', b'[metal-progress-v1]', b'[metal-lifecycle-v1]',
-                         b'[cs2-window-geometry-v1]', b'[pool-accounting]'):
+                         b'[cs2-window-geometry-v1]', b'[pool-accounting]', b'[pool-code-wait]',
+                         b'[native-build-provenance-v1]', b'[pool-policy-runtime-v1]'):
               assert marker in image, 'missing native diagnostic: ' + repr(marker)
           assert b'SEGV LOOP FATAL' not in image, 'legacy fault-skipping path is still bundled'
           print('PASS native attach/UI/I/O/guard/process-isolation diagnostics included in IPA')

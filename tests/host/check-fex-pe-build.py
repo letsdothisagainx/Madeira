@@ -24,7 +24,9 @@ with tempfile.TemporaryDirectory(prefix='madeira-fex-pe-') as temporary:
     scripts = ('tools/build/stage-fex-compat.py', 'tools/build/build-fex-pe-compat.sh',
                'tools/build/build-fex-wow64-compat.sh', 'tools/build/build-fex-arm64ec-compat.sh',
                'build/fex-wow64/build.sh', 'build/fex-arm64ec/build.sh')
-    for relative in (*scripts, 'tools/check-fex-subfloor-atomics.py', *('build/fex-compat/' + name for name in stager.PATCHES)):
+    for relative in (*scripts, 'tools/check-fex-subfloor-atomics.py',
+                     'build/fex-compat/owner_allocator.cmake', 'build/ntdll-unix/fex_code_buffer_abi.h',
+                     *('build/fex-compat/' + name for name in stager.PATCHES)):
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / relative, path)
@@ -61,6 +63,14 @@ with Path(os.environ['PE_TRACE']).open('a') as log:log.write(json.dumps(args)+'\
 core=root/'FEX/FEXCore/Source/Interface/IR/IREmitter.h'
 assert 'TryReownOrClaimBuffer()' in core.read_text()
 assert '[fex-ir-pool-v1]' in core.read_text()
+producer=(root/'FEX/FEXCore/Source/Interface/Core/CPUBackend.cpp').read_text()
+producer_header=(root/'FEX/FEXCore/Source/Interface/Core/CPUBackend.h').read_text()
+hooks=(root/'FEX/FEXCore/include/FEXCore/Utils/AllocatorHooks.h').read_text()
+assert producer.count('FEXCore::Allocator::VirtualAllocCodeBuffer(Size, GuardSize)')==2
+assert '[code-buffer-grow-v1]' in producer and 'madeira_fex_code_buffer_next_size(PreviousSize)' in producer
+assert 'return AllocatedSize - GuardSize;' in producer_header and 'Buffer.GuardSize' in producer
+assert 'Parameters[1].Type = MADEIRA_FEX_CODE_PARAMETER_TYPE;' in hooks
+assert (root/'build/ntdll-unix/fex_code_buffer_abi.h').is_file()
 wow=(root/'FEX/Source/Windows/WOW64/Module.cpp').read_text()
 build_dir=Path(args[1] if args[0]=='--build' else args[args.index('-B')+1])
 if build_dir.name=='build-wow64':assert 'MadeiraPrepareFirstDispatch' in wow

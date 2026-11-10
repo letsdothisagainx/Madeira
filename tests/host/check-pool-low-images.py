@@ -26,6 +26,7 @@ helpers = ''.join(function(signature) for signature in (
     'static size_t ios_pool_holes_head_place(',
     'static int ios_pool_skip_pieces(',
     'static int ios_pool_low_take(',
+    'static int ios_pool_image_range_fits(',
     'static int ios_pool_best_fit(',
     'static int ios_pool_keep_big(',
     'static int ios_pool_free_put(',
@@ -67,6 +68,7 @@ fixture = r'''
 #include <pthread.h>
 #include <unistd.h>
 #define MB ((size_t)1 << 20)
+static size_t ios_pool_image_limit; /* Legacy region-C/image transfer path. */
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "failed line %d: %s\n", __LINE__, #c); exit(1); } } while (0)
 #define IOS_POOL_BIG_MIN (64u * 1024 * 1024)
 #define IOS_POOL_LEDGER_MAX 1024

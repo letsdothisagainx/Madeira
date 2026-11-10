@@ -139,6 +139,9 @@ extern volatile int madeira_diag_enabled;
  * this file that decides handling asks these as well; both are 0 without it. */
 extern int ios_jit_low_contains( uintptr_t a );
 extern int ios_jit_low_rw_contains( uintptr_t a );
+/* Permanent code-buffer guards are an intentional denial, including through
+ * the writable alias. This query is lock-free and performs no VM operation. */
+extern int ios_jit_code_guard_contains( uintptr_t addr, size_t size );
 extern uintptr_t ios_jit_low_rx_global;
 extern size_t ios_jit_low_size_global;
 
@@ -1946,6 +1949,7 @@ static uintptr_t ios_write_alias( uintptr_t addr )
     uintptr_t rw = (uintptr_t)ios_jit_rw_base_global;
     size_t size = ios_jit_pool_size_global;
 
+    if (ios_jit_code_guard_contains( addr, 1 )) return 0;
     if (rx && rw && ((addr >= rx && addr - rx < size) || ios_jit_low_contains( addr )))
         return rw + (addr - rx);
     return ios_jit_anon_alias_lookup( addr );
@@ -1965,6 +1969,7 @@ static int ios_alias_write_is_trapped( uintptr_t addr )
     uintptr_t rx = (uintptr_t)ios_jit_rx_base_global;
     int prot;
 
+    if (ios_jit_code_guard_contains( addr, 1 )) return 1;
     if ((rx && addr >= rx && addr - rx < ios_jit_pool_size_global) || ios_jit_low_contains( addr )) return 0;
     prot = ios_page_expected_prot( (const void *)addr );
     return prot >= 0 && !(prot & PROT_WRITE);
@@ -1983,6 +1988,7 @@ static int ios_alias_write( uintptr_t addr, const void *source, size_t size, uin
 
     *blocked = 0;
     if (!size || size > MAX_STORE || addr > UINTPTR_MAX - (size - 1)) return 0;
+    if (ios_jit_code_guard_contains( addr, size )) { *blocked = addr; return 0; }
     while (done < size)
     {
         uintptr_t at = addr + done, rw = ios_write_alias( at );
@@ -2947,6 +2953,7 @@ int ios_store_split_crossing( uint32_t insn, arm_thread_state64_t *st,
     else return 0;
 
     if (ea > UINTPTR_MAX - (bytes - 1)) return -1;
+    if (ios_jit_code_guard_contains( (uintptr_t)ea, bytes )) return -1;
     if (((ea ^ (ea + bytes - 1)) & ~(uint64_t)0x3fff) == 0) return 0;   /* within one page */
     if (v && !neon) return 0;
 
@@ -3869,6 +3876,10 @@ static void *ios_mach_exception_thread( void *arg )
         if (kr == KERN_SUCCESS)
         {
             uintptr_t fault_addr = (uintptr_t)req->code[1];
+            /* An intentional guard must reach genuine exception delivery.
+             * In particular, never alias-emulate it or restore its RX page. */
+            if (req->exception == EXC_BAD_ACCESS && ios_jit_code_guard_contains( fault_addr, 1 ))
+                goto ios_deliver_code_guard_exception;
             if (req->exception == EXC_BREAKPOINT &&
                 (ios_verified_guest_breakpoint( arm_thread_state64_get_pc(state), state.__x[28], thread_teb ) ||
                  ios_verified_guest64_breakpoint( arm_thread_state64_get_pc(state), state.__x[28], thread_teb )))
@@ -6597,6 +6608,7 @@ skip_reclaim_band: ;
             }
 
 dispatch_guest_fault:
+ios_deliver_code_guard_exception:
             /* madeira-bcd: a thread of an EXITED pseudo-process woke into its
              * reclaimed JIT copies; its ntdll copy is gone too, so guest SEH can
              * only re-fault until the ml461/ml465 terminal kills the whole app
@@ -9557,6 +9569,7 @@ static int ios_mach_deliver_guest_exception_inner( thread_t thread, arm_thread_s
      * violation nor a transient — so it skips wine's page machinery, the
      * transient-retry debounce and the redelivery terminal below. */
     int is_align = 0;
+    const int is_code_guard = exception == EXC_BAD_ACCESS && ios_jit_code_guard_contains( fault_addr, 1 );
 
     /* Pick the faulting thread's TEB by STACK CONTAINMENT, not by
      * self-consistency alone.
@@ -9797,7 +9810,7 @@ static int ios_mach_deliver_guest_exception_inner( thread_t thread, arm_thread_s
          * MADEIRA_MACH_ALIGN_FAULT=0 restores the old classification (every
          * data abort here is c0000005) for a same-build A/B; it is read once
          * when the exception server starts, never from this thread. */
-        is_align = ios_mach_align_fault_enabled &&
+        is_align = !is_code_guard && ios_mach_align_fault_enabled &&
                    (esr_ec == 0x24 || esr_ec == 0x25) && (esr & 0x3F) == 0x21;
         if (is_align)
         {
@@ -9982,7 +9995,7 @@ static int ios_mach_deliver_guest_exception_inner( thread_t thread, arm_thread_s
          * `rec->ExceptionCode = ret` — letting it run would overwrite the
          * 80000002 chosen above with c0000005 again. It still has to pass the
          * guest-pc gate below, so no `goto dispatch` here. */
-        if (!is_align)
+        if (!is_align && !is_code_guard)
         {
             st = ios_virtual_handle_fault_for_thread( &rec, teb );
             if (!st)
@@ -10018,7 +10031,7 @@ static int ios_mach_deliver_guest_exception_inner( thread_t thread, arm_thread_s
      * the decline regime. Dispatch only on the 3rd identical
      * (thread,pc,addr) fault — still well before the script's 8-stop kill.
      * Single server thread services all messages: no atomics needed. */
-    if (!is_align)
+    if (!is_align && !is_code_guard)
     {
         static struct { uint64_t key; uint32_t n; } rep[16];
         uint64_t key = ((uint64_t)thread << 48) ^ pc ^ ((uint64_t)fault_addr << 1);
@@ -10028,7 +10041,7 @@ static int ios_mach_deliver_guest_exception_inner( thread_t thread, arm_thread_s
     }
 
 dispatch:
-    if (!is_align)
+    if (!is_align && !is_code_guard)
     {
         static struct { thread_t thread; uintptr_t teb; struct ios_fault_replay replay; } faults[IOS_MAX_WINE_THREADS];
         unsigned i;
@@ -11588,6 +11601,27 @@ static void ios_fault_operand_trace( ucontext_t *context, const void *fault_addr
     }
 }
 
+/* Preserve the original access violation for a permanent code guard. Calling
+ * setup_exception delivers it; this never advances the faulting instruction or
+ * asks page/SMC machinery to turn the guard back into accessible memory. */
+static int ios_deliver_code_guard_signal( ucontext_t *context, void *address )
+{
+    EXCEPTION_RECORD rec = { EXCEPTION_ACCESS_VIOLATION };
+    DWORD64 esr;
+
+    if (!ios_jit_code_guard_contains( (uintptr_t)address, 1 )) return 0;
+    esr = get_fault_esr( context );
+    rec.ExceptionAddress = (void *)PC_sig( context );
+    rec.NumberParameters = 2;
+    if ((esr >> 26) == 0x20 || (esr >> 26) == 0x21)
+        rec.ExceptionInformation[0] = EXCEPTION_EXECUTE_FAULT;
+    else if (esr & 0x40) rec.ExceptionInformation[0] = EXCEPTION_WRITE_FAULT;
+    else rec.ExceptionInformation[0] = EXCEPTION_READ_FAULT;
+    rec.ExceptionInformation[1] = (ULONG_PTR)address;
+    setup_exception( context, &rec );
+    return 1;
+}
+
 static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
 {
     EXCEPTION_RECORD rec = { 0 };
@@ -11604,6 +11638,7 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
         return;
     }
     dbg_ok = ios_make_wine_logging_safe();
+    if (ios_deliver_code_guard_signal( context, siginfo->si_addr )) return;
 #endif
 
 #ifdef WINE_IOS
@@ -14593,6 +14628,7 @@ static void bus_handler( int signal, siginfo_t *siginfo, void *sigcontext )
         return;
     }
     ios_make_wine_logging_safe();   /* ml375: before any ERR/WARN — see helper */
+    if (ios_deliver_code_guard_signal( (ucontext_t *)sigcontext, siginfo->si_addr )) return;
     ios_track_signal( signal, sigcontext );
     static int bus_count = 0;
     bus_count++;

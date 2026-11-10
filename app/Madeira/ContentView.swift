@@ -2909,6 +2909,8 @@ struct ContentView: View {
             // Steam command keeps the original game's profile in `profile`.
             unsetenv("WINE_IOS_JIT_HEAD_RESERVE_MB")
             unsetenv("WINE_IOS_JIT_CODE_TAIL_LIMIT_MB")
+            unsetenv("WINE_IOS_JIT_IMAGE_ARENA_MB")
+            unsetenv("WINE_IOS_FEX_CODE_GUARD_V1")
             // A library entry's launch profile (executable, arguments, x87
             // precision, frame limit).
             if let profile {
@@ -2929,6 +2931,17 @@ struct ContentView: View {
             } else {
                 _ = try? MadeiraConfig.applyGame(nil)   // no library game: no game's own lines
             }
+
+            // These private flags are selected by the measured CS2 plan, not
+            // by a retained profile or the later Wine cfg import loops.
+            let cs2PartitionNames = ["WINE_IOS_JIT_IMAGE_ARENA_MB", "WINE_IOS_FEX_CODE_GUARD_V1"]
+            var cs2PartitionLocks = getenv("MADEIRA_ENV_LOCKED").map { String(cString: $0) }?
+                .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } ?? []
+            for name in cs2PartitionNames {
+                unsetenv(name)
+                if !cs2PartitionLocks.contains(name) { cs2PartitionLocks.append(name) }
+            }
+            let cs2PartitionLocksReady = setenv("MADEIRA_ENV_LOCKED", cs2PartitionLocks.joined(separator: ","), 1) == 0
 
             // Reassert the immutable selected paths after profile environment,
             // before JIT/server startup. Both later cfg loops honor these locks.
@@ -3080,6 +3093,7 @@ struct ContentView: View {
             var minimumPoolSize = 0
             var selectedImageReserveMB: UInt64 = 0
             var selectedCodeTailLimitMB: UInt64 = 0
+            var selectedImageArenaMB: UInt64 = 0
             if profile?.steamAppID == 730 {
                 var available: UInt64 = 0, footprint: UInt64 = 0
                 var mapMin: UInt64 = 0, mapMax: UInt64 = 0
@@ -3102,6 +3116,17 @@ struct ContentView: View {
                     let codeTailLimitMB = jit_cs2_code_tail_limit_mb()
                     selectedCodeTailLimitMB = codeTailLimitMB
                     setenv("WINE_IOS_JIT_CODE_TAIL_LIMIT_MB", String(codeTailLimitMB), 1)
+                    let imageArenaMB = jit_cs2_image_arena_mb()
+                    selectedImageArenaMB = imageArenaMB
+                    if !cs2PartitionLocksReady ||
+                        setenv("WINE_IOS_JIT_IMAGE_ARENA_MB", String(imageArenaMB), 1) != 0 ||
+                        setenv("WINE_IOS_FEX_CODE_GUARD_V1", "1", 1) != 0 {
+                        unsetenv("WINE_IOS_JIT_IMAGE_ARENA_MB")
+                        unsetenv("WINE_IOS_FEX_CODE_GUARD_V1")
+                        selectedImageArenaMB = 0
+                        poolSelectionSource = "cs2-policy-export-declined"
+                        cs2PoolPreflightFailure = "Madeira could not publish CS2's verified memory policy. Restart Madeira and try again."
+                    }
                 } else {
                     poolSelectionSource = StikJITHelper.poolTaken ? "cs2-existing-pool" : "cs2-budget-declined"
                     cs2PoolPreflightFailure = StikJITHelper.poolTaken
@@ -3117,6 +3142,7 @@ struct ContentView: View {
             let effectivePoolMB = cs2PoolPreflightFailure == nil ? String(poolSizeMB) : "none"
             logStore.log("[jit-pool-selection-v1] source=\(poolSelectionSource) configured-mb=\(configuredPoolMB.map { String($0) } ?? "none") "
                 + "effective-mb=\(effectivePoolMB) image-reserve-mb=\(selectedImageReserveMB) code-tail-limit-mb=\(selectedCodeTailLimitMB) "
+                + "hard-image-arena-mb=\(selectedImageArenaMB) private-code-guard-v1=\(selectedImageArenaMB > 0 ? 1 : 0) "
                 + "session-reserve-mb=\(minimumPoolSize > 0 ? 2048 : 0) result=\(cs2PoolPreflightFailure == nil ? "requested" : "declined") "
                 + "existing-pool=\(StikJITHelper.poolTaken ? 1 : 0) physical-charge=once coverage=startup-plan-not-allocation")
             // ml694: W^X A/B switch. Documents/madeira-wx.txt containing "0"
@@ -3526,6 +3552,8 @@ struct ContentView: View {
                 // the lines above this one in the log carry the detail.
                 unsetenv("WINE_IOS_JIT_HEAD_RESERVE_MB")
                 unsetenv("WINE_IOS_JIT_CODE_TAIL_LIMIT_MB")
+                unsetenv("WINE_IOS_JIT_IMAGE_ARENA_MB")
+                unsetenv("WINE_IOS_FEX_CODE_GUARD_V1")
                 let reason = cs2PoolPreflightFailure ?? StikJITHelper.poolFailure
                 logStore.log("  " + (reason ?? "No reason was recorded; see the pool lines above."), level: .info)
                 logStore.uiPaused = false

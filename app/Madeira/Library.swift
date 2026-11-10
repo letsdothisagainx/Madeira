@@ -3023,6 +3023,7 @@ struct LibraryView: View {
                     Toggle("Extended logging", isOn: $input.diagnostics)
                     CS2VACDiagnosticActions()
                     SteamGameDiagnosticsExportButton()
+                    SteamGameDiagnosticsExportButton(run: true)
                     Button("Run D3D11 pixel test", systemImage: "checkmark.rectangle") { runGraphicsPixelProbe() }
                         .disabled(model.current != nil || model.preparing != nil || jit.busy)
                     Text("Checks known pixels through DXMT. Close Wine first; results appear in the Madeira log. Restart before returning to a game.")
@@ -5180,6 +5181,7 @@ struct LibraryHUD: View {
                     CS2VACDiagnosticActions()
                     SteamGameDiagnosticsExportButton()
                 }
+                SteamGameDiagnosticsExportButton(run: true)
                 Divider()
                 FPSChoice(mode: Binding(get: { model.fpsMode }, set: { model.setFPS($0) }))
                 // Saved to the game with the rest of the session's profile.
