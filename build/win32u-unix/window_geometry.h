@@ -33,11 +33,20 @@ static struct madeira_window_geometry madeira_window_geometry_begin(
     unsigned style, unsigned exstyle, int x, int y, int width, int height, HWND parent)
 {
     struct madeira_window_geometry out = {0};
-    TEB *teb = NtCurrentTeb();
-    RTL_USER_PROCESS_PARAMETERS *params = teb && teb->Peb ? teb->Peb->ProcessParameters : NULL;
-    unsigned saved_error = teb ? teb->LastErrorValue : 0;
     int saved_errno = errno;
-    if (params && !(style & WS_CHILD) && parent != HWND_MESSAGE &&
+    TEB *teb = NtCurrentTeb();
+    unsigned saved_error = teb ? teb->LastErrorValue : 0;
+    RTL_USER_PROCESS_PARAMETERS *params;
+    /* CS2 is64-bit. The current thread's offset, unlike session wow_peb,
+     * identifies WoW64 exactly. Exclude unrelated windows before metadata. */
+    if (!teb || teb->WowTebOffset || (style & WS_CHILD) || parent == HWND_MESSAGE)
+    {
+        if (teb) teb->LastErrorValue = saved_error;
+        errno = saved_errno;
+        return out;
+    }
+    params = teb->Peb ? teb->Peb->ProcessParameters : NULL;
+    if (params &&
         !(params->ImagePathName.Length % sizeof(WCHAR)) &&
         ios_cs2_role((const uint16_t *)params->ImagePathName.Buffer,
                      params->ImagePathName.Length / sizeof(WCHAR)) &&

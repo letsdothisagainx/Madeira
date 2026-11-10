@@ -84,7 +84,7 @@ typedef struct { int left, top, right, bottom; } RECT;
 typedef struct { WCHAR *Buffer; unsigned short Length, MaximumLength; } UNICODE_STRING;
 typedef struct { UNICODE_STRING ImagePathName; } RTL_USER_PROCESS_PARAMETERS;
 typedef struct { RTL_USER_PROCESS_PARAMETERS *ProcessParameters; } PEB;
-typedef struct { PEB *Peb; DWORD LastErrorValue; } TEB;
+typedef struct { PEB *Peb; DWORD LastErrorValue; int WowTebOffset; } TEB;
 typedef struct { int x, y, cx, cy; } CREATESTRUCTW;
 struct window_rects { RECT window, client, visible; };
 #define WS_CHILD 0x40000000u
@@ -140,7 +140,7 @@ static void set_image(const char *text) {
 }
 static void identity(unsigned owner, unsigned pid, unsigned tid) {
     assert(owner<40);
-    current_teb=(TEB){&owners[owner],77}; teb_pointer=&current_teb;
+    current_teb=(TEB){.Peb=&owners[owner],.LastErrorValue=77}; teb_pointer=&current_teb;
     current_pid=pid; current_tid=tid;
     monitor_success=96; raw_dpi=144; query_success=1; monitor_calls=query_calls=0;
     query_geometry=(struct window_rects){{70,-20,730,470},{80,0,720,450},{80,0,720,450}};
@@ -163,6 +163,14 @@ static void filter_cases(void) {
     for(unsigned i=0;i<sizeof(names)/sizeof(names[0]);i++) { set_image(names[i]); assert(!begin(0,0).sequence); }
     set_image("C:\\private-account-secret\\cs2.exe");
     assert(!begin(WS_CHILD,1).sequence && !begin(0,HWND_MESSAGE).sequence);
+    /* Production prefilter must not touch even the PEB pointer for WoW64,
+     * children or message-only windows. ASan/UBSan traps a read at address1. */
+    current_teb.Peb=(PEB *)(uintptr_t)1;
+    current_teb.WowTebOffset=0x2000; assert(!begin(0,0).sequence);
+    current_teb.WowTebOffset=-0x2000; assert(!begin(0,0).sequence);
+    current_teb.WowTebOffset=0;
+    assert(!begin(WS_CHILD,1).sequence && !begin(0,HWND_MESSAGE).sequence);
+    current_teb.Peb=&owners[0];
     parameters.ImagePathName.Length--; assert(!begin(0,0).sequence); parameters.ImagePathName.Length++;
     WCHAR saved=image[3]; image[3]=0; assert(!begin(0,0).sequence); image[3]=saved;
     unsigned short length=parameters.ImagePathName.Length;
