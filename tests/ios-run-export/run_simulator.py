@@ -106,10 +106,23 @@ def collect(device, verify, selected_test=''):
         shutil.copyfile(archive, evidence / archive.name)
     elif verify:
         raise AssertionError('Actual file supplied to UIKit was not retained or was unavailable')
+    # Only the native Save to Files extension can create this destination.
+    # Host.swift's producer writes its separate tmp file, never Documents.
+    saved_archive = container / 'Documents/RunExportFixture.zip'
+    native_saved = saved_archive.is_file() and not saved_archive.is_symlink()
+    if native_saved:
+        assert saved_archive.stat().st_size < 4096
+        with zipfile.ZipFile(saved_archive) as contents:
+            assert contents.testzip() is None and contents.namelist() == ['run.txt']
+            assert contents.read('run.txt') == b'Owned run export UI fixture\n'
+        shutil.copyfile(saved_archive, evidence / 'native-files-saved.zip')
+    elif verify:
+        raise AssertionError('Native Save to Files did not create the CRC-openable owned Documents archive')
     if verify:
         assert len(records) >= (1 if selected_test else 5), 'Every actual test launch must preserve its bounded event trail'
         modern = [r for r in records if 'baseline=0' in r]
         assert any('event=share-presented' in r and 'event=share-finished' in r for r in modern)
+        assert any('event=share-finished request=1 completed=1' in r for r in modern)
         if not selected_test:
             assert any('event=failed' in r and 'stage=archive' in r for r in modern)
             assert any('baseline=1' in r and 'event=factory-created' in r and 'event=share-presented' not in r for r in records)
@@ -117,6 +130,7 @@ def collect(device, verify, selected_test=''):
     (evidence / 'summary.json').write_text(json.dumps({
         'schema': 'madeira-export-ui-simulator-v1', 'hostBundle': BUNDLE,
         'nativeUITestsPassed': verify, 'eventFiles': len(records),
+        'nativeFilesSavedAndCRCVerified': native_saved,
         'selectedTest': selected_test or 'full-suite',
         'scope': 'production coordinator/UIKit + owned host and archive-production boundary; no game or account data',
         'deviceAcceptance': 'unverified; simulator does not establish operation on the user iPhone',
