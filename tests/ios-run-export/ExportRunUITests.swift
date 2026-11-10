@@ -120,8 +120,21 @@ final class ExportRunUITests: XCTestCase {
         let picker = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         picker.name = "Owned host native Files destination picker"; picker.lifetime = .keepAlways
         add(picker)
-        let ownedFolder = files.cells["Run Export Host, Container"].firstMatch
-        XCTAssertTrue(ownedFolder.waitForExistence(timeout: 5)); ownedFolder.tap()
+        preserveOwnedPickerState(app, context: "native-picker-before-owned-folder")
+        // FileProvider's first catalog is asynchronous and its default
+        // location can differ. Select the observed local provider explicitly;
+        // the owned folder's item count and ', Container' decoration are not
+        // part of its identity.
+        let localStorage = files.cells.matching(identifier: "DOC.sidebar.item.On My iPhone").element(boundBy: 0)
+        let localReady = localStorage.waitForExistence(timeout: 30)
+        if !localReady { preserveOwnedPickerState(app, context: "local-provider-not-ready") }
+        XCTAssertTrue(localReady); localStorage.tap()
+        let ownedFolder = files.cells.matching(NSPredicate(
+            format: "label BEGINSWITH %@ OR identifier BEGINSWITH %@", "Run Export Host", "Run Export Host"
+        )).element(boundBy: 0)
+        let folderReady = ownedFolder.waitForExistence(timeout: 30)
+        if !folderReady { preserveOwnedPickerState(app, context: "owned-folder-not-ready") }
+        XCTAssertTrue(folderReady); ownedFolder.tap()
         XCTAssertTrue(save.isEnabled); XCTAssertTrue(save.isHittable); save.tap()
         preserveOwnedPickerState(app, context: "immediately-after-native-save")
         let completion = XCTNSPredicateExpectation(
