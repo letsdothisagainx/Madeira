@@ -2,6 +2,7 @@
 """Execute the actual export parser/reader and stored ZIP writer, never log-copy mocks."""
 import argparse
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -25,6 +26,39 @@ assert 'DispatchQueue.global(qos: .utility).async' in store
 assert 'SteamGameDiagnostics.collect(documents: documents)' in store
 assert 'O_EXCL | O_NOFOLLOW' in store and 'if createdDirectory' in store
 assert not any(x in source.read_text() for x in ['loginusers.vdf', 'ssfn', 'config.vdf', 'URLSession', 'contentsOfDirectory'])
+
+def trust_nonfile_producer_row():
+    """Execute the actual observer format through its existing host adapter.
+
+    The adapter's verifier return is synthetic; this proves producer/codec
+    agreement and redaction, never certificate verification.
+    """
+    with tempfile.TemporaryDirectory(prefix='madeira-trust-schema-') as folder:
+        temp = Path(folder)
+        fixture = json.dumps(str(ROOT / 'tests/host/trust_diagnostics_test.c'))
+        (temp / 'producer.c').write_text('''
+#define main madeira_existing_trust_test_main
+#include ''' + fixture + '''
+#undef main
+int main(void)
+{
+    action = (GUID){0x00aac56b, 0xcd44, 0x11d0, {0x8c, 0xc2, 0x00, 0xc0, 0x4f, 0xc2, 0x95, 0xee}};
+    setup(L"https://example.invalid/SCHEMA_PRIVATE_SENTINEL.exe?fixture=1");
+    call();
+    assert(output_lines == 1);
+    fputs(output, stdout);
+    return 0;
+}
+''')
+        binary = temp / 'producer'
+        subprocess.run([os.environ.get('CC', 'cc'), '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror',
+                        '-pthread', str(temp / 'producer.c'), '-o', str(binary)], check=True)
+        row = subprocess.check_output([str(binary)], text=True).strip()
+        assert 'path=nonfile name=unknown' in row
+        assert 'SCHEMA_PRIVATE_SENTINEL' not in row and 'https:' not in row and '?' not in row
+        return row
+
+producer_nonfile = trust_nonfile_producer_row()
 swift = shutil.which('swiftc')
 if not swift:
     assert not args.require_swift, 'Swift compiler required for production export tests'
@@ -66,6 +100,17 @@ let retirement = "[startup-timeline-v1] event=owner-quiesced-status-unobserved p
 assert(SteamGameDiagnostics.decode(retirement) != nil)
 let trust = "033c:err:wintrust:WinVerifyTrust [trust-result-v1] pid=828 action=00aac56b-cd44-11d0-8cc2-00c04fc295ee choice=1 kind=file state=0 result=800b0100 error=0 path=drive name=cs2.exe limit=64-per-process-module"
 assert(SteamGameDiagnostics.decode(trust) != nil)
+let producerNonfile = CommandLine.arguments[3]
+let nonfile = SteamGameDiagnostics.decode(producerNonfile)!.1
+assert(nonfile["path"] == "nonfile" && nonfile["name"] == "unknown")
+assert(nonfile["result"] == "800b0100" && nonfile["error"] == "39030")
+for invalid in [producerNonfile + " url=https://example.invalid/private",
+                producerNonfile.replacingOccurrences(of: "path=nonfile", with: "path=https://example.invalid/private"),
+                producerNonfile.replacingOccurrences(of: "path=nonfile", with: "path=nonfile-private"),
+                producerNonfile.replacingOccurrences(of: "name=unknown", with: "name=cs2.exe"),
+                producerNonfile.replacingOccurrences(of: "kind=file", with: "kind=blob")] {
+    assert(SteamGameDiagnostics.decode(invalid) == nil)
+}
 // Exact captured loader rows: prefix is a TID, never a process identity.
 let loaderFull = #"00b0:err:module:load_dll [dll-missing] rev=ml336 #3 L"C:\\Program Files (x86)\\Steam\\bin\\steamservice.dll" status=c000007b -- if the webhelper dies right after this, it is the delay-load Chromium kills the process over"#
 let loaderBare = #"00b0:err:module:load_dll [dll-missing] rev=ml336 #5 L"steamservice.dll" status=c0000135 -- if the webhelper dies right after this, it is the delay-load Chromium kills the process over"#
@@ -466,7 +511,7 @@ with tempfile.TemporaryDirectory(prefix='madeira-export-') as folder:
     exe = tmp / 'export-test'
     subprocess.run([swift, '-swift-version', '5', '-sanitize=address', *include, str(ROOT / 'app/Madeira/CS2VACMarkers.swift'), str(source), str(tmp / 'Writer.swift'), str(tmp / 'main.swift'), '-lz', '-o', str(exe)], check=True)
     archive = tmp / 'diagnostics.zip'
-    subprocess.run([str(exe), str(docs), str(archive)], check=True)
+    subprocess.run([str(exe), str(docs), str(archive), producer_nonfile], check=True)
     with zipfile.ZipFile(archive) as z:
         assert z.testzip() is None
         assert z.namelist() == ['manifest.json', 'observations.json', 'cs2-console.json', 'summary.json', 'README.txt']

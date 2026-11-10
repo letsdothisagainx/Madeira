@@ -32,8 +32,10 @@
 #include <stdint.h>
 #include <sys/sysctl.h>
 #include <dlfcn.h>
+#include <crt_externs.h>
 #include <mach-o/loader.h>
 #include "StaleRuntimeLinks.h"
+#include "ManagedSteamBridge.h"
 
 #include "WineProcessBridge.h"
 #include "WineServerBridge.h"
@@ -393,6 +395,27 @@ int wine_crash_exit_status(uint32_t *status) {
 }
 static char *g_prefix_path = NULL;
 
+/* Wine imports names without regard to case. Copy a bounded known launch key
+ * before unsetenv can replace the host array, then reacquire that array. */
+static void madeira_clear_standalone_environment_key(const char *name)
+{
+    size_t wanted = strlen(name);
+    if (wanted >= sizeof("MADEIRA_STANDALONE_PROBE")) return;
+    char **entries = *_NSGetEnviron();
+    for (size_t i = 0; entries && entries[i]; ) {
+        const char *equal = strchr(entries[i], '=');
+        size_t length = equal ? (size_t)(equal - entries[i]) : 0;
+        if (length == wanted && !strncasecmp(entries[i], name, length)) {
+            char key[sizeof("MADEIRA_STANDALONE_PROBE")];
+            memcpy(key, entries[i], length);
+            key[length] = 0;
+            if (unsetenv(key)) { i++; continue; }
+            entries = *_NSGetEnviron();
+            i = 0;
+        } else i++;
+    }
+}
+
 /* Export MADEIRA_DOCS_DIR before main(), while HOME is still the app container.
  * The in-app wineserver thread sets HOME to the Wine prefix before it creates its
  * first object, and madsync reads madeira.cfg inproc-sync right there (then keeps
@@ -409,9 +432,11 @@ static const char *g_madeira_docs_early = "not-run";
  * launch, and the user taps one thing while another starts, with nothing on
  * screen to say so. The match is on the whole name between commas, so a lock
  * on MADEIRA_EXE does not also catch MADEIRA_EXEC_FOO. Nothing is locked
- * unless a host asks for it. */
+ * unless a host asks for it, except the owned diagnostic's host-only signal. */
 static int madeira_env_is_locked(const char *name)
 {
+    /* Config files cannot create or replace an app-owned diagnostic launch. */
+    if (name && !strcasecmp(name, "MADEIRA_STANDALONE_PROBE")) return 1;
     const char *locked = getenv("MADEIRA_ENV_LOCKED");
     if (!locked || !*locked || !name || !*name) return 0;
     size_t n = strlen(name);
@@ -726,6 +751,7 @@ static void madeira_link_syswow64(NSFileManager *fm, NSString *prefix, NSString 
     [fm createDirectoryAtPath:farmDir withIntermediateDirectories:YES attributes:nil error:nil];
     for (NSString *f in [fm contentsOfDirectoryAtPath:source error:nil])
     {
+        if (!madeira_generic_runtime_farm_allows(f.UTF8String)) continue;
         if ([f hasPrefix:@"."]) continue;
         NSString *dst = [farmDir stringByAppendingPathComponent:f];
         [fm removeItemAtPath:dst error:nil];  /* self-heal stale links on reinstall */
@@ -1596,19 +1622,28 @@ static void *wine_process_thread(void *arg) {
          * their main image is cmd/explorer, and Steam starts later inside that wrapper.
          * Steam-specific identity, child tracking and guest-window policy share
          * this signal; Dock process/memory policies stay independent.
+         * The app-owned standalone diagnostic also publishes no Steam title;
+         * its final cleanup after config imports prevents later overrides.
          * Launch metadata is consumed here so no guest or later launch inherits it. */
         const char *native_launch = getenv("MADEIRA_NATIVE_STEAM_LAUNCH");
         const int native_steam = native_launch && !strcmp(native_launch, "1");
         unsetenv("MADEIRA_NATIVE_STEAM_LAUNCH");
+        /* The app's owned diagnostic has no Steam title. Capture this host
+         * launch signal before config imports, then consume it again after
+         * those imports so neither a guest nor a later launch inherits it. */
+        const char *standalone_launch = getenv("MADEIRA_STANDALONE_PROBE");
+        const int standalone_probe = standalone_launch && !strcmp(standalone_launch, "1");
+        unsetenv("MADEIRA_STANDALONE_PROBE");
         const char *dock_session = getenv("MADEIRA_DOCK_SESSION");
         const char *direct_app = getenv("MADEIRA_STEAM_APPID");    /* set by the library for one direct Steam start (Start with: The game); not a setting */
         const char *direct_path = getenv("MADEIRA_STEAM_APPPATH"); /* that game's install folder, with MADEIRA_STEAM_APPID; not a setting */
         const int steam_client = madeira_is_steam_client_image(getenv("MADEIRA_EXE"));
-        if ((dock_session && dock_session[0] == '1') || steam_client || native_steam) {
+        if (standalone_probe || (dock_session && dock_session[0] == '1') || steam_client || native_steam) {
             unsetenv("SteamAppPath");
             unsetenv("SteamGameId");
             unsetenv("SteamAppId");
             dprintf(STDERR_FILENO, "[steam-env] %s: no inherited Steam game identity published\n",
+                    standalone_probe ? "Standalone diagnostic" :
                     steam_client || native_steam ? "Steam client" : "Madeira Dock session");
         } else if (direct_app && direct_app[0] && strlen(direct_app) <= 10 &&
             strspn(direct_app, "0123456789") == strlen(direct_app) &&
@@ -1859,6 +1894,18 @@ static void *wine_process_thread(void *arg) {
             }
         }
 
+        /* standalone-probe-env-final: global and game config env lines run
+         * after the ordinary identity setup above. The owned probe must not
+         * inherit another title even when those lines set Steam variables. */
+        if (standalone_probe) {
+            madeira_clear_standalone_environment_key("SteamAppPath");
+            madeira_clear_standalone_environment_key("SteamGameId");
+            madeira_clear_standalone_environment_key("SteamAppId");
+            unsetenv("MADEIRA_STEAM_APPID");
+            unsetenv("MADEIRA_STEAM_APPPATH");
+        }
+        madeira_clear_standalone_environment_key("MADEIRA_STANDALONE_PROBE");
+
         // Steam S0: root CA trust. iOS has no API to enumerate system
         // roots, so crypt32's unix rootstore (crypt32_unixlib_ios.c)
         // reads the bundled Mozilla CA set from this path instead.
@@ -2042,6 +2089,7 @@ static void *wine_process_thread(void *arg) {
             NSArray *dlls = [fm contentsOfDirectoryAtPath:dllSource error:nil];
             int linked = 0;
             for (NSString *dll in dlls) {
+                if (!madeira_generic_runtime_farm_allows(dll.UTF8String)) continue;
                 NSString *src = [dllSource stringByAppendingPathComponent:dll];
                 NSString *dst = [sys32Dir stringByAppendingPathComponent:dll];
                 // Remove stale symlinks and re-create (bundle path changes on reinstall)
@@ -2065,6 +2113,7 @@ static void *wine_process_thread(void *arg) {
                 NSArray *others = [fm contentsOfDirectoryAtPath:otherSource error:nil];
                 int crossLinked = 0;
                 for (NSString *f in others) {
+                    if (!madeira_generic_runtime_farm_allows(f.UTF8String)) continue;
                     NSString *dst = [sys32Dir stringByAppendingPathComponent:f];
                     // fileExistsAtPath FOLLOWS symlinks: YES means the session
                     // (main) pass already linked this name to a resolvable
@@ -2106,6 +2155,7 @@ static void *wine_process_thread(void *arg) {
                     NSArray *files = [fm contentsOfDirectoryAtPath:archSource error:nil];
                     int farmLinked = 0;
                     for (NSString *f in files) {
+                        if (!madeira_generic_runtime_farm_allows(f.UTF8String)) continue;
                         NSString *dst = [farmDir stringByAppendingPathComponent:f];
                         [fm removeItemAtPath:dst error:nil];  // self-heal stale links on reinstall
                         NSString *src = [archSource stringByAppendingPathComponent:f];

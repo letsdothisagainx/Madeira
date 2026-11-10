@@ -12,7 +12,9 @@ on:
       - app/Madeira/SteamBrowserRuntime.swift
       - app/Madeira/SteamRuntime.swift
       - app/Madeira/SteamNativeBrowserLaunch.swift
+      - app/Madeira/ManagedSteamBridge.h
       - tests/host/check-steam-browser-bridge.py
+      - tests/host/fixtures/steam-bridge-*
       - tests/host/check-steam-browser-logs.py
       - tests/host/htmlipc/test_log_file.c
       - build/ntdll-unix/htmlipc_log_file.h
@@ -37,7 +39,9 @@ on:
       - app/Madeira/SteamBrowserRuntime.swift
       - app/Madeira/SteamRuntime.swift
       - app/Madeira/SteamNativeBrowserLaunch.swift
+      - app/Madeira/ManagedSteamBridge.h
       - tests/host/check-steam-browser-bridge.py
+      - tests/host/fixtures/steam-bridge-*
       - tests/host/check-steam-browser-logs.py
       - tests/host/htmlipc/test_log_file.c
       - build/ntdll-unix/htmlipc_log_file.h

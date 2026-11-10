@@ -225,18 +225,139 @@ enum SteamNativeBrowserLaunchFiles {
         trace(.stamp, result: "verified", observed: bytes.count, state: stampState(value), report: report)
         return (value, bytes)
     }
+    // Fixed labels only: never log NSError descriptions, URLs or private paths.
+    private static func stage<T>(_ name: String, relative: String, operation: String,
+                                 report: (String) -> Void, _ body: () throws -> T) throws -> T {
+        do { return try body() }
+        catch {
+            let value = error as NSError
+            let domain = value.domain == NSPOSIXErrorDomain ? "posix" :
+                (value.domain == NSCocoaErrorDomain ? "cocoa" : "validation")
+            let underlying = value.userInfo[NSUnderlyingErrorKey] as? NSError
+            let posix = value.domain == NSPOSIXErrorDomain ? value.code :
+                (underlying?.domain == NSPOSIXErrorDomain ? underlying!.code : 0)
+            report("[steam-browser-bridge-fs-v1] phase=\(name) operation=\(operation) relative=\(relative) result=failed domain=\(domain) code=\(value.code) errno=\(posix)")
+            throw error
+        }
+    }
+    private static func leafInfo(_ file: URL) throws -> stat? {
+        var info = stat()
+        if lstat(file.path, &info) == 0 { return info }
+        if errno == ENOENT { return nil }
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+    }
+    private static func exactLeaf(_ name: String, system: URL) throws -> URL {
+        let matches = try FileManager.default.contentsOfDirectory(atPath: system.path)
+            .filter { $0.caseInsensitiveCompare(name) == .orderedSame }
+        guard matches.isEmpty || matches == [name] else { throw Failure.ownership }
+        return system.appendingPathComponent(name)
+    }
+    // Normalize only the documented iOS bundle-container alias, never resolve
+    // an untrusted link or normalize traversal components into an owned path.
+    private static func bundleComponents(_ path: String) -> [String]? {
+        guard path.hasPrefix("/"), URL(fileURLWithPath: path).standardizedFileURL.path == path else { return nil }
+        let canonical = path.hasPrefix("/var/containers/Bundle/Application/") ? "/private" + path : path
+        return canonical.split(separator: "/").map(String.init)
+    }
+    // An old app-container UUID may change on update. Accept only this exact
+    // known bundle route, with a valid ownership stamp; never follow the link.
+    private static func oldBundleLink(_ path: String, source: URL) -> Bool {
+        guard let old = bundleComponents(path), let current = bundleComponents(source.path), old.count == current.count,
+              old.count >= 7 else { return false }
+        let uuid = old.count - 4
+        guard current[uuid - 2] == "Bundle", current[uuid - 1] == "Application",
+              UUID(uuidString: old[uuid]) != nil, UUID(uuidString: current[uuid]) != nil,
+              current[uuid + 1].hasSuffix(".app"), current[uuid + 2] == "arm64ec-windows",
+              current.last == bridgeName else { return false }
+        return old.enumerated().allSatisfy { $0.offset == uuid || $0.element == current[$0.offset] }
+    }
+    // Recover only this app's named bridge entry. The generic runtime farm used
+    // to overwrite it with a bundle symlink. Preserve the entry itself (not its
+    // referent), then publish and verify the trusted bundle copy as usual.
+    private static func recoverTarget(_ source: URL, manifest: BridgeManifest, system: URL, stamp: URL,
+                                      digest: DigestFile, idle: () -> Bool, report: (String) -> Void) throws {
+        let fm = FileManager.default
+        let relative = "windows/system32/" + bridgeName
+        let target = try stage("bridge-target-path", relative: relative, operation: "inspect-leaf", report: report) {
+            try exactLeaf(bridgeName, system: system)
+        }
+        let oldStamp: (Stamp, Data)? = try leafInfo(stamp) != nil ? checkedStamp(stamp, report: report) : nil
+        guard let original = try leafInfo(target) else { return }
+        guard original.st_uid == getuid() else { throw Failure.ownership }
+        let kind = original.st_mode & mode_t(S_IFMT)
+        var link: String?, repair = false
+        if kind == mode_t(S_IFLNK) {
+            link = try fm.destinationOfSymbolicLink(atPath: target.path)
+            let sameSource = bundleComponents(link!).map { $0 == bundleComponents(source.path) } ?? false
+            guard sameSource || (oldStamp != nil && oldBundleLink(link!, source: source)) else {
+                throw Failure.ownership
+            }
+            repair = true
+        } else if kind == mode_t(S_IFREG), original.st_nlink == 1 {
+            // A stale stamp can be reconciled only to the currently verified
+            // bundle bytes. Unknown old/corrupted content is never adopted.
+            guard let (value, _) = oldStamp else { throw Failure.ownership }
+            let count = try freshLength(target)
+            guard count <= 32 * 1024 * 1024 else { throw Failure.ownership }
+            let actual = Fingerprint(bytes: count, sha256: try digest(target))
+            if actual == manifest.fingerprint {
+                try verify(target, fingerprint: actual, digest: digest, phase: .existing, report: report)
+                if ![value.installed, value.pending].contains(actual) {
+                    guard idle() else { throw Failure.active }
+                    let reconciled = Stamp(format: 1, owner: value.owner, filename: bridgeName, installed: actual, pending: nil)
+                    try JSONEncoder().encode(reconciled).write(to: stamp, options: .atomic)
+                    trace(.stamp, result: "verified", reason: "current-source-reconciled", state: "installed", report: report)
+                }
+                return
+            }
+            if [value.installed, value.pending].compactMap({ $0 }).contains(actual) { return }
+            guard original.st_size >= 0, original.st_size <= 32 * 1024 * 1024,
+                  [value.installed, value.pending].contains(manifest.fingerprint) else { throw Failure.ownership }
+            repair = true
+        } else { throw Failure.ownership }
+        guard repair, idle() else { throw Failure.active }
+        let directory = system.appendingPathComponent(".madeira-bridge-previous-" + UUID().uuidString, isDirectory: true)
+        // mkdir must create a NEW directory, never adopt a preexisting path.
+        guard mkdir(directory.path, mode_t(0o700)) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        if let oldStamp { try oldStamp.1.write(to: directory.appendingPathComponent(stampName), options: .withoutOverwriting) }
+        let pending = Stamp(format: 1, owner: "org.madeira.NativeSteamBrowserBridge/v1", filename: bridgeName,
+                            installed: oldStamp?.0.installed, pending: manifest.fingerprint)
+        try JSONEncoder().encode(pending).write(to: stamp, options: oldStamp == nil ? .withoutOverwriting : .atomic)
+        guard idle(), let current = try leafInfo(target), current.st_dev == original.st_dev,
+              current.st_ino == original.st_ino, current.st_mode == original.st_mode,
+              current.st_uid == original.st_uid, current.st_size == original.st_size else { throw Failure.ownership }
+        if let link { guard try fm.destinationOfSymbolicLink(atPath: target.path) == link else { throw Failure.ownership } }
+        let saved = directory.appendingPathComponent(bridgeName)
+        guard rename(target.path, saved.path) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        trace(.existing, result: "retained", reason: link == nil ? "owned-damaged-copy" : "managed-bundle-link",
+              state: "pending-repair", report: report)
+    }
     // Pending ownership is written before replacing the one named app DLL. A
     // retry accepts only the recorded previous/new fingerprint. Unknown files,
-    // links, mismatched stamps and unrelated system32 files are always retained.
+    // mismatched stamps and unrelated system32 files are always retained.
     static func installBridge(_ source: URL, manifest: BridgeManifest, drive: URL,
                               digest: DigestFile, idle: () -> Bool, report: (String) -> Void = { _ in }) throws {
         typealias Files = SteamBrowserRuntimeFiles
         let fm = FileManager.default
         try verify(source, fingerprint: manifest.fingerprint, digest: digest, report: report)
-        let system = try Files.destination("windows/system32", under: drive)
-        try Files.plain(system, directory: true)
-        let target = try Files.destination("windows/system32/" + bridgeName, under: drive)
-        let stamp = try Files.destination("windows/system32/" + stampName, under: drive)
+        let system = try stage("bridge-system-directory", relative: "windows/system32", operation: "resolve-parent", report: report) {
+            let value = try Files.destination("windows/system32", under: drive)
+            try Files.plain(value, directory: true)
+            return value
+        }
+        let stamp = try stage("bridge-stamp-path", relative: "windows/system32/" + stampName, operation: "resolve-stamp", report: report) {
+            try Files.destination("windows/system32/" + stampName, under: drive)
+        }
+        try stage("bridge-owned-recovery", relative: "windows/system32/" + bridgeName, operation: "retain-and-repair", report: report) {
+            try recoverTarget(source, manifest: manifest, system: system, stamp: stamp, digest: digest, idle: idle, report: report)
+        }
+        let target = try stage("bridge-target-path", relative: "windows/system32/" + bridgeName, operation: "resolve-plain-target", report: report) {
+            try Files.destination("windows/system32/" + bridgeName, under: drive)
+        }
         let hasTarget = fm.fileExists(atPath: target.path), hasStamp = fm.fileExists(atPath: stamp.path)
         var previous: Fingerprint?, previousStamp: Data?, state = "missing"
         if hasStamp {
@@ -291,7 +412,9 @@ enum SteamNativeBrowserLaunchFiles {
             let pending = Stamp(format: 1, owner: "org.madeira.NativeSteamBrowserBridge/v1", filename: bridgeName,
                                 installed: previous, pending: manifest.fingerprint)
             let encoded = try JSONEncoder().encode(pending)
-            try encoded.write(to: stamp, options: hasStamp ? .atomic : .withoutOverwriting)
+            try stage("bridge-pending-transaction", relative: "windows/system32/" + stampName, operation: "write-stamp", report: report) {
+                try encoded.write(to: stamp, options: hasStamp ? .atomic : .withoutOverwriting)
+            }
             state = stampState(pending)
             trace(.pending, result: "written", observed: encoded.count, state: state, report: report)
             do {
@@ -302,7 +425,9 @@ enum SteamNativeBrowserLaunchFiles {
                 // Readback opens the NEW inode instead of reusing URL metadata.
                 trace(.copy, result: "begin", expected: manifest.bytes, state: state, report: report)
                 let image = try bounded(source, maximum: 32 * 1024 * 1024)
-                try image.write(to: target, options: .atomic)
+                try stage("bridge-copy", relative: "windows/system32/" + bridgeName, operation: "publish-copy", report: report) {
+                    try image.write(to: target, options: .atomic)
+                }
                 trace(.copy, result: "written", expected: manifest.bytes, observed: image.count, state: state, report: report)
                 try verify(target, fingerprint: manifest.fingerprint, digest: digest, phase: .readback, state: state, report: report)
                 guard idle() else { throw Failure.active }
@@ -328,7 +453,9 @@ enum SteamNativeBrowserLaunchFiles {
         try verify(target, fingerprint: manifest.fingerprint, digest: digest, phase: .readback, state: state, report: report)
         let complete = Stamp(format: 1, owner: "org.madeira.NativeSteamBrowserBridge/v1", filename: bridgeName,
                              installed: manifest.fingerprint, pending: nil)
-        try JSONEncoder().encode(complete).write(to: stamp, options: .atomic)
+        try stage("bridge-pending-transaction", relative: "windows/system32/" + stampName, operation: "complete-stamp", report: report) {
+            try JSONEncoder().encode(complete).write(to: stamp, options: .atomic)
+        }
         trace(.pending, result: "completed", observed: manifest.bytes, hash: "match", machine: 0x8664, state: "installed", report: report)
     }
     // The helper executable's statically linked logger writes debug.log next

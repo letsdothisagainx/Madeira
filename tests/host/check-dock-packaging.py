@@ -63,7 +63,7 @@ with tempfile.TemporaryDirectory() as temp:
     struct.pack_into('<Q', pixel_fixture, 0x240, 0x1060)
     pixel_fixture[0x250:0x25a] = b'd3d11.dll\0'
     pixel_fixture[0x262:0x273] = b'D3D11CreateDevice\0'
-    markers = b'[d3d11-pixels]\0DXMT device identity\0GPU completion exceeded 30 seconds\0BC3-update-copy-region-tail\0readbacks=%u failures=%u\0'
+    markers = b'[d3d11-pixels]\0DXMT device identity\0GPU completion exceeded 30 seconds\0BC3-update-copy-region-tail\0readbacks=%u failures=%u\0contract=extended-v2 expected-readbacks=184 baseline=113\0'
     pixel_fixture[0x2a0:0x2a0 + len(markers)] = markers
     pixel_fixture = bytes(pixel_fixture)
     pixel_path = bridge_dir/'pixel-readback-x64.exe'

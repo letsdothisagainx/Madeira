@@ -182,8 +182,11 @@ enum SteamGameDiagnostics {
                   oneOf(f["action"]!, "unknown 00aac56b-cd44-11d0-8cc2-00c04fc295ee 189a3842-3041-11d1-85e1-00c04fc295ee"),
                   number(f["choice"]!, maximum: 5), oneOf(f["kind"]!, "unknown file catalog blob signer cert"),
                   number(f["state"]!, maximum: 4), matches(f["result"]!, "[0-9a-fA-F]{8}"), number(f["error"]!, maximum: UInt64(UInt32.max)),
-                  oneOf(f["path"]!, "unknown bare unc drive other"),
+                  oneOf(f["path"]!, "unknown bare unc drive other nonfile"),
                   f["limit"] == "64-per-process-module" else { return nil }
+            if f["path"] == "nonfile" {
+                guard f["name"] == "unknown", oneOf(f["kind"]!, "file catalog") else { return nil }
+            }
             // The numeric verifier result remains useful for an unlisted
             // subject. Never export that subject's arbitrary filename.
             let name = f["name"]!.lowercased()

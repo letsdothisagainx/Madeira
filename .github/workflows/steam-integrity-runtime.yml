@@ -25,7 +25,9 @@ on:
       - tests/host/check-crypt32-root-fd.py
       - app/Madeira/GuestDisplay.swift
       - app/Madeira/GraphicsPixelProbe.swift
+      - app/Madeira/WineProcessBridge.m
       - tests/host/check-graphics-probe-launch.py
+      - tests/host/check-standalone-environment.py
       - build/steam-service/**
       - tests/host/check-steam-service*.py
       - app/Madeira/SteamRuntime.swift
@@ -79,6 +81,7 @@ jobs:
       - name: Validate owned graphics probe staging and complete service records
         run: |
           python3 tests/host/check-graphics-probe-launch.py --require-swift
+          python3 tests/host/check-standalone-environment.py --require-swift
           python3 tests/host/check-steam-service.py
       - name: Reproduce old crypto descriptor reuse and validate exact ownership
         run: |

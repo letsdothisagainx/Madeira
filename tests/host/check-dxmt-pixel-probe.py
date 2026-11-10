@@ -28,8 +28,10 @@ if not args.preflight:
     import_name = image.lower().index(b'd3d11.dll')
     wrong_backend[import_name:import_name + 9] = b'd3d12.dll'
     missing_reporting = image.replace(b'DXMT device identity', b'X' * len(b'DXMT device identity'))
+    old_contract = image.replace(b'contract=extended-v2 expected-readbacks=184 baseline=113',
+                                 b'X' * len(b'contract=extended-v2 expected-readbacks=184 baseline=113'))
     with tempfile.TemporaryDirectory(prefix='madeira-pixel-contract-') as folder:
-        for number, bad in enumerate((wrong_machine, wrong_console, wrong_backend, missing_reporting)):
+        for number, bad in enumerate((wrong_machine, wrong_console, wrong_backend, missing_reporting, old_contract)):
             path = Path(folder) / (str(number) + '.exe')
             path.write_bytes(bad)
             try:
@@ -48,7 +50,7 @@ view = (ROOT / 'app/Madeira/ContentView.swift').read_text()
 button = view[view.index('Button("DX11 pixel readback")'):]
 button = button[:button.index('.buttonStyle')]
 assert '"MADEIRA_EXE", "pixel-readback-x64.exe"' in button
-assert 'runWineFullSequence()' in button
+assert 'runWineFullSequence(standaloneProbe: true)' in button
 assert 'WINEDLLOVERRIDES' not in button
 source = (ROOT / 'tests/dxmt/pixel-readback.c').read_text()
 assert 'D3D_DRIVER_TYPE_HARDWARE' in source and 'D3D_DRIVER_TYPE_WARP' not in source
@@ -68,6 +70,10 @@ fixture = '#include <assert.h>\n#include <math.h>\n#include <stdint.h>\n#include
 fixture += function('static void put_bits(') + '\n'
 fixture += function('static unsigned block_for(') + '\n'
 fixture += function('static float srgb_to_linear(') + '\n'
+fixture += '#include "pixel-reference-vectors.h"\n'
+palette = source.index('static const float quadrants[4][4]')
+fixture += source[palette:source.index(';', palette) + 1] + '\n'
+fixture += function('static void indexed_expected(') + '\n'
 fixture += r'''
 int main(void) {
     uint8_t block[16]; float rgba[4];
@@ -92,6 +98,19 @@ int main(void) {
     assert(fabsf(srgb_to_linear(132/255.f)-.230740049f)<.000001f);
     assert(fabsf(srgb_to_linear(130/255.f)-.223227957f)<.000001f);
     assert(srgb_to_linear(0)==0 && srgb_to_linear(1)==1);
+    float grid[16][4]; const float tint[4] = {.25f,.5f,.75f,1};
+    indexed_expected(grid,tint,0);
+    for (unsigned y=0;y<4;y++) for (unsigned x=0;x<4;x++) {
+        unsigned which=(y>=2?2:0)+(x>=2?1:0);
+        const float known[4][4]={{.25f,0,0,1},{0,.5f,0,1},{0,0,.75f,1},{.25f,.5f,.75f,1}};
+        assert(!memcmp(grid[y*4+x],known[which],16));
+    }
+    indexed_expected(grid,tint,1);
+    for (unsigned y=0;y<4;y++) for (unsigned x=0;x<4;x++) {
+        unsigned which=(y>=2?2:0)+(x%2);
+        const float known[4][4]={{.25f,0,0,1},{0,.5f,0,1},{0,0,.75f,1},{.25f,.5f,.75f,1}};
+        assert(!memcmp(grid[y*4+x],known[which],16));
+    }
     return 0;
 }
 '''
@@ -100,6 +119,47 @@ with tempfile.TemporaryDirectory(prefix='madeira-pixel-inputs-') as folder:
     code, executable = path / 'inputs.c', path / 'inputs'
     code.write_text(fixture)
     subprocess.run([os.environ.get('CC', 'cc'), '-std=c11', '-O1', '-Wall', '-Wextra', '-Werror',
-                    '-fsanitize=address,undefined', str(code), '-lm', '-o', str(executable)], check=True)
+                    '-fsanitize=address,undefined', '-I', str(ROOT / 'tests/dxmt'), str(code), '-lm', '-o', str(executable)], check=True)
     subprocess.run([str(executable)], check=True)
-print('PASS actual C BC input vectors (valid BC6H mode0/BC7 mode6), independent literal endpoints/sRGB expectations, IPA packaging and user-accessible launch; GPU readbacks not executed by this host check')
+    # Wine's separate decoder validates the new BC6H encoder inputs. Expected
+    # palette values below are literal, not read from the DXMT/GPU output.
+    bcdec = ROOT / 'wine/dlls/d3dx9_36/bcdec.h'
+    assert bcdec.is_file(), 'initialize the pinned Wine source for independent BC6H vector validation'
+    independent = r'''
+#include <assert.h>
+#include <stdint.h>
+#include <string.h>
+#include "pixel-reference-vectors.h"
+#define WINE_UNUSED 1
+#define BCDEC_STATIC
+#define BCDEC_IMPLEMENTATION
+#include "bcdec.h"
+int main(void) {
+    static const unsigned palette[2][6][3] = {
+        {{1,0,0},{0,1,0},{0,0,1},{1,1,0},{1,0,1},{0,1,1}},
+        {{0,1,0},{0,0,1},{1,1,0},{1,0,1},{0,1,1},{1,0,0}}
+    };
+    static const uint8_t red[16]={0xe3,0x3d,0,0,0x78,0x0f,0,0,0,0,0,0,0,0,0,0};
+    union { uint64_t alignment[2]; uint8_t bytes[16]; } block;
+    float rgba[4], rgb[48];
+    for (unsigned cube=0;cube<2;cube++) for (unsigned face=0;face<6;face++) for (unsigned mip=0;mip<2;mip++) {
+        ref_cube_color(cube,face,mip,rgba);
+        for (unsigned c=0;c<3;c++) assert(rgba[c]==(float)(mip?1-palette[cube][face][c]:palette[cube][face][c]));
+        assert(rgba[3]==1);
+        ref_bc6h_constant(block.bytes,rgba);
+        if (!cube && !face && !mip) assert(!memcmp(block.bytes,red,16));
+        bcdec_bc6h_float(block.bytes,rgb,12,0);
+        for (unsigned px=0;px<16;px++) for (unsigned c=0;c<3;c++)
+            assert(rgb[px*3+c]==(float)(mip?1-palette[cube][face][c]:palette[cube][face][c]));
+    }
+    return 0;
+}
+'''
+    code.write_text(independent)
+    subprocess.run([os.environ.get('CC', 'cc'), '-std=c11', '-O1', '-Wall', '-Wextra', '-Werror',
+                    '-Wno-unused-function', '-fsanitize=address,undefined', '-fno-sanitize-recover=all',
+                    '-I', str(ROOT / 'tests/dxmt'), '-I', str(bcdec.parent), str(code),
+                    '-lm', '-o', str(executable)], check=True)
+    subprocess.run([str(executable)], check=True)
+assert all(name in source for name in ('full_array_checks', 'cube_checks', 'sampler_checks', 'indexed_checks', 'multipass_checks'))
+print('PASS actual C BC6H/BC7 vectors, independent Wine BC6H decoding of 24 cube/mip vectors, literal sRGB and indexed spatial references, PE packaging and user-accessible launch; GPU execution not performed by this host check')

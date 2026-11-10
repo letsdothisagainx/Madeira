@@ -2113,7 +2113,7 @@ struct ContentView: View {
                     unsetenv("MADEIRA_ARGS")
                     unsetenv("MADEIRA_DESKTOP")
                     logStore.log("DX11 pixel readback: offscreen hardware checks; results appear as [d3d11-pixels] in the log.")
-                    runWineFullSequence()
+                    runWineFullSequence(standaloneProbe: true)
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.purple)
@@ -2643,7 +2643,7 @@ struct ContentView: View {
             entry.resolution = "800x450"; entry.liveLogs = true
             entry.graphicsAPI = "Direct3D 11"
             logStore.log("[graphics-pixel-probe-v1] action=requested backend=DXMT-required results=d3d11-pixels game-files=untouched")
-            startLibraryEntry(entry, remember: false)
+            startLibraryEntry(entry, remember: false, standaloneProbe: true)
         } catch {
             library.error = "The graphics test could not be prepared. Check the Madeira log."
             logStore.log("[graphics-pixel-probe-v1] action=prepare-failed result=no-launch", level: .error)
@@ -2706,14 +2706,14 @@ struct ContentView: View {
     /// The rest of Play, with JIT on: checks the entry's launch profile and starts it.
     /// An Epic game first gets Epic's sign-in arguments with a fresh one-use code
     /// (EpicLibrary.launchArguments), for this launch only.
-    private func startLibraryEntry(_ entry: LibraryEntry, epicReady: Bool = false, remember: Bool = true, preferences: LibraryEntry? = nil, nativeSteamClient: Bool = false, nativeSteamBrowser: SteamNativeBrowserLaunch.Prepared? = nil) {
+    private func startLibraryEntry(_ entry: LibraryEntry, epicReady: Bool = false, remember: Bool = true, preferences: LibraryEntry? = nil, nativeSteamClient: Bool = false, nativeSteamBrowser: SteamNativeBrowserLaunch.Prepared? = nil, standaloneProbe: Bool = false) {
         guard !steamBrowserLaunch.busy, !SteamBrowserRuntime.busy else {
             library.error = "Wait for Steam browser preparation to finish."; return
         }
         if nativeSteamClient && nativeSteamBrowser == nil {
             prepareNativeSteamBrowser { selected in
                 startLibraryEntry(entry, epicReady: epicReady, remember: remember, preferences: preferences,
-                                  nativeSteamClient: true, nativeSteamBrowser: selected)
+                                  nativeSteamClient: true, nativeSteamBrowser: selected, standaloneProbe: standaloneProbe)
             }
             return
         }
@@ -2764,7 +2764,7 @@ struct ContentView: View {
             : entry.launchWindowsPath.split(separator: "\\").last.map(String.init) ?? entry.launchWindowsPath
         LogStore.shared.startSessionLog(program: program)
         library.begin(entry, remember: remember)
-        runWineFullSequence(profile: effectiveProfile, nativeSteamClient: nativeSteamClient, nativeSteamBrowser: nativeSteamBrowser)
+        runWineFullSequence(profile: effectiveProfile, nativeSteamClient: nativeSteamClient, nativeSteamBrowser: nativeSteamBrowser, standaloneProbe: standaloneProbe)
     }
 
     /// madeira-bcd: LibraryPrefs' AVX, NVIDIA and Wine C++ runtime switches for a
@@ -2838,7 +2838,14 @@ struct ContentView: View {
     /// Debugger stays attached during PE loading so mprotect_exec can use BRK
     /// to prepare code pages. Detach happens after Wine finishes + recovery.
     /// `profile` is a library entry whose launch profile applies to this run.
-    private func runWineFullSequence(profile: LibraryEntry? = nil, nativeSteamClient: Bool = false, nativeSteamBrowser: SteamNativeBrowserLaunch.Prepared? = nil) {
+    private func runWineFullSequence(profile: LibraryEntry? = nil, nativeSteamClient: Bool = false, nativeSteamBrowser: SteamNativeBrowserLaunch.Prepared? = nil, standaloneProbe: Bool = false) {
+        // Only the app-owned standalone test may request this environment policy.
+        // Set before async preparation/snapshots, clear on every ordinary launch.
+        if standaloneProbe {
+            setenv("MADEIRA_STANDALONE_PROBE", "1", 1)
+        } else {
+            unsetenv("MADEIRA_STANDALONE_PROBE")
+        }
         guard !steamBrowserLaunch.busy, !SteamBrowserRuntime.busy else {
             logStore.log("Wait for Steam browser preparation to finish before starting Wine.", level: .error)
             if profile != nil { LibraryModel.shared.launchFailed() }
@@ -2846,7 +2853,7 @@ struct ContentView: View {
         }
         if nativeSteamClient && nativeSteamBrowser == nil {
             prepareNativeSteamBrowser { selected in
-                runWineFullSequence(profile: profile, nativeSteamClient: true, nativeSteamBrowser: selected)
+                runWineFullSequence(profile: profile, nativeSteamClient: true, nativeSteamBrowser: selected, standaloneProbe: standaloneProbe)
             }
             return
         }

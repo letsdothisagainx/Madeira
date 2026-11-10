@@ -142,3 +142,41 @@ The probe checks DXMT identity itself. Its actual `[d3d11-pixels]` log is the
 result; staging/compilation success is not a GPU pass. Share the Madeira log
 after the test and restart before returning to a game. This removes the need
 to switch to the developer interface to run the same 113 readbacks.
+
+## Hardware result and expanded reference coverage, November 10
+
+The supplied `818D196A-1F0E-48C7-B3AE-8BEF91560249/1-madeira-log.txt`
+records candidate `b6edc4d7` running the original probe: lines 2028–2030 report
+the hardware DXMT device at feature level `b000` and
+`PASS readbacks=113 failures=0`. Wine then exits with code zero. This is actual
+device pixel evidence for those 113 cases; it is not a new CS2 or VAC result.
+
+The same Settings action now runs those unchanged baseline cases followed by
+71 additional offscreen readbacks, for 184 total:
+
+| Suite | Additional readbacks | Reference pixels checked |
+| --- | ---: | --- |
+| Full arrays and relative views | 12 | Three array layers, three mips, nonzero first slice/mip, and view rebinding, with a different constant color for each subresource. |
+| Colored BC6H cubes and cube arrays | 38 | Six face-center directions, two mips, two cubes, and a view beginning at face six. Valid mode-11 blocks encode exact RGB zero/one colors. |
+| Sampler routes | 8 | Point/linear filtering, clamp/wrap/white border, anisotropic sampler with explicit LOD, sampler rebinding, and MinLOD/MaxLOD clamps. |
+| Vertex, index and instance fetch | 4 | A spatial four-color texture through stride-40 vertices, attribute offsets, 16/32-bit indices, byte/start-index/base-vertex offsets, vertex-buffer discard, constant-buffer discard and two instances. |
+| Multipass binding and ownership | 9 | Render-target to SRV transitions at t3/t7, b2 discard updates without an intervening flush, ClearState and pipeline reuse, releasing bound application references, and repeated fresh-resource view rebinding. |
+
+The probe prints `contract=extended-v2 expected-readbacks=184 baseline=113`
+and a separate count/failure result for every suite. A final pass requires
+`PASS readbacks=184 failures=0`; runtime count checks reject missing cases.
+Packaging rejects an executable without the expanded contract marker.
+
+Expected pixels come from fixed endpoint colors, spatial patterns, exact
+products/additions and the standard sRGB transfer function. The host regression
+compiles the actual input/oracle helpers under ASan/UBSan, checks literal
+indexed spatial patterns and independently decodes all 24 new BC6H cube/mip
+vectors with Wine's separate `bcdec` implementation. No DXMT decoder supplies
+the expected GPU output. The new sampler color texture is RGBA8 UNORM, avoiding
+an incidental requirement for optional RGBA32F linear filtering.
+
+The added 71 readbacks have not run on the phone yet. The anisotropic case
+checks the explicit-LOD sampler route, not image quality under arbitrary
+implicit derivatives. BC6H coverage remains one valid block mode with constant
+endpoints; this is not coverage of every BC6H mode or every CS2 shader. No new
+Metal runtime correction follows from the baseline pass.

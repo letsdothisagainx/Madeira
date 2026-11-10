@@ -22,6 +22,13 @@ parser.add_argument('--require-swift', action='store_true')
 parser.add_argument('--official-archives', type=Path, help='Use genuine pinned Valve archives for combined cache-rebuild/bridge-upgrade sequence')
 parser.add_argument('--download-official', action='store_true', help='Explicitly permit downloads of missing exact pinned archives')
 args = parser.parse_args()
+# Exact installed b6edc4d tree: retain the old production entry as an executable
+# negative control. Only its Swift function name changes when it is compiled.
+baseline = (ROOT / 'tests/host/fixtures/steam-bridge-installer-b6edc4d.swift').read_text()
+assert hashlib.sha256(baseline.encode()).hexdigest() == 'd279a320eb9c41afa609c9923bee6bf9496d013f445c8ed54bfebf540709a9e6'
+assert baseline.count('static func installBridge(') == 1
+legacy_farm = (ROOT / 'tests/host/fixtures/steam-bridge-farm-b6edc4d.m.inc').read_text()
+assert hashlib.sha256(legacy_farm.encode()).hexdigest() == '75708a3536f5eb241f8defb80835e0dbac8ed287ea2e04e72ce0203680281fa8'
 if os.uname().sysname != 'Darwin' or not shutil.which('swiftc'):
     if args.require_swift:
         raise SystemExit('FAIL --require-swift: macOS Swift/CryptoKit is required')
@@ -83,6 +90,12 @@ import Foundation
 import CryptoKit
 
 let fm = FileManager.default
+let farmExecutable = URL(fileURLWithPath: CommandLine.arguments[1])
+func refreshFarm(_ source: URL, _ system: URL, legacy: Bool = false, cross: Bool = false) throws {
+    let process = Process(); process.executableURL = farmExecutable
+    process.arguments = [source.path, system.path, legacy ? "legacy" : (cross ? "cross" : "main")]
+    try process.run(); process.waitUntilExit(); precondition(process.terminationStatus == 0)
+}
 func hash(_ bytes: Data) -> String { SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined() }
 func hashFile(_ file: URL) throws -> String { hash(try Data(contentsOf: file)) }
 func fails(_ label: String, _ action: () throws -> Void) {
@@ -123,7 +136,9 @@ func manifest(_ bytes: Data, hashOverride: String? = nil) -> F.BridgeManifest {
         readinessABI: F.ReadinessABI(version: 1, size: 80, sha256: F.abiSHA256))
 }
 func bundle(_ label: String, _ bytes: Data) throws -> (URL, F.BridgeManifest) {
-    let resources = temp.appendingPathComponent("resources-" + label, isDirectory: true)
+    // Match an actual iOS bundle-container update: only the UUID changes;
+    // App.app, architecture and one named bridge leaf retain their identity.
+    let resources = temp.appendingPathComponent("Bundle/Application/" + UUID().uuidString + "/App.app", isDirectory: true)
     let binary = resources.appendingPathComponent("arm64ec-windows", isDirectory: true)
     try fm.createDirectory(at: binary, withIntermediateDirectories: true)
     let dll = binary.appendingPathComponent(F.bridgeName), metadata = binary.appendingPathComponent(F.manifestName)
@@ -164,6 +179,90 @@ assert(reusedInode == afterReuseInode)
 try check(old, oldManifest)
 print("PASS first install and verified reuse: full SHA256, physical size, AMD64 PE and ownership stamp")
 
+// Reproduce the actual device ordering: a successful install is followed by
+// the generic graphics-probe farm refresh, then the next Steam preflight.
+// The negative control executes the exact installed old installer entry.
+try refreshFarm(oldSource.deletingLastPathComponent(), system, legacy: true)
+assert(try fm.destinationOfSymbolicLink(atPath: target.path) == oldSource.path)
+var oldReports: [String] = [], baselineConflict = false
+do {
+    try F.baselineInstallBridge(oldSource, manifest: oldManifest, drive: drive, digest: hashFile, idle: { true }, report: { oldReports.append($0) })
+} catch SteamRuntimeFiles.Failure.conflict {
+    assert((SteamRuntimeFiles.Failure.conflict as NSError).code == 1)
+    baselineConflict = true
+}
+assert(baselineConflict)
+assert(oldReports.contains { $0.contains("phase=bridge-source-recheck") && $0.contains("result=verified") })
+assert(!oldReports.contains { $0.contains("phase=bridge-existing-stamp") })
+print("PASS exact installed baseline reproduces source-verified -> farm-created symlink path conflict before stamp diagnostics")
+
+func retainedLinkCount(_ destination: String) -> Int {
+    guard let items = fm.enumerator(at: system, includingPropertiesForKeys: nil) else { return 0 }
+    var count = 0
+    for case let file as URL in items where file.path != target.path {
+        if (try? fm.destinationOfSymbolicLink(atPath: file.path)) == destination { count += 1 }
+    }
+    return count
+}
+try F.installBridge(oldSource, manifest: oldManifest, drive: drive, digest: hashFile, idle: { true }, report: report)
+try check(old, oldManifest)
+assert(retainedLinkCount(oldSource.path) > 0)
+let ownedStamp = try Data(contentsOf: stampFile)
+let ordinaryName = "madeira-test-ordinary-farm.dll"
+let ordinarySource = oldSource.deletingLastPathComponent().appendingPathComponent(ordinaryName)
+try pe(512).write(to: ordinarySource)
+for cross in [false, true, false, true] {
+    try refreshFarm(oldSource.deletingLastPathComponent(), system, cross: cross)
+    assert((try? fm.destinationOfSymbolicLink(atPath: target.path)) == nil)
+    assert(try Data(contentsOf: stampFile) == ownedStamp)
+    assert(try fm.destinationOfSymbolicLink(atPath: system.appendingPathComponent(ordinaryName).path) == ordinarySource.path)
+    try F.installBridge(oldSource, manifest: oldManifest, drive: drive, digest: hashFile, idle: { true }, report: report)
+    try check(old, oldManifest)
+}
+print("PASS actual generic farm policy preserves owned bridge/stamp across probe and repeated Steam preflight while ordinary DLL links still refresh")
+
+// The probe can precede the first ever native Steam installation, so a link
+// to this exact verified bundle source must be recoverable without a stamp.
+try fm.removeItem(at: stampFile); try refreshFarm(oldSource.deletingLastPathComponent(), system, legacy: true)
+try F.installBridge(oldSource, manifest: oldManifest, drive: drive, digest: hashFile, idle: { true }, report: report)
+try check(old, oldManifest)
+print("PASS first-probe-before-Steam exact verified current-source link recovers without adopting an unowned regular file")
+
+// A real app update changes the bundle UUID. The old farm link can still be
+// readable or can dangle after iOS removes the preceding installed app.
+for dangling in [false, true] {
+    try F.installBridge(oldSource, manifest: oldManifest, drive: drive, digest: hashFile, idle: { true })
+    let before = retainedLinkCount(oldSource.path)
+    try fm.removeItem(at: target); try fm.createSymbolicLink(at: target, withDestinationURL: oldSource)
+    if dangling { try fm.removeItem(at: oldSource); assert(!fm.fileExists(atPath: target.path)) }
+    let oldStamp = try Data(contentsOf: stampFile)
+    fails("active session cannot migrate a known previous-bundle link") {
+        try F.installBridge(nextSource, manifest: nextManifest, drive: drive, digest: hashFile, idle: { false })
+    }
+    assert(try fm.destinationOfSymbolicLink(atPath: target.path) == oldSource.path)
+    assert(try Data(contentsOf: stampFile) == oldStamp)
+    try F.installBridge(nextSource, manifest: nextManifest, drive: drive, digest: hashFile, idle: { true }, report: report)
+    try check(next, nextManifest)
+    assert(retainedLinkCount(oldSource.path) > before)
+    if dangling { try old.write(to: oldSource) }
+    try F.installBridge(nextSource, manifest: nextManifest, drive: drive, digest: hashFile, idle: { true }, report: report)
+    try check(next, nextManifest)
+}
+print("PASS valid-owned live and dangling preceding-bundle UUID links retained as links, replaced from new verified source and reused")
+try fm.removeItem(at: target); try fm.createSymbolicLink(at: target, withDestinationURL: oldSource)
+try fm.removeItem(at: stampFile)
+fails("previous-bundle UUID link without valid ownership stamp") {
+    try F.installBridge(nextSource, manifest: nextManifest, drive: drive, digest: hashFile, idle: { true })
+}
+assert(try fm.destinationOfSymbolicLink(atPath: target.path) == oldSource.path)
+assert(!fm.fileExists(atPath: stampFile.path))
+try writeStamp(nextManifest.fingerprint, nil)
+try F.installBridge(nextSource, manifest: nextManifest, drive: drive, digest: hashFile, idle: { true }, report: report)
+try check(next, nextManifest)
+// Restore the established baseline for the independent unequal-size upgrade.
+try F.installBridge(oldSource, manifest: oldManifest, drive: drive, digest: hashFile, idle: { true })
+try check(old, oldManifest)
+
 // The baseline caches target.resourceValues(fileSizeKey) while recognizing the
 // older bridge, then reads that same URL after atomic replacement. Same-size
 // fixtures hide the defect. Real upgrade sizes must pass installed readback.
@@ -196,6 +295,9 @@ try writeStamp(oldManifest.fingerprint, nextManifest.fingerprint)
 try F.installBridge(nextSource, manifest: nextManifest, drive: drive, digest: hashFile, idle: { true }, report: report)
 try check(next, nextManifest)
 try fm.removeItem(at: target); try writeStamp(nil, nextManifest.fingerprint)
+try F.installBridge(nextSource, manifest: nextManifest, drive: drive, digest: hashFile, idle: { true }, report: report)
+try check(next, nextManifest)
+try fm.removeItem(at: target); try writeStamp(nextManifest.fingerprint, nil)
 try F.installBridge(nextSource, manifest: nextManifest, drive: drive, digest: hashFile, idle: { true }, report: report)
 try check(next, nextManifest)
 print("PASS interrupted pending recovery before/after copy and owned pending first-install with missing target")
@@ -249,8 +351,28 @@ try wrong.write(to: target); try writeStamp(manifest(wrong).fingerprint, nil)
 fails("owned but wrong-architecture old target") { try F.installBridge(nextSource, manifest: nextManifest, drive: drive, digest: hashFile, idle: { true }) }
 assert(try Data(contentsOf: target) == wrong)
 try next.write(to: target); try writeStamp(oldManifest.fingerprint, nil)
-fails("unknown target despite valid ownership stamp") { try F.installBridge(nextSource, manifest: nextManifest, drive: drive, digest: hashFile, idle: { true }) }
-assert(try Data(contentsOf: target) == next)
+try F.installBridge(nextSource, manifest: nextManifest, drive: drive, digest: hashFile, idle: { true }, report: report)
+try check(next, nextManifest)
+print("PASS stale valid stamp with actual current verified bridge is reconciled using full current-source fingerprint")
+let unknown = pe(59_392, salt: 19)
+try unknown.write(to: target); try writeStamp(oldManifest.fingerprint, nil)
+fails("unknown target despite old ownership stamp") { try F.installBridge(nextSource, manifest: nextManifest, drive: drive, digest: hashFile, idle: { true }) }
+assert(try Data(contentsOf: target) == unknown)
+try writeStamp(nextManifest.fingerprint, nil)
+let corruptStamp = try Data(contentsOf: stampFile)
+try F.installBridge(nextSource, manifest: nextManifest, drive: drive, digest: hashFile, idle: { true }, report: report)
+try check(next, nextManifest)
+var retainedCorrupt = false, retainedCorruptStamp = false
+if let entries = fm.enumerator(at: system, includingPropertiesForKeys: [.isRegularFileKey]) {
+    for case let file as URL in entries where file.path != target.path && file.path != stampFile.path {
+        if (try? fm.destinationOfSymbolicLink(atPath: file.path)) == nil {
+            retainedCorrupt = retainedCorrupt || (try? Data(contentsOf: file)) == unknown
+            retainedCorruptStamp = retainedCorruptStamp || (try? Data(contentsOf: file)) == corruptStamp
+        }
+    }
+}
+assert(retainedCorrupt && retainedCorruptStamp)
+print("PASS damaged current-owned regular bridge is retained with its stamp and replaced only from the fully verified source")
 try writeStamp(nextManifest.fingerprint, nil, owner: "not-Madeira")
 fails("foreign stamp") { try F.installBridge(nextSource, manifest: nextManifest, drive: drive, digest: hashFile, idle: { true }) }
 try fm.removeItem(at: stampFile)
@@ -265,14 +387,61 @@ try fm.removeItem(at: target); try next.write(to: target)
 try fm.removeItem(at: stampFile); try fm.createSymbolicLink(at: stampFile, withDestinationURL: auth)
 fails("linked stamp") { try F.installBridge(nextSource, manifest: nextManifest, drive: drive, digest: hashFile, idle: { true }) }
 try fm.removeItem(at: stampFile); try writeStamp(nextManifest.fingerprint, nil)
+// Matching bytes at an unrelated link destination do not prove farm ownership.
+let foreignCopy = temp.appendingPathComponent("foreign-copy.dll"); try next.write(to: foreignCopy)
+try fm.removeItem(at: target); try fm.createSymbolicLink(at: target, withDestinationURL: foreignCopy)
+fails("foreign link even with current matching bytes and ownership stamp") {
+    try F.installBridge(nextSource, manifest: nextManifest, drive: drive, digest: hashFile, idle: { true })
+}
+assert(try fm.destinationOfSymbolicLink(atPath: target.path) == foreignCopy.path)
+assert(try Data(contentsOf: foreignCopy) == next)
+try fm.removeItem(at: target); try next.write(to: target)
+let currentStamp = try Data(contentsOf: stampFile)
+try Data("{malformed".utf8).write(to: stampFile, options: .atomic)
+try fm.removeItem(at: target); try fm.createSymbolicLink(at: target, withDestinationURL: nextSource)
+fails("malformed stamp before known-source link repair") {
+    try F.installBridge(nextSource, manifest: nextManifest, drive: drive, digest: hashFile, idle: { true })
+}
+assert(try fm.destinationOfSymbolicLink(atPath: target.path) == nextSource.path)
+assert(try Data(contentsOf: stampFile) == Data("{malformed".utf8))
+try currentStamp.write(to: stampFile, options: .atomic)
+try F.installBridge(nextSource, manifest: nextManifest, drive: drive, digest: hashFile, idle: { true }, report: report)
+try check(next, nextManifest)
+for leaf in [F.bridgeName.uppercased(), F.stampName.uppercased()] {
+    let aliasDrive = temp.appendingPathComponent("alias-" + UUID().uuidString, isDirectory: true)
+    let aliasSystem = aliasDrive.appendingPathComponent("windows/system32", isDirectory: true)
+    try fm.createDirectory(at: aliasSystem, withIntermediateDirectories: true)
+    let file = aliasSystem.appendingPathComponent(leaf), original = Data("case-alias-kept".utf8)
+    try original.write(to: file)
+    let beforeReports = reports.count
+    fails("case-aliased owned bridge entry " + leaf) {
+        try F.installBridge(nextSource, manifest: nextManifest, drive: aliasDrive, digest: hashFile, idle: { true }, report: report)
+    }
+    assert(try Data(contentsOf: file) == original)
+    let expectedPhase = leaf == F.bridgeName.uppercased() ? "bridge-target-path" : "bridge-stamp-path"
+    assert(reports.dropFirst(beforeReports).contains { $0.contains("[steam-browser-bridge-fs-v1]") && $0.contains("phase=" + expectedPhase) && $0.contains("result=failed") })
+}
+let parentDrive = temp.appendingPathComponent("linked-parent-drive", isDirectory: true)
+let parentWindows = parentDrive.appendingPathComponent("windows", isDirectory: true)
+let outsideSystem = temp.appendingPathComponent("outside-system", isDirectory: true)
+try fm.createDirectory(at: parentWindows, withIntermediateDirectories: true)
+try fm.createDirectory(at: outsideSystem, withIntermediateDirectories: true)
+try fm.createSymbolicLink(at: parentWindows.appendingPathComponent("system32"), withDestinationURL: outsideSystem)
+let outsideFile = outsideSystem.appendingPathComponent(F.bridgeName)
+try Data("outside-kept".utf8).write(to: outsideFile)
+fails("linked system32 parent") {
+    try F.installBridge(nextSource, manifest: nextManifest, drive: parentDrive, digest: hashFile, idle: { true }, report: report)
+}
+assert(try Data(contentsOf: outsideFile) == Data("outside-kept".utf8))
+assert(reports.contains { $0.contains("[steam-browser-bridge-fs-v1]") && $0.contains("phase=bridge-system-directory") && $0.contains("result=failed") && $0.contains("relative=windows/system32") })
 print("PASS strict source/old-target architecture, fingerprint, unknown/foreign/unowned and symlink rejection")
 
 // The optional CI integration uses all three genuine archives and the actual
 // cache transaction. The offline unit fixture covers canonical path acceptance.
 let compat = try F.compatRoot(drive: drive, idle: { true })
 let cache: B.Prepared
-if CommandLine.arguments.count > 1 {
-    let archives = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
+if CommandLine.arguments.count > 2 {
+    let archives = URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true)
     let owner = try B.ownerRoot(cacheBase: compat, steamRoot: steam, idle: { true })
     let final = owner.appendingPathComponent(B.official.id, isDirectory: true)
     func freshOfficialStage(_ label: String) throws -> (URL, [B.FileRecord]) {
@@ -335,7 +504,62 @@ with tempfile.TemporaryDirectory(prefix='madeira-browser-bridge-') as directory:
     (p / 'Files.swift').write_text(files)
     (p / 'Update.swift').write_text(update)
     (p / 'Browser.swift').write_text((ROOT / 'app/Madeira/SteamBrowserRuntime.swift').read_text())
-    (p / 'Native.swift').write_text((ROOT / 'app/Madeira/SteamNativeBrowserLaunch.swift').read_text())
+    native = (ROOT / 'app/Madeira/SteamNativeBrowserLaunch.swift').read_text()
+    closing = '\n}\n\n#if canImport(CryptoKit) && canImport(Combine)'
+    assert native.count(closing) == 1
+    native = native.replace(closing, '\n' + baseline.replace('static func installBridge(', 'static func baselineInstallBridge(', 1) + closing, 1)
+    (p / 'Native.swift').write_text(native)
     (p / 'main.swift').write_text(main)
+    farm_source = (ROOT / 'app/Madeira/WineProcessBridge.m').read_text()
+    assert farm_source.count('madeira_generic_runtime_farm_allows(') == 4, 'every generic farm protects the managed names'
+    first = farm_source.index('            NSArray *dlls = [fm contentsOfDirectoryAtPath:dllSource error:nil];')
+    fixed_main = farm_source[first:farm_source.index('            LOG("Symlinked %d DLLs', first)]
+    first = farm_source.index('                NSArray *others = [fm contentsOfDirectoryAtPath:otherSource error:nil];')
+    fixed_cross = farm_source[first:farm_source.index('                dprintf(STDERR_FILENO, "[WineProc] Cross-linked', first)]
+    assert 'madeira_generic_runtime_farm_allows' in fixed_main
+    assert 'madeira_generic_runtime_farm_allows' in fixed_cross
+    farm = r'''
+#import <Foundation/Foundation.h>
+#include <assert.h>
+#include <string.h>
+#include "ManagedSteamBridge.h"
+static void legacy(NSString *dllSource, NSString *sys32Dir, NSFileManager *fm)
+{
+''' + legacy_farm + r'''
+    (void)linked;
+}
+static void current(NSString *dllSource, NSString *sys32Dir, NSFileManager *fm)
+{
+''' + fixed_main + r'''
+    (void)linked;
+}
+static void cross(NSString *otherSource, NSString *sys32Dir, NSFileManager *fm)
+{
+''' + fixed_cross + r'''
+    (void)crossLinked;
+}
+int main(int argc, char **argv)
+{
+    @autoreleasepool {
+        assert(argc == 4);
+        assert(!madeira_generic_runtime_farm_allows("madeira-htmlipc-bridge.dll"));
+        assert(!madeira_generic_runtime_farm_allows("MADEIRA-HTMLIPC-BRIDGE.DLL"));
+        assert(!madeira_generic_runtime_farm_allows("Madeira-Htmlipc-Bridge.Manifest.Json"));
+        assert(!madeira_generic_runtime_farm_allows("madeira-htmlipc-bridge.madeira-owned-v1.json"));
+        assert(madeira_generic_runtime_farm_allows("kernel32.dll"));
+        assert(madeira_generic_runtime_farm_allows("madeira-test-ordinary-farm.dll"));
+        NSString *source = [NSString stringWithUTF8String:argv[1]];
+        NSString *destination = [NSString stringWithUTF8String:argv[2]];
+        NSFileManager *fm = [NSFileManager defaultManager];
+        if (!strcmp(argv[3], "legacy")) legacy(source, destination, fm);
+        else if (!strcmp(argv[3], "cross")) cross(source, destination, fm);
+        else { assert(!strcmp(argv[3], "main")); current(source, destination, fm); }
+    }
+    return 0;
+}
+'''
+    (p / 'farm.m').write_text(farm)
+    subprocess.run(['clang', '-Wall', '-Wextra', '-Werror', '-framework', 'Foundation',
+                    '-I', str(ROOT / 'app/Madeira'), str(p / 'farm.m'), '-o', str(p / 'farm')], check=True)
     subprocess.run(['swiftc', '-swift-version', '5', str(p / 'Files.swift'), str(p / 'Update.swift'), str(p / 'Browser.swift'), str(p / 'Native.swift'), str(p / 'main.swift'), '-o', str(p / 'check')], check=True)
-    subprocess.run([str(p / 'check')] + ([str(args.official_archives.resolve())] if args.official_archives else []), check=True, timeout=180)
+    subprocess.run([str(p / 'check'), str(p / 'farm')] + ([str(args.official_archives.resolve())] if args.official_archives else []), check=True, timeout=180)

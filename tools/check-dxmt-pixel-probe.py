@@ -48,7 +48,8 @@ def validate(path):
     assert 'd3dcompiler_47.dll' not in imports, 'compiler failure must be logged by the running probe'
     assert b'Wine builtin DLL' not in image[:offset], 'must run through the ordinary x64 guest loader'
     for marker in (b'[d3d11-pixels]', b'DXMT device identity', b'GPU completion exceeded 30 seconds',
-                   b'BC3-update-copy-region-tail', b'readbacks=%u failures=%u'):
+                   b'BC3-update-copy-region-tail', b'readbacks=%u failures=%u',
+                   b'contract=extended-v2 expected-readbacks=184 baseline=113'):
         assert marker in image, 'probe reporting contract missing: ' + repr(marker)
     print('PASS DXMT probe PE: x64 guest, console, real D3D11 import, explicit DXMT identity, bounded GPU completion; pixel execution not measured')
 

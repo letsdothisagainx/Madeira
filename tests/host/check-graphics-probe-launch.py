@@ -99,7 +99,7 @@ entry = content[start:end]
 assert 'mkdir(directory.path, mode_t(0o700)) == 0' in (ROOT / 'app/Madeira/GraphicsPixelProbe.swift').read_text()
 assert entry.index('nativeSteamPreparationIdle()') < entry.index('GraphicsPixelProbe.stage(')
 assert entry.index('jitReadyForLaunch(') < entry.index('GraphicsPixelProbe.stage(')
-assert 'startLibraryEntry(entry, remember: false)' in entry
+assert 'startLibraryEntry(entry, remember: false, standaloneProbe: true)' in entry
 assert 'LibraryModel.sessionsThisRun' in entry and 'MADEIRA_ONE_SESSION_PER_RUN' in entry
 assert 'WINEDLLOVERRIDES' not in entry and 'library.save' not in entry
 ui = (ROOT / 'app/Madeira/Library.swift').read_text()
