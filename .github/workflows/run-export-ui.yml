@@ -6,7 +6,7 @@ on:
         description: 'Owned native UI cases to run'
         required: false
         type: choice
-        options: [all, landscape]
+        options: [all, landscape, stock]
         default: all
   push:
     branches: [main, 'codex/pr-build-*', codex/validate-cs2-integrity-runtime-4b41]

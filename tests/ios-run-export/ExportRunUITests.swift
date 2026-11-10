@@ -93,13 +93,7 @@ final class ExportRunUITests: XCTestCase {
         event("event=share-presented request=\(request)", app: app)
     }
 
-    func testActiveLandscapeExportSurvivesOriginDestructionAndOpensFiles() throws {
-        XCUIDevice.shared.orientation = .landscapeLeft
-        let app = launch(["--active-game", "--drop-origin"])
-        XCTAssertGreaterThan(app.frame.width, app.frame.height, "The actual host must be in landscape")
-        request(app, controls: true)
-        confirmNativeShare(app)
-        openNativeFiles(app)
+    private func saveInOwnedDocuments(_ app: XCUIApplication) {
         // The system Files interface must open and perform its own copy into
         // the isolated host's Documents folder; the archive factory cannot
         // write the destination that the collector subsequently verifies.
@@ -165,6 +159,16 @@ final class ExportRunUITests: XCTestCase {
         let completed = XCTWaiter.wait(for: [completion], timeout: 20) == .completed
         if !completed { preserveOwnedPickerState(app, context: "after-native-completion-timeout") }
         XCTAssertTrue(completed, "Native Save must report its actual successful activity completion")
+    }
+
+    func testActiveLandscapeExportSurvivesOriginDestructionAndOpensFiles() throws {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = launch(["--active-game", "--drop-origin"])
+        XCTAssertGreaterThan(app.frame.width, app.frame.height, "The actual host must be in landscape")
+        request(app, controls: true)
+        confirmNativeShare(app)
+        openNativeFiles(app)
+        saveInOwnedDocuments(app)
         XCTAssertTrue(app.buttons["library-menu"].waitForExistence(timeout: 8))
         XCTAssertTrue(app.staticTexts["host.session"].firstMatch.label.contains("session-ended"))
         XCTAssertTrue(app.staticTexts["host.key-window"].firstMatch.label.contains("library"))
@@ -174,6 +178,24 @@ final class ExportRunUITests: XCTestCase {
         XCTAssertTrue(saveToFiles(app).waitForExistence(timeout: 5))
         dismissNativeShare(app, request: 2)
         event("event=share-presented request=2", app: app)
+    }
+
+    func testStockPrimaryWindowFilesSaveControl() throws {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = launch(["--stock-control"])
+        XCTAssertGreaterThan(app.frame.width, app.frame.height)
+        let button = app.buttons["stock-export"]
+        XCTAssertTrue(button.waitForExistence(timeout: 10)); button.tap()
+        confirmNativeShare(app)
+        openNativeFiles(app)
+        saveInOwnedDocuments(app)
+        XCTAssertTrue(button.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts["host.key-window"].firstMatch.label.contains("library"))
+        // Match the original case's second producer invocation and real cancel;
+        // source-file reuse is deliberately unchanged for this comparison.
+        button.tap()
+        confirmNativeShare(app)
+        dismissNativeShare(app, request: 2)
     }
 
     func testEndedSessionExportAndNativeCancellationRestoreWindow() throws {

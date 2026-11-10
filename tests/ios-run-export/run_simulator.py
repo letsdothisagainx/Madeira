@@ -216,7 +216,9 @@ def collect(device, verify, selected_test='', data_path=None):
         'nativeUITestsPassed': verify, 'eventFiles': len(records),
         'nativeFilesSavedAndCRCVerified': native_saved,
         'selectedTest': selected_test or 'full-suite',
-        'scope': 'production coordinator/UIKit + owned host and archive-production boundary; no game or account data',
+        'scope': ('stock UIKit primary normal-window control + same production operation/owned archive producer'
+                  if selected_test.endswith('testStockPrimaryWindowFilesSaveControl') else
+                  'production coordinator/UIKit + owned host and archive-production boundary; no game or account data'),
         'deviceAcceptance': 'unverified; simulator does not establish operation on the user iPhone',
     }
     (evidence / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
@@ -250,9 +252,10 @@ def main():
     selectors = {
         'all': '',
         'landscape': 'RunExportUITests/ExportRunUITests/testActiveLandscapeExportSurvivesOriginDestructionAndOpensFiles',
+        'stock': 'RunExportUITests/ExportRunUITests/testStockPrimaryWindowFilesSaveControl',
     }
     if test_case not in selectors:
-        raise ValueError('Only the all or landscape owned UI test selection is permitted')
+        raise ValueError('Only the all, landscape or stock owned UI test selection is permitted')
     selected_test = selectors[test_case]
     try:
         if selected['state'] != 'Booted':

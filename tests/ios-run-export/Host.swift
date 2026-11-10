@@ -16,6 +16,8 @@ final class ExportHostState: ObservableObject {
     let baseline = ProcessInfo.processInfo.arguments.contains("--baseline-d6")
     let failArchive = ProcessInfo.processInfo.arguments.contains("--fail-archive")
     let dropOrigin = ProcessInfo.processInfo.arguments.contains("--drop-origin")
+    let stockControl = ProcessInfo.processInfo.arguments.contains("--stock-control")
+    private let stockOperation = RunExportOperation()
 
     func onAppear() {
         guard !didStart else { return }; didStart = true
@@ -54,7 +56,7 @@ final class ExportHostState: ObservableObject {
         // File evidence comes from actual production callbacks, not assertions
         // that a presenter ought to have been invoked.
         if let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
-            let context = "[fixture-context] baseline=\(baseline ? 1 : 0) fail=\(failArchive ? 1 : 0) drop-origin=\(dropOrigin ? 1 : 0)"
+            let context = "[fixture-context] baseline=\(baseline ? 1 : 0) fail=\(failArchive ? 1 : 0) drop-origin=\(dropOrigin ? 1 : 0) stock=\(stockControl ? 1 : 0)"
             try? Data((context + "\n" + events.joined(separator: "\n") + "\n").utf8)
                 .write(to: docs.appendingPathComponent(evidenceName), options: .atomic)
         }
@@ -90,6 +92,41 @@ final class ExportHostState: ObservableObject {
         controls?.isHidden = true; controls?.rootViewController = nil; controls = nil
         gameActive = false
         activeScene()?.windows.first { !$0.isHidden && $0.windowLevel == .normal }?.makeKey()
+    }
+
+    // A causal control, not the production presenter: use the same production
+    // operation and owned archive producer, with stock UIKit presentation from
+    // the persistent primary normal window. Real Files/callback/CRC gates are
+    // identical to the secondary-window case.
+    func requestStockControl() {
+        stockOperation.start(export: { try await self.makeArchive() }, present: { url in
+            guard let window = self.activeScene()?.windows.first(where: {
+                $0.isKeyWindow && !$0.isHidden && $0.windowLevel == .normal
+            }), let root = window.rootViewController else {
+                throw CocoaError(.fileNoSuchFile)
+            }
+            let identity = self.stockOperation.request
+            let activity = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+            activity.completionWithItemsHandler = { _, completed, _, error in
+                Task { @MainActor in
+                    self.stockOperation.finish(request: identity, completed: completed, error: error)
+                }
+            }
+            if let popover = activity.popoverPresentationController {
+                popover.sourceView = root.view
+                popover.sourceRect = CGRect(x: root.view.bounds.midX, y: root.view.bounds.midY, width: 1, height: 1)
+                popover.permittedArrowDirections = []
+            }
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                root.present(activity, animated: true) {
+                    guard activity.presentingViewController != nil, activity.viewIfLoaded?.window != nil else {
+                        continuation.resume(throwing: CocoaError(.fileNoSuchFile)); return
+                    }
+                    self.stockOperation.didPresent(request: identity)
+                    continuation.resume()
+                }
+            }
+        }, record: { self.record($0) })
     }
 }
 
@@ -154,7 +191,12 @@ struct RunExportHostApp: App {
         WindowGroup {
             VStack(spacing: 12) {
                 Text("Madeira Run Export UI Host")
-                ExportMenu(controls: false)
+                if ExportHostState.shared.stockControl {
+                    Button("Stock primary-window export") { ExportHostState.shared.requestStockControl() }
+                        .accessibilityIdentifier("stock-export")
+                } else {
+                    ExportMenu(controls: false)
+                }
                 Status()
             }.padding().onAppear { ExportHostState.shared.onAppear() }
         }
