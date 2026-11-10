@@ -345,7 +345,7 @@ func jit_cs2_pool_plan(_ requested: UInt64, _ available: UInt64, _ footprint: UI
     if budgetEligible { selected = 1152; reserve = 240 }
     return budgetEligible
 }
-func jit_cs2_code_tail_limit_mb() -> UInt64 { 512 }
+func jit_cs2_code_tail_limit_mb() -> UInt64 { 448 }
 struct SelectionProfile { let steamAppID: Int }
 struct SelectionLaunch { let dock: Bool, compact: Bool }
 struct SelectionResult { let lines: [String], size: Int, floor: Int, failed: Bool, calls: Int }
@@ -375,7 +375,7 @@ precondition(configured.lines.contains { $0.contains("JIT pool requested at 1024
 record(select(global: "1024", game: "768"), ["source=game-config", "configured-mb=768", "effective-mb=768"])
 let cs2 = select(app: 730, global: "1024")
 record(cs2, ["source=cs2-budget-selected", "configured-mb=1024", "effective-mb=1152", "image-reserve-mb=240",
-             "code-tail-limit-mb=512", "session-reserve-mb=2048", "existing-pool=0", "result=requested"])
+             "code-tail-limit-mb=448", "session-reserve-mb=2048", "existing-pool=0", "result=requested"])
 precondition(cs2.size == 1152 && cs2.floor == 1152 << 20 && !cs2.failed && cs2.calls == 1)
 let declined = select(app: 730, global: "1024", eligible: false)
 record(declined, ["source=cs2-budget-declined", "configured-mb=1024", "effective-mb=none",
