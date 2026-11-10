@@ -160,7 +160,9 @@ with tempfile.TemporaryDirectory(prefix='madeira-run-streaming-') as temporary:
     subprocess.run([swift, '-swift-version', '5', '-parse-as-library', '-I', str(p),
                     str(ROOT / 'app/Madeira/CS2VACMarkers.swift'), str(ROOT / 'app/Madeira/SteamGameDiagnostics.swift'),
                     str(ROOT / 'app/Madeira/RunDiagnostics.swift'), str(p / 'Writer.swift'), str(p / 'Check.swift'), '-o', str(executable)], check=True)
-    subprocess.run([str(executable), str(p)], check=True, timeout=240)
+    # This is a bounded-memory/correctness stress case, not a host-speed gate.
+    # The debug Swift fixture can exceed four minutes on a loaded Apple runner.
+    subprocess.run([str(executable), str(p)], check=True, timeout=600)
     result = json.loads((p / 'result.json').read_text())
     with log.open('rb') as file:
         assert before == hashlib.file_digest(file, 'sha256').hexdigest(), 'Exporter changed source log'
