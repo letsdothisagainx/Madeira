@@ -207,11 +207,14 @@ func retainedLinkCount(_ destination: String) -> Int {
 try F.installBridge(oldSource, manifest: oldManifest, drive: drive, digest: hashFile, idle: { true }, report: report)
 try check(old, oldManifest)
 assert(retainedLinkCount(oldSource.path) > 0)
-let ownedStamp = try Data(contentsOf: stampFile)
 let ordinaryName = "madeira-test-ordinary-farm.dll"
 let ordinarySource = oldSource.deletingLastPathComponent().appendingPathComponent(ordinaryName)
 try pe(512).write(to: ordinarySource)
 for cross in [false, true, false, true] {
+    // Each Steam preflight below may atomically re-encode the same valid JSON
+    // stamp. JSON object-key order is not part of that ownership contract.
+    // Compare bytes across this farm operation, rather than across preflights.
+    let ownedStamp = try Data(contentsOf: stampFile)
     try refreshFarm(oldSource.deletingLastPathComponent(), system, cross: cross)
     assert((try? fm.destinationOfSymbolicLink(atPath: target.path)) == nil)
     assert(try Data(contentsOf: stampFile) == ownedStamp)
