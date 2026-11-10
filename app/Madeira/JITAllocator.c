@@ -462,8 +462,9 @@ bool jit_memory_snapshot(uint64_t *available_bytes, uint64_t *footprint_bytes) {
  * adding 128MB lets the next FEX generation consume that whole increase.
  * Pair 1152MB with 240MB of image headroom. The November 8 rotation arrives
  * earlier than the November 7 replay: 208MB still admits another 32MB code
- * generation. The separate 512MB large-code growth budget below prevents that
- * reservation even if image loading moves earlier or later. Existing code
+ * generation. The separate large-code growth budget below prevents that
+ * reservation even if image loading moves earlier or later; the November 10
+ * CS2 client.dll failure requires the tighter 448MB code budget below. Existing code
  * reuse and FEX's minimum-buffer fallback remain available. These are startup
  * choices, never a request to resize a live pool.
  *
@@ -498,13 +499,19 @@ bool jit_cs2_pool_plan(uint64_t requested_pool_mb, uint64_t available_bytes,
     return true;
 }
 
-/* The observed three 128MB generations and their initial small carves occupy
- * 496.109375MB. Keep them intact while preventing a further fresh 32MB growth
- * from consuming image capacity, independently of the image-head cursor.
- * This limits large fresh growth, not reusable code or required <=16MB units.
- * It does not reserve physical memory or guarantee arbitrary future images. */
+/* CS2's 2026-11-10 ee12a33e run reproduced a real JIT exhaustion:
+ * a 41.65625 MiB client.dll executable copy failed with a 627.4375 MiB
+ * image head and a 496.203125 MiB FEX tail in a 1152 MiB pool, leaving only
+ * 28.359375 MiB of fresh contiguous room. The 512 MiB large-code limit still
+ * admitted that tail. Cap fresh >16 MiB code growth at 448 MiB instead, so
+ * the third 128 MiB generation is honestly retried at 64 MiB before it
+ * consumes the room needed by mandatory CS2 game modules. This preserves
+ * existing live code buffers, ordinary <=16 MiB fallback/reuse, RX/RW alias
+ * protections and the 1152 MiB physical-memory budget. It is a proactive
+ * headroom trade-off, not a guarantee of VAC or successful game startup;
+ * verify with a real-device session after the native replay tests. */
 uint64_t jit_cs2_code_tail_limit_mb(void) {
-    return 512;
+    return 448;
 }
 
 bool jit_pool_alias_layout_valid(uint64_t rx, uint64_t rw, uint64_t size,
