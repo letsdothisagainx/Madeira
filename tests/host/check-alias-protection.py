@@ -6,7 +6,7 @@ root=Path(__file__).resolve().parents[2]
 s=(root/'build/ntdll-unix/virtual_ios.c').read_text()
 # Compile the actual lock-free guard query with an empty legacy bitmap.
 g = (root / 'build/ntdll-unix/fex_code_guards.h').read_text()
-guard_bitmap = (root / 'build/ntdll-unix/fex_code_buffer_abi.h').read_text() + '\n' + g[g.index('#define IOS_CODE_GUARD_MAX_POOL'):g.index('static uint64_t ios_code_guard_armed')]
+guard_bitmap = '#include "fex_code_buffer_abi.h"\n' + g[g.index('#define IOS_CODE_GUARD_MAX_POOL'):g.index('static uint64_t ios_code_guard_armed')]
 
 def function(marker):
  a=s.index(marker); b=s.index('{',a); depth=1; end=b+1

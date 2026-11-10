@@ -85,7 +85,8 @@ assert ('ios_tail_carve_scan( (char *)ios_jit_rx_base_global + ios_tail_carves[b
         '                                     ios_tail_carves[best].size, 1 )') in ec, 'a strict thread scan'
 assert release_block.index('ios_tail_carve_foreign_release(') < release_block.index('ios_tail_carves[i].free = 1;')
 
-fixture = (root / 'build/ntdll-unix/fex_code_buffer_abi.h').read_text() + r'''
+fixture = r'''
+#include "fex_code_buffer_abi.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -596,7 +597,7 @@ with tempfile.TemporaryDirectory(prefix='madeira-pool-code-exit-') as directory:
     cfile.write_text(fixture)
     subprocess.run([os.environ.get('CC', 'cc'), '-std=c11', '-D_POSIX_C_SOURCE=200809L',
                     '-Wall', '-Wextra', '-Werror', '-fsanitize=address,undefined', '-fno-sanitize-recover=undefined',
-                    '-fno-omit-frame-pointer', '-pthread', str(cfile), '-o', str(binary)], check=True)
+                    '-fno-omit-frame-pointer', '-pthread', '-I' + str(root / 'build/ntdll-unix'), str(cfile), '-o', str(binary)], check=True)
     # The allocator's own log lines go to stderr; show them only on failure.
     completed = subprocess.run([str(binary)], capture_output=True, text=True)
     print(completed.stdout, end='')

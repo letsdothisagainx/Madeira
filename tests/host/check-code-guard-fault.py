@@ -73,6 +73,9 @@ void ios_jit_anon_alias_note_write(unsigned long long address) { (void)address; 
 int ios_page_expected_prot(const void *address) { (void)address; return PROT_READ|PROT_WRITE; }
 typedef uint64_t DWORD64;
 typedef uintptr_t ULONG_PTR;
+/* Darwin's mman headers already expose its real ucontext_t. This explicit OS
+ * adapter substitutes only the context boundary used by the extracted helper. */
+#define ucontext_t guard_test_context
 typedef struct { uint64_t pc, esr, regs[32]; } ucontext_t;
 typedef struct { unsigned ExceptionCode; void *ExceptionAddress; unsigned NumberParameters;
                  uintptr_t ExceptionInformation[2]; } EXCEPTION_RECORD;

@@ -57,7 +57,8 @@ helpers = ''.join(function(native, signature) for signature in (
 carve_start = native.index('#define IOS_TAIL_CARVE_MAX ')
 carve_table = native[carve_start:native.index('\n\n', carve_start)]
 
-c_fixture = (root / 'build/ntdll-unix/fex_code_buffer_abi.h').read_text() + r'''
+c_fixture = r'''
+#include "fex_code_buffer_abi.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -406,7 +407,7 @@ with tempfile.TemporaryDirectory(prefix='madeira-pool-startup-') as directory:
     cfile.write_text(c_fixture)
     subprocess.run([os.environ.get('CC', 'cc'), '-std=c11', '-D_POSIX_C_SOURCE=200809L',
                     '-Wall', '-Wextra', '-Werror', '-fsanitize=address,undefined',
-                    '-fno-omit-frame-pointer', '-pthread', str(cfile), '-o', str(binary)], check=True)
+                    '-fno-omit-frame-pointer', '-pthread', '-I' + str(root / 'build/ntdll-unix'), str(cfile), '-o', str(binary)], check=True)
     result = subprocess.run([str(binary)], capture_output=True, text=True)
     print(result.stdout, end='')
     if result.returncode:

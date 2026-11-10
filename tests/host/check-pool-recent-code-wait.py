@@ -178,7 +178,7 @@ with tempfile.TemporaryDirectory(prefix='pool-recent-code-wait-') as directory:
     subprocess.run([os.environ.get('CC', 'cc'), '-std=c11', '-D_POSIX_C_SOURCE=200809L',
                     '-Wall', '-Wextra', '-Werror', '-Wno-unused-function',
                     '-fsanitize=address,undefined', '-fno-sanitize-recover=all',
-                    '-fno-omit-frame-pointer', '-pthread', str(path), '-o', str(executable)], check=True)
+                    '-fno-omit-frame-pointer', '-pthread', '-I' + str(root / 'build/ntdll-unix'), str(path), '-o', str(executable)], check=True)
     result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=15)
     print(result.stdout, end='')
     if result.returncode:

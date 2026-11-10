@@ -35,8 +35,7 @@ virtual = (root / 'build/ntdll-unix/virtual_ios.c').read_text()
 
 
 # Compile the actual lock-free guard query with an empty legacy bitmap.
-g = (root / 'build/ntdll-unix/fex_code_guards.h').read_text()
-guard_bitmap = (root / 'build/ntdll-unix/fex_code_buffer_abi.h').read_text() + '\n' + g.replace('#include "fex_code_buffer_abi.h"', '')
+guard_bitmap = '#include "fex_code_guards.h"\n'
 
 def function(source, signature):
     start = source.index(signature)
@@ -420,7 +419,7 @@ with tempfile.TemporaryDirectory(prefix='madeira-rwx-kernel-writes-') as directo
     exe = folder / 'check'
     cc = os.environ.get('CC', 'cc')
     flags = [cc, '-std=gnu11', '-Wall', '-Wextra', '-Werror', '-Wno-unused-function', '-Wno-unused-parameter',
-             '-Wno-sign-compare', '-g', '-pthread', str(src), '-o', str(exe)]
+             '-Wno-sign-compare', '-g', '-pthread', '-I' + str(root / 'build/ntdll-unix'), str(src), '-o', str(exe)]
     sanitize = ['-fsanitize=address,undefined', '-fno-sanitize-recover=all']
     if subprocess.run(flags[:1] + sanitize + flags[1:], capture_output=True).returncode == 0:
         print('built with AddressSanitizer/UBSan')
