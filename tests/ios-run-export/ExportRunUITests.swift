@@ -50,6 +50,33 @@ final class ExportRunUITests: XCTestCase {
         action.tap()
     }
 
+    private func preserveOwnedPickerState(_ app: XCUIApplication) {
+        // Fresh simulator, owned test host, and Apple's empty system picker:
+        // no game, Steam account, or user Files container is opened here.
+        for (name, application) in [
+            ("host", app),
+            ("springboard", XCUIApplication(bundleIdentifier: "com.apple.springboard")),
+            ("documents", XCUIApplication(bundleIdentifier: "com.apple.DocumentsApp")),
+            ("save-extension", XCUIApplication(bundleIdentifier: "com.apple.DocumentManagerUICore.SaveToFiles")),
+        ] {
+            print("OWNED_EXPORT_UI_HIERARCHY_BEGIN \(name) state=\(application.state.rawValue)")
+            if application.state != .notRunning { print(String(application.debugDescription.prefix(20000))) }
+            print("OWNED_EXPORT_UI_HIERARCHY_END \(name)")
+        }
+        let screenshot = XCUIScreen.main.screenshot()
+        let attachment = XCTAttachment(screenshot: screenshot)
+        attachment.name = "Owned host after native Files action"; attachment.lifetime = .keepAlways
+        add(attachment)
+        // Also preserve this small, owned UI image in the textual CI log when
+        // the artifact-download service cannot materialize xcresult locally.
+        let bytes = screenshot.pngRepresentation
+        if bytes.count <= 512 * 1024 {
+            print("OWNED_EXPORT_UI_SCREENSHOT_BASE64_BEGIN")
+            print(bytes.base64EncodedString())
+            print("OWNED_EXPORT_UI_SCREENSHOT_BASE64_END")
+        }
+    }
+
     private func dismissNativeShare(_ app: XCUIApplication) {
         // Current iOS exposes a Close button; older simulator releases use
         // Cancel. These are actual native controls, never a mocked completion.
@@ -68,13 +95,16 @@ final class ExportRunUITests: XCTestCase {
     func testActiveLandscapeExportSurvivesOriginDestructionAndOpensFiles() throws {
         XCUIDevice.shared.orientation = .landscapeLeft
         let app = launch(["--active-game", "--drop-origin"])
+        XCTAssertGreaterThan(app.frame.width, app.frame.height, "The actual host must be in landscape")
         request(app, controls: true)
         confirmNativeShare(app)
         openNativeFiles(app)
         // The system Files interface must open; producing a ZIP alone cannot
         // satisfy this check. Cancel leaves the user's storage untouched.
         let save = app.buttons["Save"].firstMatch
-        XCTAssertTrue(save.waitForExistence(timeout: 10), "Native Files destination picker must open")
+        let pickerOpened = save.waitForExistence(timeout: 10)
+        preserveOwnedPickerState(app)
+        XCTAssertTrue(pickerOpened, "Native Files destination picker must open")
         let cancel = app.buttons["Cancel"].firstMatch
         XCTAssertTrue(cancel.waitForExistence(timeout: 5)); cancel.tap()
         let events = app.staticTexts["host.events"].firstMatch
