@@ -10,6 +10,9 @@ final class RunExportOperation {
         let domain: String
         let code: Int
         var message: String {
+            if stage == .archive && domain == "background" {
+                return "iOS ended the background time available for this export. The incomplete archive was cancelled; your original logs are unchanged. Keep Madeira open and export again."
+            }
             if domain == NSPOSIXErrorDomain && code == 28 || domain == NSCocoaErrorDomain && code == 640 ||
                domain == "archive" && (code == 28 || code == 640) {
                 return "There is not enough free storage to export this run. Free some storage and try again."
@@ -35,6 +38,7 @@ final class RunExportOperation {
     var onPhase: ((Phase) -> Void)?
     var onFailure: ((Failure) -> Void)?
     private var task: Task<Void, Never>?
+    private var archiveCancellation: Failure?
     private(set) var request = 0
     private var record: (String) -> Void = { _ in }
 
@@ -47,12 +51,16 @@ final class RunExportOperation {
         let identity = request
         self.record = record
         archive = nil
+        archiveCancellation = nil
         phase = .creating
         record("[run-export-v1] event=requested request=\(identity)")
         task = Task { [self] in
             var stage = Stage.archive
             do {
                 let result = try await export()
+                // Expiration can race with a producer finishing its last disk
+                // write. A cancelled archive must never open a late sheet.
+                try Task.checkCancellation()
                 guard result.isFileURL else { throw Failure(stage: .archive, domain: "export", code: 1) }
                 let properties = try result.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
                 guard properties.isRegularFile == true,
@@ -69,11 +77,21 @@ final class RunExportOperation {
                 // Never resurrect it after the completion has reset the state.
                 didPresent(request: identity)
             } catch {
-                if identity == request { fail((error as? Failure) ?? Failure.capture(error, at: stage)) }
+                if identity == request { fail(archiveCancellation ?? (error as? Failure) ?? Failure.capture(error, at: stage)) }
             }
             if identity == request { task = nil }
         }
         return true
+    }
+
+    func expireArchive(request identity: Int) {
+        guard identity == request, phase == .creating, archiveCancellation == nil else { return }
+        archiveCancellation = Failure(stage: .archive, domain: "background", code: 1)
+        record("[run-export-v1] event=background-time-expired request=\(identity)")
+        // The producer's cancellation handler stops its utility-queue work and
+        // removes owned partial files. Keep the request busy until that work
+        // acknowledges cancellation, preventing overlapping export workers.
+        task?.cancel()
     }
 
     func didPresent(request identity: Int? = nil) {
@@ -103,6 +121,43 @@ final class RunExportOperation {
     }
 }
 
+/// Holds native background execution only while an archive is being created.
+/// The resource boundary is injectable so expiration/end races are tested
+/// without pretending a host test can grant real iOS background time.
+@MainActor
+final class RunExportArchiveLease {
+    private var identity: Int?
+    private var release: (() -> Void)?
+
+    func begin(request: Int, acquire: (@escaping () -> Void) -> (() -> Void)?,
+               expired: @escaping () -> Void) {
+        precondition(identity == nil, "an archive already owns background time")
+        identity = request
+        let end = acquire { [weak self] in
+            guard let self, self.identity == request else { return }
+            let release = self.release
+            self.identity = nil
+            self.release = nil
+            // Cancel the utility worker before relinquishing execution time;
+            // iOS may suspend the app as soon as the native token is ended.
+            expired()
+            release?()
+        }
+        // A resource provider can expire synchronously during acquisition.
+        // End the returned token too, without ending it a second time later.
+        if identity == request { release = end }
+        else { end?() }
+    }
+
+    func finish(request: Int) {
+        guard identity == request else { return }
+        identity = nil
+        let end = release
+        release = nil
+        end?()
+    }
+}
+
 #if canImport(UIKit) && canImport(SwiftUI)
 import UIKit
 import SwiftUI
@@ -119,6 +174,7 @@ final class RunExportCoordinator: ObservableObject {
     private weak var previousKeyWindow: UIWindow?
     private weak var scene: UIWindowScene?
     private var presentationTimeout: Task<Void, Never>?
+    private let archiveLease = RunExportArchiveLease()
 
     init() {
         operation.onPhase = { [weak self] phase in self?.phase = phase }
@@ -135,7 +191,18 @@ final class RunExportCoordinator: ObservableObject {
         // A Menu may not materialize its background anchor. A single active
         // scene is unambiguous; never send an archive to an arbitrary scene.
         if scene == nil, activeScenes.count == 1 { scene = activeScenes[0] }
-        operation.start(export: export, present: { [self] url in try await present(url) }, record: record)
+        operation.start(export: { [self] in
+            let identity = operation.request
+            archiveLease.begin(request: identity, acquire: { expiration in
+                let identifier = UIApplication.shared.beginBackgroundTask(withName: "Madeira run export") {
+                    Task { @MainActor in expiration() }
+                }
+                guard identifier != .invalid else { return nil }
+                return { UIApplication.shared.endBackgroundTask(identifier) }
+            }, expired: { [weak self] in self?.operation.expireArchive(request: identity) })
+            defer { archiveLease.finish(request: identity) }
+            return try await export()
+        }, present: { [self] url in try await present(url) }, record: record)
     }
 
     private func presentationRoot() throws -> UIViewController {

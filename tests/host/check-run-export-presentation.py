@@ -32,6 +32,15 @@ completion = source[source.index('activity.completionWithItemsHandler = '):sourc
 assert completion.index('guard self.operation.acceptsCompletion(request: identity)') < completion.index('self.closePresentation()')
 assert 'popover.sourceView = root.view' in source
 assert 'previousKeyWindow.makeKey()' in source
+assert 'UIApplication.shared.beginBackgroundTask(withName: "Madeira run export")' in source
+assert 'UIApplication.shared.endBackgroundTask(identifier)' in source
+assert 'defer { archiveLease.finish(request: identity) }' in source
+assert 'self?.operation.expireArchive(request: identity)' in source
+assert 'try Task.checkCancellation()' in source
+producer = (ROOT / 'app/Madeira/LogStore.swift').read_text()
+producer = producer[producer.index('    func exportRunDiagnostics()'):producer.index('    /// Keeps this session', producer.index('    func exportRunDiagnostics()'))]
+assert 'DispatchQueue.global(qos: .utility).async' in producer
+assert 'withTaskCancellationHandler' in producer and 'onCancel: { cancellation.cancel() }' in producer
 assert 'RunExportPresentation.swift in Sources' in project
 modal = controls.index('if let modal = rootViewController?.presentedViewController')
 assert modal < controls.index('if library.enabled && library.current == nil { return nil }', modal)
@@ -50,6 +59,12 @@ import Foundation
 @MainActor final class ButtonLifetime {
     let tap: () -> Void
     init(_ tap: @escaping () -> Void) { self.tap = tap }
+}
+final class CancellationObserved: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    func cancel() { lock.lock(); value = true; lock.unlock() }
+    var cancelled: Bool { lock.lock(); defer { lock.unlock() }; return value }
 }
 @main struct Check {
     @MainActor static func wait(_ condition: () -> Bool) async {
@@ -135,6 +150,67 @@ import Foundation
         }, record: { events.append($0) }))
         await wait { operation.phase == .idle }
         precondition(events.last!.contains("event=share-finished"), "presentation completion must not resurrect a closed sheet")
+        // The same production lease used by UIKit must release exactly once,
+        // including a provider expiring before acquisition returns its token.
+        let lease = RunExportArchiveLease()
+        var expiration: (() -> Void)?, releases = 0, expirations = 0
+        lease.begin(request: 1, acquire: { expiration = $0; return { releases += 1 } }, expired: { expirations += 1 })
+        lease.finish(request: 1); lease.finish(request: 1); expiration?()
+        precondition(releases == 1 && expirations == 0)
+        lease.begin(request: 2, acquire: { expiration = $0; return { releases += 1 } }, expired: { expirations += 1 })
+        let oldExpiration = expiration
+        expiration?(); expiration?(); lease.finish(request: 2)
+        precondition(releases == 2 && expirations == 1)
+        lease.begin(request: 3, acquire: { expiration = $0; return { releases += 1 } }, expired: { expirations += 1 })
+        oldExpiration?(); lease.finish(request: 2)
+        precondition(releases == 2 && expirations == 1, "stale expiration must not release the current lease")
+        lease.finish(request: 3)
+        lease.begin(request: 4, acquire: { expire in expire(); return { releases += 1 } }, expired: { expirations += 1 })
+        lease.finish(request: 4)
+        precondition(releases == 4 && expirations == 2)
+        lease.begin(request: 5, acquire: { _ in nil }, expired: { preconditionFailure("no native lease expired") })
+        lease.finish(request: 5)
+        var expiryOrder = [String]()
+        lease.begin(request: 6, acquire: { expiration = $0; return { expiryOrder.append("end") } },
+                    expired: { expiryOrder.append("cancel") })
+        expiration?(); lease.finish(request: 6)
+        precondition(expiryOrder == ["cancel", "end"], "cancel the producer before iOS can suspend the released task")
+
+        let expiring = RunExportOperation(), cancellation = CancellationObserved()
+        var delayed: CheckedContinuation<URL, Error>?, expiryFailure: RunExportOperation.Failure?
+        var expiryEvents = [String](), expiryPresentations = 0
+        expiring.onFailure = { expiryFailure = $0 }
+        precondition(expiring.start(export: {
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { delayed = $0 }
+            } onCancel: { cancellation.cancel() }
+        }, present: { _ in expiryPresentations += 1 }, record: { expiryEvents.append($0) }))
+        await wait { delayed != nil }
+        let expiredRequest = expiring.request
+        expiring.expireArchive(request: expiredRequest - 1)
+        precondition(!cancellation.cancelled)
+        expiring.expireArchive(request: expiredRequest)
+        expiring.expireArchive(request: expiredRequest)
+        precondition(cancellation.cancelled && expiring.phase == .creating)
+        precondition(!expiring.start(export: { zip }, present: { _ in }, record: { _ in }),
+                     "expired work must acknowledge cancellation before another worker starts")
+        // A producer can finish despite cancellation. Its late valid file must
+        // never open a sheet, and the existing file must not be destroyed.
+        delayed!.resume(returning: zip); delayed = nil
+        await wait { expiryFailure != nil }
+        precondition(expiryFailure!.domain == "background" && expiryFailure!.stage == .archive)
+        precondition(expiryFailure!.message.contains("iOS") && expiryPresentations == 0)
+        precondition(FileManager.default.fileExists(atPath: zip.path))
+        precondition(expiryEvents.filter { $0.contains("event=background-time-expired") }.count == 1)
+        expiryFailure = nil
+        precondition(expiring.start(export: { zip }, present: { _ in expiryPresentations += 1 }, record: { expiryEvents.append($0) }))
+        expiring.expireArchive(request: expiredRequest)
+        await wait { expiring.phase == .sharing }
+        precondition(expiryFailure == nil && expiryPresentations == 1)
+        expiring.expireArchive(request: expiring.request)
+        precondition(expiring.phase == .sharing, "archive expiry does not cancel an active share extension")
+        expiring.finish(completed: true, error: nil)
+        print("PASS production archive background lifecycle: normal/error/expiration release exactly once, synchronous acquisition expiry, missing lease, stale callbacks, real Task cancellation propagation, late archive refusal and safe retry")
         print("PASS production export operation: actual action, transient button destruction, duplicate taps, delayed archive, ordered real presentation event, completion during presenting/sharing, retry, failed/idle/stale callback rejection and sanitized useful errors")
     }
 }
@@ -145,3 +221,14 @@ with tempfile.TemporaryDirectory(prefix='madeira-run-export-ui-') as tmp:
     subprocess.run([swift, '-swift-version', '5', '-parse-as-library', str(ROOT / 'app/Madeira/RunExportPresentation.swift'),
                     str(folder / 'Check.swift'), '-o', str(folder / 'check')], check=True)
     subprocess.run([str(folder / 'check')], check=True)
+    # This regression must reject a producer which finishes after cancellation
+    # instead of treating a valid ZIP URL as authorization to open a late sheet.
+    changed = source.replace('                try Task.checkCancellation()',
+                             '                // Negative control: cancellation check removed', 1)
+    assert changed != source
+    (folder / 'NoCancellation.swift').write_text(changed)
+    subprocess.run([swift, '-swift-version', '5', '-parse-as-library', str(folder / 'NoCancellation.swift'),
+                    str(folder / 'Check.swift'), '-o', str(folder / 'no-cancellation')], check=True)
+    rejected = subprocess.run([str(folder / 'no-cancellation')], capture_output=True, text=True, timeout=30)
+    assert rejected.returncode != 0 and 'export operation did not reach the expected state' in rejected.stderr, rejected
+    print('PASS negative control: removing the production post-export cancellation check reproduces the unsafe late-presentation regression')
