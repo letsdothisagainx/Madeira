@@ -44,6 +44,52 @@ function extractBrkImmediate(u32) {
     return (u32 >> 5) & 0xFFFF;
 }
 
+// Full-pool handoff v1. These operations never ask the legacy helper to bless
+// an arbitrary allocator result: StikJIT 1.9 formats only nine address nibbles
+// in that helper. An iOS 27 allocation above 64 GiB would otherwise write to a
+// different low address. The app keeps its final RX/RW reservations throughout.
+const madeiraPoolProtocolVersion = 0x4d4a5031n; // MJP1
+const madeiraPoolMaximumSize = 0x48000000n;
+const madeiraPoolPageSize = 0x4000n;
+
+function madeiraPoolRangeValid(address, size, requireAddress) {
+    return typeof address === 'bigint' && typeof size === 'bigint' &&
+        size > 0n && size <= madeiraPoolMaximumSize &&
+        (size & (madeiraPoolPageSize - 1n)) === 0n &&
+        address >= 0n && (!requireAddress || address !== 0n) &&
+        (address & (madeiraPoolPageSize - 1n)) === 0n &&
+        address + size <= 0x8000000000000000n;
+}
+
+function madeiraPoolAllocate(size) {
+    if (!madeiraPoolRangeValid(0n, size, false)) return 0n;
+    const response = send_command(`_M${size.toString(16)},rx`);
+    // E22 is both a debugserver error and a syntactically valid hex number.
+    if (typeof response !== 'string' || /^E[0-9a-fA-F]{2}(?:;.*)?$/.test(response) ||
+        !/^[0-9a-fA-F]{1,16}$/.test(response)) return 0n;
+    const address = BigInt('0x' + response);
+    return madeiraPoolRangeValid(address, size, true) ? address : 0n;
+}
+
+function madeiraPoolPrepareOwned(address, size) {
+    if (!madeiraPoolRangeValid(address, size, true)) return 0n;
+    if (address + size <= 0x1000000000n) {
+        // Preserve the native helper's 128-packet batching on low mappings.
+        // It does not validate each reply. The C transaction therefore checks
+        // EVERY fresh page's 0x69 marker, shared backing and actual execution
+        // before publishing either alias; this return alone proves nothing.
+        return prepare_memory_region(address, size) === 'OK' ? address : 0n;
+    }
+    // Only the high-host fallback needs this path. send_command has no batch
+    // API; use complete addresses and stop on the first real write error.
+    // No per-page UI logging or full-pool in-memory packet buffer.
+    const end = address + size;
+    for (let page = address; page < end; page += madeiraPoolPageSize) {
+        if (send_command(`M${page.toString(16)},1:69`) !== 'OK') return 0n;
+    }
+    return address;
+}
+
 let pid = get_pid();
 log(`Madeira JIT: pid = ${pid}`);
 let attachResponse = send_command(`vAttach;${pid.toString(16)}`);
@@ -263,21 +309,43 @@ while (!detached) {
             send_command(`D`);
             detached = true;
 
+        } else if (x16Num === 8n) {
+            // Capability probe has zero inputs, so an old script returns zero
+            // without allocating or touching memory. Never fall back to an
+            // incompatible allocator protocol after a failed probe.
+            const version = x0 === 0n && x1 === 0n ? madeiraPoolProtocolVersion : 0n;
+            send_command(`P0=${numberToLittleEndianHexString(version)};thread:${tid};`);
+
+        } else if (x16Num === 9n) {
+            const address = x0 === 0n ? madeiraPoolAllocate(x1) : 0n;
+            send_command(`P0=${numberToLittleEndianHexString(address)};thread:${tid};`);
+
+        } else if (x16Num === 10n) {
+            const address = madeiraPoolPrepareOwned(x0, x1);
+            send_command(`P0=${numberToLittleEndianHexString(address)};thread:${tid};`);
+
         } else if (x16Num === 1n) {
             // CMD_PREPARE_REGION
             ulog(`Madeira JIT: prepare addr=0x${x0.toString(16)} size=0x${x1.toString(16)}`);
 
             let addr = x0;
             if (x0 === 0n && x1 !== 0n) {
-                let allocResp = send_command(`_M${x1.toString(16)},rx`);
-                if (allocResp && allocResp.length > 0) {
-                    addr = BigInt(`0x${allocResp}`);
+                addr = madeiraPoolAllocate(x1);
+                if (addr !== 0n) {
                     ulog(`Madeira JIT: allocated at 0x${addr.toString(16)}`);
                 }
             }
 
             if (addr !== 0n && x1 !== 0n) {
-                let prepResp = prepare_memory_region(addr, x1);
+                // Later native requests must also avoid the legacy helper's
+                // 64 GiB address truncation. Keep the existing low protocol.
+                let prepResp;
+                if (addr + x1 > 0x1000000000n) {
+                    prepResp = madeiraPoolPrepareOwned(addr, x1) !== 0n ? 'OK' : '';
+                    if (prepResp !== 'OK') addr = 0n;
+                } else {
+                    prepResp = prepare_memory_region(addr, x1);
+                }
                 ulog(`Madeira JIT: prepared = ${prepResp}`);
             }
 
