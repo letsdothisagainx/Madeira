@@ -42,6 +42,10 @@ fixture = r'''
 #include <time.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#endif
 #define MB ((size_t)1 << 20)
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 #define IOS_POOL_LEDGER_MAX 1024
@@ -144,6 +148,27 @@ static size_t sum(const struct ios_pool_account_snapshot *s, unsigned region)
 }
 static void permissions(void *address, char result[5])
 {
+#ifdef __APPLE__
+    mach_vm_address_t target = (mach_vm_address_t)(uintptr_t)address, base = target;
+    mach_vm_size_t size = 0;
+    vm_region_basic_info_data_64_t info;
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t object = MACH_PORT_NULL;
+    kern_return_t status = mach_vm_region(mach_task_self(), &base, &size, VM_REGION_BASIC_INFO_64,
+        (vm_region_info_t)&info, &count, &object);
+    if (object != MACH_PORT_NULL)
+        assert(mach_port_deallocate(mach_task_self(), object) == KERN_SUCCESS);
+    assert(status == KERN_SUCCESS && count == VM_REGION_BASIC_INFO_COUNT_64);
+    /* A query into a gap can succeed with the next mapping. Require coverage
+     * of the requested byte and avoid overflowing a region's upper bound. */
+    assert(base <= target && target - base < size);
+    result[0] = info.protection & VM_PROT_READ ? 'r' : '-';
+    result[1] = info.protection & VM_PROT_WRITE ? 'w' : '-';
+    result[2] = info.protection & VM_PROT_EXECUTE ? 'x' : '-';
+    /* Narrowing maximum access can poison an executable pool alias too. */
+    result[3] = (char)info.max_protection;
+    result[4] = '\0';
+#else
     FILE *file = fopen("/proc/self/maps", "r");
     assert(file);
     char line[512], perms[5]; unsigned long lo, hi;
@@ -152,6 +177,7 @@ static void permissions(void *address, char result[5])
             (uintptr_t)address >= lo && (uintptr_t)address < hi)
         { memcpy(result, perms, 5); fclose(file); return; }
     assert(!"mapping absent");
+#endif
 }
 static void classifications(void)
 {
@@ -179,6 +205,8 @@ static void classifications(void)
         ios_jit_hole_off_eff, ios_jit_hole_end_eff, ios_jit_hole2_off, ios_jit_hole2_end };
     char rx_before[5], rw_before[5], rx_after[5], rw_after[5];
     permissions(ios_jit_rx_base_global, rx_before); permissions(rw_alias, rw_before);
+    assert(rx_before[0] == 'r' && rx_before[1] == '-' && rx_before[2] == 'x');
+    assert(rw_before[0] == 'r' && rw_before[1] == 'w' && rw_before[2] == '-');
     ios_pool_account_snapshot(&s);
     assert(s.valid_records == 14 && !s.invalid_records && !s.invalid_geometry);
     assert(sum(&s, 0) == 36 * MB && sum(&s, 1) == 20 * MB);
