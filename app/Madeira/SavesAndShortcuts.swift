@@ -62,14 +62,21 @@ enum NextSteamApp {
     }
 }
 
-// MARK: - Zip writing (stored)
+// MARK: - Zip writing (stored, with opt-in deflate)
 
-/// Uncompressed zip (saves are small, and many are compressed already). No
-/// zip64: the backup stops before 3.5 GB or 65,535 files.
+/// Saves remain uncompressed by default; diagnostic text can opt into raw
+/// DEFLATE. No zip64: the backup stops before 3.5 GB or 65,535 files.
 final class SaveZipWriter {
+    enum Compression: Int { case stored = 0, deflate = 8 }
+    private enum Failure: LocalizedError {
+        case message(String)
+        var errorDescription: String? { if case .message(let text) = self { return text }; return nil }
+    }
     static let maxEntries = 0xFFFF
     private let handle: FileHandle
     private var central = Data()
+    private var failed = false
+    private var closed = false
     private(set) var count = 0
     private(set) var offset: UInt64 = 0
 
@@ -78,43 +85,96 @@ final class SaveZipWriter {
         handle = try FileHandle(forWritingTo: url)
     }
 
+    deinit { if !closed { try? handle.close() } }
+
     private static func le16(_ v: Int) -> Data { var x = UInt16(truncatingIfNeeded: v).littleEndian; return Data(bytes: &x, count: 2) }
     private static func le32(_ v: UInt32) -> Data { var x = v.littleEndian; return Data(bytes: &x, count: 4) }
 
-    func add(name: String, data: Data) throws {
+    private static func deflated(_ data: Data) throws -> Data {
+        try Task.checkCancellation()
+        var stream = z_stream()
+        // ZIP method 8 contains a raw RFC 1951 stream, without a zlib header.
+        guard deflateInit2_(&stream, Z_DEFAULT_COMPRESSION, Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY,
+                            ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size)) == Z_OK else {
+            throw Failure.message("The zip entry could not be compressed.")
+        }
+        defer { deflateEnd(&stream) }
+        // zlib's bound includes incompressible input and the empty stream. Do
+        // not grow a buffer in a loop or allocate beyond classic ZIP sizes.
+        let bound = deflateBound(&stream, uLong(data.count))
+        guard bound > 0, bound <= uLong(UInt32.max), bound <= uLong(Int.max) else {
+            throw Failure.message("The zip entry is too large.")
+        }
+        var encoded = Data(count: Int(bound))
+        let result = data.withUnsafeBytes { source in
+            encoded.withUnsafeMutableBytes { destination in
+                stream.next_in = UnsafeMutablePointer(mutating: source.bindMemory(to: Bytef.self).baseAddress)
+                stream.avail_in = uInt(data.count)
+                stream.next_out = destination.bindMemory(to: Bytef.self).baseAddress
+                stream.avail_out = uInt(bound)
+                return deflate(&stream, Z_FINISH)
+            }
+        }
+        guard result == Z_STREAM_END, stream.total_in == uLong(data.count), stream.total_out <= bound else {
+            throw Failure.message("The zip entry could not be compressed.")
+        }
+        try Task.checkCancellation()
+        encoded.count = Int(stream.total_out)
+        return encoded
+    }
+
+    func add(name: String, data: Data, compression: Compression = .stored) throws {
         let n = Data(name.utf8)
+        guard !closed, !failed, count < Self.maxEntries,
+              n.count <= Int(UInt16.max), data.count <= Int(UInt32.max) else {
+            throw Failure.message("The zip entry is too large or the archive is closed.")
+        }
+        let body = compression == .deflate ? try Self.deflated(data) : data
+        guard body.count <= Int(UInt32.max),
+              offset + UInt64(30 + n.count) + UInt64(body.count) <= UInt64(UInt32.max),
+              UInt64(central.count) + UInt64(46 + n.count) <= UInt64(UInt32.max) else {
+            throw Failure.message("The zip is too large.")
+        }
         let crc = data.withUnsafeBytes { raw -> UInt32 in
             UInt32(crc32(0, raw.bindMemory(to: Bytef.self).baseAddress, uInt(raw.count)))
         }
-        let size = UInt32(data.count)
-        // Version 2.0, UTF-8 names (bit 11), stored, 1980-01-01 00:00.
+        let size = UInt32(data.count), compressedSize = UInt32(body.count)
+        // Version 2.0, UTF-8 names (bit 11), 1980-01-01 00:00.
         var local = Data()
         local += Self.le32(0x0403_4b50); local += Self.le16(20); local += Self.le16(0x0800)
-        local += Self.le16(0); local += Self.le16(0); local += Self.le16(0x21)
-        local += Self.le32(crc); local += Self.le32(size); local += Self.le32(size)
+        local += Self.le16(compression.rawValue); local += Self.le16(0); local += Self.le16(0x21)
+        local += Self.le32(crc); local += Self.le32(compressedSize); local += Self.le32(size)
         local += Self.le16(n.count); local += Self.le16(0); local += n
         var cd = Data()
         cd += Self.le32(0x0201_4b50); cd += Self.le16(20); cd += Self.le16(20); cd += Self.le16(0x0800)
-        cd += Self.le16(0); cd += Self.le16(0); cd += Self.le16(0x21)
-        cd += Self.le32(crc); cd += Self.le32(size); cd += Self.le32(size)
+        cd += Self.le16(compression.rawValue); cd += Self.le16(0); cd += Self.le16(0x21)
+        cd += Self.le32(crc); cd += Self.le32(compressedSize); cd += Self.le32(size)
         cd += Self.le16(n.count); cd += Self.le16(0); cd += Self.le16(0)
         cd += Self.le16(0); cd += Self.le16(0); cd += Self.le32(0)
         cd += Self.le32(UInt32(offset)); cd += n
-        try handle.write(contentsOf: local)
-        try handle.write(contentsOf: data)
-        offset += UInt64(local.count + data.count)
+        do {
+            try handle.write(contentsOf: local)
+            try handle.write(contentsOf: body)
+        } catch { failed = true; throw error }
+        offset += UInt64(local.count + body.count)
         central += cd
         count += 1
     }
 
     func finish() throws {
+        guard !closed, !failed, offset <= UInt64(UInt32.max), central.count <= Int(UInt32.max) else {
+            throw Failure.message("The zip could not be completed.")
+        }
         var end = Data()
         end += Self.le32(0x0605_4b50); end += Self.le16(0); end += Self.le16(0)
         end += Self.le16(count); end += Self.le16(count)
         end += Self.le32(UInt32(central.count)); end += Self.le32(UInt32(offset)); end += Self.le16(0)
-        try handle.write(contentsOf: central)
-        try handle.write(contentsOf: end)
-        try handle.close()
+        do {
+            try handle.write(contentsOf: central)
+            try handle.write(contentsOf: end)
+            try handle.close()
+            closed = true
+        } catch { failed = true; throw error }
     }
 }
 

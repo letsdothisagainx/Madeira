@@ -15,7 +15,12 @@ enum SteamGameDiagnostics {
     struct Entry: Sendable { let name: String; let data: Data }
     struct Limits { var mainBytes = 8 << 20; var otherBytes = 256 << 10; var records = 2048 }
     enum Failure: Error { case unavailable }
-    private struct Snapshot { let bytes: Data; let identity: String; let truncated: Bool }
+    struct Snapshot {
+        let bytes: Data, identity: String
+        let truncated: Bool, changedDuringRead: Bool
+        let originalBytes: UInt64, capturedBytes: Int
+        let readWindows: [[String: UInt64]]
+    }
     private struct ConsoleCandidate {
         var fields: [String: String]
         let row: Int
@@ -423,7 +428,8 @@ enum SteamGameDiagnostics {
     }
     /// Every path is a literal below an already opened, app-owned Documents
     /// directory. Neither directory nor final-file symlinks are followed.
-    private static func snapshot(_ root: Int32, _ relative: String, maximum: Int, preserveStartup: Bool = false) -> Snapshot? {
+    static func snapshot(_ root: Int32, _ relative: String, maximum: Int, preserveStartup: Bool = false,
+                         annotateGap: Bool = false) -> Snapshot? {
         let parts = relative.split(separator: "/").map(String.init)
         guard maximum > 0, !parts.isEmpty, parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else { return nil }
         guard let fd = openOwned(root, parts) else { return nil }
@@ -440,19 +446,26 @@ enum SteamGameDiagnostics {
             if cutEnd || data.last != 10 { if let newline = data.lastIndex(of: 10) { data.removeSubrange(data.index(after: newline)..<data.endIndex) } else { data.removeAll() } }
             return data
         }
-        let data: Data
+        let data: Data, captured: Int, windows: [[String: UInt64]]
         if size > limit {
             let head = preserveStartup ? min(maximum * 3 / 4, 6 << 20) : min(maximum / 8, 512 << 10)
             let tail = maximum - head
             guard let first = read(0, head, cutStart: false, cutEnd: true),
                   let last = read(size - UInt64(tail), tail, cutStart: true, cutEnd: false) else { return nil }
-            data = first + last
+            captured = first.count + last.count
+            windows = [["offset": 0, "requestedBytes": UInt64(head)], ["offset": size - UInt64(tail), "requestedBytes": UInt64(tail)]]
+            let gap = annotateGap ? Data("\n[run-export-gap] source-bytes=\(size) read-budget=\(maximum) middle=omitted\n".utf8) : Data()
+            data = first + gap + last
         } else {
-            guard let all = read(0, Int(size), cutStart: false, cutEnd: false) else { return nil }; data = all
+            guard let all = read(0, Int(size), cutStart: false, cutEnd: false) else { return nil }; data = all; captured = all.count
+            windows = [["offset": 0, "requestedBytes": size]]
         }
-        return Snapshot(bytes: data, identity: "\(info.st_dev):\(info.st_ino)", truncated: size > limit)
+        var after = stat()
+        let changed = fstat(fd, &after) != 0 || !unchanged(info, after)
+        return Snapshot(bytes: data, identity: "\(info.st_dev):\(info.st_ino)", truncated: size > limit,
+                        changedDuringRead: changed, originalBytes: size, capturedBytes: captured, readWindows: windows)
     }
-    private static func openOwned(_ root: Int32, _ parts: [String]) -> Int32? {
+    static func openOwned(_ root: Int32, _ parts: [String]) -> Int32? {
         var fd = dup(root)
         guard fd >= 0 else { return nil }
         for (i, part) in parts.enumerated() {
@@ -780,6 +793,8 @@ import SwiftUI
 import UIKit
 
 struct SteamGameDiagnosticsExportButton: View {
+    private let run: Bool
+    init(run: Bool = false) { self.run = run }
     private struct Export: Identifiable { let id = UUID(); let url: URL }
     @State private var preparing = false
     @State private var export: Export?
@@ -788,13 +803,18 @@ struct SteamGameDiagnosticsExportButton: View {
         Button {
             preparing = true
             Task {
-                do { export = Export(url: try await LogStore.shared.exportSteamGameDiagnostics()) }
+                do {
+                    let url: URL
+                    if run { url = try await LogStore.shared.exportRunDiagnostics() }
+                    else { url = try await LogStore.shared.exportSteamGameDiagnostics() }
+                    export = Export(url: url)
+                }
                 catch { failed = true }
                 preparing = false
             }
         } label: {
             HStack {
-                Label("Export CS2 VAC Diagnostics", systemImage: "square.and.arrow.up")
+                Label(run ? "Export Run Diagnostics" : "Export CS2 VAC Diagnostics", systemImage: "square.and.arrow.up")
                 if preparing { Spacer(); ProgressView() }
             }
         }
