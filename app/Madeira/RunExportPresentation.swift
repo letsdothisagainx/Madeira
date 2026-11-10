@@ -161,7 +161,7 @@ final class RunExportCoordinator: ObservableObject {
         let identity = operation.request
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             var replied = false
-            func reply(_ result: Result<Void, Error>) {
+            @MainActor func reply(_ result: Result<Void, Error>) {
                 guard !replied else { return }
                 replied = true
                 presentationTimeout?.cancel(); presentationTimeout = nil
