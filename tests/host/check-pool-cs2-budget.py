@@ -23,6 +23,7 @@ from pathlib import Path
 import json
 import hashlib
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -39,6 +40,17 @@ def function(source, signature):
     while source.index(';', start) < source.index('{', start):
         start = source.index(signature, start + len(signature))
     return source[start:source.index('\n}', start) + 2] + '\n'
+
+
+# Test-only mutation of the extracted selector; the checked-out runtime source
+# is never modified. Used only to prove that candidate producer wiring changes.
+test_selector = os.environ.get('MADEIRA_POOL_TEST_SELECTOR_MB')
+if test_selector is not None:
+    assert test_selector in ('448', '512')
+    selector = function(allocator, 'uint64_t jit_cs2_code_tail_limit_mb(')
+    changed, count = re.subn(r'return\s+\d+;', 'return ' + test_selector + ';', selector)
+    assert count == 1
+    allocator = allocator.replace(selector, changed, 1)
 
 
 # Explicit executable controls for the former policy. Only the two changed
@@ -507,7 +519,8 @@ static void check_budget_plan(uint64_t *selected, uint64_t *reserve)
     const uint64_t physical = 8192 * MB, lo = 0x100000000, hi = 0xfc0000000;
     CHECK(jit_cs2_pool_plan(1024, 5120 * MB, 1024 * MB, physical, lo, hi, selected, reserve));
     CHECK(*selected == 1152 && *reserve == 240);
-    CHECK(jit_cs2_code_tail_limit_mb() == 448);
+    uint64_t selected_limit=jit_cs2_code_tail_limit_mb();
+    CHECK(selected_limit>=16 && selected_limit<=*selected);
     for (uint64_t requested = 256; requested <= 1152; requested += 16)
     {
         uint64_t pool = 0, image_reserve = 0;
@@ -557,10 +570,12 @@ static void check_budget_plan(uint64_t *selected, uint64_t *reserve)
     unsetenv("MADEIRA_POOL_HEAD_RESERVE_MB"); unsetenv("WINE_IOS_JIT_HEAD_RESERVE_MB");
     initialize_head_reserve(); CHECK(ios_pool_head_reserve == 48 * MB);
     setenv("WINE_IOS_JIT_HEAD_RESERVE_MB", "240", 1);
-    setenv("WINE_IOS_JIT_CODE_TAIL_LIMIT_MB", "512", 1);
+    char selected_limit_text[32];
+    CHECK(snprintf(selected_limit_text,sizeof(selected_limit_text),"%llu",(unsigned long long)selected_limit)>0);
+    setenv("WINE_IOS_JIT_CODE_TAIL_LIMIT_MB", selected_limit_text, 1);
     setenv("MADEIRA_POOL_HEAD_RESERVE_MB", "48", 1);
     initialize_head_reserve(); CHECK(ios_pool_head_reserve == *reserve * MB);
-    CHECK(ios_pool_code_tail_limit == 512 * MB);
+    CHECK(ios_pool_code_tail_limit == selected_limit * MB);
     setenv("MADEIRA_POOL_HEAD_RESERVE_MB", "256", 1);
     initialize_head_reserve(); CHECK(ios_pool_head_reserve == 256 * MB);
     setenv("MADEIRA_POOL_HEAD_RESERVE_MB", "48", 1);
@@ -606,6 +621,23 @@ static void reset(size_t total, size_t reserve)
     ios_pool_free_count = 226;
     CHECK(free_bytes == 0x33e4000 && largest == 0xf0000 && cursor < rotation_head);
     owner = cs2_owner;
+}
+
+/* The CURRENT candidate path uses the same production selector and env
+ * initialization as launch. Historical controls below explicitly pass512. */
+static void reset_current_cs2_policy(void)
+{
+    uint64_t selected=0,reserve=0;
+    CHECK(jit_cs2_pool_plan(1024,5120*MB,1024*MB,8192*MB,0x100000000,0xfc0000000,&selected,&reserve));
+    reset(selected*MB,reserve*MB);
+    uint64_t selected_limit=jit_cs2_code_tail_limit_mb(); /* candidate policy wiring */
+    char head_text[32],code_text[32];
+    CHECK(snprintf(head_text,sizeof(head_text),"%llu",(unsigned long long)reserve)>0);
+    CHECK(snprintf(code_text,sizeof(code_text),"%llu",(unsigned long long)selected_limit)>0);
+    unsetenv("MADEIRA_POOL_HEAD_RESERVE_MB");
+    CHECK(!setenv("WINE_IOS_JIT_HEAD_RESERVE_MB",head_text,1));
+    CHECK(!setenv("WINE_IOS_JIT_CODE_TAIL_LIMIT_MB",code_text,1));
+    initialize_head_reserve();CHECK(ios_pool_head_reserve==reserve*MB);
 }
 
 /* FEX asks for 128 MB, then halves on STATUS_NO_MEMORY; all placement,
@@ -1616,7 +1648,7 @@ static void check_captured_fbb4_tail_history(void)
     /* The first observed failure is old kernelbase.dll, already copied at
      * log28086. Reproduce its exact census with separated aggregate extents;
      * their original addresses are unavailable, not invented here. */
-    reset(1152*MB,240*MB);ios_pool_code_tail_limit=512*MB;
+    reset(1152*MB,240*MB);ios_pool_code_tail_limit=512*MB; /* historical fbb4 census */
     jit_pool_offset=0x28fd4000;ios_jit_tail_reserved=0x1f01c000;
     ios_pool_free_count=ios_pool_ledger_count=ios_tail_carve_n=0;
     static const size_t remaining[]={0x4c000,0x14000,0xc000,0x8000,0x8000,0x8000,0x4000};
@@ -1645,7 +1677,7 @@ static void check_prior_capture_current(const char *name,const struct captured_t
     struct ios_tail_carve pinned[3];unsigned pins=0,changes=0;
     size_t server=(size_t)-1,client=(size_t)-1,embree=(size_t)-1;
     int copied=0;
-    reset(1152*MB,240*MB);ios_pool_code_tail_limit=512*MB;
+    reset_current_cs2_policy();CHECK(ios_pool_code_tail_limit==jit_cs2_code_tail_limit_mb()*MB);
     jit_pool_offset=ios_jit_tail_reserved=0;ios_pool_free_count=ios_pool_ledger_count=ios_tail_carve_n=0;
     memset(ios_tail_carves,0,sizeof ios_tail_carves);
     for(unsigned i=0;i<count;i++)
@@ -1724,7 +1756,10 @@ static void check_captured_november10_tail_history(void)
     struct ios_tail_carve pinned[3];unsigned pins=0,grants=0,changes=0;
     int shift=getenv("MADEIRA_POOL_NOV10_CLOCK_SHIFT")?atoi(getenv("MADEIRA_POOL_NOV10_CLOCK_SHIFT")):0;
     CHECK(shift>=-1&&shift<=1);
-    reset(1152*MB,240*MB);ios_pool_code_tail_limit=512*MB;
+    if(getenv("MADEIRA_POOL_NOV10_EXPECT_BASELINE")||getenv("MADEIRA_POOL_NOV10_EXPECT_FAILURE"))
+    { reset(1152*MB,240*MB);ios_pool_code_tail_limit=512*MB; /* explicit historical512 controls */ }
+    else
+    { reset_current_cs2_policy();CHECK(ios_pool_code_tail_limit==jit_cs2_code_tail_limit_mb()*MB); }
     jit_pool_offset=ios_jit_tail_reserved=0;ios_pool_free_count=ios_pool_ledger_count=ios_tail_carve_n=0;
     memset(ios_tail_carves,0,sizeof ios_tail_carves);
     for(unsigned i=0;i<ARRAY_SIZE(captured_november10_tail_events);i++)
@@ -1872,41 +1907,6 @@ static void check_captured_november10_tail_history(void)
     }
 }
 
-
-/* Replay the exact allocator boundary observed on-device in ee12a33e:
- * main image head 0x27370000, retained FEX tail 0x1f034000,
- * client.dll .text copy 0x29a8000. This is a counterfactual capacity test:
- * the new 448MiB policy downshifts the third 128MiB producer request to
- * 64MiB before these cursors develop, leaving at least that 64MiB
- * headroom. It does not fake retirement receipts, alter image execution,
- * or claim that the real device has yet completed the game startup. */
-static void check_nov10_ee12_client_headroom(void)
-{
-    const size_t head = 0x27370000, observed_tail = 0x1f034000;
-    const size_t client_request = 0x29a8000;
-    size_t client = (size_t)-1;
-
-    CHECK(jit_cs2_code_tail_limit_mb() == 448);
-    CHECK(ios_pool_code_growth_cap(0x1701c000, jit_cs2_code_tail_limit_mb() * MB) == 64 * MB);
-    CHECK(!ios_pool_code_growth_fits(0x1701c000, 128 * MB, jit_cs2_code_tail_limit_mb() * MB));
-    CHECK(ios_pool_code_growth_fits(0x1701c000, 64 * MB, jit_cs2_code_tail_limit_mb() * MB));
-
-    reset(1152 * MB, 240 * MB);
-    owner = cs2_owner; fake_now = 1600;
-    jit_pool_offset = head; ios_jit_tail_reserved = observed_tail;
-    CHECK(ios_pool_alloc_range_tagged(client_request, 1152 * MB - observed_tail, 0) == (size_t)-1);
-    CHECK(jit_pool_offset == head && ios_jit_tail_reserved == observed_tail);
-
-    reset(1152 * MB, 240 * MB);
-    owner = cs2_owner; fake_now = 1600;
-    jit_pool_offset = head; ios_jit_tail_reserved = observed_tail - 64 * MB;
-    CHECK(!allocate_image(client_request, &client) && client == head);
-    CHECK(ios_pool_ledger_holds(client, client_request, (void *)owner));
-    check_owned_executable_image(client, client_request);
-    CHECK(ios_jit_pool_size_global - jit_pool_offset - ios_jit_tail_reserved > 40 * MB);
-    puts("PASS ee12a33e counterfactual: a 64MiB early code-buffer downshift makes the previously failing 41.66MiB client.dll image copy fit, without unsafe recycling");
-}
-
 struct scheduled_request { unsigned role; size_t size, limit, off; void *ret; int status; };
 static void *scheduled_allocate(void *opaque)
 {
@@ -2033,6 +2033,19 @@ int main(void)
     rw_memory = map_pool_alias(backing, PROT_READ | PROT_WRITE);
     rx_memory = map_pool_alias(backing, PROT_READ | PROT_EXEC);
     CHECK(rw_memory != MAP_FAILED && rx_memory != MAP_FAILED && rw_memory != rx_memory);
+    if(getenv("MADEIRA_POOL_SELECTOR_PROBE"))
+    {
+        reset_current_cs2_policy();
+        jit_pool_offset=0x144f0000;ios_jit_tail_reserved=0x1701c000;
+        ios_tail_carve_n=0;ios_pool_free_count=ios_pool_ledger_count=0;
+        void *code=NULL;size_t granted=rotate(&code);
+        size_t expected=(size_t)strtoul(getenv("MADEIRA_POOL_SELECTOR_PROBE"),NULL,10);
+        printf("[pool-selector-probe] selected=%llu effective=%zu grant=%zu expected=%zu route=production-env-init\n",
+               (unsigned long long)jit_cs2_code_tail_limit_mb(),ios_pool_code_tail_limit/MB,granted/MB,expected);
+        CHECK(code&&granted==expected*MB);
+        CHECK(ios_pool_code_tail_limit==jit_cs2_code_tail_limit_mb()*MB);
+        CHECK(!munmap(rx_memory,mapped_size)&&!munmap(rw_memory,mapped_size));CHECK(!fclose(backing));return 0;
+    }
     if (REPLAY_LEGACY_ONLY)
     {
         check_captured_november8_tail_history(208*MB,0,0);
@@ -2054,7 +2067,6 @@ int main(void)
     }
     check_original_and_growth_only();
     check_paired_budget(selected, reserve);
-    check_nov10_ee12_client_headroom();
     check_capacity_failure();
     check_captured_server_failure();
     check_captured_tail_history(176*MB,0);
@@ -2079,9 +2091,25 @@ int main(void)
 '''
 
 if __name__ == '__main__':
+    if '--verify-policy-wiring' in sys.argv[1:]:
+        for selected, expected, broken in ((None, '128', False), ('448', '64', False), ('448', '64', True)):
+            environment = dict(os.environ, MADEIRA_POOL_REPLAY_VARIANT='current', MADEIRA_POOL_SELECTOR_PROBE=expected)
+            if selected is not None:
+                environment['MADEIRA_POOL_TEST_SELECTOR_MB'] = selected
+            if broken:
+                environment['MADEIRA_POOL_TEST_DISCONNECT_SELECTOR'] = '1'
+            result = subprocess.run([sys.executable, __file__], env=environment, capture_output=True, text=True)
+            if broken:
+                assert result.returncode != 0 and 'selected=448 effective=512 grant=128 expected=64' in result.stdout, result.stdout + result.stderr
+            else:
+                print(result.stdout, end='')
+                if result.returncode:
+                    print(result.stderr, end='');result.check_returncode()
+        print('PASS complete EC_CODE policy wiring: selector448 mutation changes the real grant; disconnected literal512 is rejected after allocation')
+        raise SystemExit(0)
     if not any(os.environ.get(key) for key in ('MADEIRA_POOL_REPLAY_VARIANT', 'MADEIRA_POOL_SOURCE',
                                                'MADEIRA_POOL_NOV10_ONLY', 'MADEIRA_POOL_CURRENT_PRIOR',
-                                               'MADEIRA_POOL_LEGACY_REPLAY_ONLY')):
+                                               'MADEIRA_POOL_LEGACY_REPLAY_ONLY', 'MADEIRA_POOL_SELECTOR_PROBE')):
         # Historical exact-address controls and current returned-handle
         # projections are distinct executions, never interchangeable claims.
         runs = [('historical', {}),
@@ -2094,11 +2122,17 @@ if __name__ == '__main__':
             print('POOL POLICY CONTROL:', selected, settings, flush=True)
             environment = dict(os.environ, MADEIRA_POOL_REPLAY_VARIANT=selected, **settings)
             subprocess.run([sys.executable, __file__], env=environment, check=True)
+        subprocess.run([sys.executable, __file__, '--verify-policy-wiring'], check=True)
         raise SystemExit(0)
     with tempfile.TemporaryDirectory(prefix='madeira-pool-cs2-') as directory:
         temporary = Path(directory)
         unit, binary = temporary / 'cs2.c', temporary / 'cs2'
-        unit.write_text(fixture)
+        producer_fixture = fixture
+        if os.environ.get('MADEIRA_POOL_TEST_DISCONNECT_SELECTOR'):
+            wire = 'uint64_t selected_limit=jit_cs2_code_tail_limit_mb(); /* candidate policy wiring */'
+            assert producer_fixture.count(wire) == 1
+            producer_fixture = producer_fixture.replace(wire, 'uint64_t selected_limit=512; /* deliberate negative wiring control */', 1)
+        unit.write_text(producer_fixture)
         subprocess.run([os.environ.get('CC', 'cc'), '-std=c11', '-D_POSIX_C_SOURCE=200809L',
                         '-Wall', '-Wextra', '-Werror', '-fsanitize=address,undefined',
                         '-fno-sanitize-recover=all', '-fno-omit-frame-pointer', '-pthread',

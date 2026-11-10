@@ -134,6 +134,7 @@ jobs:
           python3 tests/host/check-pool-cs2-budget.py
           python3 tests/host/check-pool-code-growth-budget.py
           python3 tests/host/check-pool-retired-main.py
+          python3 tests/host/check-pool-free-grace.py
           python3 tests/host/check-loader-import-failure-retention.py
           python3 tests/host/check-pool-cs2-scenesystem.py
           python3 tests/host/check-pool-rx-demotion.py

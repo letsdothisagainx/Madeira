@@ -79,6 +79,7 @@ commands = [
     ['python3', 'tests/host/check-pool-cs2-budget.py'],
     ['python3', 'tests/host/check-pool-code-growth-budget.py'],
     ['python3', 'tests/host/check-pool-retired-main.py'],
+    ['python3', 'tests/host/check-pool-free-grace.py'],
     ['python3', 'tests/host/check-jit-pool-meter.py'],
     ['python3', 'tests/host/check-pool-failure-census.py'],
     ['python3', 'tests/host/check-pool-owner-accounting.py'],

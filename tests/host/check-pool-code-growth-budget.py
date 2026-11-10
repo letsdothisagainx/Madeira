@@ -7,12 +7,16 @@ Wine EC_CODE/image/recycler replay remains check-pool-cs2-budget.py. Its synthet
 thread references test C++ buffer lifetime, not on-device FEX sweep execution.
 """
 from pathlib import Path
+import argparse
 import os
 import shlex
 import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--verify-policy-wiring', action='store_true', help='Run only actual-producer selector mutation controls')
+args = parser.parse_args()
 native = (ROOT / 'build/ntdll-unix/virtual_ios.c').read_text()
 allocator = (ROOT / 'app/Madeira/JITAllocator.c').read_text()
 backend = (ROOT / 'FEX/FEXCore/Source/Interface/Core/CPUBackend.cpp').read_text()
@@ -97,6 +101,9 @@ static unsigned frees;
 static std::mutex vm_mutex;
 static volatile sig_atomic_t expect_oom,expect_permission;
 static uintptr_t expected_fault_lo,expected_fault_hi;
+static void select_production_code_limit() {
+  ios_pool_code_tail_limit=jit_cs2_code_tail_limit_mb()*MB;
+}
 
 static void signal_handler(int signal,siginfo_t* info,void*) {
   if(expect_permission&&(signal==SIGSEGV||signal==SIGBUS)&&
@@ -218,7 +225,7 @@ static void native_permissions(const CodeBuffer& buffer) {
   }
 }
 static void policy_tests() {
-  assert(jit_cs2_code_tail_limit_mb()==448);
+  assert(jit_cs2_code_tail_limit_mb()==512);
   assert(ios_pool_parse_code_tail_limit("512",total)==512*MB);
   for(const char* invalid:{"","0","15","1153","-1","512x","99999999999999999999999999"})
     assert(!ios_pool_parse_code_tail_limit(invalid,total));
@@ -239,12 +246,10 @@ static void policy_tests() {
     ios_pool_code_tail_limit=512*MB;
     assert(!ios_pool_fresh_tail_fits(total,early_head,captured_tail,32*MB,0,0,0,0));
   }
-  // The November10 production policy intentionally downsizes the third
-  // 128MiB generation to 64MiB so CS2's mandatory client.dll can load.
-  // Retain the old 512MiB behavior below as a historical replay control.
+  // 448MiB would downsize the third observed128MiB working-set generation.
+  // 512MiB preserves it while refusing the later extra32MiB reservation.
   assert(ios_pool_code_growth_cap(0x1701c000,448*MB)==64*MB);
   assert(!ios_pool_code_growth_fits(0x1701c000,128*MB,448*MB));
-  assert(ios_pool_code_growth_fits(0x1701c000,64*MB,jit_cs2_code_tail_limit_mb()*MB));
   assert(ios_pool_code_growth_cap(0x1701c000,512*MB)==128*MB);
   assert(ios_pool_code_growth_fits(0x1701c000,128*MB,512*MB));
   assert(ios_pool_code_growth_cap(captured_tail,0)==128*MB);
@@ -279,10 +284,20 @@ static void atomic_reservation_tests() {
   puts("PASS production code-growth helpers: captured208 failure threshold, timing-independent large cap, validated parse, two64MiB contenders publish exactly one reservation, skipped-hole accounting, overflow and unchanged refused outputs");
 }
 int main(int argc,char** argv) {
+  if(argc==3&&!strcmp(argv[1],"selector-probe")) {
+    initialize_aliases();select_production_code_limit();
+    tail=0x1701c000;image_head=0x144f0000;attempts.clear();
+    auto buffer=std::make_shared<CodeBuffer>(128*MB);
+    size_t expected=(size_t)strtoul(argv[2],nullptr,10);
+    printf("[producer-selector-probe] selected=%llu effective=%zu grant=%zu expected=%zu attempts=%zu\n",
+           (unsigned long long)jit_cs2_code_tail_limit_mb(),ios_pool_code_tail_limit/MB,
+           buffer->AllocatedSize/MB,expected,attempts.size());fflush(stdout);
+    assert(buffer->AllocatedSize==expected*MB);
+    assert(ios_pool_code_tail_limit==jit_cs2_code_tail_limit_mb()*MB);
+    put_code(*buffer);return 0;
+  }
   policy_tests();atomic_reservation_tests();initialize_aliases();
-  // Historical 3x128MiB producer/lifetime control, independent of the new
-  // CS2 startup selection; the 448MiB limit is asserted in policy_tests().
-  ios_pool_code_tail_limit=512*MB;
+  select_production_code_limit();
   if(argc==2&&!strcmp(argv[1],"oom")) {
     tail=0;image_head=total-MB/2;attempts.clear();expect_oom=1;
     auto impossible=std::make_shared<CodeBuffer>(128*MB);(void)impossible;return 88;
@@ -347,13 +362,30 @@ with tempfile.TemporaryDirectory(prefix='madeira-code-growth-') as directory:
     # fatal path. Leave that exact instruction to the hardware signal handler;
     # A constructor-only alignment annotation leaves all helper/lifetime
     # arithmetic under UBSan; the production constructor body is unchanged.
-    subprocess.run(shlex.split(os.environ.get('CXX', 'c++')) + [
+    command = shlex.split(os.environ.get('CXX', 'c++')) + [
         '-std=c++20', '-O1', '-g', '-Wall', '-Wextra', '-Werror',
         '-Wno-unused-function', '-Wno-misleading-indentation',
         '-fsanitize=undefined', '-fno-sanitize-recover=all', '-pthread',
         str(source), '-o', str(executable),
-    ], check=True)
-    subprocess.run([str(executable)], check=True, timeout=90)
-    result = subprocess.run([str(executable), 'oom'], timeout=30)
-    assert result.returncode == 86, 'The real producer must retain its genuine final allocation-failure trap'
-print('PASS actual FEX producer true exhaustion: all eight128-to1MiB requests fail honestly and the original fatal path remains observable')
+    ]
+    subprocess.run(command, check=True)
+    if not args.verify_policy_wiring:
+        subprocess.run([str(executable)], check=True, timeout=90)
+        result = subprocess.run([str(executable), 'oom'], timeout=30)
+        assert result.returncode == 86, 'The real producer must retain its genuine final allocation-failure trap'
+        print('PASS actual FEX producer true exhaustion: all eight128-to1MiB requests fail honestly and the original fatal path remains observable')
+    subprocess.run([str(executable), 'selector-probe', '128'], check=True, timeout=30)
+    assert plan_limit.count('return 512;') == 1, 'Update the explicit selector mutation control when the production policy changes'
+    mutated = code.replace(plan_limit, plan_limit.replace('return 512;', 'return 448;', 1), 1)
+    source.write_text(mutated)
+    subprocess.run(command, check=True)
+    subprocess.run([str(executable), 'selector-probe', '64'], check=True, timeout=30)
+    # Reproduce PR9's disconnected test wiring. The actual constructor must
+    # expose128MiB, not silently pass the expected64MiB candidate assertion.
+    wire = 'ios_pool_code_tail_limit=jit_cs2_code_tail_limit_mb()*MB;'
+    assert mutated.count(wire) == 1
+    source.write_text(mutated.replace(wire, 'ios_pool_code_tail_limit=512*MB; /* negative wiring control */', 1))
+    subprocess.run(command, check=True)
+    broken = subprocess.run([str(executable), 'selector-probe', '64'], capture_output=True, text=True, timeout=30)
+    assert broken.returncode != 0 and 'selected=448 effective=512 grant=128 expected=64' in broken.stdout, broken.stdout + broken.stderr
+    print('PASS actual FEX producer selector wiring: production512->128MiB, in-memory selector448->64MiB; disconnected512 test wiring is rejected after real allocation')

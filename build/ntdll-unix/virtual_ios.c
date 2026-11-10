@@ -2792,6 +2792,8 @@ static int ios_pool_execable_runs( uint64_t base, size_t off, size_t size, ios_p
 /* madeira-bcd: put a freed range on the freelist (at most `max` entries),
  * merged with every adjacent entry `clean` accepts, so a dead process's
  * ranges, and a big range a small image was carved from, join up again.
+ * Retain the newest constituent timestamp: an aged code-buffer transfer
+ * must not backdate a neighbouring image's still-pending reuse grace.
  * Returns 0 when the list is full (the range is leaked, as before). */
 typedef int (*ios_pool_clean_fn)( size_t off, size_t size );
 
@@ -2813,6 +2815,7 @@ static int ios_pool_free_put( struct ios_pool_free *fl, int *n, int max, size_t 
         {
             if (fl[i].off + fl[i].size != off && off + size != fl[i].off) continue;
             if (!clean( fl[i].off, fl[i].size )) continue;
+            if (fl[i].freed_at > now) now = fl[i].freed_at;
             if (fl[i].off < off) off = fl[i].off;
             size += fl[i].size;
             fl[i] = fl[--*n];
