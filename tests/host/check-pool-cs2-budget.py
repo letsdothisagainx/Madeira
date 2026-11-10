@@ -507,7 +507,7 @@ static void check_budget_plan(uint64_t *selected, uint64_t *reserve)
     const uint64_t physical = 8192 * MB, lo = 0x100000000, hi = 0xfc0000000;
     CHECK(jit_cs2_pool_plan(1024, 5120 * MB, 1024 * MB, physical, lo, hi, selected, reserve));
     CHECK(*selected == 1152 && *reserve == 240);
-    CHECK(jit_cs2_code_tail_limit_mb() == 512);
+    CHECK(jit_cs2_code_tail_limit_mb() == 448);
     for (uint64_t requested = 256; requested <= 1152; requested += 16)
     {
         uint64_t pool = 0, image_reserve = 0;
@@ -1872,6 +1872,41 @@ static void check_captured_november10_tail_history(void)
     }
 }
 
+
+/* Replay the exact allocator boundary observed on-device in ee12a33e:
+ * main image head 0x27370000, retained FEX tail 0x1f034000,
+ * client.dll .text copy 0x29a8000. This is a counterfactual capacity test:
+ * the new 448MiB policy downshifts the third 128MiB producer request to
+ * 64MiB before these cursors develop, leaving at least that 64MiB
+ * headroom. It does not fake retirement receipts, alter image execution,
+ * or claim that the real device has yet completed the game startup. */
+static void check_nov10_ee12_client_headroom(void)
+{
+    const size_t head = 0x27370000, observed_tail = 0x1f034000;
+    const size_t client_request = 0x29a8000;
+    size_t client = (size_t)-1;
+
+    CHECK(jit_cs2_code_tail_limit_mb() == 448);
+    CHECK(ios_pool_code_growth_cap(0x1701c000, jit_cs2_code_tail_limit_mb() * MB) == 64 * MB);
+    CHECK(!ios_pool_code_growth_fits(0x1701c000, 128 * MB, jit_cs2_code_tail_limit_mb() * MB));
+    CHECK(ios_pool_code_growth_fits(0x1701c000, 64 * MB, jit_cs2_code_tail_limit_mb() * MB));
+
+    reset(1152 * MB, 240 * MB);
+    owner = cs2_owner; fake_now = 1600;
+    jit_pool_offset = head; ios_jit_tail_reserved = observed_tail;
+    CHECK(ios_pool_alloc_range_tagged(client_request, 1152 * MB - observed_tail, 0) == (size_t)-1);
+    CHECK(jit_pool_offset == head && ios_jit_tail_reserved == observed_tail);
+
+    reset(1152 * MB, 240 * MB);
+    owner = cs2_owner; fake_now = 1600;
+    jit_pool_offset = head; ios_jit_tail_reserved = observed_tail - 64 * MB;
+    CHECK(!allocate_image(client_request, &client) && client == head);
+    CHECK(ios_pool_ledger_holds(client, client_request, (void *)owner));
+    check_owned_executable_image(client, client_request);
+    CHECK(ios_jit_pool_size_global - jit_pool_offset - ios_jit_tail_reserved > 40 * MB);
+    puts("PASS ee12a33e counterfactual: a 64MiB early code-buffer downshift makes the previously failing 41.66MiB client.dll image copy fit, without unsafe recycling");
+}
+
 struct scheduled_request { unsigned role; size_t size, limit, off; void *ret; int status; };
 static void *scheduled_allocate(void *opaque)
 {
@@ -2019,6 +2054,7 @@ int main(void)
     }
     check_original_and_growth_only();
     check_paired_budget(selected, reserve);
+    check_nov10_ee12_client_headroom();
     check_capacity_failure();
     check_captured_server_failure();
     check_captured_tail_history(176*MB,0);
