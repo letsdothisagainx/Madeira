@@ -19,6 +19,6 @@ jobs:
           CC: clang
         run: |
           shasum -a 256 tests/host/check-jit-debugserver-batch.py
-          xcrun --find debugserver
+          xcrun --find debugserver || true
           clang --version
           python3 -u tests/host/check-jit-debugserver-batch.py --require-debugserver

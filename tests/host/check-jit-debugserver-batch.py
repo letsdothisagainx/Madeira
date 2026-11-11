@@ -173,7 +173,9 @@ class Remote:
             if len(payload) > 1 << 20:
                 raise RuntimeError('unbounded debugserver reply')
         checksum = bytes((self.byte(), self.byte()))
-        if int(checksum, 16) != sum(payload) & 255:
+        # Apple's no-ack mode deliberately transmits #00 without computing
+        # a checksum (RNBRemote::SendPacket). Before negotiation it is strict.
+        if not self.no_ack and int(checksum, 16) != sum(payload) & 255:
             raise RuntimeError('debugserver reply checksum mismatch')
         if not self.no_ack:
             self.connection.sendall(b'+')
@@ -331,6 +333,13 @@ def main():
     if platform.system() == 'Darwin':
         located = subprocess.run(['xcrun', '--find', 'debugserver'], capture_output=True, text=True)
         tool = Path(located.stdout.strip()) if located.returncode == 0 else None
+        if not tool or not tool.is_file():
+            selected = subprocess.run(['xcode-select', '-p'], capture_output=True, text=True, check=True)
+            developer = Path(selected.stdout.strip())
+            candidates = [developer.parent / 'SharedFrameworks/LLDB.framework/Resources/debugserver',
+                          developer.parent / 'SharedFrameworks/LLDB.framework/Versions/A/Resources/debugserver',
+                          developer / 'Library/PrivateFrameworks/LLDB.framework/Resources/debugserver']
+            tool = next((p for p in candidates if p.is_file()), None)
         if tool and not tool.is_file():
             tool = None
     available, reason = supported(tool)
