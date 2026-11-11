@@ -106,6 +106,8 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+      - name: Install static PE reader dependencies
+        run: python3 -m pip install --disable-pip-version-check capstone==5.0.3 protobuf==5.29.5 pefile==2024.8.26
       - name: Exercise production installer against old and updated official core files
         run: python3 tests/integration/check-official-steam-bridge-profiles.py --download-official
   browser-cache:
