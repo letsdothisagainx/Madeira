@@ -9,6 +9,7 @@ CONFIGURATION="${CONFIGURATION:-Debug}"
 APP="$DERIVED/Build/Products/$CONFIGURATION-iphoneos/Madeira.app"
 
 required=(
+  "$ROOT/app/Madeira/madeira-jit.js"
   "$ROOT/app/Madeira/aarch64-windows/wow64.dll"
   "$ROOT/app/Madeira/aarch64-windows/services.exe"
   "$ROOT/app/Madeira/i386-windows/madeira-wow64-probe.exe"
@@ -91,6 +92,7 @@ codesign --force --sign - \
   "$APP"
 
 bundle_required=(
+  "$APP/madeira-jit.js"
   "$APP/aarch64-windows/wow64.dll"
   "$APP/aarch64-windows/services.exe"
   "$APP/Madeira.debug.dylib"
@@ -111,6 +113,12 @@ bundle_required=(
 for path in "${bundle_required[@]}"; do
   [[ -s "$path" ]] || { echo "ERROR: required bundle resource missing: $path" >&2; exit 1; }
 done
+# The debugger script and native allocator negotiate the same JIT wire
+# protocol. Never ship a cached Xcode resource beside a newly linked allocator.
+cmp -s "$ROOT/app/Madeira/madeira-jit.js" "$APP/madeira-jit.js" || {
+  echo "ERROR: Xcode packaged stale JIT debugger script" >&2
+  exit 1
+}
 python3 "$ROOT/tools/check-dxmt-pixel-probe.py" "$APP/arm64ec-windows/pixel-readback-x64.exe"
 cmp -s "$ROOT/app/Madeira/arm64ec-windows/pixel-readback-x64.exe" "$APP/arm64ec-windows/pixel-readback-x64.exe" || {
   echo "ERROR: Xcode packaged stale DXMT pixel probe" >&2
@@ -131,6 +139,10 @@ rm -f "$DIST/Madeira.ipa"
 rm -rf "$DIST/Payload"
 [[ -s "$DIST/Madeira.ipa" ]] || { echo "ERROR: failed to create IPA" >&2; exit 1; }
 unzip -tq "$DIST/Madeira.ipa" >/dev/null
+unzip -p "$DIST/Madeira.ipa" 'Payload/Madeira.app/madeira-jit.js' | cmp -s - "$ROOT/app/Madeira/madeira-jit.js" || {
+  echo "ERROR: IPA JIT debugger script differs from current source" >&2
+  exit 1
+}
 
 for resource in dockhost.exe dock-notices.txt madeira-steam-service.exe madeira-scm-probe.exe; do
   unzip -p "$DIST/Madeira.ipa" "Payload/Madeira.app/arm64ec-windows/$resource" | cmp - "$APP/arm64ec-windows/$resource"

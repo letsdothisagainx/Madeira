@@ -18,10 +18,11 @@
 #include <libkern/OSCacheControl.h>
 #define CHECK(x) do{if(!(x)){fprintf(stderr,"native Mach line%d: %s\n",__LINE__,#x);exit(1);}}while(0)
 static unsigned debug_allocations,preparations;
+static unsigned native_prepare_zero;
 static void jit_log(const char* format,...){(void)format;}
 /* ACTUAL TASK MAP QUERY INSERTED HERE */
 /* ACTUAL EXECUTION PROBE INSERTED HERE */
-static uint64_t jit26_pool_capabilities(void){return UINT64_C(0x4d4a5031);}
+static uint64_t jit26_pool_capabilities(void){return native_prepare_zero?UINT64_C(0x4d4a5032):UINT64_C(0x4d4a5031);}
 static void* jit26_pool_allocate(size_t size){
  vm_address_t address=0;debug_allocations++;
  CHECK(vm_allocate(mach_task_self(),&address,(vm_size_t)size,VM_FLAGS_ANYWHERE)==KERN_SUCCESS);
@@ -36,9 +37,9 @@ static void* jit26_pool_prepare(void* pointer,size_t size){
  CHECK(vm_remap(mach_task_self(),&writable,(vm_size_t)size,0,VM_FLAGS_ANYWHERE,
                 mach_task_self(),(vm_address_t)(uintptr_t)pointer,FALSE,&current,&maximum,VM_INHERIT_NONE)==KERN_SUCCESS);
  CHECK(vm_protect(mach_task_self(),writable,(vm_size_t)size,FALSE,VM_PROT_READ|VM_PROT_WRITE)==KERN_SUCCESS);
- for(size_t offset=0;offset<size;offset+=0x4000)((volatile unsigned char*)(uintptr_t)writable)[offset]=0x69;
+ for(size_t offset=0;offset<size;offset+=0x4000)((volatile unsigned char*)(uintptr_t)writable)[offset]=native_prepare_zero?0:0x69;
  CHECK(vm_deallocate(mach_task_self(),writable,(vm_size_t)size)==KERN_SUCCESS);
- return pointer;
+ return(void*)((uintptr_t)pointer|(native_prepare_zero?1u:0u));
 }
 /* ACTUAL PRODUCTION PLACEMENT INSERTED HERE */
 /* ACTUAL POLICY GETTERS INSERTED HERE */
@@ -94,8 +95,9 @@ static void native_failure_diagnostics(void){
  native_fresh_probe("separate-direct-store",0);
 }
 
-int main(void){
+int main(int argc,char** argv){
  uint64_t rx=0,rw=0,base=0,bytes=0;const char* receipt=NULL;uint32_t stage=0;int32_t error=0;
+ if(argc>1){CHECK(argc==2&&!strcmp(argv[1],"--mjp2-zero"));native_prepare_zero=1;}
  jit_required_early_hold();
  if(jit_required_pool.state!=1||jit_required_pool.size!=((uint64_t)1152<<20))native_failure_diagnostics();
  CHECK(jit_required_pool.state==1&&jit_required_pool.size==((uint64_t)1152<<20));
@@ -110,7 +112,7 @@ int main(void){
  CHECK(jit_required_range(rx,(uint64_t)1152<<20,-1,VM_PROT_READ|VM_PROT_EXECUTE,NULL));
  CHECK(jit_required_range(rw,(uint64_t)1152<<20,-1,VM_PROT_READ|VM_PROT_WRITE,NULL));
  for(uint64_t offset=0;offset<((uint64_t)1152<<20);offset+=0x4000)
-  CHECK(*(volatile unsigned char*)(uintptr_t)(rw+offset)==0x69);
+  CHECK(*(volatile unsigned char*)(uintptr_t)(rw+offset)==(native_prepare_zero?0:0x69));
  CHECK(!jit_required_pool_release_early());
  if(jit_required_pool_fex_reservation(&base,&bytes,&receipt)){
   CHECK(bytes==((uint64_t)8<<30)&&base>=UINT64_C(0x7c00000000)&&receipt);
@@ -119,7 +121,7 @@ int main(void){
   CHECK(ios_native_fex_hold_description(&parsed)&&parsed.base==base&&parsed.size==bytes&&parsed.count);
   CHECK(parsed.count<=IOS_NATIVE_FEX_RECEIPT_MAX);
  }
- printf("PASS real Darwin Mach: full1152MiB RX=0x%llx RW=0x%llx; shared page markers, W^X, all73728 guarded ARM64 execution probes; partition768/384; StikDebug/iPhone unverified\n",(unsigned long long)rx,(unsigned long long)rw);
+ printf("PASS real Darwin Mach: full1152MiB RX=0x%llx RW=0x%llx; shared page markers, W^X, all73728 guarded ARM64 execution probes; partition768/384; preparation=MJP%u marker=%02x; StikDebug/iPhone unverified\n",(unsigned long long)rx,(unsigned long long)rw,native_prepare_zero?2u:1u,native_prepare_zero?0u:0x69u);
  /* Only owned fixture results are removed; production correctly refuses its
   * early-release API once a live pool is published. No guest executes here. */
  CHECK(vm_deallocate(mach_task_self(),(vm_address_t)rx,(vm_size_t)1152<<20)==KERN_SUCCESS);

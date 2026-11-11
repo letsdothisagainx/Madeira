@@ -1,0 +1,37 @@
+name: Verify full-width JIT preparation batching
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'codex/pr-build-*']
+    paths:
+      - app/Madeira/JITAllocator.c
+      - app/Madeira/madeira-jit.js
+      - tests/host/check-jit-*-prepare.py
+      - tests/host/check-jit-debugserver-batch.py
+      - tests/host/check-jit-full-pool-*.py
+      - tests/host/jit_full_pool*.c
+      - .github/workflows/jit-prepare-batch.yml
+permissions:
+  contents: read
+concurrency:
+  group: jit-prepare-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  script-contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Execute the bundled script and production pool transaction
+        run: |
+          python3 tests/host/check-jit-sparse-prepare.py
+          python3 tests/host/check-jit-full-pool-protocol.py
+          python3 tests/host/check-jit-full-pool-placement.py
+  real-apple-debugserver:
+    runs-on: xcode-27
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify actual native sparse writes and measure owned transport
+        run: python3 tests/host/check-jit-debugserver-batch.py --require-debugserver
+      - name: Execute the actual script in Apple's JavaScriptCore
+        run: python3 tests/host/check-jit-sparse-prepare.py

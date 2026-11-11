@@ -25,7 +25,7 @@ const assert = {
 };
 const actual = @ACTUAL@;
 const before = @BEFORE@;
-const PAGE = 0x4000n, SIZE = 0x48000000n, MAGIC = 0x4d4a5031n;
+const PAGE = 0x4000n, SIZE = 0x48000000n, MAGIC = 0x4d4a5032n;
 const high = 0x7c00004000n;
 function little(value) {let s='';for(let i=0;i<8;i++){s+=(value&255n).toString(16).padStart(2,'0');value>>=8n;}return s;}
 function decoded(value) {let result=0n;for(let i=7;i>=0;i--)result=result<<8n|BigInt('0x'+value.slice(i*2,i*2+2));return result;}
@@ -41,6 +41,7 @@ function execute(source, command, address=0n, size=0n, options={}) {
       calls.push(packet);
       if(packet.startsWith('vAttach;')||packet.startsWith('QSetIgnoredExceptions:')||packet.startsWith('QPassSignals:')) return 'OK';
       if(packet==='c') {if(!delivered){delivered=true;return stop;}return 'W00';}
+      if(packet==='qSupported') return '';
       if(packet===`m${pc.toString(16)},4`) return 'a0013ed4'; // BRK #0xf00d
       if(packet.startsWith('P20=')) { assert.equal(packet,`P20=${little(pc+4n)};thread:1;`);return 'OK';}
       if(packet.startsWith('P0=')) {const m=/^P0=([0-9a-f]{16});thread:1;$/.exec(packet);assert.ok(m);value=decoded(m[1]);registerWrites.push(value);return 'OK';}

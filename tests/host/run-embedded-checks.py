@@ -8,6 +8,8 @@ root = Path(__file__).resolve().parents[2]
 commands = [
     ['python3', 'tests/host/check-jit-full-pool-placement.py', '--require-swift', '--require-native-mach'],
     ['python3', 'tests/host/check-jit-full-pool-protocol.py'],
+    ['python3', 'tests/host/check-jit-sparse-prepare.py'],
+    ['python3', 'tests/host/check-jit-debugserver-batch.py', '--require-debugserver'],
     ['python3', 'tests/host/check-jit-high-host.py'],
     ['python3', 'tests/host/check-authenticode-attribute-order.py'],
     ['python3', 'tests/host/check-mapped-filename-contract.py'],
@@ -212,6 +214,8 @@ commands = [
 placement_preflight = {
     'tests/host/check-jit-full-pool-placement.py',
     'tests/host/check-jit-full-pool-protocol.py',
+    'tests/host/check-jit-sparse-prepare.py',
+    'tests/host/check-jit-debugserver-batch.py',
     'tests/host/check-jit-high-host.py',
 }
 failed_checks = []

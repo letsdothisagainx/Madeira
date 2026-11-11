@@ -548,6 +548,8 @@ enum StikJITHelper {
                     detail = "A temporary mapping could not be safely released. Its ownership was left intact."
                 case 11:
                     detail = "An earlier JIT operation still owns a mapping, so it cannot safely be replaced."
+                case 13:
+                    detail = "The debugger could not confirm removal of its temporary preparation breakpoints. The unused pool was retained to prevent unsafe memory reuse."
                 default:
                     detail = "The full-size debugger mapping handoff failed."
                 }

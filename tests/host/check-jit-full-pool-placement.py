@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import tempfile
@@ -216,12 +217,89 @@ int test_darwin_fixed_reserve(uint64_t base,uint64_t size) {
     assert incomplete.returncode == 1 and ('materialized_leaves==18' in incomplete.stderr or
         'jit_required_pool.state==1&&owned_count()==2' in incomplete.stderr), incomplete
     print('PASS mutation control: one touched leaf cannot bind an entire multi-object anonymous reservation')
+    # A BRK's first byte is zero. An old one-byte marker check can accept a
+    # left-behind software breakpoint even though the guarded execution test
+    # temporarily overwrites and then restores that opcode. The full restored
+    # instruction must be checked before any execution probe.
+    aliases = block.index('static int jit_required_aliases_match(')
+    loop_start = block.index('    for (offset = 0;', aliases)
+    loop_end = block.index('    memcpy(&original,', loop_start)
+    one_byte = block[:loop_start] + '''    for (offset = 0; offset < pool->size; offset += JIT_REQUIRED_PAGE)
+        if (*(const volatile unsigned char *)(uintptr_t)(pool->rw + offset) != pool->prepare_marker) return 0;
+''' + block[loop_end:]
+    assert one_byte != block, 'MJP2 must validate the complete restored ARM64 instruction'
+    unsafe = directory / 'one-byte-zero-marker.c'; unsafe_binary = directory / 'one-byte-zero-marker'
+    unsafe.write_text((ROOT / 'tests/host/jit_full_pool_fixture.c').read_text().replace(
+        '/* ACTUAL PRODUCTION PLACEMENT INSERTED HERE */', one_byte + support))
+    run([os.environ.get('CC','cc'),'-std=c11','-Wall','-Wextra','-Werror',
+         '-Wno-misleading-indentation','-fsanitize=undefined','-fno-sanitize-recover=all',
+         '-pthread',str(unsafe),*extra,'-o',str(unsafe_binary)])
+    rejected = subprocess.run([str(unsafe_binary)], capture_output=True, text=True, timeout=120)
+    assert rejected.returncode == 1 and '!accepted_left_breakpoint' in rejected.stderr, rejected
+    print('PASS mutation control: one-byte zero acceptance wrongly publishes a leftover ARM64 breakpoint and is caught')
 
 
 
 def source_function(source, signature):
     start = source.index(signature)
     return source[start:source.index('\n}', start) + 2] + '\n'
+
+
+def native_initial_layout_refusal(result):
+    """Identify only the initial no-holder Mac ASLR refusal, never a failed JIT.
+
+    The same owned native fixture was measured passing/failing across fresh
+    launches on one Mac. Repeating this test process is distinct from retrying
+    or weakening the application's allocator. Every accepted run must complete
+    all real Mach ownership, protection, alias and per-page execution checks.
+    """
+    if result.returncode != 1:
+        return False
+    lines = result.stderr.splitlines()
+    if not lines or not re.fullmatch(
+            r'native Mach line\d+: jit_required_pool\.state==1&&jit_required_pool\.size==\(\(uint64_t\)1152<<20\)',
+            lines[-1]):
+        return False
+    hold = any(re.fullmatch(
+        r'NATIVE_HOLD_FAILURE measured=1 map=\[0x[0-9a-f]+,0x[0-9a-f]+\) '
+        r'vm-address-bytes=8 vm-offset-bytes=8 state=0 RX=0x0 RW=0x0 FEX=0x0 '
+        r'RX-object=0 RW-object=0 FEX-object=0', line) for line in lines)
+    recheck = 'NATIVE_RECHECK result=0 error=0 RX=0x0 RW=0x0 FEX=0x0' in lines
+    return hold and recheck
+
+
+def native_retry_controls():
+    refusal = ('NATIVE_HOLD_FAILURE measured=1 map=[0x100000000,0x7ffffe000000) '
+               'vm-address-bytes=8 vm-offset-bytes=8 state=0 RX=0x0 RW=0x0 FEX=0x0 '
+               'RX-object=0 RW-object=0 FEX-object=0\n'
+               'NATIVE_RECHECK result=0 error=0 RX=0x0 RW=0x0 FEX=0x0\n'
+               'native Mach line1121: jit_required_pool.state==1&&jit_required_pool.size==((uint64_t)1152<<20)\n')
+    def classify(error=refusal, code=1):
+        return native_initial_layout_refusal(subprocess.CompletedProcess([], code, '', error))
+    assert classify()
+    for old, new in [('state=0', 'state=4'), ('RX=0x0', 'RX=0x7c00000000'),
+                     ('error=0', 'error=5'), ('result=0', 'result=-1'),
+                     ('RX-object=0', 'RX-object=22')]:
+        assert not classify(refusal.replace(old, new))
+    for code in (0, -9, -6, 2):
+        assert not classify(code=code)
+    assert not classify(refusal + 'native Mach line1200: shared_aliases_verified\n')
+    assert not classify('native full-pool transaction failed stage=8 Mach=2\n')
+    print('PASS native-process retry classification: only initial empty no-placement refusal; ownership/execution/cleanup failures and signals remain fatal')
+
+
+def run_native_process(binary, arguments):
+    for attempt in range(6):
+        result = subprocess.run([str(binary), *arguments], capture_output=True,
+                                text=True, timeout=120)
+        print(result.stdout, end='', flush=True)
+        print(result.stderr, end='', flush=True)
+        if not result.returncode:
+            return
+        if not native_initial_layout_refusal(result) or attempt == 5:
+            raise subprocess.CalledProcessError(result.returncode, result.args,
+                                                result.stdout, result.stderr)
+        print(f'NATIVE_ASLR: safe empty initial layout refusal; fresh owned test process {attempt + 2}/6; no application allocator change', flush=True)
 
 
 def native_mach(directory, required):
@@ -250,7 +328,8 @@ def native_mach(directory, required):
     run([os.environ.get('CC','cc'),'-std=c11','-D_DARWIN_C_SOURCE','-Wall','-Wextra','-Werror',
          '-Wno-misleading-indentation','-fsanitize=undefined','-fno-sanitize-recover=all','-pthread',
          str(cfile),'-o',str(binary)])
-    run([str(binary)])
+    run_native_process(binary, [])
+    run_native_process(binary, ['--mjp2-zero'])
 
 
 def main():
@@ -262,6 +341,7 @@ def main():
     swiftc = os.environ.get('SWIFTC') or shutil.which('swiftc')
     if args.require_swift and not swiftc: raise RuntimeError('Swift is required')
     if args.require_native_mach and platform.system() != 'Darwin': raise RuntimeError('Real Mach execution requires Darwin')
+    native_retry_controls()
     with tempfile.TemporaryDirectory(prefix='madeira-full-jit-placement-') as tmp:
         before_control(Path(tmp), swiftc)
         if args.before_only: return

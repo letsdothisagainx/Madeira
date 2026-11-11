@@ -59,6 +59,8 @@ static struct region regions[512];static unsigned count;static uint64_t serial=1
 static uint64_t map_min=0x100ab8000ULL,map_max=0x8000000000ULL;
 static unsigned allocation_calls,debug_allocations,preparations,remaps,deallocations,executions,expected_debug=1,expected_preparations=1,materialized_leaves;
 static int query_error,lose_first,remap_fail,protect_fail,missing_markers,wrong_return,bad_backing,cleanup_fail,cow_prepare,multi_objects,multi_active,fresh_zero,cap_supported=1;
+static unsigned cap_version=1,prepare_zero,prepare_tag,prepared_pages,execution_pages_checked;
+static int execution_refused,left_breakpoint;
 static int prepare_blocks,cap_entered,cap_release,deep_submap,one_submap;
 static pthread_mutex_t boundary_mutex=PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t boundary_condition=PTHREAD_COND_INITIALIZER;
@@ -183,7 +185,7 @@ static int vm_read_overwrite(int task,vm_address_t address,vm_size_t size,vm_add
 static uint64_t jit26_pool_capabilities(void){
  pthread_mutex_lock(&boundary_mutex);
  if(prepare_blocks){cap_entered=1;pthread_cond_broadcast(&boundary_condition);while(!cap_release)pthread_cond_wait(&boundary_condition,&boundary_mutex);}
- pthread_mutex_unlock(&boundary_mutex);return cap_supported?0x4d4a5031ULL:0;
+ pthread_mutex_unlock(&boundary_mutex);return cap_supported?0x4d4a5030ULL+cap_version:0;
 }
 static void* jit26_pool_allocate(size_t size){
  CHECK(size==FULL);debug_allocations++;
@@ -196,7 +198,7 @@ static void* jit26_pool_allocate(size_t size){
 }
 static void* jit26_pool_prepare(void* pointer,size_t size){
  CHECK(size==FULL);preparations++;if(wrong_return)return(void*)((uintptr_t)pointer+PAGE);
- if(missing_markers==1)return pointer;
+ if(missing_markers==1)return(void*)((uintptr_t)pointer|prepare_tag);
  pthread_mutex_lock(&boundary_mutex);int i=index_at((uint64_t)(uintptr_t)pointer);CHECK(i>=0&&regions[i].prot==5&&regions[i].fd>=0);
  uint64_t group=regions[i].group;int fd=dup(regions[i].fd);CHECK(fd>=0);
  if(cow_prepare){CHECK(!close(fd));fd=backing();CHECK(mmap(pointer,size,5,MAP_SHARED|MAP_FIXED,fd,0)==pointer);
@@ -204,14 +206,23 @@ static void* jit26_pool_prepare(void* pointer,size_t size){
  }
  void* write=mmap(NULL,size,3,MAP_SHARED,fd,0);CHECK(write!=MAP_FAILED);
  uint64_t end=missing_markers==2?PAGE:size;
- for(uint64_t offset=0;offset<end;offset+=PAGE)((unsigned char*)write)[offset]=0x69;
+ for(uint64_t offset=0;offset<end;offset+=PAGE)((unsigned char*)write)[offset]=prepare_zero?0:0x69;
+ if(left_breakpoint)((uint32_t*)((unsigned char*)write+size-PAGE))[0]=UINT32_C(0xd4200000);
+ prepared_pages=(unsigned)(end/PAGE);
  for(unsigned j=0;j<count;j++)if(regions[j].group==group&&!regions[j].object&&regions[j].base-(uint64_t)(uintptr_t)pointer<end)regions[j].object=++serial;
- CHECK(!munmap(write,size));CHECK(!close(fd));if(multi_objects)multi_active=1;pthread_mutex_unlock(&boundary_mutex);return pointer;
+ CHECK(!munmap(write,size));CHECK(!close(fd));if(multi_objects)multi_active=1;pthread_mutex_unlock(&boundary_mutex);return(void*)((uintptr_t)pointer|prepare_tag);
 }
 /* Linux's x86 kernel cannot execute ARM64 code. Actual ARM64 guarded execution
  * is compiled unchanged in the separate real Mach integration on Apple CI. */
 static int jit_required_execute_pages(uint64_t rx,uint64_t rw,uint64_t size){
- CHECK(rx&&rw&&size==FULL);executions++;return 1;
+ CHECK(rx&&rw&&size==FULL);executions++;
+ /* This is the explicit host permission boundary, not an ARM64 emulator.
+  * Fresh zero bytes alone cannot stand in for per-page execute permission. */
+ for(unsigned page=0;page<FULL/PAGE;page++){
+  execution_pages_checked++;
+  if(execution_refused||page>=prepared_pages)return 0;
+ }
+ return 1;
 }
 
 /* ACTUAL PRODUCTION PLACEMENT INSERTED HERE */
@@ -222,6 +233,7 @@ static void clear_all(void){
  allocation_calls=debug_allocations=preparations=remaps=deallocations=executions=materialized_leaves=0;expected_debug=1;expected_preparations=1;
  query_error=lose_first=remap_fail=protect_fail=missing_markers=wrong_return=bad_backing=cleanup_fail=cow_prepare=multi_objects=multi_active=fresh_zero=0;last_rx=last_rw=0;
  prepare_blocks=cap_entered=cap_release=deep_submap=one_submap=0;cap_supported=1;
+ cap_version=1;prepare_zero=prepare_tag=prepared_pages=execution_pages_checked=0;execution_refused=left_breakpoint=0;
 }
 static void setup(int high){
  clear_all();map_max=high?0x8000000000ULL:0xfc0000000ULL;
@@ -266,7 +278,8 @@ static void successful(int high){
   CHECK(version==2&&receipt_base==fex&&receipt_size==8*GB&&leaves==64);
   CHECK(!overlap(rx,FULL,fex,fex_size)&&!overlap(rw,FULL,fex,fex_size));CHECK(owned_count()==3);
  }else{CHECK(rx==12*GB&&rw==12*GB+FULL);CHECK(!jit_required_pool_fex_reservation(&fex,&fex_size,&fex_receipt));CHECK(owned_count()==2);}
- for(uint64_t offset=0;offset<FULL;offset+=PAGE)CHECK(*(unsigned char*)(uintptr_t)(rw+offset)==0x69);
+ for(uint64_t offset=0;offset<FULL;offset+=PAGE)CHECK(*(unsigned char*)(uintptr_t)(rw+offset)==(prepare_zero?0:0x69));
+ CHECK(jit_required_pool.prepare_marker==(prepare_zero?0:0x69)&&execution_pages_checked==FULL/PAGE);
  CHECK(*(uint32_t*)(uintptr_t)(rw+4)==0&&*(uint32_t*)(uintptr_t)(rw+FULL-4)==0);
  uint64_t second_rx=1,second_rw=1;CHECK(!create(&second_rx,&second_rw,&stage,&error));CHECK(!second_rx&&!second_rw&&stage==11&&debug_allocations==expected_debug);
 }
@@ -293,6 +306,44 @@ int main(void){
 
  setup(1);jit_required_early_hold();cow_prepare=1;multi_objects=1;successful(1);
  puts("PASS all73728 per-page COW object/offset snapshots are retained through remap/protection and released after publication");
+ setup(1);jit_required_early_hold();cap_version=2;prepare_zero=prepare_tag=1;successful(1);
+ puts("PASS MJP2 tagged completed breakpoint preparation selects zero contents and still verifies every73728 page permission before publication");
+ setup(1);jit_required_early_hold();cap_version=2;successful(1);
+ puts("PASS MJP2 ordinary return keeps native/serial69-marker fallback valid");
+ setup(1);jit_required_early_hold();cap_version=2;prepare_zero=prepare_tag=1;cow_prepare=multi_objects=1;successful(1);
+ puts("PASS MJP2 zero preparation supports per-page debugger COW while retaining complete object/offset sharing proof");
+ for(int mode=0;mode<5;mode++){
+  setup(1);jit_required_early_hold();cap_version=2;
+  if(mode==0){prepare_zero=prepare_tag=1;cap_version=1;}
+  if(mode==1)prepare_tag=1; /* A zero tag cannot authorize69 contents. */
+  if(mode==2)prepare_zero=1; /* Ordinary response still promises69. */
+  if(mode==3){prepare_zero=1;prepare_tag=4;cap_version=1;}
+  if(mode==4){prepare_zero=prepare_tag=1;missing_markers=2;}
+  CHECK(!create(&rx,&rw,&stage,&error));CHECK(!rx&&!rw&&!owned_count()&&!jit_required_pool.state);
+  CHECK(debug_allocations==3);
+  if(mode<4)CHECK(!executions);else CHECK(executions==3&&stage==12);
+ }
+ puts("PASS MJP1 cannot decode MJP2 tag; wrong tags/content and partial zero-page authorization never publish");
+ for(unsigned poison=2;poison<=4;poison+=2){
+  setup(1);jit_required_early_hold();cap_version=2;prepare_zero=1;prepare_tag=poison;
+  unsigned before_poison_deallocations=deallocations;
+  CHECK(!create(&rx,&rw,&stage,&error));
+  CHECK(stage==13&&error==KERN_ABORTED&&!rx&&!rw&&jit_required_pool.state==4&&owned_count()==4);
+  CHECK(debug_allocations==1&&preparations==1&&!executions&&deallocations==before_poison_deallocations);
+  CHECK(!create(&rx,&rw,&stage,&error));
+  CHECK(stage==11&&jit_required_pool.state==4&&owned_count()==4&&debug_allocations==1&&preparations==1&&deallocations==before_poison_deallocations);
+ }
+ puts("PASS MJP2 cleanup-poison and unknown tags quarantine every unpublished extent without deallocation, retry or another debugger request");
+ setup(1);jit_required_early_hold();cap_version=2;prepare_zero=prepare_tag=1;left_breakpoint=1;
+ int accepted_left_breakpoint=create(&rx,&rw,&stage,&error);
+ CHECK(!accepted_left_breakpoint);CHECK(stage==8&&!rx&&!rw&&!owned_count()&&!jit_required_pool.state&&!executions);
+ puts("PASS leftover ARM64 breakpoint whose first byte is zero cannot pass the MJP2 complete restored-opcode validation");
+ setup(1);jit_required_early_hold();cap_version=2;prepare_zero=prepare_tag=1;execution_refused=1;
+ CHECK(!create(&rx,&rw,&stage,&error));CHECK(stage==12&&!rx&&!rw&&!owned_count()&&!jit_required_pool.state&&executions==3);
+ puts("PASS zero markers cannot bypass the required real-execution boundary; rejection releases only verified ownership");
+ setup(1);jit_required_early_hold();cap_version=3;
+ CHECK(!create(&rx,&rw,&stage,&error));CHECK(stage==1&&error==KERN_NOT_SUPPORTED&&!debug_allocations&&jit_required_pool.state==1);
+ puts("PASS unsupported future preparation capability is refused before allocation");
  setup(1);fresh_zero=1;jit_required_early_hold();CHECK(jit_required_pool.rx_object&&jit_required_pool.rw_object&&jit_required_pool.fex_object);
  successful(1);puts("PASS initially objectless holds bind all82 anonymous leaves with82 bounded page materializations;9-leaf temporary source remains fully tracked");
 

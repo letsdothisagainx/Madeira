@@ -115,6 +115,8 @@ bool jit_required_pool_fex_reservation(uint64_t *base, uint64_t *size, const cha
 // Versioned debugger protocol; old scripts return zero for the capability call.
 uint64_t jit26_pool_capabilities(void);
 void *jit26_pool_allocate(size_t size);
+// Fresh-pool protocol result, not a dereferenceable pointer: MJP2 can tag
+// restored-zero completion or uncertain cleanup. Decoded only by pool_create.
 void *jit26_pool_prepare(void *address, size_t size);
 
 // iOS 26 BRK-based protocol: Ask attached debugger (StikDebug) to

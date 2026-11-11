@@ -25,6 +25,11 @@ with tempfile.TemporaryDirectory() as temp:
         p = t/relative
         if relative.endswith(('.a','.exe','.dll','.txt')):
             p.parent.mkdir(parents=True, exist_ok=True); p.write_bytes(b'fixture')
+    # Exercise the actual script bytes, not a protocol-shaped marker. These
+    # packaging fixtures do not execute a debugger or claim an iPhone result.
+    jit_script=t/'app/Madeira/madeira-jit.js'
+    jit_script.parent.mkdir(parents=True,exist_ok=True)
+    jit_script.write_bytes((root/'app/Madeira/madeira-jit.js').read_bytes())
     import importlib.util
     package_fixture_spec=importlib.util.spec_from_file_location('fex_package_fixture',root/'tests/host/check-fex-subfloor-package.py')
     package_fixture=importlib.util.module_from_spec(package_fixture_spec);package_fixture_spec.loader.exec_module(package_fixture)
@@ -150,6 +155,8 @@ with tempfile.TemporaryDirectory() as temp:
     (t/'tools/check-io-abi-package.py').write_text((root/'tools/check-io-abi-package.py').read_text())
     bodies = {
       'xcodebuild': '''mkdir -p "$TEST_APP/arm64ec-windows" "$TEST_APP/i386-windows" "$TEST_APP/x86_64-vcruntime" "$TEST_APP/aarch64-windows"
+if [ "${OMIT_RESOURCE:-}" != madeira-jit.js ]; then cp "$ROOT/app/Madeira/madeira-jit.js" "$TEST_APP/madeira-jit.js"; fi
+if [ "${STALE_JIT_SCRIPT:-}" = 1 ]; then printf '\\n// stale debugger protocol' >> "$TEST_APP/madeira-jit.js"; fi
 python3 - "$TEST_APP/Info.plist" <<'PY_FIXTURE_INFO'
 import plistlib, sys
 from pathlib import Path
@@ -233,7 +240,7 @@ for resource in madeira-wow64-probe.exe madeira-wow64-module-probe.dll; do
 done
 ''',
       'codesign': 'if [ "$1" = -d ]; then echo com.apple.security.cs.allow-jit; fi\n',
-      'ditto': 'cp -R "$1" "$2"\n',
+      'ditto': 'cp -R "$1" "$2"\nif [ "${STALE_IPA_JIT_SCRIPT:-}" = 1 ]; then printf "\\n// stale archived debugger protocol" >> "$2/madeira-jit.js"; fi\n',
     }
     for name, body in bodies.items():
         p=commands/name; p.write_text('#!/bin/sh\nset -eu\n'+body); p.chmod(0o755)
@@ -243,11 +250,27 @@ done
         return subprocess.run(['bash',str(package)],env=dict(env,**(extra or {})),capture_output=True,text=True)
     result=run(); assert result.returncode == 0, result.stdout+result.stderr
     with zipfile.ZipFile(t/'dist/Madeira.ipa') as archive:
+        assert archive.read('Payload/Madeira.app/madeira-jit.js')==jit_script.read_bytes()
         provenance=plistlib.loads(archive.read('Payload/Madeira.app/Info.plist'))['MadeiraNativeBuildProvenance']
         assert provenance['packageSourceRevision']==revision
         assert provenance['virtualBuildRevision']=='a'*40
         assert provenance['virtualBuildRevision']!=provenance['packageSourceRevision']
         assert provenance['nativeImageUUID']=='12345678-1234-5678-90AB-123456789ABC'
+    result=run({'OMIT_RESOURCE':'madeira-jit.js'})
+    assert result.returncode and 'required bundle resource missing' in result.stderr,result.stderr
+    result=run({'STALE_JIT_SCRIPT':'1'})
+    assert result.returncode and 'Xcode packaged stale JIT debugger script' in result.stderr,result.stderr
+    result=run({'STALE_IPA_JIT_SCRIPT':'1'})
+    assert result.returncode and 'IPA JIT debugger script differs from current source' in result.stderr,result.stderr
+    current_jit=jit_script.read_bytes()
+    jit_script.unlink()
+    result=run()
+    assert result.returncode and 'required build artifact missing' in result.stderr,result.stderr
+    jit_script.write_bytes(b'')
+    result=run()
+    assert result.returncode and 'required build artifact missing' in result.stderr,result.stderr
+    jit_script.write_bytes(current_jit)
+    print('PASS exact current JIT debugger script survives app/IPA packaging; missing/empty source, missing/stale Xcode copy and changed archive bytes fail actual gates; no debugger execution claim')
     for stale,component in [('STALE_NATIVE_SOURCE','virtual'),('STALE_JIT_SOURCE','jitallocator')]:
         result=run({stale:'1'})
         assert result.returncode and component+': linked source digest differs from package source' in result.stderr,result.stderr

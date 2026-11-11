@@ -44,13 +44,108 @@ function extractBrkImmediate(u32) {
     return (u32 >> 5) & 0xFFFF;
 }
 
-// Full-pool handoff v1. These operations never ask the legacy helper to bless
+// Full-pool handoff v2. These operations never ask the legacy helper to bless
 // an arbitrary allocator result: StikJIT 1.9 formats only nine address nibbles
 // in that helper. An iOS 27 allocation above 64 GiB would otherwise write to a
 // different low address. The app keeps its final RX/RW reservations throughout.
-const madeiraPoolProtocolVersion = 0x4d4a5031n; // MJP1
+const madeiraPoolProtocolVersion = 0x4d4a5032n; // MJP2: checked sparse preparation batches
 const madeiraPoolMaximumSize = 0x48000000n;
 const madeiraPoolPageSize = 0x4000n;
+let madeiraPoolBatchSupport = null;
+
+// Apple debugserver's jMultiBreakpoint executes the ordinary Z/z requests in
+// order and reports every result. A set/clear pair writes and restores a fresh
+// page through the debugger without retaining a breakpoint when it succeeds.
+// Unlike the legacy native helper, addresses in these requests are not clipped
+// to nine hex digits. Query support before touching any memory.
+function madeiraPoolBatchPayloadLimit() {
+    if (madeiraPoolBatchSupport !== null) return madeiraPoolBatchSupport;
+    const response = send_command('qSupported');
+    madeiraPoolBatchSupport = 0;
+    if (typeof response !== 'string' || response.length > 65536) return 0;
+    const fields = response.split(';');
+    if (!fields.includes('jMultiBreakpoint+')) return 0;
+    const size = fields.find(value => /^PacketSize=[0-9a-fA-F]{1,8}$/.test(value));
+    if (!size) return 0;
+    // Conservatively leave room for framing even if the peer's limit is a
+    // payload limit. Local memory and command size stay bounded independently.
+    const limit = Math.min(parseInt(size.slice(11), 16) - 4, 65536);
+    if (limit >= 128) madeiraPoolBatchSupport = limit;
+    return madeiraPoolBatchSupport;
+}
+
+function madeiraPoolBatchResults(response, count) {
+    if (typeof response !== 'string' || response.length > 16384) return null;
+    let value;
+    try { value = JSON.parse(response); }
+    catch (_) {
+        // debugserver DumpBinaryEscaped() escapes JSON's closing brace in the
+        // RSP response. idevice returns that wire payload without unescaping.
+        let decoded = '';
+        for (let i = 0; i < response.length; ++i) {
+            let code = response.charCodeAt(i);
+            if (code === 0x7d) {
+                if (++i === response.length) return null;
+                code = response.charCodeAt(i) ^ 0x20;
+                if (![0x23, 0x24, 0x2a, 0x7d].includes(code)) return null;
+            }
+            decoded += String.fromCharCode(code);
+        }
+        try { value = JSON.parse(decoded); } catch (_) { return null; }
+    }
+    if (!value || Array.isArray(value) || Object.keys(value).length !== 1 ||
+        !Array.isArray(value.results) || value.results.length !== count ||
+        !value.results.every(item => typeof item === 'string' && /^(?:OK|E[0-9a-fA-F]{2})$/.test(item))) return null;
+    return value.results;
+}
+
+function madeiraPoolUncertainBreakpoints() {
+    // Never resume into a pool with uncertain saved breakpoint bytes: a later
+    // debugger cleanup could otherwise restore them over live generated code.
+    detached = true;
+    try { ulog('Madeira JIT: sparse preparation cleanup unconfirmed; stopping inferior'); } catch (_) {}
+    try { send_command('k'); } catch (_) { /* No success or resume is reported. */ }
+    return 0n;
+}
+
+function madeiraPoolPrepareBatches(address, size, limit) {
+    const end = address + size;
+    for (let page = address; page < end;) {
+        const pages = [], requests = [];
+        let bytes = 'jMultiBreakpoint:{"breakpoint_requests":[]}'.length;
+        for (let count = 0; count < 128 && page < end; ++count) {
+            const set = `Z0,${page.toString(16)},4`, clear = `z0,${page.toString(16)},4`;
+            const additional = JSON.stringify(set).length + JSON.stringify(clear).length + (requests.length ? 2 : 1);
+            if (bytes + additional > limit) break;
+            bytes += additional; pages.push(page); requests.push(set, clear);
+            page += madeiraPoolPageSize;
+        }
+        if (!pages.length) return madeiraPoolUncertainBreakpoints();
+        const packet = 'jMultiBreakpoint:' + JSON.stringify({breakpoint_requests: requests});
+        if (packet.length !== bytes || packet.length > limit) return madeiraPoolUncertainBreakpoints();
+        let results;
+        try { results = madeiraPoolBatchResults(send_command(packet), requests.length); }
+        catch (_) { return madeiraPoolUncertainBreakpoints(); }
+        if (!results) return madeiraPoolUncertainBreakpoints();
+        if (results.every(value => value === 'OK')) continue;
+        let confirmedClear = true;
+        for (let i = 0; i < pages.length; ++i) {
+            if (results[i * 2 + 1] === 'OK') continue;
+            // Only an acknowledged set proves that this script owns a saved
+            // breakpoint. A failed set AND clear is ambiguous, not permission
+            // to remove another breakpoint or resume a partially prepared pool.
+            if (results[i * 2] !== 'OK') { confirmedClear = false; continue; }
+            try {
+                if (send_command(`z0,${pages[i].toString(16)},4`) !== 'OK') confirmedClear = false;
+            } catch (_) { confirmedClear = false; }
+        }
+        return confirmedClear ? 0n : madeiraPoolUncertainBreakpoints();
+    }
+    // MJP2's low bit denotes the zero-restoring debugger operation. C accepts
+    // it only for this fresh full-pool transaction and still validates every
+    // mapping, shared page, protection and actual instruction execution.
+    return address + 1n;
+}
 
 function madeiraPoolRangeValid(address, size, requireAddress) {
     return typeof address === 'bigint' && typeof size === 'bigint' &&
@@ -71,7 +166,7 @@ function madeiraPoolAllocate(size) {
     return madeiraPoolRangeValid(address, size, true) ? address : 0n;
 }
 
-function madeiraPoolPrepareOwned(address, size) {
+function madeiraPoolPrepareOwned(address, size, allowBatches = false) {
     if (!madeiraPoolRangeValid(address, size, true)) return 0n;
     if (address + size <= 0x1000000000n) {
         // Preserve the native helper's 128-packet batching on low mappings.
@@ -80,9 +175,12 @@ function madeiraPoolPrepareOwned(address, size) {
         // before publishing either alias; this return alone proves nothing.
         return prepare_memory_region(address, size) === 'OK' ? address : 0n;
     }
-    // Only the high-host fallback needs this path. send_command has no batch
-    // API; use complete addresses and stop on the first real write error.
-    // No per-page UI logging or full-pool in-memory packet buffer.
+    if (allowBatches && size === madeiraPoolMaximumSize) {
+        const limit = madeiraPoolBatchPayloadLimit();
+        if (limit) return madeiraPoolPrepareBatches(address, size, limit);
+    }
+    // Unsupported peers and later live-code requests retain strict full-width
+    // writes. Only capability absence BEFORE any breakpoint write may fall back.
     const end = address + size;
     for (let page = address; page < end; page += madeiraPoolPageSize) {
         if (send_command(`M${page.toString(16)},1:69`) !== 'OK') return 0n;
@@ -321,8 +419,24 @@ while (!detached) {
             send_command(`P0=${numberToLittleEndianHexString(address)};thread:${tid};`);
 
         } else if (x16Num === 10n) {
-            const address = madeiraPoolPrepareOwned(x0, x1);
-            send_command(`P0=${numberToLittleEndianHexString(address)};thread:${tid};`);
+            // Poison a valid transaction BEFORE any remote breakpoint write.
+            // If the connection disappears or kill cannot be confirmed, C must
+            // quarantine every owned mapping rather than free/reuse addresses
+            // whose saved breakpoint bytes might still be restored later.
+            const poison = madeiraPoolRangeValid(x0, x1, true) ? x0 + 2n : 0n;
+            if (send_command(`P0=${numberToLittleEndianHexString(poison)};thread:${tid};`) !== 'OK') {
+                madeiraPoolUncertainBreakpoints();
+                continue;
+            }
+            let address = 0n;
+            try { address = madeiraPoolPrepareOwned(x0, x1, true); }
+            catch (_) { address = 0n; }
+            if (!detached) {
+                try {
+                    if (send_command(`P0=${numberToLittleEndianHexString(address)};thread:${tid};`) !== 'OK')
+                        madeiraPoolUncertainBreakpoints();
+                } catch (_) { madeiraPoolUncertainBreakpoints(); }
+            }
 
         } else if (x16Num === 1n) {
             // CMD_PREPARE_REGION

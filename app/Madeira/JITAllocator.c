@@ -1150,12 +1150,14 @@ void jit_wx_probe(void) {
 #define JIT_REQUIRED_RX_TAG 251
 #define JIT_REQUIRED_RW_TAG 252
 #define JIT_REQUIRED_FEX_TAG 253
-#define JIT_REQUIRED_CAPABILITY UINT64_C(0x4d4a5031)
+#define JIT_REQUIRED_CAPABILITY_V1 UINT64_C(0x4d4a5031)
+#define JIT_REQUIRED_CAPABILITY UINT64_C(0x4d4a5032)
 
 struct jit_required_pool {
     uint64_t rx, rw, size, temporary, generation, fex, fex_size;
     uint64_t rx_object, rw_object, fex_object; /* First-leaf diagnostics, never ownership proof. */
     unsigned state, rx_installed, rw_installed, temporary_owned;
+    unsigned prepare_marker;
     struct jit_required_snapshot *rx_snapshot, *rw_snapshot, *fex_snapshot, *temporary_snapshot;
 };
 struct jit_required_snapshot_entry {
@@ -1697,18 +1699,25 @@ bool jit_required_pool_fex_reservation(uint64_t *base, uint64_t *size, const cha
     return valid != 0;
 }
 
-/* The debugger's prepare command writes 0x69 at every 16 KiB page. Reading
- * every such marker through RW proves the whole remap shares the prepared RX
- * object. A reversible write/read test independently checks both directions.
- * This touches no extra backing beyond the original debugger prepare. */
+/* Legacy preparation writes 0x69 at every 16 KiB page. The MJP2 batched
+ * breakpoint operation restores each fresh page's original zero bytes.
+ * Check the promised contents through RW, then independently check shared
+ * writes and execute EVERY page before publication. Zero contents alone
+ * never establish debugger authorization or successful preparation. */
 static int jit_required_aliases_match(const struct jit_required_pool *pool)
 {
     uint64_t offset;
     uint32_t original = 0, readback = 0, pattern = UINT32_C(0x4d4a5031);
     vm_size_t copied = 0;
     kern_return_t kr;
-    for (offset = 0; offset < pool->size; offset += JIT_REQUIRED_PAGE)
-        if (*(const volatile unsigned char *)(uintptr_t)(pool->rw + offset) != 0x69) return 0;
+    for (offset = 0; offset < pool->size; offset += JIT_REQUIRED_PAGE) {
+        /* ARM64 BRK begins with a zero byte: test its complete word in the
+         * zero-restoring mode so a leftover breakpoint cannot pass this
+         * check, get overwritten by our probe, and then be restored. */
+        if (pool->prepare_marker == 0) {
+            if (*(const volatile uint32_t *)(uintptr_t)(pool->rw + offset) != 0) return 0;
+        } else if (*(const volatile unsigned char *)(uintptr_t)(pool->rw + offset) != pool->prepare_marker) return 0;
+    }
     memcpy(&original, (const void *)(uintptr_t)pool->rw, sizeof(original));
     memcpy((void *)(uintptr_t)pool->rw, &pattern, sizeof(pattern));
     sys_dcache_flush((void *)(uintptr_t)pool->rw, sizeof(pattern));
@@ -1727,6 +1736,7 @@ bool jit_required_pool_create(uint64_t size, uint64_t exe_base, uint64_t exe_siz
     struct jit_required_avoid avoid[6];
     unsigned attempt, avoid_count = 0;
     uint64_t map_min = 0, map_max = 0;
+    uint64_t debugger_capability;
     if (rx) *rx = 0; if (rw) *rw = 0;
     if (stage) *stage = 1; if (error) *error = KERN_INVALID_ARGUMENT;
     if (!rx || !rw || !stage || !error || size != JIT_REQUIRED_BYTES ||
@@ -1742,7 +1752,9 @@ bool jit_required_pool_create(uint64_t size, uint64_t exe_base, uint64_t exe_siz
 
     /* Must happen before any allocating request: an older installed script
      * cannot safely implement allocation-only or full-width final prepare. */
-    if (jit26_pool_capabilities() != JIT_REQUIRED_CAPABILITY) {
+    debugger_capability = jit26_pool_capabilities();
+    if (debugger_capability != JIT_REQUIRED_CAPABILITY &&
+        debugger_capability != JIT_REQUIRED_CAPABILITY_V1) {
         *stage = 1; *error = KERN_NOT_SUPPORTED;
         pthread_mutex_lock(&jit_required_mutex);
         jit_required_pool = pool;
@@ -1829,9 +1841,34 @@ bool jit_required_pool_create(uint64_t size, uint64_t exe_base, uint64_t exe_siz
         {
             struct timespec begin_time = {0}, end_time = {0};
             uint64_t prepared;
+            const char *prepare_mode;
             uint64_t elapsed = 0;
             int clock_ok = clock_gettime(CLOCK_MONOTONIC, &begin_time) == 0;
+            pool.prepare_marker = 0x69;
             prepared = (uint64_t)(uintptr_t)jit26_pool_prepare((void *)(uintptr_t)pool.rx, (size_t)size);
+            if (debugger_capability == JIT_REQUIRED_CAPABILITY && prepared != 0 &&
+                prepared != pool.rx && prepared != (pool.rx | UINT64_C(1))) {
+                /* The script leaves this value armed until all breakpoint
+                 * removals and its final reply are acknowledged. A dropped
+                 * debugger can resume the app despite an attempted kill.
+                 * Unknown nonzero results are equally unsafe to recycle.
+                 * Keep EVERY extent reserved in that case: later debugger
+                 * cleanup must never restore bytes into reused memory. */
+                *stage = 13; *error = KERN_ABORTED;
+                jit_log("[jit-placement-v1] prepare cleanup=unconfirmed action=quarantined");
+                goto failed;
+            }
+            prepare_mode = pool.rx + size <= UINT64_C(0x1000000000) ? "native-batched" : "wide-serial";
+            /* MJP2 uses an otherwise invalid low address bit as a result
+             * tag, never as a pointer. Only a new script may report that
+             * every owned software breakpoint was installed AND cleared.
+             * The final address, all object receipts, W^X and actual page
+             * execution remain independently validated below. */
+            if (debugger_capability == JIT_REQUIRED_CAPABILITY && prepared == (pool.rx | UINT64_C(1))) {
+                prepared = pool.rx;
+                pool.prepare_marker = 0;
+                prepare_mode = "wide-breakpoint-batched";
+            }
             clock_ok = (clock_gettime(CLOCK_MONOTONIC, &end_time) == 0) && clock_ok;
             if (clock_ok && (end_time.tv_sec > begin_time.tv_sec ||
                             (end_time.tv_sec == begin_time.tv_sec && end_time.tv_nsec >= begin_time.tv_nsec))) {
@@ -1840,7 +1877,7 @@ bool jit_required_pool_create(uint64_t size, uint64_t exe_base, uint64_t exe_siz
                 elapsed = (uint64_t)nanoseconds / 1000000;
             } else clock_ok = 0;
             jit_log("[jit-placement-v1] prepare mode=%s pages=%llu elapsed-ms=%llu clock=%s result=%s",
-                    pool.rx + size <= UINT64_C(0x1000000000) ? "native-batched" : "wide-serial",
+                    prepare_mode,
                     (unsigned long long)(size / JIT_REQUIRED_PAGE), (unsigned long long)elapsed,
                     clock_ok ? "monotonic" : "unavailable",
                     prepared == pool.rx ? "accepted" : "failed");
