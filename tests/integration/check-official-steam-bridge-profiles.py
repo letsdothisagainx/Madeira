@@ -56,7 +56,7 @@ with tempfile.TemporaryDirectory(prefix='madeira-official-bridge-profiles-') as 
         (baseline/name).write_bytes(content)
     install=ROOT/'build/htmlipc/stream-install'
     for label,directory,defines in [('baseline',baseline,['-DMADEIRA_BASELINE_PROFILE=1']),('corrected',install,[])]:
-        binary=temporary/label
+        binary=temporary/(label+'-fixture')
         subprocess.run([os.environ.get('CXX','c++'),'-std=c++20','-O1','-g','-D_WIN64=1',*defines,
             '-fsanitize=address,undefined','-fno-omit-frame-pointer','-fno-pie','-no-pie',
             '-I'+str(directory),'-I'+str(install),str(directory/'installer.cpp'),

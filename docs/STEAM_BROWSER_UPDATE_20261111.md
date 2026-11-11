@@ -36,6 +36,12 @@ and read-only sections, and moved stream/controller coordinates. This is not
 merely re-signing. A hash-only refresh, an unconditional Ready flag or a section
 fabricated on Steam's behalf would be incorrect.
 
+FEX's existing `ComputeCodeMapId` uses the lowercased module name, PE timestamp
+and image size. Those independently read current PE fields produce
+`da1f62aa54b87135`, exactly the captured `chromehtml.dll` module ID; the old fields
+produce `da1f72aa5493109d`. This identifies the captured header version without
+pretending to have measured a complete on-device file hash.
+
 ## Production correction
 
 The installer selects a complete immutable compatibility profile by bounded
