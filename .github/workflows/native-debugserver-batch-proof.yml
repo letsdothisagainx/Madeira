@@ -1,0 +1,24 @@
+name: Verify real Apple debugserver sparse preparation batches
+on:
+  push:
+    branches: [codex/native-debugserver-batch-20261111]
+    paths:
+      - tests/host/check-jit-debugserver-batch.py
+      - .github/workflows/native-debugserver-batch-proof.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native-debugserver:
+    runs-on: xcode-27
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - name: Execute genuine debugserver against owned RX child
+        env:
+          CC: clang
+        run: |
+          shasum -a 256 tests/host/check-jit-debugserver-batch.py
+          xcrun --find debugserver
+          clang --version
+          python3 -u tests/host/check-jit-debugserver-batch.py --require-debugserver
