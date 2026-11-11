@@ -213,7 +213,7 @@ def census_summary(value):
             for name, rows in value.items()}
 
 
-def run_test(debugserver):
+def run_test(debugserver, order):
     with tempfile.TemporaryDirectory(prefix='madeira-real-debugserver-') as directory:
         root = Path(directory)
         source, binary = root / 'owned.c', root / 'owned'
@@ -268,30 +268,39 @@ def run_test(debugserver):
             print('REAL_DEBUGSERVER features=' + features, flush=True)
             print('REAL_DEBUGSERVER before=' + json.dumps(census_summary(info['before']), separators=(',', ':')), flush=True)
 
-            serial_start = time.monotonic()
-            count = remote.commands
-            for page in range(PAGES):
-                assert remote.request(f'M{info["serial"] + page * PAGE:x},1:69') == 'OK'
-            serial_elapsed, serial_calls = time.monotonic() - serial_start, remote.commands - count
+            def measure_serial():
+                start = time.monotonic()
+                count = remote.commands
+                for page in range(PAGES):
+                    assert remote.request(f'M{info["serial"] + page * PAGE:x},1:69') == 'OK'
+                return time.monotonic() - start, remote.commands - count
 
-            batch_start = time.monotonic()
-            count = remote.commands
-            page = 0
-            while page < PAGES:
-                requests = []
-                while page < PAGES and len(requests) < 256:
-                    address = info['batch'] + page * PAGE
-                    extra = [f'Z0,{address:x},4', f'z0,{address:x},4']
-                    candidate = 'jMultiBreakpoint:' + json.dumps({'breakpoint_requests': requests + extra}, separators=(',', ':'))
-                    if len(candidate) > maximum:
-                        break
-                    requests.extend(extra)
-                    page += 1
-                assert requests, 'advertised packet capacity cannot hold one breakpoint pair'
-                command = 'jMultiBreakpoint:' + json.dumps({'breakpoint_requests': requests}, separators=(',', ':'))
-                reply = json.loads(remote.request(command))
-                assert isinstance(reply, dict) and reply.get('results') == ['OK'] * len(requests), reply
-            batch_elapsed, batch_calls = time.monotonic() - batch_start, remote.commands - count
+            def measure_batch():
+                start = time.monotonic()
+                count = remote.commands
+                page = 0
+                while page < PAGES:
+                    requests = []
+                    while page < PAGES and len(requests) < 256:
+                        address = info['batch'] + page * PAGE
+                        extra = [f'Z0,{address:x},4', f'z0,{address:x},4']
+                        candidate = 'jMultiBreakpoint:' + json.dumps({'breakpoint_requests': requests + extra}, separators=(',', ':'))
+                        if len(candidate) > maximum:
+                            break
+                        requests.extend(extra)
+                        page += 1
+                    assert requests, 'advertised packet capacity cannot hold one breakpoint pair'
+                    command = 'jMultiBreakpoint:' + json.dumps({'breakpoint_requests': requests}, separators=(',', ':'))
+                    reply = json.loads(remote.request(command))
+                    assert isinstance(reply, dict) and reply.get('results') == ['OK'] * len(requests), reply
+                return time.monotonic() - start, remote.commands - count
+
+            if order == 'serial-first':
+                serial_elapsed, serial_calls = measure_serial()
+                batch_elapsed, batch_calls = measure_batch()
+            else:
+                batch_elapsed, batch_calls = measure_batch()
+                serial_elapsed, serial_calls = measure_serial()
             reply = remote.request('c', stop=True)
             assert reply.startswith('W00'), 'owned byte-integrity child failed: ' + reply
             assert result.exists(), 'owned child did not report direct memory checks'
@@ -299,6 +308,7 @@ def run_test(debugserver):
             assert outcome['failures'] == 0, outcome
             print('REAL_DEBUGSERVER after=' + json.dumps(census_summary(outcome['after']), separators=(',', ':')), flush=True)
             print(json.dumps({'scope': 'actual Apple debugserver; owned 16MiB RX mapping; host transport timing only',
+                              'order': order,
                               'pages': PAGES, 'serialM': {'commands': serial_calls, 'milliseconds': round(serial_elapsed * 1000, 3)},
                               'pairedBreakpointBatch': {'commands': batch_calls, 'milliseconds': round(batch_elapsed * 1000, 3)},
                               'directInferiorByteFailures': 0, 'iosCSM': 'unmeasured', 'iphoneStartup': 'unmeasured'}, sort_keys=True), flush=True)
@@ -348,7 +358,11 @@ def main():
             raise SystemExit('FAIL real debugserver required: ' + reason)
         print('UNMEASURED real debugserver: ' + reason)
         return
-    run_test(tool)
+    # Fresh child/backing for both orders: do not present one cold-then-warm
+    # ordering as a reliable performance result. Operation counts are exact;
+    # timings remain host samples, never an iPhone startup extrapolation.
+    run_test(tool, 'serial-first')
+    run_test(tool, 'batch-first')
 
 
 if __name__ == '__main__':
