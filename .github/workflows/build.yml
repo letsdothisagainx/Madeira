@@ -373,6 +373,19 @@ jobs:
           build/wine-i386/build.sh
       - name: Build IPA
         run: tools/build-ipa.sh
+      - name: Retain compiled security evidence on build failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-compiler-evidence
+          path: |
+            wine/build-*/dlls/crypt32/*-windows/encode.o
+            wine/build-*/dlls/crypt32/*-windows/msg.o
+            wine/build-*/dlls/kernelbase/*-windows/debug.o
+            app/Madeira/*-windows/crypt32.dll
+            app/Madeira/*-windows/kernelbase.dll
+          if-no-files-found: warn
+          retention-days: 3
       - uses: actions/cache/save@v4
         with:
           key: ${{ needs.plan.outputs.ipa }}

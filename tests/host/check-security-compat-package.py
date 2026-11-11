@@ -53,6 +53,15 @@ def object_bytes(farm, name, reference=None, big=False):
             struct.pack_into('<I', body, 8, 0x94000000)
     relocs = struct.pack('<IIH', 8, 1, 0x14 if machine == 0x14c else 3) if reference else b''
     symbols = [(name, 0, 1, 0x20)] + ([(reference, 0, 0, 0)] if reference else [])
+    if reference and farm == 'arm64ec-windows':
+        # Real clang ARM64EC also emits a shorter exit thunk. Its ADRP/ADD
+        # references address the undecorated helper; they are not the call in
+        # the real verifier. The previous shortest-reference search selected
+        # this thunk and rejected a correctly compiled DLL.
+        start = len(body)
+        body += struct.pack('<IIII', 0x9000000b, 0x9100016b, 0xd61f0200, 0xd65f03c0)
+        relocs += struct.pack('<IIH', start, 1, 4) + struct.pack('<IIH', start + 4, 1, 6)
+        symbols += [('#' + reference + '$exit_thunk', start, 1, 0x20)]
     code_start = 96 if big else 60
     offset = code_start + len(body) + len(relocs)
     if big:
@@ -65,7 +74,7 @@ def object_bytes(farm, name, reference=None, big=False):
     section = bytearray(40)
     section[:5] = b'.text'
     struct.pack_into('<III', section, 16, len(body), code_start, code_start + len(body) if reference else 0)
-    struct.pack_into('<H', section, 32, bool(reference))
+    struct.pack_into('<H', section, 32, len(relocs) // 10)
     struct.pack_into('<I', section, 36, 0x60000020)
     return header + section + body + relocs + symbol_table(symbols, big)
 
@@ -194,6 +203,18 @@ with tempfile.TemporaryDirectory(prefix='madeira-security-package-valid-') as tm
     stage, source, repo, app, archive = setup(tmp)
     proof = check(stage, source, repo, app, archive, objects=source)
     assert len(proof['dlls']) == 6 and len(proof['compiled']) == 3
+    ec = CHECKER.Code(object_path(source, 'msg.o', 'arm64ec-windows').read_bytes())
+    assert ec.caller(CHECKER.HELPER)['name'] == CALLER
+    # Establish the actual old selection failure instead of making the
+    # compiler-created thunk disappear from the regression fixture.
+    old_choice = min(ec.functions, key=lambda fn: (fn['length'], fn['name']))
+    assert old_choice['name'].endswith('$exit_thunk')
+    try:
+        ec.calls(old_choice, CHECKER.HELPER)
+    except ValueError as error:
+        assert 'machine=0xa641 kind=0x4' in str(error)
+    else:
+        raise AssertionError('address-loading exit thunk was accepted as a verifier call')
     check(stage, source, repo, app, archive)  # Artifact-only consumer need not possess build objects.
 
 with tempfile.TemporaryDirectory(prefix='madeira-security-package-bigobj-') as tmp:
@@ -223,6 +244,8 @@ for farm in CHECKER.FARMS:
 
 reject('removed actual verifier helper reference', lambda stage, source, *_:
        change(object_path(source, 'msg.o'), 60 + 48 + 4, struct.pack('<I', 0)), writing=True)
+reject('ARM64EC exit-thunk address references cannot replace the real verifier call', lambda stage, source, *_:
+       change(object_path(source, 'msg.o', 'arm64ec-windows'), 60 + 64 + 4, struct.pack('<I', 0)), writing=True)
 reject('linked relocation points at the old verifier instead of corrected helper', lambda stage, *_:
        change(stage / 'aarch64-windows/crypt32.dll', 0x488, struct.pack('<I', 0x94000000)), writing=True)
 reject('missing helper symbol', lambda stage, *_:

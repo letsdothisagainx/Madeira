@@ -141,14 +141,24 @@ class Code:
         return self.data[start:start + fn['length']]
 
     def caller(self, name):
-        found = []
+        found, references = [], []
         for index, section in enumerate(self.sections):
             for address, symbol, kind in section['relocs']:
                 if kind and canonical(self.symbols.get(symbol, '')) == canonical(name):
+                    references.append((index, address, kind, self.symbols.get(symbol, '')))
+                    # ARM64EC also emits a helper$exit_thunk containing ADRP /
+                    # ADD address references to the undecorated helper. Those
+                    # are not calls from the message verifier. Select the
+                    # actual compiler call relocation, then verify its final
+                    # linked instruction and destination below.
+                    call_kind = 0x14 if self.machine == 0x14c else 3
+                    if kind != call_kind:
+                        continue
                     candidates = [fn for fn in self.functions if fn['section'] == index and fn['start'] <= address < fn['start'] + fn['length']]
                     assert candidates, 'new verifier call is not in a real emitted code function'
                     found.append(max(candidates, key=lambda fn: fn['start']))
-        assert found, 'compiled message verifier does not reference unsorted-attribute encoder'
+        assert found, ('compiled message verifier has no direct unsorted-attribute encoder call: '
+                       f'machine={self.machine:#06x} references={references!r}')
         # The static updater may be inlined into its real decode caller.
         return min(found, key=lambda fn: (fn['length'], fn['name']))
 
@@ -181,7 +191,9 @@ class Code:
                 elif self.machine in (0xaa64, 0xa641) and kind == 3:
                     result.append(['arm64-branch26', address - fn['start']])
                 else:
-                    raise ValueError('unexpected relocation for direct attribute-encoder call')
+                    raise ValueError('unexpected relocation for direct attribute-encoder call: '
+                                     f'machine={self.machine:#06x} kind={kind:#x} symbol={self.symbols.get(symbol)!r} '
+                                     f'function={fn["name"]!r} section={fn["section"]} offset={address - fn["start"]:#x}')
         assert result, 'actual verifier helper call is missing'
         return result
 
