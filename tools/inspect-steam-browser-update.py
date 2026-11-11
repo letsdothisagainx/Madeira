@@ -14,6 +14,7 @@ import struct
 import tempfile
 import urllib.request
 import zipfile
+from collections import deque
 
 ORIGIN = 'https://client-update.akamai.steamstatic.com/'
 OLD = ('bins_win64.zip.1f91da2609327de9658146b01307e89a13cc1ef8', 64309479,
@@ -122,6 +123,28 @@ class PE:
                 return names
             names.append(self.string(struct.unpack_from('<I', row, 12)[0]))
         raise ValueError('unterminated/excessive PE imports')
+
+    def import_slots(self):
+        if len(self.directories) < 2 or not self.directories[1][0]:
+            return {}
+        rva, size = self.directories[1]
+        slots = {}
+        width = self.bits // 8
+        for index in range(min(size // 20, 512)):
+            row = self.at(rva + index * 20, 20)
+            if not any(row):
+                return slots
+            original, _, _, name, first = struct.unpack('<IIIII', row)
+            dll = self.string(name).lower()
+            for item in range(8192):
+                value = int.from_bytes(self.at((original or first) + item * width, width), 'little')
+                if not value:
+                    break
+                function = '#' + str(value & 0xffff) if value & (1 << (self.bits - 1)) else self.string(value + 2)
+                slots[first + item * width] = dll + '!' + function
+            else:
+                raise ValueError('unterminated import thunk list')
+        raise ValueError('unterminated import directory')
 
     def exports(self):
         if not self.directories or not self.directories[0][0]:
@@ -236,21 +259,51 @@ def rtti_tables(image, type_name, slots):
 
 
 def disassemble_function(image, address, known):
-    from capstone import Cs, CS_ARCH_X86, CS_MODE_64, CS_GRP_CALL, CS_GRP_JUMP
+    from capstone import Cs, CS_ARCH_X86, CS_MODE_64, CS_GRP_CALL, CS_GRP_JUMP, CS_GRP_RET
     from capstone.x86_const import X86_OP_IMM, X86_OP_MEM, X86_REG_RIP
     ranges = image.function_ranges()
     candidates = [item for item in ranges if item[0] == address]
-    if len(candidates) != 1:
-        return {'rva': hex(address), 'error': 'no unique complete unwind range; no equivalence claimed'}
-    start, end, unwind = candidates[0]
-    require(end - start <= 16384, 'inspected method exceeds bound')
+    require(len(candidates) <= 1, 'ambiguous unwind entry')
+    start = address
+    unwind = candidates[0][2] if candidates else None
     engine = Cs(CS_ARCH_X86, CS_MODE_64)
     engine.detail = True
+    imports = image.import_slots()
+    known = {**known, **imports}
+    pending, decoded, indirect_exits, tail_exits = [start], {}, [], []
+    while pending:
+        pc = pending.pop()
+        if pc in decoded:
+            continue
+        if pc != start and known.get(pc, '').startswith('stream-slot-'):
+            tail_exits.append({'rva': hex(pc), 'target': known[pc]})
+            continue
+        require(len(decoded) < 4096 and abs(pc - start) < 256 << 10, 'method CFG exceeds bound')
+        section = image.section_for(pc)
+        require(section and section['flags'] & 0x20000000, 'method CFG leaves executable image bytes')
+        maximum = min(15, section['rva'] + section['bytes'] - pc)
+        require(maximum > 0, 'method instruction is not file backed')
+        instruction = next(engine.disasm(image.at(pc, maximum), pc, count=1), None)
+        require(instruction is not None and instruction.mnemonic not in ('int3', 'ud2'), 'method CFG undecoded/trap instruction')
+        decoded[pc] = instruction
+        if instruction.group(CS_GRP_RET):
+            continue
+        if instruction.group(CS_GRP_JUMP):
+            if len(instruction.operands) == 1 and instruction.operands[0].type == X86_OP_IMM:
+                pending.append(instruction.operands[0].imm)
+            else:
+                indirect_exits.append(hex(pc))
+            if instruction.mnemonic != 'jmp':
+                pending.append(pc + instruction.size)
+        else:
+            pending.append(pc + instruction.size)
+    end = max(pc + item.size for pc, item in decoded.items())
+    node_index = {pc: index for index, pc in enumerate(sorted(decoded))}
     instructions, shape = [], []
 
     def target_name(target):
-        if start <= target < end:
-            return {'kind': 'local', 'offset': hex(target - start)}
+        if target in decoded:
+            return {'kind': 'local', 'offset': hex(target - start), 'instruction_index': node_index[target]}
         if target in known:
             return {'kind': 'named-target', 'name': known[target], 'rva': hex(target)}
         section = image.section_for(target)
@@ -265,8 +318,9 @@ def disassemble_function(image, address, known):
                     result['bytes_32'] = None
         return result
 
-    consumed = 0
-    for instruction in engine.disasm(image.at(start, end - start), start):
+    code_bytes = bytearray()
+    for pc in sorted(decoded):
+        instruction = decoded[pc]
         references = []
         normalized = bytearray(instruction.bytes)
         for operand in instruction.operands:
@@ -280,10 +334,13 @@ def disassemble_function(image, address, known):
                              'instruction': instruction.mnemonic + ' ' + instruction.op_str,
                              'references': references})
         shape.append(normalized.hex())
-        consumed += instruction.size
-    require(consumed == end - start, 'instruction decode did not cover complete unwind body')
-    return {'rva': hex(start), 'end_rva': hex(end), 'unwind_rva': hex(unwind),
-            'code_sha256': hashlib.sha256(image.at(start, end - start)).hexdigest(),
+        code_bytes.extend(instruction.bytes)
+    return {'rva': hex(start), 'end_rva': hex(end), 'unwind_rva': hex(unwind) if unwind is not None else None,
+            'initial_unwind_end_rva': hex(candidates[0][1]) if candidates else None,
+            'scope': 'All statically reachable instructions from entry; conditional/direct jumps followed across unwind fragments, calls resolved but not inlined.',
+            'indirect_exits': indirect_exits, 'other_stream_method_tail_exits': tail_exits,
+            'control_flow_statically_closed': not indirect_exits,
+            'code_sha256': hashlib.sha256(code_bytes).hexdigest(),
             'relative_encoding_shape_sha256': hashlib.sha256(''.join(shape).encode()).hexdigest(),
             'shape_scope': 'PC-relative encodings zeroed only; compare every resolved target separately. Shape equality is not semantic equivalence.',
             'instructions': instructions}
@@ -302,13 +359,102 @@ def native_profile(image):
     exports = image.exports()
     for name, rva in exports.items():
         known[rva] = 'export-' + name
+    registry = interface_registry(image, 'ChromeHTML_Controller_003')
+    for entry in registry:
+        if entry.get('returned_object_rva'):
+            known[int(entry['returned_object_rva'], 16)] = 'controller-global-object'
     methods = []
     if len(stream) == 1:
         methods = [disassemble_function(image, int(method, 16), known) for method in stream[0]['methods']]
     type_names = [match.group().decode('ascii') for match in re.finditer(rb'\.\?AV[A-Za-z0-9_?$@]*HTML[A-Za-z0-9_?$@]*@@', image.data)]
     return {'stream_tables': stream, 'controller_tables': controller, 'stream_complete_methods': methods,
-            'related_type_names': sorted(set(type_names))[:32], 'exports': {key: hex(value) for key, value in exports.items() if key == 'CreateInterface'},
+            'related_type_names': sorted(set(type_names))[:32], 'interface_registry_candidates': registry,
+            'exports': {key: hex(value) for key, value in exports.items() if key == 'CreateInterface'},
             'factory': disassemble_function(image, exports['CreateInterface'], known) if 'CreateInterface' in exports else None}
+
+
+def interface_registry(image, interface_name):
+    from capstone import Cs, CS_ARCH_X86, CS_MODE_64
+    from capstone.x86_const import X86_OP_REG, X86_OP_MEM, X86_REG_RAX, X86_REG_RIP, X86_REG_R8, X86_REG_RDX, X86_REG_RCX
+    engine = Cs(CS_ARCH_X86, CS_MODE_64)
+    engine.detail = True
+    found = []
+    for name in occurrences(image, interface_name.encode('ascii') + b'\0'):
+        string_rva = int(name['rva'], 16)
+        for reference in occurrences(image, struct.pack('<Q', image.base + string_rva), limit=32):
+            at = int(reference['rva'], 16)
+            if at % 8:
+                continue
+            try:
+                function, pointer, next_pointer = struct.unpack('<QQQ', image.at(at - 8, 24))
+                address = function - image.base
+                section = image.section_for(address)
+                if not section or not section['flags'] & 0x20000000:
+                    continue
+                if next_pointer and not image.section_for(next_pointer - image.base):
+                    continue
+                code = []
+                for instruction in engine.disasm(image.at(address, 64), address):
+                    code.append(instruction)
+                    if instruction.mnemonic in ('ret', 'jmp'):
+                        break
+                entry = {'node_rva': hex(at - 8), 'name_rva': hex(string_rva),
+                         'callback_rva': hex(address), 'initial_next_pointer': hex(next_pointer),
+                         'callback_instructions': [{'rva': hex(i.address), 'bytes': i.bytes.hex(), 'instruction': i.mnemonic + ' ' + i.op_str} for i in code]}
+                # Accept the object identity only from the complete ordinary
+                # two-instruction factory leaf, never by proximity or a guess.
+                if len(code) == 2 and code[0].mnemonic == 'lea' and code[1].mnemonic == 'ret':
+                    operands = code[0].operands
+                    if len(operands) == 2 and operands[0].type == X86_OP_REG and operands[0].reg == X86_REG_RAX and operands[1].type == X86_OP_MEM and operands[1].mem.base == X86_REG_RIP:
+                        object_rva = code[0].address + code[0].size + operands[1].mem.disp
+                        target = image.section_for(object_rva)
+                        if target and target['flags'] & 0x80000000 and not target['flags'] & 0x20000000:
+                            entry['returned_object_rva'] = hex(object_rva)
+                found.append(entry)
+            except ValueError:
+                continue
+    # Valve also initializes InterfaceReg in an ordinary static constructor:
+    # lea r8,[name]; lea rdx,[factory]; lea rcx,[node]; jmp Register. The node
+    # may live in BSS, so looking only for initialized disk pointers misses it.
+    wanted = {int(item['rva'], 16) for item in occurrences(image, interface_name.encode('ascii') + b'\0')}
+    for section in image.sections:
+        if not section['flags'] & 0x20000000:
+            continue
+        history = deque(maxlen=4)
+        for instruction in engine.disasm(image.at(section['rva'], section['bytes']), section['rva']):
+            history.append(instruction)
+            if len(history) != 4 or instruction.mnemonic not in ('jmp', 'call'):
+                continue
+            values = {}
+            for item in list(history)[:3]:
+                operands = item.operands
+                if item.mnemonic != 'lea' or len(operands) != 2 or operands[0].type != X86_OP_REG or operands[1].type != X86_OP_MEM or operands[1].mem.base != X86_REG_RIP:
+                    break
+                values[operands[0].reg] = item.address + item.size + operands[1].mem.disp
+            if set(values) != {X86_REG_R8, X86_REG_RDX, X86_REG_RCX} or values[X86_REG_R8] not in wanted:
+                continue
+            address, node = values[X86_REG_RDX], values[X86_REG_RCX]
+            target, node_section = image.section_for(address), image.section_for(node)
+            if not target or not target['flags'] & 0x20000000 or not node_section or not node_section['flags'] & 0x80000000:
+                continue
+            callback = []
+            for item in engine.disasm(image.at(address, 64), address):
+                callback.append(item)
+                if item.mnemonic in ('ret', 'jmp'):
+                    break
+            entry = {'node_rva': hex(node), 'name_rva': hex(values[X86_REG_R8]), 'callback_rva': hex(address),
+                     'source': 'validated-register-arguments-in-static-initializer',
+                     'initializer': [{'rva': hex(i.address), 'bytes': i.bytes.hex(), 'instruction': i.mnemonic + ' ' + i.op_str} for i in history],
+                     'callback_instructions': [{'rva': hex(i.address), 'bytes': i.bytes.hex(), 'instruction': i.mnemonic + ' ' + i.op_str} for i in callback]}
+            if len(callback) == 2 and callback[0].mnemonic == 'lea' and callback[1].mnemonic == 'ret':
+                operands = callback[0].operands
+                if len(operands) == 2 and operands[0].type == X86_OP_REG and operands[0].reg == X86_REG_RAX and operands[1].type == X86_OP_MEM and operands[1].mem.base == X86_REG_RIP:
+                    object_rva = callback[0].address + callback[0].size + operands[1].mem.disp
+                    object_section = image.section_for(object_rva)
+                    if object_section and object_section['flags'] & 0x80000000 and not object_section['flags'] & 0x20000000:
+                        entry['returned_object_rva'] = hex(object_rva)
+            found.append(entry)
+    return found
 
 
 def varint(data, at):
