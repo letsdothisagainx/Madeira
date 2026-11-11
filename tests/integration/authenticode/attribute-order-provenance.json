@@ -1,0 +1,22 @@
+{
+  "format": 1,
+  "upstream": {
+    "commit": "840a939ee526137639665ff5f587224d6a36403f",
+    "source": "https://github.com/wine-mirror/wine/commit/840a939ee526137639665ff5f587224d6a36403f",
+    "path": "dlls/crypt32/tests/msg.c",
+    "array": "msgWithUnsortedAuthAttrs",
+    "bytes": 1426,
+    "sha256": "94d3d22e68bbe17bfc531918eaa62b8427ec09ea76e2d5f446fb7c228722dae1",
+    "purpose": "valid RSA/SHA256 SignedData with noncanonical authenticated-attribute order; upstream throwaway key"
+  },
+  "canonical": {
+    "array": "madeiraCanonicalSignedAttrs",
+    "bytes": 1414,
+    "sha256": "8b5712911cc4af8d6b0dc287695ca449b796e1175a18b11a4b3c71741386f3b6",
+    "producer": "OpenSSL 3.5.7 9 Jun 2026 (Library: OpenSSL 3.5.7 9 Jun 2026)",
+    "certificateSubject": "CN=Madeira Attribute Order Test",
+    "generation": "openssl req -new -x509 -newkey rsa:2048 -nodes -subj /CN=Madeira Attribute Order Test -days 3650; openssl cms -sign -binary -nodetach -md sha256 -nosmimecap -signer cert.pem -inkey ephemeral-key.pem -in content.txt -outform DER",
+    "privateKey": "discarded; not included"
+  },
+  "scope": "Signature math and API conformance only; self-signed test certificates are not imported into any trust store and are not Valve content or a VAC verdict."
+}

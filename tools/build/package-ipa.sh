@@ -148,6 +148,9 @@ python3 "$ROOT/tools/check-system-programs.py" \
 python3 "$ROOT/tools/check-trust-diagnostics-package.py" \
   --root "$ROOT/app/Madeira" --source-root "$ROOT/wine" --repo-root "$ROOT" \
   --app "$APP" --ipa "$DIST/Madeira.ipa"
+python3 "$ROOT/tools/check-security-compat-package.py" \
+  --root "$ROOT/app/Madeira" --source-root "$ROOT/wine" --repo-root "$ROOT" \
+  --app "$APP" --ipa "$DIST/Madeira.ipa"
 
 python3 "$ROOT/tools/check-htmlipc-image.py" \
   --staged "$ROOT/app/Madeira/arm64ec-windows/madeira-htmlipc-bridge.dll" \

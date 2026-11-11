@@ -1,0 +1,21 @@
+--- a/dlls/kernelbase/debug.c
++++ b/dlls/kernelbase/debug.c
+@@ -1365,11 +1365,17 @@
+                                              mem, sizeof(buffer), NULL )))
+         return 0;
+ 
++    if (!size)
++    {
++        SetLastError( ERROR_INSUFFICIENT_BUFFER );
++        return 0;
++    }
++
+     len = mem->SectionFileName.Length / sizeof(WCHAR);
+     memcpy( name, mem->SectionFileName.Buffer, min( mem->SectionFileName.Length, size * sizeof(WCHAR) ));
+     if (len >= size) SetLastError( ERROR_INSUFFICIENT_BUFFER );
+     name[min(len, size - 1)] = 0;
+-    return len;
++    return min( len, size );
+ }
+ 
+ 

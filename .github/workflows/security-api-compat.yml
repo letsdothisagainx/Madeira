@@ -1,0 +1,52 @@
+name: Verify Windows signature and mapped-filename API compatibility
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'codex/pr-build-*']
+    paths:
+      - build/wine-pe/crypt32-authattrs-*
+      - build/wine-pe/mapped-filename-contract.patch
+      - build/wine-pe/build-security-compat.sh
+      - tools/build/stage-crypt32-authattrs.py
+      - tools/build/stage-mapped-filename-contract.py
+      - tools/check-security-compat-package.py
+      - tests/host/check-authenticode-attribute-order.py
+      - tests/host/check-mapped-filename-contract.py
+      - tests/host/check-security-compat-package.py
+      - tests/host/check-security-compat-build.py
+      - tests/integration/authenticode/**
+      - .github/workflows/security-api-compat.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-api-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  production-functions:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Load pinned Wine source
+        run: git submodule update --init --depth 1 wine
+      - name: Verify real Wine hash-input and filename functions
+        run: |
+          python3 tests/host/check-authenticode-attribute-order.py
+          python3 tests/host/check-mapped-filename-contract.py
+          python3 tests/host/check-security-compat-package.py
+          python3 tests/host/check-security-compat-build.py
+
+  windows-contract:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Execute ordinary SignedData conformance on real Windows
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do call "%%i\VC\Auxiliary\Build\vcvars64.bat"
+          cl /nologo /std:c11 /O2 /W4 tests\integration\authenticode\attribute-order.c /Fe:attribute-order.exe crypt32.lib
+          if errorlevel 1 exit /b %errorlevel%
+          attribute-order.exe

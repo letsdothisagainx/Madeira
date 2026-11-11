@@ -1,0 +1,22 @@
+{
+  "format": 1,
+  "upstreamCommit": "a358d7ecf13b420d7fa65d54fcad1f96003d7a48",
+  "upstreamTestCommit": "840a939ee526137639665ff5f587224d6a36403f",
+  "upstreamURL": "https://github.com/wine-mirror/wine/commit/a358d7ecf13b420d7fa65d54fcad1f96003d7a48",
+  "adaptation": "Private header insertion context only; encoder and verify-path source changes are upstream verbatim.",
+  "patchSHA256": "5b75695039f117a1f900125727ade315e0f6ce349e64c7eb71b7250630908868",
+  "files": {
+    "dlls/crypt32/crypt32_private.h": {
+      "beforeSHA256": "57902e969cfc80b6616d4ff7c1665f1c1fa3ee0b76cb5a9fa53264c8ccb7bd57",
+      "afterSHA256": "1c1177a0e3ea96d312e3b2b18ef1b530bd4f1fedba2ab677b315749e2e3a017b"
+    },
+    "dlls/crypt32/encode.c": {
+      "beforeSHA256": "e07ca8b11cd1a93ec5af664706f6e1f56bcce06e27d228c18a4c47f81e5141ba",
+      "afterSHA256": "b736b05d134e236260a1a9e58b7e1a05c7d5006d6ecf5c3eae2353d1d832a77c"
+    },
+    "dlls/crypt32/msg.c": {
+      "beforeSHA256": "9b7797c39fccbc24563ff1cf100d090f22804043af05a3459eb6c720fed45968",
+      "afterSHA256": "89c24b49dc458cae7610b195ec36f0f2796a462a04284975368227a2f83572ca"
+    }
+  }
+}

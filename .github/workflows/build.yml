@@ -235,6 +235,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+      - name: Ensure real cryptographic regression provider
+        run: brew list openssl@3 >/dev/null 2>&1 || brew install openssl@3
       - name: Check embedded signal ownership and Dock packaging
         run: python3 tests/host/run-embedded-checks.py
       - id: sdk
@@ -336,7 +338,7 @@ jobs:
             app/Madeira/legal/LICENSES-rppairing-crates.txt
       - uses: actions/cache@v4
         with:
-          key: plan19-${{ steps.sdk.outputs.key }}-wine-host-${{ steps.pins.outputs.wine }}-${{ hashFiles('tools/build/build-wine.sh', 'tools/build/setup-llvm-mingw.sh', 'build/wine-pe/**', 'tools/build/stage-process-lookup.py', 'tools/build/stage-trust-diagnostics.py', 'tools/check-system-programs.py', 'tools/check-trust-diagnostics-*.py') }}
+          key: plan19-${{ steps.sdk.outputs.key }}-wine-host-${{ steps.pins.outputs.wine }}-${{ hashFiles('tools/build/build-wine.sh', 'tools/build/setup-llvm-mingw.sh', 'build/wine-pe/**', 'tools/build/stage-process-lookup.py', 'tools/build/stage-trust-diagnostics.py', 'tools/build/stage-crypt32-authattrs.py', 'tools/build/stage-mapped-filename-contract.py', 'tools/check-security-compat-package.py', 'tools/check-system-programs.py', 'tools/check-trust-diagnostics-*.py') }}
           path: |
             wine/build-macos
             wine/build-arm64ec
@@ -400,6 +402,8 @@ jobs:
           python3 tools/check-scm-rpc-image.py "$farm/sechost.dll" "$farm/ntdll.dll"
           "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-scm-rpc-abi.py --producer "$farm/sechost.dll" --runtime "$farm/rpcrt4.dll"
           git submodule update --init --depth 1 wine
+          unzip -oq scm-ipa/Madeira.ipa 'Payload/Madeira.app/*-windows/crypt32.dll' 'Payload/Madeira.app/*-windows/kernelbase.dll' 'Payload/Madeira.app/arm64ec-windows/madeira-security-compat.json' -d scm-ipa
+          python3 tools/check-security-compat-package.py --root scm-ipa/Payload/Madeira.app --source-root wine --repo-root "$GITHUB_WORKSPACE" --ipa scm-ipa/Madeira.ipa
           "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-x18-loads.py --emulate
           "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-fex-native-callback.py --emulate
           unzip -q scm-ipa/Madeira.ipa 'Payload/Madeira.app/i386-windows/madeira-wow64-*' 'Payload/Madeira.app/Madeira.debug.dylib' -d scm-ipa
