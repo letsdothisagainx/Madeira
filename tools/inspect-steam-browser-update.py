@@ -123,6 +123,35 @@ class PE:
             names.append(self.string(struct.unpack_from('<I', row, 12)[0]))
         raise ValueError('unterminated/excessive PE imports')
 
+    def exports(self):
+        if not self.directories or not self.directories[0][0]:
+            return {}
+        row = self.at(self.directories[0][0], 40)
+        functions, names, functions_rva, names_rva, ordinals_rva = struct.unpack_from('<IIIII', row, 20)
+        require(functions <= 4096 and names <= 4096, 'export count bound')
+        result = {}
+        for index in range(names):
+            name = self.string(struct.unpack('<I', self.at(names_rva + index * 4, 4))[0])
+            ordinal = struct.unpack('<H', self.at(ordinals_rva + index * 2, 2))[0]
+            require(ordinal < functions, 'invalid export ordinal')
+            result[name] = struct.unpack('<I', self.at(functions_rva + ordinal * 4, 4))[0]
+        return result
+
+    def function_ranges(self):
+        if len(self.directories) < 4 or not self.directories[3][0] or self.bits != 64:
+            return []
+        rva, size = self.directories[3]
+        require(size <= 8 << 20 and size % 12 == 0, 'invalid exception directory')
+        result = []
+        for offset in range(0, size, 12):
+            start, end, unwind = struct.unpack('<III', self.at(rva + offset, 12))
+            require(0 < start < end <= self.image_size, 'invalid unwind function range')
+            result.append((start, end, unwind))
+        return result
+
+    def section_for(self, rva):
+        return next((s for s in self.sections if s['rva'] <= rva < s['rva'] + max(s['bytes'], s['virtual'])), None)
+
     def describe(self):
         certificate_offset, certificate_bytes = self.directories[4] if len(self.directories) > 4 else (0, 0)
         certificate_at_eof = bool(certificate_offset and certificate_bytes and certificate_offset % 8 == 0 and
@@ -166,6 +195,203 @@ def occurrences(image, needle, limit=16):
         found.append({'file_offset': hex(offset), 'rva': hex(image.rva_of(offset)) if image.rva_of(offset) is not None else None})
         start = offset + 1
     return found
+
+
+def rtti_tables(image, type_name, slots):
+    """Derive MSVC x64 COL/vftable identities from real relocated-image RVAs."""
+    require(image.bits == 64, 'RTTI inspector requires x64 image')
+    names = occurrences(image, type_name.encode('ascii') + b'\0')
+    result = []
+    for name in names:
+        name_rva = int(name['rva'], 16)
+        descriptor = name_rva - 16
+        needle = struct.pack('<I', descriptor)
+        for section in image.sections:
+            if section['name'] != '.rdata':
+                continue
+            data = image.read(section['raw'], section['bytes'])
+            at = 0
+            while (at := data.find(needle, at)) >= 0:
+                col = section['rva'] + at - 12
+                at += 1
+                try:
+                    signature, offset, cd, td, hierarchy, self_rva = struct.unpack('<IIIIII', image.at(col, 24))
+                    if signature != 1 or offset != 0 or cd != 0 or td != descriptor or self_rva != col:
+                        continue
+                    image.at(hierarchy, 16)
+                    for reference in occurrences(image, struct.pack('<Q', image.base + col), limit=32):
+                        table = int(reference['rva'], 16) + 8
+                        if table % 8:
+                            continue
+                        entries = list(struct.unpack('<' + 'Q' * slots, image.at(table, slots * 8)))
+                        targets = [entry - image.base for entry in entries]
+                        if not all(image.section_for(target) and image.section_for(target)['flags'] & 0x20000000 for target in targets):
+                            continue
+                        result.append({'type_descriptor_rva': hex(descriptor), 'complete_object_locator_rva': hex(col),
+                                       'class_hierarchy_rva': hex(hierarchy), 'vtable_rva': hex(table),
+                                       'methods': [hex(target) for target in targets]})
+                except ValueError:
+                    continue
+    return result
+
+
+def disassemble_function(image, address, known):
+    from capstone import Cs, CS_ARCH_X86, CS_MODE_64, CS_GRP_CALL, CS_GRP_JUMP
+    from capstone.x86_const import X86_OP_IMM, X86_OP_MEM, X86_REG_RIP
+    ranges = image.function_ranges()
+    candidates = [item for item in ranges if item[0] == address]
+    if len(candidates) != 1:
+        return {'rva': hex(address), 'error': 'no unique complete unwind range; no equivalence claimed'}
+    start, end, unwind = candidates[0]
+    require(end - start <= 16384, 'inspected method exceeds bound')
+    engine = Cs(CS_ARCH_X86, CS_MODE_64)
+    engine.detail = True
+    instructions, shape = [], []
+
+    def target_name(target):
+        if start <= target < end:
+            return {'kind': 'local', 'offset': hex(target - start)}
+        if target in known:
+            return {'kind': 'named-target', 'name': known[target], 'rva': hex(target)}
+        section = image.section_for(target)
+        result = {'kind': 'external', 'rva': hex(target), 'section': section['name'] if section else None}
+        if section:
+            result['section_offset'] = hex(target - section['rva'])
+            if not section['flags'] & 0x20000000:
+                try:
+                    value = image.at(target, 32)
+                    result['bytes_32'] = value.hex()
+                except ValueError:
+                    result['bytes_32'] = None
+        return result
+
+    consumed = 0
+    for instruction in engine.disasm(image.at(start, end - start), start):
+        references = []
+        normalized = bytearray(instruction.bytes)
+        for operand in instruction.operands:
+            if operand.type == X86_OP_MEM and operand.mem.base == X86_REG_RIP:
+                references.append(target_name(instruction.address + instruction.size + operand.mem.disp))
+                normalized[instruction.disp_offset:instruction.disp_offset + instruction.disp_size] = bytes(instruction.disp_size)
+            if operand.type == X86_OP_IMM and (instruction.group(CS_GRP_JUMP) or instruction.group(CS_GRP_CALL)):
+                references.append(target_name(operand.imm))
+                normalized[instruction.imm_offset:instruction.imm_offset + instruction.imm_size] = bytes(instruction.imm_size)
+        instructions.append({'offset': hex(instruction.address - start), 'bytes': instruction.bytes.hex(),
+                             'instruction': instruction.mnemonic + ' ' + instruction.op_str,
+                             'references': references})
+        shape.append(normalized.hex())
+        consumed += instruction.size
+    require(consumed == end - start, 'instruction decode did not cover complete unwind body')
+    return {'rva': hex(start), 'end_rva': hex(end), 'unwind_rva': hex(unwind),
+            'code_sha256': hashlib.sha256(image.at(start, end - start)).hexdigest(),
+            'relative_encoding_shape_sha256': hashlib.sha256(''.join(shape).encode()).hexdigest(),
+            'shape_scope': 'PC-relative encodings zeroed only; compare every resolved target separately. Shape equality is not semantic equivalence.',
+            'instructions': instructions}
+
+
+def native_profile(image):
+    stream = rtti_tables(image, '.?AVCSharedMemStream@@', 7)
+    controller = rtti_tables(image, '.?AVCHTMLController@@', 42)
+    known = {}
+    for name, tables in [('stream', stream), ('controller', controller)]:
+        for table in tables:
+            known[int(table['vtable_rva'], 16)] = name + '-vtable'
+            known[int(table['complete_object_locator_rva'], 16)] = name + '-COL'
+            for index, method in enumerate(table['methods']):
+                known.setdefault(int(method, 16), name + '-slot-' + str(index))
+    exports = image.exports()
+    for name, rva in exports.items():
+        known[rva] = 'export-' + name
+    methods = []
+    if len(stream) == 1:
+        methods = [disassemble_function(image, int(method, 16), known) for method in stream[0]['methods']]
+    type_names = [match.group().decode('ascii') for match in re.finditer(rb'\.\?AV[A-Za-z0-9_?$@]*HTML[A-Za-z0-9_?$@]*@@', image.data)]
+    return {'stream_tables': stream, 'controller_tables': controller, 'stream_complete_methods': methods,
+            'related_type_names': sorted(set(type_names))[:32], 'exports': {key: hex(value) for key, value in exports.items() if key == 'CreateInterface'},
+            'factory': disassemble_function(image, exports['CreateInterface'], known) if 'CreateInterface' in exports else None}
+
+
+def varint(data, at):
+    value = 0
+    for shift in range(0, 70, 7):
+        require(at < len(data), 'truncated protobuf varint')
+        byte = data[at]
+        at += 1
+        value |= (byte & 127) << shift
+        if byte < 128:
+            return value, at
+    raise ValueError('oversized protobuf varint')
+
+
+def descriptors(image):
+    from google.protobuf.descriptor_pb2 import FileDescriptorProto
+    from google.protobuf.message import DecodeError
+    result = {}
+    # Generated C++ stores serialized FileDescriptorProto beginning with field
+    # one (filename). No string-table hit alone is accepted as a descriptor.
+    for match in re.finditer(rb'[A-Za-z0-9_./-]{1,200}\.proto', image.data):
+        for back in range(2, 6):
+            start = match.start() - back
+            if start < 0 or image.data[start] != 10:
+                continue
+            try:
+                length, body = varint(image.data, start + 1)
+                if body != match.start() or length != len(match.group()):
+                    continue
+                at = body + length
+                while at - start < 2 << 20 and at < len(image.data):
+                    tag, cursor = varint(image.data, at)
+                    field, wire = tag >> 3, tag & 7
+                    if not 1 <= field <= 14 or wire not in (0, 1, 2, 5):
+                        break
+                    if wire == 0:
+                        _, cursor = varint(image.data, cursor)
+                    elif wire == 2:
+                        count, cursor = varint(image.data, cursor)
+                        cursor += count
+                    else:
+                        cursor += 8 if wire == 1 else 4
+                    require(cursor <= len(image.data), 'descriptor exceeds image')
+                    at = cursor
+                raw = image.data[start:at]
+                descriptor = FileDescriptorProto.FromString(raw)
+                require(descriptor.name.encode() == match.group() and len(descriptor.message_type) > 0, 'not a message descriptor')
+                require(descriptor.name not in result, 'duplicate serialized descriptor')
+                result[descriptor.name] = {'rva': hex(image.rva_of(start)), 'bytes': len(raw),
+                                           'sha256': hashlib.sha256(raw).hexdigest(), 'descriptor': descriptor}
+            except (ValueError, UnicodeError, DecodeError):
+                continue
+    return result
+
+
+def descriptor_comparison(old, current):
+    before, after = descriptors(old), descriptors(current)
+    output = {'old_files': {}, 'current_files': {}, 'files_identical': {}, 'message_comparison': []}
+    for key, files in [('old_files', before), ('current_files', after)]:
+        for name, item in files.items():
+            output[key][name] = {k: v for k, v in item.items() if k != 'descriptor'}
+            output[key][name]['messages'] = [message.name for message in item['descriptor'].message_type]
+            output[key][name]['enums'] = {enum.name: {value.name: value.number for value in enum.value} for enum in item['descriptor'].enum_type}
+    for name in sorted(set(before) | set(after)):
+        output['files_identical'][name] = bool(name in before and name in after and before[name]['sha256'] == after[name]['sha256'])
+    def messages(files):
+        found = {}
+        for file in files.values():
+            def walk(prefix, entries):
+                for item in entries:
+                    name = prefix + item.name
+                    require(name not in found, 'ambiguous protobuf message identity')
+                    found[name] = item
+                    walk(name + '.', item.nested_type)
+            descriptor = file['descriptor']
+            walk(descriptor.package + '.' if descriptor.package else '', descriptor.message_type)
+        return found
+    a, b = messages(before), messages(after)
+    for name in sorted(set(a) | set(b)):
+        output['message_comparison'].append({'name': name, 'old_present': name in a, 'current_present': name in b,
+            'serialized_definition_identical': bool(name in a and name in b and a[name].SerializeToString(deterministic=True) == b[name].SerializeToString(deterministic=True))})
+    output['scope'] = 'Exact embedded protobuf descriptors and definitions only; producer/consumer numeric command assignment still requires its actual instruction/table proof.'
+    return output
 
 
 def compare(old, current):
@@ -236,9 +462,12 @@ def main():
                 selected[member] = data
         require('bin/chromehtml.dll' in selected and 'bin/cef/cef.win64/steamwebhelper.exe' in selected, 'required current components absent')
         report['current_components'] = {member: PE(data).describe() for member, data in selected.items()}
-        report['core_comparison'] = compare(old, PE(selected['bin/chromehtml.dll']))
+        current = PE(selected['bin/chromehtml.dll'])
+        report['core_comparison'] = compare(old, current)
+        report['native_profiles'] = {'old': native_profile(old), 'current': native_profile(current)}
+        report['embedded_protobuf_comparison'] = descriptor_comparison(old, current)
     text = json.dumps(report, indent=2, sort_keys=True) + '\n'
-    require(len(text) < 256 << 10, 'inspection report exceeds bound')
+    require(len(text) < 1 << 20, 'inspection report exceeds bound')
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(text)
     print(text, end='')
