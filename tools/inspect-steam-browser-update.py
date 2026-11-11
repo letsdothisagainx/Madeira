@@ -10,6 +10,7 @@ import bisect
 import capstone as cs
 import pefile
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import re
@@ -23,6 +24,9 @@ ORIGIN = 'https://client-update.akamai.steamstatic.com/'
 OLD = ('bins_win64.zip.1f91da2609327de9658146b01307e89a13cc1ef8', 64309479,
        'f34b0d5924d0cca4c81775ed2fef0aee1ca060e2daa5c24270711267786c0236')
 OLD_CORE_SHA = '37f5ddbe874362d729b7cd33504943a9d649d845525afae4bcc2af36ab971f4b'
+OLD_HELPER = ('bins_webhelpers_win64.zip.24cccba0a57045dd639e797a63facc0f56d9cd4c', 3673432,
+              '697b728a706405a73bbcfcb530f609d414968c2ba189ae87aba83715ff9394c6')
+OLD_HELPER_SHA = 'abbd293bd42564944700b46b9245209a4fef15247e21b968dd622d874961f4ce'
 OLD_METHODS = [0x58bf0, 0x59100, 0x590e0, 0x593f0, 0x58fa0, 0x58e60, 0x58dc0]
 
 
@@ -933,6 +937,10 @@ def main():
         require(hashlib.sha256(old_bytes).hexdigest() == OLD_CORE_SHA, 'old core provenance mismatch')
         old = PE(old_bytes)
         report['old_core'] = old.describe()
+        old_helper_path = temporary / 'old-helper.zip'
+        report['old_helper_package'] = fetch(OLD_HELPER[0], old_helper_path, 16 << 20, OLD_HELPER[1], OLD_HELPER[2])
+        old_helper_bytes = select(old_helper_path, {'bin/cef/cef.win64/steamwebhelper.exe'})['bin/cef/cef.win64/steamwebhelper.exe']
+        require(hashlib.sha256(old_helper_bytes).hexdigest() == OLD_HELPER_SHA, 'old AMD64 helper provenance mismatch')
         report['current_packages'] = []
         selected = {}
         for package in ('bins_win64', 'bins_webhelpers_win64'):
@@ -957,8 +965,77 @@ def main():
         b = {key: value['name'] for key, value in new_wire['proven_receiver_bindings'].items()}
         report['wire_receiver_evidence']['exact_binding_set_unchanged'] = a == b
         report['wire_receiver_evidence']['scope'] = 'Only independently decoded receiver-switch bindings; absent producer IDs remain unresolved.'
+        old_helper = PE(old_helper_bytes)
+        new_helper = PE(selected['bin/cef/cef.win64/steamwebhelper.exe'])
+        old_helper_wire = wire_extract_command_evidence(old_helper.data)
+        new_helper_wire = wire_extract_command_evidence(new_helper.data)
+        report['helper_embedded_protobuf_comparison'] = descriptor_comparison(old_helper, new_helper)
+        report['helper_wire_receiver_evidence'] = {'old': old_helper_wire, 'current': new_helper_wire}
+        sender_path = Path(__file__).with_name('steam-htmlipc-command-proof.py')
+        spec = importlib.util.spec_from_file_location('steam_htmlipc_command_proof', sender_path)
+        sender = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(sender)
+        old_sender = sender.extract_sender_evidence(old_helper.data, WireInspector)
+        new_sender = sender.extract_sender_evidence(new_helper.data, WireInspector)
+        old_core_sender = sender.extract_sender_evidence(old.data, WireInspector)
+        new_core_sender = sender.extract_sender_evidence(current.data, WireInspector)
+        report['wire_sender_evidence'] = {'old_helper': old_sender, 'current_helper': new_sender,
+                                          'old_core': old_core_sender, 'current_core': new_core_sender}
+        def combined(*evidence):
+            result = {}
+            for item in evidence:
+                for key, value in item.get('proven_receiver_bindings', item.get('bindings', {})).items():
+                    require(key not in result or result[key] == value['name'], 'conflicting command identities in actual receivers')
+                    result[key] = value['name']
+            return result
+        old_commands = combined(old_wire, old_helper_wire, old_sender, old_core_sender)
+        current_commands = combined(new_wire, new_helper_wire, new_sender, new_core_sender)
+        source = (Path(__file__).resolve().parents[1] / 'build/htmlipc/runtime/proven_map.cpp').read_text()
+        maintained = {number: name for number, legacy, name in re.findall(r'\{(\d+),(\d+),MessageKind::\w+\}, // (CMsg\w+)', source)}
+        report['combined_receiver_comparison'] = {
+            'exact_binding_set_unchanged': old_commands == current_commands,
+            'old_count': len(old_commands), 'current_count': len(current_commands),
+            'proven_current_bindings': current_commands,
+            'maintained_map_count': len(maintained),
+            'proven_maintained_count': sum(current_commands.get(key) == value for key, value in maintained.items()),
+            'contradicted_maintained_bindings': {key: {'expected': value, 'actual': current_commands[key]} for key, value in maintained.items() if key in current_commands and current_commands[key] != value},
+            'unresolved_maintained_bindings': {key: value for key, value in maintained.items() if key not in current_commands},
+            'scope': 'Typed receiver switches plus stack-wrapper/command/encoder forwarding instruction witnesses; absent commands are explicitly unresolved, never inferred from ordering or descriptor identity.'}
+        # These are executable regression gates, not assertions of device UI,
+        # full wire-map exhaustiveness, certificate trust or VAC acceptance.
+        before, after = report['native_profiles']['old'], report['native_profiles']['current']
+        require(len(before['stream_tables']) == len(after['stream_tables']) == 1 and
+                len(before['controller_tables']) == len(after['controller_tables']) == 1,
+                'native RTTI identities are ambiguous')
+        require(len(before['stream_complete_methods']) == len(after['stream_complete_methods']) == 7,
+                'incomplete native stream method set')
+        for old_method, new_method in zip(before['stream_complete_methods'], after['stream_complete_methods']):
+            require(old_method['control_flow_statically_closed'] and new_method['control_flow_statically_closed'] and
+                    old_method['relative_encoding_shape_sha256'] == new_method['relative_encoding_shape_sha256'],
+                    'native stream registers, member offsets, constants or control-flow encoding changed')
+            def references(method):
+                return [[(ref['kind'], ref.get('name') if ref['kind'] == 'named-target' else
+                          ref.get('instruction_index') if ref['kind'] == 'local' else ref.get('section'))
+                         for ref in instruction['references']] for instruction in method['instructions']]
+            require(references(old_method) == references(new_method), 'native local branch target or imported API identity changed')
+        require(before['controller_init']['relative_encoding_shape_sha256'] == after['controller_init']['relative_encoding_shape_sha256'],
+                'controller Init member layout/instruction shape changed')
+        for key in ('embedded_protobuf_comparison', 'helper_embedded_protobuf_comparison'):
+            comparison = report[key]
+            require('htmlmessages.proto' in comparison['files_identical'] and
+                    all(comparison['files_identical'].values()), 'embedded protobuf descriptor bytes changed')
+        comparison = report['combined_receiver_comparison']
+        require(comparison['exact_binding_set_unchanged'] and not comparison['contradicted_maintained_bindings'],
+                'actual command/type instruction witnesses changed or contradict the maintained map')
+        report['regression_gates'] = {'result': 'passed', 'native_entry_cfg_count': 7,
+            'native_named_api_and_local_branch_targets': 'unchanged',
+            'controller_init_member_layout': 'unchanged', 'embedded_core_and_helper_descriptors': 'byte-identical',
+            'known_command_instruction_bindings': 'unchanged',
+            'maintained_proven_count': comparison['proven_maintained_count'],
+            'unresolved_maintained_count': len(comparison['unresolved_maintained_bindings']),
+            'scope': 'Static actual-file regression only; unresolved IDs remain explicitly unresolved and no device/browser/VAC success is asserted.'}
     text = json.dumps(report, indent=2, sort_keys=True) + '\n'
-    require(len(text) < 1 << 20, 'inspection report exceeds bound')
+    require(len(text) < 2 << 20, 'inspection report exceeds bound')
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(text)
     print(text, end='')

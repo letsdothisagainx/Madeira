@@ -42,6 +42,20 @@ and image size. Those independently read current PE fields produce
 produce `da1f72aa5493109d`. This identifies the captured header version without
 pretending to have measured a complete on-device file hash.
 
+The registered controller callback returns `0x1806c0` in the new core, versus
+`0x1806b0` previously; its 42-entry vtable moves from `0x123688` to `0x123710`.
+The stream table moves from `0x132340` to `0x1323a0`. Actual disassembly confirms
+the seven entry methods' register/member access and control flow, including
+fragments beyond the first unwind range. Controller initialization retains its
+stream-pair subobject at `+0x170`. Its embedded `htmlmessages.proto` is exactly
+the same 15,423-byte descriptor, containing 162 top-level messages. Descriptor
+identity alone does not prove numeric command assignment; the separate decoded
+receiver/producer evidence records its actual coverage and unresolved cases.
+The bounded instruction analysis covers 145 of the 152 maintained mappings.
+IDs 33, 35, 36, 117, 132, 139 and 141 require further interprocedural analysis;
+they are not filled from message ordering or inferred from schema equality.
+The existing codec and its explicit unsupported-command behavior are unchanged.
+
 ## Production correction
 
 The installer selects a complete immutable compatibility profile by bounded
@@ -80,6 +94,13 @@ The official-file installer fixture uses full original PE bytes and the actual
 production installer, with owned native mappings/protections. It executes only
 test-owned hooks, not Valve instructions; initialized controller BSS is a fixture
 boundary. It does not prove Steam, CEF rendering, or iPhone operation.
+
+Actions [43121199498](https://github.com/letsdothisagainx/Madeira/actions/runs/43121199498)
+reproduces the original installer's `PinMismatch` on the new official file, then
+passes production `arm`, mapped-image installation and controller validation for
+both profiles, plus real native permissions, hash/section tamper refusal,
+protection rollback and unload rejection. The helper-path pointer check also
+passes against the complete updated original file.
 
 On-device acceptance still requires the genuine helper's process creation,
 master-section creation/open, responsive Steam, actual `cs2.exe` creation and a
