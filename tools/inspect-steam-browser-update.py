@@ -183,7 +183,11 @@ def compare(old, current):
             new_bytes = current.at(rva, size).hex()
         except ValueError:
             new_bytes = None
-        fields[hex(rva)] = {'old': old.at(rva, size).hex(), 'current_at_old_rva': new_bytes}
+        try:
+            old_bytes = old.at(rva, size).hex()
+        except ValueError:
+            old_bytes = None  # Mutable BSS/controller state has no disk bytes.
+        fields[hex(rva)] = {'old': old_bytes, 'current_at_old_rva': new_bytes}
     return {'identical_file_bytes': old.data == current.data, 'old_profile_fields': fields,
             'method_prefixes': methods,
             'named_ABI_patterns': {needle.decode('ascii').rstrip('\0'): {'old': occurrences(old, needle), 'current': occurrences(current, needle)} for needle in needles},
