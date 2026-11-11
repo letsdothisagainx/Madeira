@@ -238,7 +238,13 @@ jobs:
       - name: Ensure real cryptographic regression provider
         run: brew list openssl@3 >/dev/null 2>&1 || brew install openssl@3
       - name: Check embedded signal ownership and Dock packaging
-        run: python3 tests/host/run-embedded-checks.py
+        env:
+          CC: clang
+        run: |
+          command -v cc clang
+          cc --version
+          clang --version
+          python3 tests/host/run-embedded-checks.py
       - id: sdk
         run: bash tools/build/ci-input-key.sh
       - id: cache-llvm
