@@ -84,12 +84,13 @@ def fixture():
 
 def manifest(data):
     return dict(format=1, mode='native-owner', filename=image.FILENAME, bytes=len(data), sha256=image.sha256(data),
-                coreSHA256=image.CORE_SHA256,
+                coreSHA256=image.CORE_SHA256, compatibleCoreSHA256=list(image.COMPATIBLE_CORE_SHA256),
                 readinessABI=dict(version=1, size=80, sha256=image.sha256(ABI.read_bytes())))
 
 def report(data, source_hashes):
     return dict(native_owner=True, stock_wine_test=False, experimental_auto_arm=True,
                 compiler_target='x86_64-windows-msvc', sha256=image.sha256(data), size=len(data),
+                compatible_core_sha256=list(image.COMPATIBLE_CORE_SHA256),
                 owner_query_class='0x4d480001', cache_environment='MADEIRA_HTMLIPC_CACHE_DIR',
                 writable_executable_sections=False, static_constructor_sections=False,
                 ready_data=dict(name='MadeiraRuntimeReady', size=80, version=1,
@@ -132,6 +133,15 @@ def main():
     data = fixture()
     result = image.inspect_image(data)
     assert result['ready_rva'] == 0x3000
+    # Linked-profile publication is a production build gate, separate from
+    # the generic PE parser used by these deliberately minimal fixtures.
+    rejects(image.validate_compiled_profiles, data)
+    for omitted in image.COMPATIBLE_CORE_SHA256:
+        partial=data+b''.join(bytes.fromhex(value) for value in image.COMPATIBLE_CORE_SHA256 if value!=omitted)
+        rejects(image.validate_compiled_profiles, partial)
+    image.validate_compiled_profiles(data+b''.join(bytes.fromhex(value) for value in image.COMPATIBLE_CORE_SHA256))
+    generated=image.make_manifest(data, ABI)
+    assert generated['compatibleCoreSHA256']==list(image.COMPATIBLE_CORE_SHA256)
     with tempfile.TemporaryDirectory(prefix='madeira-htmlipc-image-') as directory:
         temporary = Path(directory)
         staged, selected = temporary / image.FILENAME, temporary / 'bridge.manifest.json'
@@ -146,6 +156,20 @@ def main():
         metadata['sourceSHA256'] = image.sha256(json.dumps(sources, sort_keys=True, separators=(',', ':')).encode())
         selected.write_text(json.dumps(metadata))
         native_report = report(data, sources); build_report.write_text(json.dumps(native_report))
+        legacy_manifest=copy.deepcopy(metadata);legacy_manifest.pop('compatibleCoreSHA256')
+        legacy_report=copy.deepcopy(native_report);legacy_report.pop('compatible_core_sha256')
+        image.validate_manifest(data,legacy_manifest,image.sha256(ABI.read_bytes()))
+        image.validate_build_report(data,legacy_manifest,legacy_report,temporary)
+        rejects(image.validate_build_report,data,metadata,legacy_report,temporary)
+        rejects(image.validate_build_report,data,legacy_manifest,native_report,temporary)
+        for bad in ([],[image.CORE_SHA256],[image.NEW_CORE_SHA256],
+                    [image.CORE_SHA256,'0'*64],list(reversed(image.COMPATIBLE_CORE_SHA256)),
+                    list(image.COMPATIBLE_CORE_SHA256)+[image.NEW_CORE_SHA256],None):
+            altered_manifest=copy.deepcopy(metadata);altered_manifest['compatibleCoreSHA256']=bad
+            rejects(image.validate_manifest,data,altered_manifest,image.sha256(ABI.read_bytes()))
+            altered_report=copy.deepcopy(native_report);altered_report['compatible_core_sha256']=bad
+            rejects(image.validate_build_report,data,metadata,altered_report,temporary)
+
         image.check(staged, selected, ABI, build_report, temporary)
         # Same exact copied resources must occur in both .app and IPA.
         app = temporary / 'Madeira.app'
@@ -188,7 +212,10 @@ def main():
         if actual.exists():
             actual_bytes = actual.read_bytes(); image.inspect_image(actual_bytes); probe_image(actual_bytes)
             actual_report = json.loads(actual.with_suffix('.build.json').read_bytes())
-            image.validate_build_report(actual_bytes, manifest(actual_bytes), actual_report)
+            actual_manifest=manifest(actual_bytes)
+            if 'compatible_core_sha256' not in actual_report:
+                actual_manifest.pop('compatibleCoreSHA256')
+            image.validate_build_report(actual_bytes, actual_manifest, actual_report)
             print('PASS optional actual source-built AMD64 DLL: bounded C DATA reader and hash-bound native build report')
         for name in ('MadeiraHtmlIPCBridge-disarmed.dll', 'version-stock.dll'):
             other = actual.with_name(name)

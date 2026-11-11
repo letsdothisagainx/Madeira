@@ -25,7 +25,13 @@
     "native provider: current bounded numeric image Diagnostic + OutputDebugStringA fallback; Ready revoke remains before log publication",
     "native loader: loader-entry diagnostic; native owner/Ready detach preserved",
     "Bounded status lines always reach OutputDebugStringA, including after Steam redirects stderr to NUL; Installed is announced directly after successful data installation.",
-    "Cache v2 includes exact official I386 SDL3 required before helper MasterServer initialization; original AMD64 Steam SDL3 stays untouched."
+    "Cache v2 includes exact official I386 SDL3 required before helper MasterServer initialization; original AMD64 Steam SDL3 stays untouched.",
+    "Per-core immutable profile selection retains whole-file SHA pins, exact mapped-image comparison and runtime owner checks; generated packages declare both reviewed file identities and must embed both linked pins."
   ],
-  "commonInstallerPolicy": "copy latest root-reviewed common source on every generation; no source pin/protection relaxation"
+  "commonInstallerPolicy": "copy latest root-reviewed common source on every generation; no source pin/protection relaxation",
+  "compatibleCoreSHA256": [
+    "37f5ddbe874362d729b7cd33504943a9d649d845525afae4bcc2af36ab971f4b",
+    "7afabbd8fae70a1b9831546d4c126ebd74c18796457e3a12fa259f529f7f2266"
+  ],
+  "coreSHA256Meaning": "legacy I386 browser/cache contract baseline, not the exclusive supported current-core hash or a security trust verdict"
 }

@@ -2,8 +2,27 @@
 #include "installer.h"
 #include "sha256.h"
 namespace madeira_stream_install {
-static constexpr U32 original_rvas[7]={0x58bf0,0x59100,0x590e0,0x593f0,0x58fa0,0x58e60,0x58dc0};
 static constexpr U8 digest[32]={0x37,0xf5,0xdd,0xbe,0x87,0x43,0x62,0xd7,0x29,0xb7,0xcd,0x33,0x50,0x49,0x43,0xa9,0xd6,0x49,0xd8,0x45,0x52,0x5a,0xfa,0xe4,0xbc,0xc2,0xaf,0x36,0xab,0x97,0x1f,0x4b};
+static constexpr U8 updated_digest[32]={0x7a,0xfa,0xbb,0xd8,0xfa,0xe7,0x0a,0x1b,0x98,0x31,0x54,0x6d,0x4c,0x12,0x6e,0xbd,0x74,0xc1,0x87,0x96,0x45,0x7e,0x3a,0x12,0xfa,0x25,0x9f,0x52,0x9f,0x7f,0x22,0x66};
+const Profile legacy_profile={
+    1668248,0x19c000,0x6ad92a63,6,0x180000000ULL,digest,
+    {0x58bf0,0x59100,0x590e0,0x593f0,0x58fa0,0x58e60,0x58dc0},
+    0x132340,0x132338,0x15c550,0x17f428,0x17f400,
+    0x121ce0,0x121cd8,0x1806b0,0x123688,0xf9660,42
+};
+/* Official November update. Whole-file identity selects these reviewed
+ * coordinates; similar RTTI, file size or an environment value cannot. */
+const Profile updated_profile={
+    1667224,0x19d000,0x6af24bcb,6,0x180000000ULL,updated_digest,
+    {0x58d10,0x59220,0x59200,0x59510,0x590c0,0x58f80,0x58ee0},
+    0x1323a0,0x132398,0x15c550,0x17f428,0x17f400,
+    0x121d50,0x121d48,0x1806c0,0x123710,0xf9420,42
+};
+static const Profile *const profiles[]={&legacy_profile,&updated_profile};
+const Profile *profile_for_size(Size size){
+    for(const Profile *profile:profiles)if(size==profile->file_size)return profile;
+    return nullptr;
+}
 static constexpr char old_path[]="bin/cef/cef.win64/steamwebhelper.exe";
 static constexpr char new_path[]="bin/cef/cef.win32/steamwebhelper.exe";
 static_assert(sizeof(old_path)==37 && sizeof(old_path)==sizeof(new_path));
@@ -23,19 +42,19 @@ static void diagnose(Installer *s,Stage stage,U32 rva,U64 expected=0,U64 actual=
     d.actual_bytes=actual;d.byte_count=count;d.expected_protection=expected_protect;
     d.actual_protection=actual_protect;d.query_flags=flags;
 }
-struct PE {const U8 *f;Size n;U32 nt,optional,sections,count,image_size,headers,iat,iat_size,reloc,reloc_size;U64 base;};
-static bool parse(const Config &c,PE &p){
-    p={};p.f=c.pinned_file;p.n=c.pinned_file_size;
-    if(!p.f || p.n!=1668248 || u16(p.f)!=0x5a4d)return false;
+struct PE {const Profile *profile;const U8 *f;Size n;U32 nt,optional,sections,count,image_size,headers,iat,iat_size,reloc,reloc_size;U64 base;};
+static bool parse(const Config &c,PE &p,const Profile &profile){
+    p={};p.profile=&profile;p.f=c.pinned_file;p.n=c.pinned_file_size;
+    if(!p.f || p.n!=profile.file_size || p.n<64 || u16(p.f)!=0x5a4d)return false;
     p.nt=u32(p.f+0x3c);
     if(!span(p.nt,264,p.n)||u32(p.f+p.nt)!=0x4550||u16(p.f+p.nt+4)!=0x8664)return false;
     p.count=u16(p.f+p.nt+6);p.optional=p.nt+24;p.sections=p.optional+u16(p.f+p.nt+20);
-    if(p.count!=6||!span(p.sections,p.count*40,p.n)||u16(p.f+p.optional)!=0x20b)return false;
+    if(p.count!=profile.section_count||!span(p.sections,p.count*40,p.n)||u16(p.f+p.optional)!=0x20b)return false;
     p.base=u64(p.f+p.optional+24);p.image_size=u32(p.f+p.optional+56);p.headers=u32(p.f+p.optional+60);
     p.iat=u32(p.f+p.optional+112+12*8);p.iat_size=u32(p.f+p.optional+116+12*8);
     p.reloc=u32(p.f+p.optional+112+5*8);p.reloc_size=u32(p.f+p.optional+116+5*8);
-    return p.base==0x180000000ULL && p.image_size==0x19c000 &&
-      u32(p.f+p.nt+8)==0x6ad92a63 && span(p.headers,0,p.n) &&
+    return p.base==profile.image_base && p.image_size==profile.image_size &&
+      u32(p.f+p.nt+8)==profile.timestamp && span(p.headers,0,p.n) &&
       span(p.iat,p.iat_size,p.image_size)&&span(p.reloc,p.reloc_size,p.image_size);
 }
 static const U8 *at(const PE &p,U32 rva,Size n){
@@ -45,7 +64,15 @@ static const U8 *at(const PE &p,U32 rva,Size n){
     }return nullptr;
 }
 static bool pin(const Config &c,PE &p){
-    if(!parse(c,p))return false;U8 actual[32];sha256(c.pinned_file,c.pinned_file_size,actual);return equal(actual,digest,32);
+    if(!c.pinned_file||!profile_for_size(c.pinned_file_size))return false;
+    U8 actual[32];sha256(c.pinned_file,c.pinned_file_size,actual);
+    for(const Profile *profile:profiles)
+        if(c.pinned_file_size==profile->file_size&&equal(actual,profile->digest,32)&&parse(c,p,*profile))return true;
+    return false;
+}
+const Profile *profile_for_file(const U8 *bytes,Size size){
+    Config config{};config.pinned_file=bytes;config.pinned_file_size=size;
+    PE parsed;return pin(config,parsed)?parsed.profile:nullptr;
 }
 static bool query_span(Installer *s,const void *address,Size bytes,U32 expected,void *allocation,Stage stage=Stage::None,bool writable_image_cow=false){
     U64 cursor=reinterpret_cast<U64>(address),end=cursor+bytes;
@@ -129,7 +156,7 @@ Result arm(Installer *s,const Config &c,const Api &a){
     for(auto hook:c.hooks){U64 address=reinterpret_cast<U64>(hook);Region r{};
         if(address<lo||address>=hi||!a.query(a.context,hook,&r)||r.allocation!=c.hook_module||r.state!=0x1000||
             r.type!=0x1000000||r.protect!=0x20)return fail(s,Error::WrongHook);}
-    s->config=c;s->api=a;s->phase=Phase::Armed;s->result={Error::None,0,true};return s->result;
+    s->config=c;s->api=a;s->profile=p.profile;s->phase=Phase::Armed;s->result={Error::None,0,true};return s->result;
 }
 static bool restore_pages(Installer *s,void *const pages[2],U32 count,const U32 old[2],U32 *first_error=nullptr){
     bool ok=true;for(U32 i=count;i>0;--i){U32 ignored;if(!s->api.protect(s->api.context,pages[i-1],4096,old[i-1],&ignored)){
@@ -141,8 +168,9 @@ Result install_loaded(Installer *s,void *module,Size image_size,const U16 *name,
     if(!s||s->phase!=Phase::Armed)return s?fail(s,s->phase==Phase::Installed?Error::AlreadyInstalled:Error::NotArmed):Result{Error::NotArmed,0,true};
     s->diagnostic.actual_image_size=image_size;
     if(!name_is_current(name,units))return fail(s,Error::WrongModule);
-    if(!module||image_size!=0x19c000){diagnose(s,Stage::ModuleSize,0,0x19c000,image_size);return fail(s,Error::WrongImage);}
-    s->module=module;PE p;if(!pin(s->config,p))return fail(s,Error::PinMismatch);
+    const Profile *profile=s->profile;
+    if(!profile||!module||image_size!=profile->image_size){diagnose(s,Stage::ModuleSize,0,profile?profile->image_size:0,image_size);return fail(s,Error::WrongImage);}
+    s->module=module;PE p;if(!pin(s->config,p)||p.profile!=profile)return fail(s,Error::PinMismatch);
     if(!query_span(s,module,p.headers,2,module,Stage::HeaderProtection)){snapshot(s,p,true);return fail(s,Error::WrongImage);}
     /* Wine's SEC_IMAGE mapper rewrites OptionalHeader.ImageBase to map_addr
      * while applying dynamic-base relocations (ntdll/unix/virtual.c). Windows
@@ -161,33 +189,34 @@ Result install_loaded(Installer *s,void *module,Size image_size,const U16 *name,
      * Mutable .data is checked separately for the exact RTTI type names. */
     for(U32 i=0;i<p.count;++i){const U8 *h=p.f+p.sections+i*40;
         if((equal(h,".text",5)||equal(h,".rdata",6)||equal(h,".pdata",6))&&!compare_section(s,p,i))return fail(s,Error::WrongImage);}
-    U8 *base=static_cast<U8*>(module);auto table=reinterpret_cast<volatile U64*>(base+stream_vtable_rva);
-    if(u64(base+0x132338)!=reinterpret_cast<U64>(base)+0x15c550){
-        diagnose(s,Stage::Metadata,0x132338,reinterpret_cast<U64>(base)+0x15c550,u64(base+0x132338),8);return fail(s,Error::WrongMetadata);}
-    const U32 metadata_rvas[3]={0x15c550,0x17f428,0x17f400};
-    const U8 *metadata_expected[3]={at(p,0x15c550,24),reinterpret_cast<const U8*>(".?AVCSharedMemStream@@"),reinterpret_cast<const U8*>(".?AVIMemStream@@")};
+    U8 *base=static_cast<U8*>(module);auto table=reinterpret_cast<volatile U64*>(base+profile->stream_vtable_rva);
+    if(u64(base+profile->stream_locator_rva)!=reinterpret_cast<U64>(base)+profile->stream_col_rva){
+        diagnose(s,Stage::Metadata,profile->stream_locator_rva,reinterpret_cast<U64>(base)+profile->stream_col_rva,u64(base+profile->stream_locator_rva),8);return fail(s,Error::WrongMetadata);}
+    const U32 metadata_rvas[3]={profile->stream_col_rva,profile->stream_name_rva,profile->interface_name_rva};
+    const U8 *metadata_expected[3]={at(p,profile->stream_col_rva,24),reinterpret_cast<const U8*>(".?AVCSharedMemStream@@"),reinterpret_cast<const U8*>(".?AVIMemStream@@")};
+    if(!metadata_expected[0])return fail(s,Error::WrongMetadata);
     const U32 metadata_lengths[3]={24,22,16};
     for(U32 m=0;m<3;++m)for(U32 i=0;i<metadata_lengths[m];++i)if(base[metadata_rvas[m]+i]!=metadata_expected[m][i]){
         diagnose(s,Stage::Metadata,metadata_rvas[m]+i);snapshot(s,p);return fail(s,Error::WrongMetadata);}
-    for(U32 i=0;i<7;++i){s->original_entries[i]=reinterpret_cast<U64>(base)+original_rvas[i];if(table[i]!=s->original_entries[i]){
-        diagnose(s,Stage::Metadata,stream_vtable_rva+i*8,s->original_entries[i],table[i],8);return fail(s,Error::WrongMetadata);}}
-    for(U32 i=0;i<sizeof(old_path);++i)if(base[0x121ce0+i]!=U8(old_path[i])){
-        diagnose(s,Stage::Metadata,0x121ce0+i);snapshot(s,p);return fail(s,Error::WrongMetadata);}
-    if(u64(base+0x121cd8)!=reinterpret_cast<U64>(base)+0x121ce0){
-        diagnose(s,Stage::Metadata,0x121cd8,reinterpret_cast<U64>(base)+0x121ce0,u64(base+0x121cd8),8);return fail(s,Error::WrongMetadata);}
-    void *pages[2]={base+0x132000,base+0x121000};U32 old[2]{};U32 count=s->config.redirect_helper_win32?2:1;
+    for(U32 i=0;i<7;++i){s->original_entries[i]=reinterpret_cast<U64>(base)+profile->original_rvas[i];if(table[i]!=s->original_entries[i]){
+        diagnose(s,Stage::Metadata,profile->stream_vtable_rva+i*8,s->original_entries[i],table[i],8);return fail(s,Error::WrongMetadata);}}
+    for(U32 i=0;i<sizeof(old_path);++i)if(base[profile->helper_path_rva+i]!=U8(old_path[i])){
+        diagnose(s,Stage::Metadata,profile->helper_path_rva+i);snapshot(s,p);return fail(s,Error::WrongMetadata);}
+    if(u64(base+profile->helper_pointer_rva)!=reinterpret_cast<U64>(base)+profile->helper_path_rva){
+        diagnose(s,Stage::Metadata,profile->helper_pointer_rva,reinterpret_cast<U64>(base)+profile->helper_path_rva,u64(base+profile->helper_pointer_rva),8);return fail(s,Error::WrongMetadata);}
+    void *pages[2]={base+(profile->stream_vtable_rva&~U32(4095)),base+(profile->helper_path_rva&~U32(4095))};U32 old[2]{};U32 count=s->config.redirect_helper_win32?2:1;
     for(U32 i=0;i<count;++i){if(!query_span(s,pages[i],4096,2,module))return fail(s,Error::WrongProtection);
         if(!s->api.protect(s->api.context,pages[i],4096,4,&old[i])){U32 error=s->api.last_error(s->api.context);bool restored=restore_pages(s,pages,i,old);return fail(s,restored?Error::MakeWritableFailed:Error::RollbackIncomplete,error,restored);}
         if(old[i]!=2){bool restored=restore_pages(s,pages,i+1,old);return fail(s,Error::WrongProtection,0,restored);}}
     for(U32 i=0;i<7;++i)table[i]=reinterpret_cast<U64>(s->config.hooks[i]);
-    if(s->config.redirect_helper_win32)for(U32 i=0;i<sizeof(new_path);++i)base[0x121ce0+i]=U8(new_path[i]);
+    if(s->config.redirect_helper_win32)for(U32 i=0;i<sizeof(new_path);++i)base[profile->helper_path_rva+i]=U8(new_path[i]);
     U32 first_restore_error=0;
     if(!restore_pages(s,pages,count,old,&first_restore_error)){
         U32 first=first_restore_error;bool writable=true;
         for(U32 i=0;i<count;++i){Region q{};if(!s->api.query(s->api.context,pages[i],&q)){writable=false;continue;}
             if(q.protect!=4){U32 ignored;if(!s->api.protect(s->api.context,pages[i],4096,4,&ignored))writable=false;}}
         if(writable){for(U32 i=0;i<7;++i)table[i]=s->original_entries[i];
-            if(s->config.redirect_helper_win32)for(U32 i=0;i<sizeof(old_path);++i)base[0x121ce0+i]=U8(old_path[i]);}
+            if(s->config.redirect_helper_win32)for(U32 i=0;i<sizeof(old_path);++i)base[profile->helper_path_rva+i]=U8(old_path[i]);}
         bool restored=restore_pages(s,pages,count,old);
         return fail(s,writable&&restored?Error::RestoreFailed:Error::RollbackIncomplete,first,writable&&restored);
     }
@@ -195,18 +224,19 @@ Result install_loaded(Installer *s,void *module,Size image_size,const U16 *name,
 }
 void note_unloaded(Installer *s,void *module){if(s&&s->module==module)fail(s,Error::ModuleUnloaded,0,false);}
 bool validate_live_controller(Installer *s,void *controller){
-    if(!s||s->phase!=Phase::Installed||!s->module||controller!=static_cast<U8*>(s->module)+controller_object_rva)return false;
+    if(!s||s->phase!=Phase::Installed||!s->module||!s->profile||controller!=static_cast<U8*>(s->module)+s->profile->controller_object_rva)return false;
+    const Profile *profile=s->profile;
     // Wine maps writable, non-shared SEC_IMAGE data as PAGE_WRITECOPY.
     // Accept it only here, with the same committed-image/allocation checks.
     // Code, hook and readonly data validations retain their exact protections.
     if(!query_span(s,controller,8,4,s->module,Stage::SectionProtection,true))return false;
     U8 *base=static_cast<U8*>(s->module);
-    if(u64(static_cast<U8*>(controller))!=reinterpret_cast<U64>(base)+controller_vtable_rva){
-        diagnose(s,Stage::Metadata,controller_object_rva,reinterpret_cast<U64>(base)+controller_vtable_rva,u64(static_cast<U8*>(controller)),8);return false;}
-    PE p;if(!parse(s->config,p))return false;
-    for(U32 i=0;i<42;++i){const U8 *original=at(p,controller_vtable_rva+i*8,8);if(!original)return false;
-        if(u64(base+controller_vtable_rva+i*8)!=u64(original)+reinterpret_cast<U64>(base)-p.base){
-            diagnose(s,Stage::Metadata,controller_vtable_rva+i*8,u64(original)+reinterpret_cast<U64>(base)-p.base,u64(base+controller_vtable_rva+i*8),8);return false;}}
+    if(u64(static_cast<U8*>(controller))!=reinterpret_cast<U64>(base)+profile->controller_vtable_rva){
+        diagnose(s,Stage::Metadata,profile->controller_object_rva,reinterpret_cast<U64>(base)+profile->controller_vtable_rva,u64(static_cast<U8*>(controller)),8);return false;}
+    PE p;if(!parse(s->config,p,*profile))return false;
+    for(U32 i=0;i<profile->controller_slots;++i){const U8 *original=at(p,profile->controller_vtable_rva+i*8,8);if(!original)return false;
+        if(u64(base+profile->controller_vtable_rva+i*8)!=u64(original)+reinterpret_cast<U64>(base)-p.base){
+            diagnose(s,Stage::Metadata,profile->controller_vtable_rva+i*8,u64(original)+reinterpret_cast<U64>(base)-p.base,u64(base+profile->controller_vtable_rva+i*8),8);return false;}}
     return true;
 }
 }

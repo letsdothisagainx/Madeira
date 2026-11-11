@@ -55,11 +55,32 @@ struct Diagnostic {
     U32 query_flags=0;
 };
 static_assert(sizeof(Diagnostic)==48);
+/* Each admitted core has a complete immutable, independently reviewed DATA
+ * layout and transport contract. A file-size match only permits a bounded
+ * read; it never authorizes installation. Unknown cores remain rejected. */
+struct Profile {
+    Size file_size;
+    U32 image_size,timestamp,section_count;
+    U64 image_base;
+    const U8 *digest;
+    U32 original_rvas[7];
+    U32 stream_vtable_rva,stream_locator_rva,stream_col_rva;
+    U32 stream_name_rva,interface_name_rva;
+    U32 helper_path_rva,helper_pointer_rva;
+    U32 controller_object_rva,controller_vtable_rva,create_interface_rva;
+    U32 controller_slots;
+};
+extern const Profile legacy_profile;
+extern const Profile updated_profile;
+const Profile *profile_for_size(Size);
+/* Full hash plus PE metadata validation, not merely a header/size lookup. */
+const Profile *profile_for_file(const U8 *,Size);
 struct Installer {
     Config config{}; Api api{}; Phase phase=Phase::Disarmed;
     Result result{Error::NotArmed,0,true}; void *module=nullptr;
     U64 original_entries[7]{};
     Diagnostic diagnostic{};
+    const Profile *profile=&legacy_profile;
 };
 /* Call before loading chromehtml. It rejects an absent real wire contract;
  * no placeholder codec, loader, hooks or permissive default is supplied. */
@@ -71,6 +92,7 @@ Result install_loaded(Installer *,void *module,Size image_size,
                       const U16 *base_name,Size base_name_units);
 void note_unloaded(Installer *,void *module);
 bool validate_live_controller(Installer *,void *controller);
+/* Legacy fixture coordinates. Runtime code must use Installer::profile. */
 static constexpr U32 stream_vtable_rva=0x132340;
 static constexpr U32 controller_object_rva=0x1806b0;
 static constexpr U32 controller_vtable_rva=0x123688;

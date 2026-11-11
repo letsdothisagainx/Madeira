@@ -65,6 +65,13 @@ enum SteamBrowserRuntimeFiles {
             Key(name: "msdia140.dll", sha256: "484dee047c0f2a6e556056ad994ef6a9b846a676a067883257c7122c46c97d66",
                 bytes: 2_245_784, machine: 0x8664)
         ], marker: officialMarker)
+    // These independently inspected chromehtml profiles share the verified
+    // browser wire contract. Keep the cache recipe/manifest identity stable:
+    // this is compatibility selection, never a new cache trust shortcut.
+    static let officialCompatibleCoreSHA256 = [
+        "37f5ddbe874362d729b7cd33504943a9d649d845525afae4bcc2af36ab971f4b",
+        "7afabbd8fae70a1b9831546d4c126ebd74c18796457e3a12fa259f529f7f2266"
+    ]
     static let ownerName = ".madeira-browser-owner-v1"
     static let ownerBytes = Data("org.madeira.SteamBrowserRuntime/v1\n".utf8)
     static let completion = ".complete-v1.json"
@@ -205,12 +212,20 @@ enum SteamBrowserRuntimeFiles {
     static func expectedMachine(_ name: String, recipe: Recipe) -> UInt16 {
         recipe.keys.first(where: { recipe.prefix + $0.name == name })?.machine ?? 0x014c
     }
-    static func core(_ file: URL, steamRoot: URL, recipe: Recipe, digest: DigestFile) throws {
+    static func compatibleCoreSHA256(_ file: URL, steamRoot: URL, recipe: Recipe, digest: DigestFile) throws -> String {
         guard file.standardizedFileURL != steamRoot.standardizedFileURL, inside(file, steamRoot) else {
             throw Failure.changedCore
         }
         try plain(steamRoot, directory: true); try plain(file, directory: false)
-        guard try digest(file) == recipe.coreSHA256 else { throw Failure.changedCore }
+        let actual = try digest(file)
+        // Compare the entire recipe, not its public identifier or one field.
+        // Unrelated/test recipes retain their original exact-core contract.
+        let permitted = recipe == official ? officialCompatibleCoreSHA256 : [recipe.coreSHA256]
+        guard permitted.contains(actual) else { throw Failure.changedCore }
+        return actual
+    }
+    static func core(_ file: URL, steamRoot: URL, recipe: Recipe, digest: DigestFile) throws {
+        _ = try compatibleCoreSHA256(file, steamRoot: steamRoot, recipe: recipe, digest: digest)
     }
 
     // The dedicated owner root is atomically introduced. A preexisting unowned

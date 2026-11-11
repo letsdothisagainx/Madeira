@@ -98,6 +98,16 @@ jobs:
           python3 tests/host/check-htmlipc-domain-registry.py
           python3 tests/host/check-htmlipc-codecs.py
           python3 tests/host/check-steam-browser-logs.py
+  official-core-profiles:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Exercise production installer against old and updated official core files
+        run: python3 tests/integration/check-official-steam-bridge-profiles.py --download-official
   browser-cache:
     runs-on: xcode-27
     timeout-minutes: 15

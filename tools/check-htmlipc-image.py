@@ -16,7 +16,11 @@ import zipfile
 RESOURCE = 'arm64ec-windows/madeira-htmlipc-bridge.dll'
 MANIFEST_RESOURCE = 'arm64ec-windows/madeira-htmlipc-bridge.manifest.json'
 FILENAME = 'madeira-htmlipc-bridge.dll'
+# The legacy hash identifies the frozen I386 browser/cache contract. It is not
+# an assertion that every accepted current Steam core has that whole-file hash.
 CORE_SHA256 = '37f5ddbe874362d729b7cd33504943a9d649d845525afae4bcc2af36ab971f4b'
+NEW_CORE_SHA256 = '7afabbd8fae70a1b9831546d4c126ebd74c18796457e3a12fa259f529f7f2266'
+COMPATIBLE_CORE_SHA256 = (CORE_SHA256, NEW_CORE_SHA256)
 READY_MAGIC = 0x314452504948444d
 READY_SIZE = 80
 READY_VERSION = 1
@@ -227,9 +231,20 @@ def inspect_image(data):
 # Reusable build-hook API. Both names inspect file bytes only.
 parse_pe = inspect_image
 
+def validate_compiled_profiles(data):
+    """Production build gate; the generic PE parser also admits test fixtures.
+
+    A manifest alone must not claim that an old single-profile DLL supports a
+    freshly updated core. Source-closure and actual installer regressions prove
+    the selection code; this gate additionally checks both exact linked pins.
+    """
+    for expected in COMPATIBLE_CORE_SHA256:
+        require(bytes.fromhex(expected) in data, 'compiled DLL omits required core profile: ' + expected)
+
+
 def make_manifest(data, abi_header, core_hash=CORE_SHA256, build_report=None, cache_marker=None):
     result = dict(format=1, mode='native-owner', filename=FILENAME, bytes=len(data), sha256=sha256(data),
-                  coreSHA256=core_hash,
+                  coreSHA256=core_hash, compatibleCoreSHA256=list(COMPATIBLE_CORE_SHA256),
                   readinessABI=dict(version=READY_VERSION, size=READY_SIZE,
                                     sha256=sha256(Path(abi_header).read_bytes())))
     if build_report is not None:
@@ -248,6 +263,11 @@ def validate_manifest(data, manifest, abi_hash=None, core_hash=CORE_SHA256):
     require(type(manifest.get('bytes')) is int and manifest['bytes'] == len(data), 'manifest byte count mismatch')
     require(manifest.get('sha256') == sha256(data), 'manifest DLL hash mismatch')
     require(digest(manifest.get('coreSHA256')) and manifest['coreSHA256'] == core_hash, 'manifest current core hash mismatch')
+    # Older self-contained fixture manifests predate the profile list. Any
+    # manifest that publishes this field must name exactly the reviewed set.
+    if 'compatibleCoreSHA256' in manifest:
+        require(manifest['compatibleCoreSHA256'] == list(COMPATIBLE_CORE_SHA256),
+                'manifest compatible core profiles mismatch')
     abi = manifest.get('readinessABI')
     require(isinstance(abi, dict) and type(abi.get('version')) is int and abi['version'] == READY_VERSION and
             type(abi.get('size')) is int and abi['size'] == READY_SIZE and
@@ -275,6 +295,10 @@ def validate_build_report(data, manifest, report, source_root=None):
             'build report readiness ABI mismatch')
     if 'diagnostics_merged' in report:
         require(report['diagnostics_merged'] is True, 'source diagnostics build mode mismatch')
+    if 'compatibleCoreSHA256' in manifest or 'compatible_core_sha256' in report:
+        require(manifest.get('compatibleCoreSHA256') == list(COMPATIBLE_CORE_SHA256) and
+                report.get('compatible_core_sha256') == list(COMPATIBLE_CORE_SHA256),
+                'build/manifest compatible core profiles mismatch')
     if 'core_sha256' in report:
         require(report['core_sha256'] == manifest['coreSHA256'], 'build/manifest current core mismatch')
     if 'cache_marker_sha256' in report:

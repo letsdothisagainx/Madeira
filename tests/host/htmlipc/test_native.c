@@ -5,6 +5,7 @@
 #include <assert.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -85,10 +86,20 @@ unsigned long long ios_thread_process_snapshot(void *owner,unsigned *threads,int
     return mock_expire_snapshot&&mock_snapshots>=mock_expire_snapshot?mock_lease+1:mock_lease;
 }
 static unsigned mock_allocations,mock_fail_allocation;
+static unsigned mock_log_calls;
+static char mock_log[2048];
 static void *mock_malloc(size_t size)
 { return ++mock_allocations==mock_fail_allocation?NULL:malloc(size); }
+static int mock_dprintf(int fd,const char *format,...)
+{
+    va_list ap;int result;(void)fd;++mock_log_calls;
+    va_start(ap,format);result=vsnprintf(mock_log,sizeof(mock_log),format,ap);va_end(ap);
+    assert(result>=0&&(size_t)result<sizeof(mock_log));return result;
+}
 #define malloc mock_malloc
+#define dprintf mock_dprintf
 #include "htmlipc_native.h"
+#undef dprintf
 #undef malloc
 
 #define IMAGE_SIZE 0x4000u
@@ -130,6 +141,7 @@ static void build(void)
     unsigned char *p;LIST_ENTRY *head;char cmd[2048],nt[512];
     memset(&f,0,sizeof(f));mock_reads=mock_snapshots=mock_fail_read=mock_expire_snapshot=0;
     mock_allocations=mock_fail_allocation=0;
+    ios_htmlipc_rejection_count=mock_log_calls=0;mock_log[0]=0;
     mock_lease=UINT64_C(0x123456789);mock_threads=3;mock_exiting=mock_reclaimed=0;
     mock_owner=&f.peb;mock_parent=NULL;mock_flip_data=NULL;test_teb.ClientId.UniqueProcess=(void *)(uintptr_t)32;
     nranges=0;readable(&f,sizeof(f));
@@ -171,6 +183,14 @@ static void rejected(USHORT requested)
     assert(!redirected&&!path&&!command);
     assert(!memcmp(&f.path,&old_path,sizeof(old_path))&&!memcmp(&f.child.ImagePathName,&old_image,sizeof(old_image))&&
            !memcmp(&f.child.CommandLine,&old_command,sizeof(old_command)));
+    assert(strstr(mock_log,"result=refused stage=")&&strstr(mock_log,"status=c00000bb pid=0020"));
+    assert(!strstr(mock_log,"Program Files")&&!strstr(mock_log,"mobile")&&!strstr(mock_log,"765611"));
+}
+static void rejected_stage(USHORT requested,const char *stage)
+{
+    char expected[80];rejected(requested);
+    assert(snprintf(expected,sizeof(expected),"stage=%s ",stage)>0);
+    assert(strstr(mock_log,expected));
 }
 static void unchanged(void)
 {
@@ -242,16 +262,23 @@ int main(void)
     build();string(&f.child.ImagePathName,f.image_name,"C:\\games\\Game.exe");unchanged();
     build();mock_owner=NULL;unchanged();
     build();assert(!unsetenv("MADEIRA_HTMLIPC_HELPER"));assert(!unsetenv("MADEIRA_HTMLIPC_CACHE_DIR"));unchanged();
+    for(unsigned i=1;i<=2;i++){
+        WCHAR *path,*command;BOOL redirected;
+        build();mock_fail_allocation=i;
+        assert(run(0,&redirected,&path,&command)==STATUS_NO_MEMORY&&!redirected&&!path&&!command);
+        assert(strstr(mock_log,"stage=allocation status=c0000017"));
+        assert(equals(&f.child.ImagePathName,original_image));
+    }
     /* Active, properly tagged requests fail closed whenever either host input
      * or the actual source Installed/current-lease proof is unavailable. */
-    build();assert(!unsetenv("MADEIRA_HTMLIPC_HELPER"));rejected(0);
-    build();assert(!unsetenv("MADEIRA_HTMLIPC_CACHE_DIR"));rejected(0);
-    build();assert(!setenv("MADEIRA_HTMLIPC_HELPER","C:\\other\\steamwebhelper.exe",1));rejected(0);
+    build();assert(!unsetenv("MADEIRA_HTMLIPC_HELPER"));rejected_stage(0,"env-pair");
+    build();assert(!unsetenv("MADEIRA_HTMLIPC_CACHE_DIR"));rejected_stage(0,"env-pair");
+    build();assert(!setenv("MADEIRA_HTMLIPC_HELPER","C:\\other\\steamwebhelper.exe",1));rejected_stage(0,"cache-paths");
     build();assert(!setenv("MADEIRA_HTMLIPC_CACHE_DIR","C:\\windows\\madeira-compat\\SteamBrowserRuntime\\v1\\bin\\cef\\cef.win7\\.. ",1));rejected(0);
-    build();rejected(0x8664);
-    build();mock_parent=(HANDLE)(uintptr_t)0x100;rejected(0); /* foreign PS parent handle */
-    build();ready()->pid=33;rejected(0);
-    build();ready()->owner_lease--;rejected(0);
+    build();rejected_stage(0x8664,"requested-machine");assert(strstr(mock_log,"requested-machine=8664"));
+    build();mock_parent=(HANDLE)(uintptr_t)0x100;rejected_stage(0,"parent"); /* foreign PS parent handle */
+    build();ready()->pid=33;rejected_stage(0,"bridge-ready");assert(strstr(mock_log,"ready-data=unavailable"));
+    build();ready()->owner_lease--;rejected_stage(0,"bridge-ready");assert(strstr(mock_log,"ready-data=unavailable"));
     build();ready()->owner_peb++;rejected(0);
     build();ready()->self_module++;rejected(0);
     build();ready()->installed_module=0;rejected(0);
@@ -260,15 +287,18 @@ int main(void)
     build();ready()->flags&=~MADEIRA_HTMLIPC_READY_CACHE_VERIFIED;rejected(0);
     build();ready()->sequence=3;rejected(0);
     build();ready()->sequence=0;rejected(0);
-    build();ready()->provider_error=1;rejected(0);
-    build();ready()->installer_error=1;rejected(0);
+    build();ready()->provider_error=1;rejected_stage(0,"bridge-ready");
+    assert(strstr(mock_log,"ready-data=coherent flags=00000007 provider-error=00000001 installer-error=00000000"));
+    build();ready()->installer_error=1;rejected_stage(0,"bridge-ready");
+    assert(strstr(mock_log,"ready-data=coherent flags=00000007 provider-error=00000000 installer-error=00000001"));
     build();ready()->generation=0;rejected(0);
     build();ready()->magic=0;rejected(0);
     build();ready()->size--;rejected(0);
     build();ready()->version++;rejected(0);
     build();ready()->reserved=1;rejected(0);
-    build();mock_flip_data=f.image+0x2080;rejected(0); /* snapshots differ */
-    build();mock_lease=0;rejected(0);
+    build();mock_flip_data=f.image+0x2080;rejected_stage(0,"bridge-ready"); /* snapshots differ */
+    assert(strstr(mock_log,"ready-data=unavailable"));
+    build();mock_lease=0;rejected_stage(0,"owner-lease");
     build();mock_threads=0;rejected(0);
     build();mock_exiting=1;rejected(0);
     build();mock_reclaimed=1;rejected(0);
@@ -302,8 +332,8 @@ int main(void)
     }
     build();u32(f.image+0x1100,0x1180);rejected(0); /* forwarded export */
     build();u32(f.image+0x1b0+36,0xe0000040);rejected(0); /* executable object */
-    build();string(&f.path,f.nt_name,"\\??\\C:\\other.exe");rejected(0);
-    build();string(&f.child.CommandLine,f.command,"helper.exe -steampid=33 -buildid=123");rejected(0);
+    build();string(&f.path,f.nt_name,"\\??\\C:\\other.exe");rejected_stage(0,"path");
+    build();string(&f.child.CommandLine,f.command,"helper.exe -steampid=33 -buildid=123");rejected_stage(0,"steam-tags");
     build();string(&f.child.CommandLine,f.command,"helper.exe --foo=\" -steampid=32 -buildid=123 a\"--bar");rejected(0);
     /* Every native DATA read failure must close the gate or leave the request
      * unrelated, without changing its path or parameters. */
@@ -313,6 +343,16 @@ int main(void)
         assert(status==STATUS_NOT_SUPPORTED||status==STATUS_SUCCESS);
         assert(!redirected&&!path&&!command);
         assert(equals(&f.child.ImagePathName,original_image));
+    }
+    /* Repeated failures remain genuine refusals after the bounded trail fills. */
+    {
+        WCHAR *path,*command;BOOL redirected;
+        build();mock_parent=(HANDLE)(uintptr_t)0x100;
+        for(unsigned i=0;i<40;i++){
+            assert(run(0,&redirected,&path,&command)==STATUS_NOT_SUPPORTED);
+            assert(!redirected&&!path&&!command);
+        }
+        assert(mock_log_calls==32&&ios_htmlipc_rejection_count==32);
     }
     assert(!unsetenv("MADEIRA_HTMLIPC_HELPER"));assert(!unsetenv("MADEIRA_HTMLIPC_CACHE_DIR"));
     puts("native header: coherent redirect, untouched tail, passthrough, current-PID/lease readiness and malformed DATA/LDR gates passed");

@@ -16,10 +16,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: Install bounded static PE inspection dependencies
         run: python3 -m pip install --disable-pip-version-check capstone==5.0.3 protobuf==5.29.5
       - name: Read verified official archives without installing or executing components
         run: python3 tools/inspect-steam-browser-update.py --output inspection/steam-browser-update.json
+      - name: Verify real production installer with both complete official core files
+        run: python3 tests/integration/check-official-steam-bridge-profiles.py --download-official
       - uses: actions/upload-artifact@v4
         with:
           name: steam-browser-update-inspection

@@ -53,7 +53,14 @@ def main():
     pinned=re.search(r'static constexpr U8 digest\[32\]=\{([^}]+)\}',installer)
     if not pinned:parser.error('missing current core digest in reviewed installer')
     core=bytes(int(n.strip(),0) for n in pinned[1].split(',')).hex()
-    if core!=image.CORE_SHA256:parser.error('current core source pin differs from image/package gate')
+    if core!=image.CORE_SHA256:parser.error('legacy core source pin differs from image/package gate')
+    profile_pins=re.findall(r'static constexpr U8 \w+\[32\]=\{([^}]+)\}',installer)
+    compatible=[bytes(int(n.strip(),0) for n in row.split(',')).hex() for row in profile_pins]
+    if sorted(compatible)!=sorted(image.COMPATIBLE_CORE_SHA256):
+        parser.error('reviewed installer profiles differ from image/package gate')
+    provenance=json.loads((HERE/'source-provenance.json').read_text())
+    if provenance.get('compatibleCoreSHA256')!=list(image.COMPATIBLE_CORE_SHA256):
+        parser.error('profile source provenance differs from reviewed installer')
     proof=json.loads((HERE/'runtime/proven-map-manifest.json').read_text())
     if proof.get('maintained_source_sha256')!=digest((HERE/'runtime/proven_map.cpp').read_bytes()):
         parser.error('actual proven map differs from its reviewed maintained source hash')
@@ -94,7 +101,7 @@ def main():
                         '/nodefaultlib','/dynamicbase','/nxcompat','/highentropyva','/timestamp:0',
                         '/opt:ref','/opt:icf','/incremental:no','/base:0x180000000',
                         '/out:'+str(output),'/def:'+str(definition),*map(str,objects),*map(str,libraries)],check=True)
-        raw=output.read_bytes();summary=image.inspect_image(raw);abi_hash=digest(abi.read_bytes())
+        raw=output.read_bytes();summary=image.inspect_image(raw);image.validate_compiled_profiles(raw);abi_hash=digest(abi.read_bytes())
         report={'format':1,'scope':'source-built native-owner AMD64 bridge; runtime/Steam UI unclaimed',
             'experimental_auto_arm':True,'native_owner':True,'stock_wine_test':False,
             'compiler_target':'x86_64-windows-msvc','sha256':summary['sha256'],'size':len(raw),
@@ -103,10 +110,12 @@ def main():
             'ready_data':{'name':'MadeiraRuntimeReady','size':80,'version':1,'abi_sha256':abi_hash,
                           'forwarder':False,'executable':False,'shared_section':False},
             'owner_query_class':'0x4d480001','cache_environment':'MADEIRA_HTMLIPC_CACHE_DIR',
-            'core_sha256':core,'cache_marker_sha256':cache_hash,'diagnostics_merged':True,
+            'core_sha256':core,'compatible_core_sha256':list(image.COMPATIBLE_CORE_SHA256),
+            'core_sha256_meaning':'legacy-i386-browser-cache-contract-baseline',
+            'cache_marker_sha256':cache_hash,'diagnostics_merged':True,
             'tools':{'compiler':compiler,'dlltool':dlltool,'linker':linker,'objcopy':str(objcopy)}}
         manifest={'format':1,'mode':'native-owner','filename':image.FILENAME,'bytes':len(raw),
-                  'sha256':summary['sha256'],'coreSHA256':core,
+                  'sha256':summary['sha256'],'coreSHA256':core,'compatibleCoreSHA256':list(image.COMPATIBLE_CORE_SHA256),
                   'readinessABI':{'version':1,'size':80,'sha256':abi_hash},
                   'sourceSHA256':source_hash,'cacheMarkerSHA256':cache_hash}
         manifest_path=build/'madeira-htmlipc-bridge.manifest.json';manifest_path.write_text(json.dumps(manifest,indent=2)+'\n')

@@ -70,7 +70,7 @@ extern "C" EXPORT void *MadeiraResolveCurrentController(){
      * constructor registration, so calling CreateInterface there is invalid. */
     if(state.phase!=Phase::Installed||!state.module)return nullptr;
     auto address=GetProcAddress(state.module,"CreateInterface");
-    if(address!=static_cast<U8*>(state.module)+create_interface_rva){
+    if(address!=static_cast<U8*>(state.module)+state.profile->create_interface_rva){
         state.phase=Phase::Failed;state.result={Error::WrongFactory,0,true};return nullptr;}
     using Factory=void *(*)(const char *,int *);int status=-1;
     void *object=reinterpret_cast<Factory>(address)("ChromeHTML_Controller_003",&status);

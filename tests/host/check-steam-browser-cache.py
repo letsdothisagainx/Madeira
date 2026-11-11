@@ -212,6 +212,75 @@ for spoof in ["spoof-marker.zip", "spoof-marker-case.zip"] {
 }
 try checked("current-core") { try F.core(core, steamRoot: steam, recipe: recipe, digest: digestFile) }
 fails("core outside Steam") { try F.core(core, steamRoot: base, recipe: recipe, digest: digestFile) }
+// Hash-provider injection exercises production compatibility selection only.
+// These fixture bytes are NOT either genuine Valve DLL. Official-archive
+// integration independently verifies the actual binaries and all 80 records.
+let oldCoreSHA = "37f5ddbe874362d729b7cd33504943a9d649d845525afae4bcc2af36ab971f4b"
+let updatedCoreSHA = "7afabbd8fae70a1b9831546d4c126ebd74c18796457e3a12fa259f529f7f2266"
+assert(F.officialCompatibleCoreSHA256 == [oldCoreSHA, updatedCoreSHA])
+assert(F.official.coreSHA256 == oldCoreSHA && F.official.expectedFiles + 1 == 80)
+// Metadata-only 80-record shape; no placeholder records are materialized into
+// an official cache or accepted as files. The archive integration uses real
+// package bytes. This checks that core selection cannot alter cache identity.
+var officialRecords = F.official.keys.map {
+    F.FileRecord(name: F.official.prefix + $0.name, bytes: $0.bytes ?? 512, sha256: $0.sha256)
+}
+for index in officialRecords.count..<F.official.expectedFiles {
+    officialRecords.append(F.FileRecord(name: F.official.prefix + "metadata-fixture-\(index).pak",
+        bytes: 1, sha256: String(repeating: "0", count: 64)))
+}
+officialRecords.append(F.generatedRecord(recipe: F.official))
+let officialBefore = try JSONEncoder().encode(F.manifest(recipe: F.official, records: officialRecords))
+for selected in [oldCoreSHA, updatedCoreSHA] {
+    let result = try F.compatibleCoreSHA256(core, steamRoot: steam, recipe: F.official, digest: { _ in selected })
+    assert(result == selected)
+    try F.core(core, steamRoot: steam, recipe: F.official, digest: { _ in selected })
+    fails("foreign recipe cannot inherit official core compatibility") {
+        try F.core(core, steamRoot: steam, recipe: recipe, digest: { _ in selected })
+    }
+}
+fails("unknown official core remains rejected") {
+    try F.core(core, steamRoot: steam, recipe: F.official, digest: { _ in String(repeating: "0", count: 64) })
+}
+// Matching the public cache identifier is insufficient to obtain the second
+// core profile. Every altered recipe field retains its original exact pin.
+let spoofedRecipes = [
+    F.Recipe(id: F.official.id, coreSHA256: oldCoreSHA, prefix: F.official.prefix,
+        expectedFiles: F.official.expectedFiles, packages: [package], keys: F.official.keys, marker: F.official.marker),
+    F.Recipe(id: F.official.id, coreSHA256: oldCoreSHA, prefix: F.official.prefix,
+        expectedFiles: F.official.expectedFiles, packages: F.official.packages, keys: keys, marker: F.official.marker),
+    F.Recipe(id: F.official.id, coreSHA256: oldCoreSHA, prefix: F.official.prefix,
+        expectedFiles: F.official.expectedFiles - 1, packages: F.official.packages, keys: F.official.keys, marker: F.official.marker),
+    F.Recipe(id: F.official.id, coreSHA256: oldCoreSHA, prefix: "other/",
+        expectedFiles: F.official.expectedFiles, packages: F.official.packages, keys: F.official.keys, marker: F.official.marker),
+    F.Recipe(id: F.official.id, coreSHA256: oldCoreSHA, prefix: F.official.prefix,
+        expectedFiles: F.official.expectedFiles, packages: F.official.packages, keys: F.official.keys, marker: generated)
+]
+for spoof in spoofedRecipes {
+    fails("altered official recipe cannot inherit second core profile") {
+        try F.core(core, steamRoot: steam, recipe: spoof, digest: { _ in updatedCoreSHA })
+    }
+    try F.core(core, steamRoot: steam, recipe: spoof, digest: { _ in oldCoreSHA })
+}
+fails("compatible hash does not permit outside-core path") {
+    try F.core(core, steamRoot: base, recipe: F.official, digest: { _ in updatedCoreSHA })
+}
+let outsideCore = temp.appendingPathComponent("outside-core.dll")
+try fixture("core.dll").write(to: outsideCore)
+let linkedCore = steam.appendingPathComponent("bin/linked-chromehtml.dll")
+try fm.createSymbolicLink(at: linkedCore, withDestinationURL: outsideCore)
+fails("compatible hash does not follow untrusted core symlink") {
+    try F.core(linkedCore, steamRoot: steam, recipe: F.official, digest: { _ in updatedCoreSHA })
+}
+try fm.removeItem(at: linkedCore)
+// Core selection cannot rewrite the existing browser recipe/manifest identity,
+// archives, hashes, or strict immutable-cache validation rules.
+let officialAfter = try JSONEncoder().encode(F.manifest(recipe: F.official, records: officialRecords))
+let beforeManifest = try JSONDecoder().decode(F.Manifest.self, from: officialBefore)
+let afterManifest = try JSONDecoder().decode(F.Manifest.self, from: officialAfter)
+assert(beforeManifest == afterManifest)
+assert(afterManifest.files.count == 80)
+print("PASS production core compatibility selection: exact two official profile hashes, full-recipe isolation, unknown/hash/path/symlink rejection, unchanged 80-record cache identity; injected hash-provider fixture, not Valve trust authentication")
 fails("active owner acquisition") { _ = try F.ownerRoot(cacheBase: base, steamRoot: steam, idle: { false }) }
 let alien = base.appendingPathComponent("SteamBrowserRuntime")
 try fm.createDirectory(at: alien, withIntermediateDirectories: false)

@@ -54,7 +54,7 @@ inline void *operator new(Size,void *p) noexcept { return p; }
 
 namespace {
 constexpr U32 entry_limit=8,wait_thread_limit=16,lock_attempts=128,drain_attempts=128;
-constexpr Size pin_size=1668248;
+static Size file_pin_size;
 struct LockWord {void *word;};
 enum class Life:U32 { Empty,Live,Failed,Closing,Dead };
 enum class Operation:U32 { Available,Writable,Put,Get,Clear,Wait };
@@ -219,7 +219,7 @@ static bool pin_source(){
 }
 static bool stream_valid(install::Installer *i,void *stream){
     if(!stream)return false;
-    auto *table=static_cast<Byte *>(i->module)+install::stream_vtable_rva;
+    auto *table=static_cast<Byte *>(i->module)+i->profile->stream_vtable_rva;
     if(*static_cast<void **>(stream)!=table)return false;
     for(U32 n=0;n<7;++n)
         if(reinterpret_cast<const void *const *>(table)[n]!=i->config.hooks[n])return false;
@@ -303,7 +303,7 @@ static Lease acquire(void *stream,Operation op,const Originals &original){
        (entries[n].scope.to_helper==stream||entries[n].scope.from_helper==stream)){e=&entries[n];break;}
     if(!e){
         auto *i=get_installer();
-        auto *controller=static_cast<Byte *>(i->module)+install::controller_object_rva;
+        auto *controller=static_cast<Byte *>(i->module)+i->profile->controller_object_rva;
         /* Read live stream identities, not a pre-Init snapshot of null fields. */
         void *to=*reinterpret_cast<void **>(controller+0x170);
         void *from=*reinterpret_cast<void **>(controller+0x178);
@@ -590,17 +590,22 @@ static bool prepare_pin(){
     void *file=CreateFileW(executable_path,0x80000000u,5,nullptr,3,0x80,nullptr);
     if(file==reinterpret_cast<void *>(~Size(0))){report(Error::PinOpen);return false;}
     long long length=0;
-    if(!GetFileSizeEx(file,&length)||length!=static_cast<long long>(pin_size)){
+    if(!GetFileSizeEx(file,&length)||length<=0||!install::profile_for_size(static_cast<Size>(length))){
         CloseHandle(file);report(Error::PinSize);return false;}
-    file_pin=static_cast<Byte *>(HeapAlloc(GetProcessHeap(),0,pin_size));
+    file_pin_size=static_cast<Size>(length);
+    file_pin=static_cast<Byte *>(HeapAlloc(GetProcessHeap(),0,file_pin_size));
     if(!file_pin){CloseHandle(file);report(Error::Allocation);return false;}
     U32 total=0;
-    while(total<pin_size){U32 got=0;
-        if(!ReadFile(file,file_pin+total,U32(pin_size-total),&got,nullptr)||!got){
+    while(total<file_pin_size){U32 got=0;
+        if(!ReadFile(file,file_pin+total,U32(file_pin_size-total),&got,nullptr)||!got){
             CloseHandle(file);HeapFree(GetProcessHeap(),0,file_pin);file_pin=nullptr;report(Error::PinRead);return false;}
         total+=got;
     }
-    CloseHandle(file);return true;
+    CloseHandle(file);
+    if(!install::profile_for_file(file_pin,file_pin_size)){
+        HeapFree(GetProcessHeap(),0,file_pin);file_pin=nullptr;file_pin_size=0;report(Error::SourcePinFailed);return false;
+    }
+    return true;
 }
 }
 
@@ -619,7 +624,7 @@ extern "C" bool MadeiraRuntimePrepareConfig(void *module,install::Config *out){
     if(!choose_cache())return false;
     if(!prepare_cache_gate())return false;
     if(!prepare_pin())return false;
-    install::Config config{};config.pinned_file=file_pin;config.pinned_file_size=pin_size;
+    install::Config config{};config.pinned_file=file_pin;config.pinned_file_size=file_pin_size;
     config.hook_module=module;config.hook_module_size=image_size;
     config.hooks[0]=reinterpret_cast<const void *>(runtime_destroy);
     config.hooks[1]=reinterpret_cast<const void *>(runtime_available);
