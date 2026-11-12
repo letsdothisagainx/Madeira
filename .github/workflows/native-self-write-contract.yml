@@ -1,0 +1,37 @@
+name: Research native Windows self-write contract
+on:
+  workflow_dispatch:
+  push:
+    branches: ['codex/inspect-*']
+    paths:
+      - tests/integration/native-self-write-contract.c
+      - tools/run-native-self-write-contract.py
+      - .github/workflows/native-self-write-contract.yml
+permissions:
+  contents: read
+jobs:
+  native-reference:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        architecture: [x86, x64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile owned DLL and exercise real Windows self-write APIs
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do call "%%i\VC\Auxiliary\Build\vcvarsall.bat" ${{ matrix.architecture }}
+          if errorlevel 1 exit /b %errorlevel%
+          python tools\run-native-self-write-contract.py --output self-write-reference-${{ matrix.architecture }}
+          if errorlevel 1 exit /b %errorlevel%
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-self-write-reference-${{ matrix.architecture }}
+          path: self-write-reference-${{ matrix.architecture }}/
+          if-no-files-found: error
+          retention-days: 3
