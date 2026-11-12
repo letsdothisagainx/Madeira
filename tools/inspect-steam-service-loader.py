@@ -65,6 +65,17 @@ class Inspector:
         self.md.detail = True
         self.md.skipdata = True
         self.imports = self.pe.import_slots()
+        delayed = public.pefile.PE(data=raw, fast_load=True)
+        delayed.parse_data_directories(directories=[public.pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT']])
+        self.delayed_imports = {}
+        for entry in getattr(delayed, 'DIRECTORY_ENTRY_DELAY_IMPORT', []):
+            dll = entry.dll.decode('ascii').lower()
+            for imported in entry.imports:
+                name = imported.name.decode('ascii') if imported.name else '#'+str(imported.ordinal)
+                slot = imported.address-self.pe.base
+                require(0 <= slot < self.pe.image_size and slot not in self.imports, 'invalid/overlapping delay import slot')
+                self.delayed_imports[slot] = dll+'!'+name
+        self.imports.update(self.delayed_imports)
         self.ranges = self.pe.function_ranges()
         self.starts = [x[0] for x in self.ranges]
         self.code = [s for s in self.pe.sections if s['flags'] & 0x20000000]
@@ -360,7 +371,15 @@ class Inspector:
             if key not in functions:
                 functions[key] = {**body, 'relationship': 'direct caller of query wrapper',
                                   'wrapper_target_rva': row['target_rva']}
-        return {'pe': self.pe.describe(), 'registry_import_slots': {
+        dynamic_names = []
+        for name in ('RegQueryInfoKeyA', 'RegQueryInfoKeyW'):
+            for encoding, needle in [('ascii', name.encode()), ('utf16le', name.encode('utf-16le'))]:
+                for match in re.finditer(re.escape(needle), self.pe.data):
+                    rva = self.pe.rva_of(match.start())
+                    dynamic_names.append({'name': name, 'encoding': encoding, 'rva': hex(rva) if rva is not None else None})
+        return {'pe': self.pe.describe(), 'query_api_name_occurrences': dynamic_names,
+                'delayed_registry_imports': {hex(slot): name for slot, name in self.delayed_imports.items() if '!Reg' in name},
+                'registry_import_slots': {
                     hex(slot): name for slot, name in self.imports.items() if name in wanted},
                 'iat_calls': calls, 'query_wrapper_callers': parents, 'functions': list(functions.values()),
                 'scope': 'Public unmodified I386 PE. Static code only; handle rights and output use require actual dataflow proof.'}
@@ -421,7 +440,10 @@ def emit_registry_summary(report):
     for name, component in report['components'].items():
         pe = component['pe']
         emit({'kind': 'registry-component', 'name': name, 'machine': pe['machine'], 'sha256': pe['sha256'],
-              'bytes': pe['bytes'], 'registry_import_slots': component['registry_import_slots'],
+              'bytes': pe['bytes'], 'timestamp': pe['timestamp'], 'size_of_image': pe['size_of_image'],
+              'query_api_name_occurrences': component['query_api_name_occurrences'],
+              'delayed_registry_imports': component['delayed_registry_imports'],
+              'registry_import_slots': component['registry_import_slots'],
               'iat_calls': component['iat_calls'], 'query_wrapper_callers': component['query_wrapper_callers']})
         for body in component['functions']:
             emit({'kind': 'registry-function', 'component': name,
@@ -473,7 +495,7 @@ def main():
                         if 'service' in member:
                             report['archive_service_inventory'].append({'package': package, 'member': member, 'bytes': item.file_size})
                         leaf = member.rsplit('/', 1)[-1]
-                        if args.registry_security and leaf != 'steamservice.dll':
+                        if args.registry_security and leaf not in ('steamservice.dll', 'steamservice.exe'):
                             continue
                         if leaf not in ('steam.exe', 'steamclient.dll', 'steamclient64.dll',
                                         'vstdlib_s64.dll', 'tier0_s64.dll') and not (
