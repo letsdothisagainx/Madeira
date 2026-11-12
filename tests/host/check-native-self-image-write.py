@@ -90,10 +90,13 @@ static kern_return_t mach_vm_read_overwrite(int task,mach_vm_address_t address,m
 /* Query real mappings; never infer W/X from the guest request or test state. */
 static kern_return_t mach_vm_region_recurse(int task,mach_vm_address_t* address,mach_vm_size_t* bytes,natural_t* depth,vm_region_recurse_info_t out,mach_msg_type_number_t* count){
  (void)task;(void)depth;(void)count;FILE* f=fopen("/proc/self/maps","r");assert(f);char line[512],perms[8];unsigned long lo,hi;int result=1;
- while(fgets(line,sizeof(line),f))if(sscanf(line,"%lx-%lx %7s",&lo,&hi,perms)==3&&hi>*address){
-  vm_region_submap_info_data_64_t* info=out;memset(info,0,sizeof(*info));info->protection=(perms[0]=='r'?1:0)|(perms[1]=='w'?2:0)|(perms[2]=='x'?4:0);
-  info->max_protection=info->protection;*address=lo;*bytes=hi-lo;result=0;break;
- }fclose(f);return result;
+ while(fgets(line,sizeof(line),f)) {
+  if(sscanf(line,"%lx-%lx %7s",&lo,&hi,perms)==3&&hi>*address){
+   vm_region_submap_info_data_64_t* info=out;memset(info,0,sizeof(*info));info->protection=(perms[0]=='r'?1:0)|(perms[1]=='w'?2:0)|(perms[2]=='x'?4:0);
+   info->max_protection=info->protection;*address=lo;*bytes=hi-lo;result=0;break;
+  }
+ }
+ fclose(f);return result;
 }
 typedef struct {struct {void* UniqueProcess;} ClientId;} TEB;static TEB teb;
 static TEB* NtCurrentTeb(void){return &teb;}
