@@ -33,14 +33,14 @@ def description():
     regular(PATCH, 'registry security patch')
     regular(PROVENANCE, 'registry security provenance')
     data = json.loads(PROVENANCE.read_text())
-    if (data.get('format') != 1 or set(data.get('files', {})) != {str(SOURCE)} or
+    if (data.get('format') != 1 or set(data.get('files', {})) != {SOURCE.as_posix()} or
             digest(PATCH) != data.get('patchSHA256')):
         raise ValueError('invalid registry security patch provenance')
     return data
 
 
 def stage(destination, source):
-    data = description()['files'][str(SOURCE)]
+    data = description()['files'][SOURCE.as_posix()]
     regular(source / SOURCE, 'registry security input')
     if digest(source / SOURCE) != data['beforeSHA256']:
         raise ValueError('unexpected or already patched registry security input')
@@ -76,7 +76,7 @@ def apply(state, source):
     (state / 'manifest.json').write_text(json.dumps(manifest) + '\n')
     try:
         shutil.copyfile(state / 'staged' / SOURCE, source / SOURCE)
-        if digest(source / SOURCE) != manifest['files'][str(SOURCE)]['afterSHA256']:
+        if digest(source / SOURCE) != manifest['files'][SOURCE.as_posix()]['afterSHA256']:
             raise ValueError('registry security publication failed')
     except BaseException:
         shutil.copyfile(backup, source / SOURCE)
@@ -95,7 +95,7 @@ def restore(state):
     regular(source / SOURCE, 'registry security staged source')
     regular(backup, 'registry security original source')
     expected = 'afterSHA256' if manifest['applied'] else 'beforeSHA256'
-    data = manifest['files'][str(SOURCE)]
+    data = manifest['files'][SOURCE.as_posix()]
     if digest(source / SOURCE) != data[expected]:
         raise ValueError('refusing to discard build-time registry security changes')
     if digest(backup) != data['beforeSHA256']:

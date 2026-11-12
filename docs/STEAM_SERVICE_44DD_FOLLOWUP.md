@@ -8,8 +8,8 @@ logs and embedded VAC export. No installed game or prefix file is edited.
 
 The genuine I386 service PID `00bc`, worker `01c0`, calls
 `SetNamedSecurityInfoW` with object type 13 (`SE_REGISTRY_WOW64_64KEY`). The
-export records Wine's unsupported-object warning twice at session rows
-15484/15487. The pinned implementation returns `ERROR_SUCCESS` from this
+export records Wine's unsupported-object warnings for types 12 and 13 at session
+rows 15484/15487. The pinned implementation returns `ERROR_SUCCESS` from this
 unsupported branch without opening a registry key or setting its security.
 That is a false success in a real service operation, independently of VAC.
 The sanitized export does not retain the affected registry path or descriptor.
