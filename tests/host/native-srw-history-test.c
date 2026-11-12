@@ -99,6 +99,6 @@ int main(void) {
     /* Every source-built ring reader uses the same owned writer mapping. */
     struct srw_lock lock={1,2};ios_srw_dump_park((const char *)&lock+2);
     assert(!munmap(reservation,reserved));
-    puts("PASS actual staged SRW producer: original/unbound real RX faults, valid owned RW binding,10000 exact events/512-slot wrap,8-thread256-event contention without lost indices or events,32-bit wrap,unchanged lock bodies/code/RX protection");
+    puts("PASS actual staged SRW producer: original/unbound real RX faults, valid owned RW binding,10000 exact events/512-slot wrap,8-thread256-event contention without lost indices or events,32-bit wrap,only the separately tested empty-wake guard changes locking,RX protection retained");
     return 0;
 }

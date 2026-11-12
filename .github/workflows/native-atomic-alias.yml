@@ -17,6 +17,7 @@ on:
       - build/ntdll-unix/native_counter*.h
       - build/wine-pe/build-ntdll.sh
       - tools/build/stage-native-counter-writes.py
+      - tools/build/stage-native-srw-wake.py
       - tests/host/*native*counter*
       - tests/host/*native*direct*call*
       - build/ntdll-unix/signal_arm64_ios.c
@@ -46,6 +47,7 @@ on:
       - build/ntdll-unix/native_counter*.h
       - build/wine-pe/build-ntdll.sh
       - tools/build/stage-native-counter-writes.py
+      - tools/build/stage-native-srw-wake.py
       - tests/host/*native*counter*
       - tests/host/*native*direct*call*
       - build/ntdll-unix/signal_arm64_ios.c
@@ -80,6 +82,7 @@ jobs:
           python3 tests/host/check-native-counter-stage.py
           python3 tests/host/check-native-srw-alias.py
           python3 tests/host/check-native-srw-history.py
+          python3 tests/host/check-native-srw-wake.py
           python3 tests/host/check-native-atomic-alias.py
           python3 tests/host/check-native-atomic-image.py
           python3 tests/host/check-jit-store-census.py

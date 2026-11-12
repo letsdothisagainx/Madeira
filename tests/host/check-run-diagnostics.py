@@ -74,7 +74,10 @@ import Glibc
         let nativeUUID = "00112233-4455-6677-8899-aabbccddeeff"
         let flags = "[cs2-launch-flags-v1] pid=033c tid=0340 steam=1 condebug=1 joy=1 insecure=0 allow-third-party=0 argument-count=3 unknown-count=0 known-sequence=0,1,2 parse-complete=1 coverage=accepted-process-params"
         let provenance = "[native-build-provenance-v1] package-source=\(revision) native-uuid=\(compactUUID) packaged-uuid=\(nativeUUID) uuid-status=match virtual-source=\(virtualHash) expected-virtual=\(virtualHash) virtual-build=\(revision) virtual-status=match jit-source=\(jitHash) expected-jit=\(jitHash) jit-build=\(revision) jit-status=match compiled-code-tail-mb=512 expected-code-tail-mb=512 policy-status=match"
+        let faultPrefix = "[fault-site-v1] family=exclusive tracked-rank=1 hits=42 pc=0x7c01234560 code-pe=0x71c0000000 code-rva=123456 "
+        let faultRows = ["unchanged", "changed", "unverifiable"].map { faultPrefix + "cookies=" + $0 + " metadata=first-event" }
         let useful = ["[build] source=\(revision)", provenance,
+            "[dynamic-memory-pressure-v1] cache-detached=151010992 entries=2430 coherent=202 physical-freed=unmeasured",
             "[allocator] event=code-buffer-capacity reserved-mb=4096 committed-mb=512 free-mb=3584",
             "[process] pid=033c parent=0020 image=cs2.exe machine=8664 status=00000000",
             "[module] pid=033c module=libarm64ecfex.dll image-size=1048576 base=0x12345678",
@@ -94,8 +97,25 @@ import Glibc
             "payload=ABCDEFGHIJKLMNOPQRSTUVWX0123456789",
             "unknown=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
         ]
+        let rejectedFaultRows = [
+            "cookies=unchanged metadata=first-event", "[other-site-v1] cookies=unchanged metadata=first-event",
+            faultPrefix + "cookies=REAL_COOKIE_PRIVATE_SENTINEL metadata=first-event",
+            faultPrefix + "Cookie: REAL_COOKIE_PRIVATE_SENTINEL cookies=unchanged metadata=first-event",
+            faultPrefix + "cookies=unchanged metadata=first-event Cookie: REAL_COOKIE_PRIVATE_SENTINEL",
+            faultPrefix + "password=PASSWORD_PRIVATE_SENTINEL cookies=unchanged metadata=first-event",
+            faultPrefix + "Authorization: Bearer AUTH_PRIVATE_SENTINEL cookies=unchanged metadata=first-event",
+            faultPrefix + "access_token=TOKEN_PRIVATE_SENTINEL cookies=unchanged metadata=first-event"
+        ]
+        for row in rejectedFaultRows { assert(RunDiagnostics.sanitize(row) == nil, "secret row accepted") }
+        assert(RunDiagnostics.sanitize("[unrecognized-diagnostic-marker-v1] status=ready") == "[[redacted-opaque-value]] status=ready")
+        let closure = "11/12 14:53:04 [Networking] Netchan client closed unexpectedly: NETWORK_DISCONNECT_TIMEOUT"
+        assert(RunDiagnostics.sanitize(closure) == closure)
+        assert(RunDiagnostics.sanitize("payload=NETWORK_DISCONNECT_TIMEOUT") == "payload=[redacted-opaque-value]")
+        assert(RunDiagnostics.sanitize(closure + " Cookie: PRIVATE_COOKIE") == nil)
+        assert(RunDiagnostics.sanitize(closure + " access_token=PRIVATE_TOKEN") == nil)
+        assert(RunDiagnostics.sanitize(closure + " UNKNOWN_CONNECTION_PAYLOAD_1234567890")!.hasSuffix("[redacted-opaque-value]"))
         let repeated = String(repeating: "[allocator] event=sample reserved-mb=4096 committed-mb=512 status=ready\n", count: 8_000)
-        let main = (useful + privateRows + [String(repeating: "x", count: 20_000), "non-ascii=\u{00e9}"]).joined(separator: "\n") + "\n" + repeated
+        let main = (useful + faultRows + privateRows + rejectedFaultRows + [String(repeating: "x", count: 20_000), "non-ascii=\u{00e9}"]).joined(separator: "\n") + "\n" + repeated
         try put("madeira-log.txt", main)
         let steam = "wine/drive_c/Program Files (x86)/Steam/"
         let console = steam + "steamapps/common/Counter-Strike Global Offensive/game/csgo/console.log"
@@ -137,6 +157,11 @@ import Glibc
         assert(["manifest.json", "metadata.json", "clocks-and-markers.json", "sanitized/madeira-session.log", "sanitized/cs2-console.log", "sanitized/steam-console.log", "vac/observations.json", "vac/cs2-console.json", "vac/summary.json"].allSatisfy(names.contains))
         let sanitized = text(entries, "sanitized/madeira-session.log")
         for row in useful { assert(sanitized.contains(row), "useful row lost: " + row) }
+        for row in faultRows {
+            let expected = row.replacingOccurrences(of: " cookies=", with: " code-seal=")
+            assert(RunDiagnostics.sanitize(row) == expected)
+            assert(sanitized.contains(expected), "fault module/RVA row lost")
+        }
         assert(text(entries, "sanitized/cs2-console.log").contains("VAC was unable to verify your game session."))
         assert(!text(entries, "vac/observations.json").contains("code-buffer-capacity"))
         assert(text(entries, "vac/observations.json").contains("cs2-launch-flags-v1"))

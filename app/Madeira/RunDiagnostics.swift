@@ -44,6 +44,7 @@ enum RunDiagnostics {
     private static let privateAssignment = try! NSRegularExpression(pattern: #"(?i)(?<!reported-)\b[A-Z0-9_]*(?:TOKEN|PASSWORD|PASSWD|SECRET|COOKIE|TICKET|CREDENTIALS?|SESSIONID|API_KEY|AUTH_KEY)[A-Z0-9_]*\s*[:=]|\b(?:account|user|steamid)(?:name|id)?\s*[:=]"#)
     private static let opaque = try! NSRegularExpression(pattern: #"(?<![A-Za-z0-9_])[A-Za-z0-9_+/-]{24,}={0,2}(?![A-Za-z0-9_])"#)
     private static let accountAssignment = try! NSRegularExpression(pattern: #"(?i)\b(?:account|user|steam)[ _-]?(?:name|id)\s*[:=]|^\s*\[(?:Client|Server|Chat)\]\s+(?!(?:CL|SV|Warning|Error):)[^:\[\]]{1,64}:\s"#)
+    private static let faultSiteSeal = try! NSRegularExpression(pattern: #" cookies=(unchanged|changed|unverifiable)(?= metadata=first-event$)"#)
     private static let replacements: [(NSRegularExpression, String)] = [
         (#"[A-Za-z][A-Za-z0-9+.-]*://[^\s<>\"']+"#, "[redacted-url]"),
         (#"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"#, "[redacted-email]"),
@@ -63,13 +64,17 @@ enum RunDiagnostics {
     static func sanitize(_ original: String) -> String? {
         guard !original.isEmpty, original.utf8.count <= 16 << 10,
               original.unicodeScalars.allSatisfy({ $0.value == 9 || (32...126).contains($0.value) }) else { return nil }
-        let range = NSRange(original.startIndex..., in: original)
-        guard secret.firstMatch(in: original, range: range) == nil,
-              chat.firstMatch(in: original, range: range) == nil,
-              jwt.firstMatch(in: original, range: range) == nil,
-              privateAssignment.firstMatch(in: original, range: range) == nil,
-              accountAssignment.firstMatch(in: original, range: range) == nil else { return nil }
         var line = original
+        // This emitter's finite mapping-generation status is not a web cookie.
+        if line.hasPrefix("[fault-site-v1] ") {
+            line = faultSiteSeal.stringByReplacingMatches(in: line, range: NSRange(line.startIndex..., in: line), withTemplate: " code-seal=$1")
+        }
+        let range = NSRange(line.startIndex..., in: line)
+        guard secret.firstMatch(in: line, range: range) == nil,
+              chat.firstMatch(in: line, range: range) == nil,
+              jwt.firstMatch(in: line, range: range) == nil,
+              privateAssignment.firstMatch(in: line, range: range) == nil,
+              accountAssignment.firstMatch(in: line, range: range) == nil else { return nil }
         for (expression, replacement) in replacements {
             line = expression.stringByReplacingMatches(in: line, range: NSRange(line.startIndex..., in: line), withTemplate: replacement)
         }
@@ -86,13 +91,18 @@ enum RunDiagnostics {
                 let hash = [32, 40, 64].contains(word.utf8.count) && hex(word.utf8) && hashKey.contains(key)
                 let tag = range.lowerBound > line.startIndex && line[line.index(before: range.lowerBound)] == "[" &&
                     range.upperBound < line.endIndex && line[range.upperBound] == "]" &&
-                    ["native-build-provenance-v1", "cs2-user-marker-v1", "steam-content-audit-v1", "startup-timeline-v1", "fex-code-buffer-guard-v1"].contains(word)
+                    ["native-build-provenance-v1", "cs2-user-marker-v1", "steam-content-audit-v1", "startup-timeline-v1", "fex-code-buffer-guard-v1", "dynamic-memory-pressure-v1"].contains(word)
                 let field = range.upperBound < line.endIndex && line[range.upperBound] == "=" &&
                     ["compiled-hard-image-arena-mb", "expected-hard-image-arena-mb"].contains(word)
                 let policy = ["WINE_IOS_JIT_CODE_TAIL_LIMIT_MB", "WINE_IOS_JIT_HEAD_RESERVE_MB", "MADEIRA_POOL_HEAD_RESERVE_MB",
                               "WINE_IOS_JIT_IMAGE_ARENA_MB", "WINE_IOS_FEX_CODE_GUARD_V1"].contains(word)
                 let address = word.hasPrefix("0x") && hex(String(word.dropFirst(2)).utf8)
-                if !hash && !uuid && !tag && !field && !policy && !address { line.replaceSubrange(range, with: "[redacted-opaque-value]") }
+                // Engine enum identifiers in this exact closure context are
+                // diagnostic codes, not opaque connection/session payloads.
+                let disconnect = line.contains("[Networking] Netchan ") && line.contains(" closed unexpectedly: ") &&
+                    word.hasPrefix("NETWORK_DISCONNECT_") && word.utf8.count <= 96 &&
+                    word.utf8.allSatisfy { (65...90).contains($0) || $0 == 95 }
+                if !hash && !uuid && !tag && !field && !policy && !address && !disconnect { line.replaceSubrange(range, with: "[redacted-opaque-value]") }
             }
         return line
     }

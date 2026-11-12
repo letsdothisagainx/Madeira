@@ -88,6 +88,15 @@ PY
 # Both must expose the same native counter size and a NULL, unrelocated writer.
 python3 "$NATIVE_COUNTER_STAGE" verify-pe --machine arm64ec "$NATIVE_COUNTER_TMP/arm64ec-ntdll.dll"
 python3 "$NATIVE_COUNTER_STAGE" verify-pe --machine aarch64 "$NATIVE_COUNTER_TMP/aarch64-ntdll.dll"
+# Attest the actual compiled wake guard without retaining private symbols or
+# adding a new marker/access to the hot synchronization path.
+for entry in "arm64ec:$B" "aarch64:$A64_BUILD"; do
+    arch="${entry%%:*}"; tree="${entry#*:}"
+    python3 "$R/tools/check-native-srw-code.py" \
+        --image "$NATIVE_COUNTER_TMP/$arch-ntdll.dll" \
+        --object "$tree/dlls/ntdll/$arch-windows/sync.o" --machine "$arch" \
+        --source-sync "$R/wine/dlls/ntdll/sync.c"
+done
 mkdir -p "$(dirname "$OUT")" "$(dirname "$A64_OUT")"
 mv "$NATIVE_COUNTER_TMP/arm64ec-ntdll.dll" "$OUT"
 mv "$NATIVE_COUNTER_TMP/aarch64-ntdll.dll" "$A64_OUT"

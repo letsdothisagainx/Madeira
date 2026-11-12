@@ -186,13 +186,16 @@ def stage_queue(source):
       staging_allocator.trim_completed(internal_seq, !critical);
       copy_temp_allocator.trim_completed(internal_seq, !critical);
       argbuf_allocator.trim_completed(internal_seq, !critical);
-      DynamicBuffer::TrimCompletedForQueue(memoryDomain(), internal_seq, critical);
       initializer.trimMemoryPressure();
     } else {
       staging_allocator.free_blocks(internal_seq);
       copy_temp_allocator.free_blocks(internal_seq);
       argbuf_allocator.free_blocks(internal_seq);
-    }""")
+    }
+    // Dynamic caches have a serialized high/low-water controller. Visit it
+    // at completion even in the recovery band; its healthy path returns
+    // before a resource walk. The transient-ring rule must not force a drain.
+    DynamicBuffer::TrimCompletedForQueue(memoryDomain(), internal_seq, false);""")
     return source
 
 

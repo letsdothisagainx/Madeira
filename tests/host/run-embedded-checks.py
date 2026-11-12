@@ -46,6 +46,8 @@ commands = [
     ['python3', 'tests/host/check-native-counter-stage.py'],
     ['python3', 'tests/host/check-native-srw-alias.py'],
     ['python3', 'tests/host/check-native-srw-history.py'],
+    ['python3', 'tests/host/check-native-srw-wake.py'],
+    ['python3', 'tests/host/check-native-srw-code.py'],
     ['python3', 'tests/host/check-native-srw-history-performance.py', '--require-arm64-darwin'],
     ['python3', 'tests/host/check-native-qpc-counter-performance.py', '--require-arm64-darwin'],
     ['python3', 'tests/host/check-native-counter-call-performance.py', '--require-arm64-darwin'],

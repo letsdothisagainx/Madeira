@@ -387,6 +387,8 @@ jobs:
             wine/build-*/dlls/crypt32/*-windows/msg.o
             wine/build-*/dlls/kernelbase/*-windows/debug.o
             wine/build-*/dlls/advapi32/*-windows/security.o
+            wine/build-*/dlls/ntdll/*-windows/sync.o
+            wine/build-*/dlls/ntdll/*-windows/ntdll.dll
             app/Madeira/*-windows/crypt32.dll
             app/Madeira/*-windows/kernelbase.dll
             app/Madeira/*-windows/advapi32.dll

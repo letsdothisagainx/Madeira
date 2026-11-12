@@ -384,7 +384,7 @@ def main():
     assert "trim && idle() && cached_coherent_seq_id >= current_seq_id_ - 1" in init
     assert queue.index("chunk.reset();\n    cpu_coherent.signal") < queue.index("staging_allocator.trim_completed")
     assert "cpu_command_allocator.trim_completed" not in queue
-    assert "DynamicBuffer::TrimCompletedForQueue(memoryDomain(), internal_seq, critical)" in queue
+    assert "DynamicBuffer::TrimCompletedForQueue(memoryDomain(), internal_seq, false)" in queue
     for name, transform in STAGE.STAGES.items():
         first = transform((SOURCE / name).read_text())
         try:

@@ -50,6 +50,7 @@ CPP = r'''
 #include <atomic>
 #include <cassert>
 #include <cstddef>
+#include <mutex>
 #include <thread>
 #include <vector>
 static constexpr uint64_t MiB = uint64_t{1} << 20;
@@ -66,6 +67,7 @@ int main() {
   static_assert(offsetof(madeira_ctl_args, name) == 24);
   auto s = dxmt::memoryPressureSnapshot();
   assert(s.valid && s.limit == 6144 * MiB && s.reserve == 768 * MiB);
+  assert(s.sampled_ns);
   assert(s.needsReclaim());
   assert(calls == 1);
   for (unsigned i = 0; i < 1000; ++i) dxmt::memoryPressureSnapshot();
@@ -108,6 +110,49 @@ int main() {
   const unsigned timed = calls;
   std::this_thread::sleep_for(std::chrono::milliseconds(110));
   assert(dxmt::memoryPressureSnapshot().valid && calls == timed + 1);
+  // Actual serialized production controller: distinct soft/emergency entry
+  // and recovery boundaries prevent trim/refill oscillation. These are host
+  // policy checks, not measurements of physical memory saved on an iPhone.
+  dxmt::MemoryPressureController controller;
+  dxmt::MemoryPressureSnapshot measured;
+  measured.valid = true; measured.limit = 6144 * MiB; measured.reserve = 768 * MiB;
+  uint64_t stamp = 1;
+  auto decide = [&](uint64_t available, uint64_t upcoming = 0) {
+    measured.available = available * MiB;
+    measured.footprint = measured.limit - measured.available;
+    measured.sampled_ns = stamp++;
+    return controller.evaluate(measured, upcoming * MiB);
+  };
+  auto d = decide(1024);
+  assert(d.valid && !d.reclaim && !d.critical && d.warm_cache_budget == 96 * MiB);
+  d = decide(768); assert(d.reclaim && !d.critical);
+  d = decide(800); assert(d.reclaim); // Recovery needs960MiB, not a one-byte threshold crossing.
+  d = decide(959); assert(d.reclaim);
+  d = decide(960); assert(!d.reclaim);
+  d = decide(389); assert(d.reclaim && !d.critical && d.warm_cache_budget == 96 * MiB);
+  d = decide(293); assert(!d.critical && d.warm_cache_budget == 96 * MiB); // Bounded refill stays below emergency entry.
+  d = decide(192); assert(d.critical && !d.warm_cache_budget);
+  d = decide(300); assert(d.critical && !d.warm_cache_budget);
+  d = decide(384); assert(!d.critical && d.reclaim && d.warm_cache_budget == 96 * MiB);
+  auto stale = measured; stale.available = 0; stale.sampled_ns--;
+  assert(!controller.evaluate(stale).critical); // Another thread's older cached sample cannot rewind state.
+  dxmt::MemoryPressureSnapshot unknown;
+  assert(!controller.evaluate(unknown).valid);
+  assert(!controller.evaluate(measured).critical);
+  d = decide(1000, 1000); assert(d.critical && !d.warm_cache_budget);
+  assert(controller.evaluate(measured).critical); // Same sample cannot instantly refill the emergency cache.
+  d = decide(1000); assert(!d.critical && !d.reclaim);
+  d = decide(0); assert(d.critical);
+  std::mutex controller_mutex;
+  workers.clear();
+  for (unsigned i = 0; i < 4; ++i) workers.emplace_back([&] {
+    for (unsigned n = 0; n < 1000; ++n) {
+      std::lock_guard<std::mutex> guard(controller_mutex);
+      const auto result = decide(n & 1 ? 760 : 800);
+      assert(result.reclaim && !result.critical && result.warm_cache_budget <= 96 * MiB);
+    }
+  });
+  for (auto &worker : workers) worker.join();
 }
 '''
 

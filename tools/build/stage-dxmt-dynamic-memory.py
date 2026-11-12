@@ -23,16 +23,108 @@ def replace_once(text, old, new):
 REGISTRY = r'''
 /* Queue domains are monotonic identities, never recycled addresses: internal
  * D3D11 references may outlive their parent queue. D3D9 stays unregistered.
- * The registry owns no reference: last decRef unregisters BEFORE delete starts.
- * Lock order is registry -> try_lock(instance); never block on an instance. */
+ * Registry -> try_lock(instance), unregister BEFORE delete, no strong registry
+ * ownership. Credit accounting is protected by the registry mutex. */
 static dxmt::mutex g_dynamic_registry_mutex;
 static DynamicBuffer *g_dynamic_registry_head = nullptr;
+static uint64_t g_dynamic_warm_cache_credit = 0;
+static MemoryPressureController g_dynamic_pressure_controller;
+static auto g_dynamic_pressure_decision = g_dynamic_pressure_controller.evaluate(MemoryPressureSnapshot{});
+
+// All calls hold the registry mutex. An unknown reading grants no new credit,
+// but must not erase another thread's last valid emergency decision.
+static auto
+pressureDecisionLocked(const MemoryPressureSnapshot &pressure, uint64_t upcoming = 0) {
+  const auto decision = g_dynamic_pressure_controller.evaluate(pressure, upcoming);
+  if (decision.valid) g_dynamic_pressure_decision = decision;
+  return g_dynamic_pressure_decision;
+}
+
+uint64_t
+DynamicBuffer::allocationCostLocked() const {
+  return name_.ptr() ? name_->census_bytes_ : (buffer ? buffer->length() : 0);
+}
+
+void
+DynamicBuffer::noteRequestLocked(uint64_t coherent_seq_id) {
+  if (!request_count_) {
+    request_epoch_ = coherent_seq_id;
+    epoch_demand_ = 1;
+  } else if (request_epoch_ != coherent_seq_id) {
+    const uint64_t gap = coherent_seq_id > request_epoch_ ? std::min<uint64_t>(1024, coherent_seq_id - request_epoch_) : 1;
+    request_gap_ = std::max(gap, (request_gap_ * 7 + gap) / 8);
+    request_epoch_ = coherent_seq_id;
+    epoch_demand_ = 1;
+  } else if (epoch_demand_ < 65536) {
+    ++epoch_demand_;
+  }
+  if (request_count_ < 65536) ++request_count_;
+  peak_demand_ = std::max(peak_demand_, epoch_demand_);
+  // A single upload earns no persistent spare. Learning/growth is occasional;
+  // do not acquire a global registry lock or write a global atomic per draw.
+  if (queue_domain_ && request_count_ >= 2 && lease_attempt_epoch_ != coherent_seq_id &&
+      cache_credit_bytes_ < desiredCacheBytesLocked())
+    lease_pending_.store(true, std::memory_order_release);
+}
+
+bool
+DynamicBuffer::hotAtLocked(uint64_t coherent_seq_id) const {
+  if (request_count_ < 2)
+    return false;
+  const uint64_t age = coherent_seq_id > request_epoch_ ? coherent_seq_id - request_epoch_ : 0;
+  const uint64_t gap = std::max(request_gap_, reuse_age_);
+  const uint64_t horizon = std::max<uint64_t>(8, std::min<uint64_t>(1024, gap * 4));
+  return age <= horizon;
+}
+
+uint64_t
+DynamicBuffer::desiredCacheBytesLocked() const {
+  const uint64_t cost = allocationCostLocked();
+  constexpr uint64_t resource_cap = uint64_t{4} << 20;
+  if (!cost || cost > resource_cap || request_count_ < 2)
+    return 0;
+  uint64_t names = 1;
+  while (names < peak_demand_ && names < 65536) names <<= 1;
+  return std::min(names, resource_cap / cost) * cost;
+}
+
+void
+DynamicBuffer::updateLeaseLocked(uint64_t coherent_seq_id, uint64_t budget, bool critical, bool allow_new) {
+  const bool hot = hotAtLocked(coherent_seq_id);
+  const uint64_t desired = !critical && hot ? desiredCacheBytesLocked() : 0;
+  const uint64_t others = g_dynamic_warm_cache_credit - cache_credit_bytes_;
+  const uint64_t capacity = budget > others ? budget - others : 0;
+  const uint64_t cost = allocationCostLocked();
+  const uint64_t candidate = std::min(desired, allow_new ? capacity : cache_credit_bytes_);
+  const uint64_t grant = cost ? (candidate / cost) * cost : 0;
+  g_dynamic_warm_cache_credit = others + grant;
+  cache_credit_bytes_ = grant;
+  lease_attempt_epoch_ = coherent_seq_id;
+  lease_pending_.store(false, std::memory_order_release);
+  if (!hot && request_count_ >= 2) {
+    request_count_ = 0;
+    epoch_demand_ = 0;
+    peak_demand_ = 1;
+    request_gap_ = 1;
+    reuse_age_ = 0;
+  }
+}
+
+void
+DynamicBuffer::EnsureWorkingSetLease(DynamicBuffer *dynamic, uint64_t coherent_seq_id, const MemoryPressureSnapshot &pressure) {
+  if (!dynamic->lease_pending_.load(std::memory_order_acquire))
+    return;
+  std::lock_guard<dxmt::mutex> registry_lock(g_dynamic_registry_mutex);
+  const auto decision = pressureDecisionLocked(pressure);
+  std::unique_lock<dxmt::mutex> instance_lock(dynamic->mutex_, std::try_to_lock);
+  if (instance_lock.owns_lock())
+    dynamic->updateLeaseLocked(coherent_seq_id, decision.warm_cache_budget, decision.critical, pressure.valid && pressure.reserve);
+}
 
 void
 DynamicBuffer::updateCensusLocked(uint64_t coherent_seq_id) {
   census_coherent_ = coherent_seq_id;
-  if (census_id_ >= DYN_CENSUS_SLOTS)
-    return;
+  if (census_id_ >= DYN_CENSUS_SLOTS) return;
   auto &st = g_dyn_stats[census_id_];
   uint64_t en = 0, eb = 0, in = 0, ib = 0, lo = ~0ull, hi = 0;
   for (const auto &entry : fifo) {
@@ -53,8 +145,8 @@ DynamicBuffer::updateCensusLocked(uint64_t coherent_seq_id) {
 
 void
 DynamicBuffer::recordQueuePopLocked(uint64_t bytes, uint64_t will_free_at) {
-  if (census_id_ >= DYN_CENSUS_SLOTS)
-    return;
+  if (fifo.empty()) has_cached_names_.store(false, std::memory_order_release);
+  if (census_id_ >= DYN_CENSUS_SLOTS) return;
   auto &st = g_dyn_stats[census_id_];
   st.depth.store(fifo.size(), std::memory_order_relaxed);
   if (will_free_at <= census_coherent_) {
@@ -70,13 +162,11 @@ DynamicBuffer::recordQueuePopLocked(uint64_t bytes, uint64_t will_free_at) {
 
 void
 DynamicBuffer::recordQueuePushLocked() {
-  /* Pushes happen AFTER allocate's snapshot. Keeping these incremental avoids
-   * both a false empty-FIFO census and an O(depth) walk on every draw. */
+  if (fifo.size() == 1) has_cached_names_.store(true, std::memory_order_release);
   g_mem_census.dyn_fifo_depth.store(fifo.size(), std::memory_order_relaxed);
   uint64_t d = fifo.size(), mx = g_mem_census.dyn_fifo_depth_max.load(std::memory_order_relaxed);
   while (d > mx && !g_mem_census.dyn_fifo_depth_max.compare_exchange_weak(mx, d, std::memory_order_relaxed)) {}
-  if (census_id_ >= DYN_CENSUS_SLOTS)
-    return;
+  if (census_id_ >= DYN_CENSUS_SLOTS) return;
   auto &st = g_dyn_stats[census_id_];
   const auto &entry = fifo.back();
   const uint64_t bytes = entry.allocation.ptr() ? entry.allocation->census_bytes_ : 0;
@@ -95,57 +185,80 @@ DynamicBuffer::recordQueuePushLocked() {
 }
 
 uint64_t
-DynamicBuffer::TrimCompletedForQueue(uint64_t queue_domain, uint64_t coherent_seq_id, bool critical) {
-  if (!queue_domain)
-    return 0;
-  // Normal pressure removes dormant spares; critical pressure can drain any
-  // completed spare. Two completed submissions preserve hot rename reuse.
-  const uint64_t reclaim_through = critical ? coherent_seq_id : (coherent_seq_id >= 2 ? coherent_seq_id - 2 : 0);
-  if (!critical && coherent_seq_id < 2)
-    return 0;
+DynamicBuffer::TrimCompletedForQueue(uint64_t queue_domain, uint64_t coherent_seq_id, bool critical,
+                                     const DynamicBuffer *pending_request) {
+  if (!queue_domain) return 0;
+  const auto pressure = memoryPressureSnapshot();
+  const bool force_critical = critical;
+  const uint64_t upcoming = pending_request && pending_request->buffer ? pending_request->buffer->length() : 0;
+  uint64_t warm_budget = 0;
+  {
+    std::lock_guard<dxmt::mutex> registry_lock(g_dynamic_registry_mutex);
+    // A pending requester reaches this path only after an actual reuse miss.
+    // Let the controller compare its latest valid sample, not a stale caller's
+    // half-reserve boolean. Explicit critical remains available for forced drain.
+    const auto decision = pressureDecisionLocked(pressure, upcoming);
+    critical = force_critical || decision.critical;
+    if (!decision.reclaim && !critical)
+      return 0; // Healthy completion: no per-resource walk or mutex writes.
+    warm_budget = critical ? 0 : decision.warm_cache_budget;
+  }
   uint64_t detached_bytes = 0, detached_count = 0;
-  for (;;) {
-    /* Fixed-size batches avoid heap growth during memory pressure. Rc destruction
-     * (and native Metal release) happens after BOTH registry and instance locks. */
-    std::array<Rc<BufferAllocation>, 64> retired;
-    size_t count = 0;
-    {
-      std::lock_guard<dxmt::mutex> registry_lock(g_dynamic_registry_mutex);
-      for (auto *dynamic = g_dynamic_registry_head; dynamic && count < retired.size(); dynamic = dynamic->registry_next_) {
-        if (dynamic->queue_domain_ != queue_domain)
-          continue;
-        std::unique_lock<dxmt::mutex> instance_lock(dynamic->mutex_, std::try_to_lock);
-        if (!instance_lock.owns_lock())
-          continue;
-        uint64_t bytes = 0, n = 0;
-        /* Never touch name_, Buffer::current(), or a fenced entry. Other GPU,
-         * command-list and queued-operation Rc owners remain independently live. */
-        while (!dynamic->fifo.empty() && count < retired.size() &&
-               dynamic->fifo.front().will_free_at <= reclaim_through) {
-          auto &entry = dynamic->fifo.front();
-          bytes += entry.allocation.ptr() ? entry.allocation->census_bytes_ : 0;
-          retired[count++] = std::move(entry.allocation);
-          dynamic->fifo.pop_front();
-          ++n;
-        }
-        if (n) {
-          dynamic->trimmed_last_ = true;
-          if (dynamic->census_id_ < DYN_CENSUS_SLOTS) {
-            g_dyn_stats[dynamic->census_id_].trimmed_n.fetch_add(n, std::memory_order_relaxed);
-            g_dyn_stats[dynamic->census_id_].trimmed_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  // Return cold/oversized leases before distributing the bounded hot credits.
+  for (unsigned phase = 0; phase < (critical ? 1u : 2u); ++phase) {
+    for (;;) {
+      std::array<Rc<BufferAllocation>, 64> retired;
+      size_t count = 0;
+      {
+        std::lock_guard<dxmt::mutex> registry_lock(g_dynamic_registry_mutex);
+        // Another requester may have latched emergency while this sweep released
+        // its previous batch. Never grant warm credit from an older normal pass.
+        const auto decision = pressureDecisionLocked(pressure, upcoming);
+        critical = force_critical || decision.critical;
+        warm_budget = critical ? 0 : decision.warm_cache_budget;
+        for (auto *dynamic = g_dynamic_registry_head; dynamic && count < retired.size(); dynamic = dynamic->registry_next_) {
+          if (dynamic->queue_domain_ != queue_domain) continue;
+          // Credit is registry-owned metadata, so this read needs no instance
+          // lock. Empty-but-credited cold owners must return their lease; wholly
+          // empty, uncredited resources cost no mutex writes on completion.
+          if (!dynamic->has_cached_names_.load(std::memory_order_acquire) &&
+              !dynamic->cache_credit_bytes_) continue;
+          std::unique_lock<dxmt::mutex> instance_lock(dynamic->mutex_, std::try_to_lock);
+          if (!instance_lock.owns_lock()) continue;
+          const bool hot = dynamic->hotAtLocked(coherent_seq_id) && dynamic->desiredCacheBytesLocked();
+          if (!critical && hot != (phase == 1)) continue;
+          dynamic->updateLeaseLocked(coherent_seq_id, warm_budget, critical, pressure.valid && pressure.reserve);
+          // The requester is about to consume its own genuine reusable backing.
+          // Never purge it immediately before allocate checks its FIFO.
+          if (dynamic == pending_request) continue;
+          const uint64_t cost = dynamic->allocationCostLocked();
+          const uint64_t keep_names = cost ? dynamic->cache_credit_bytes_ / cost : 0;
+          uint64_t bytes = 0, n = 0;
+          while (dynamic->fifo.size() > keep_names && count < retired.size() &&
+                 dynamic->fifo.front().will_free_at <= coherent_seq_id) {
+            auto &entry = dynamic->fifo.front();
+            bytes += entry.allocation.ptr() ? entry.allocation->census_bytes_ : 0;
+            retired[count++] = std::move(entry.allocation);
+            dynamic->fifo.pop_front();
+            ++n;
           }
-          detached_bytes += bytes;
-          detached_count += n;
+          if (n) {
+            if (dynamic->fifo.empty()) dynamic->has_cached_names_.store(false, std::memory_order_release);
+            dynamic->trimmed_last_ = true;
+            if (dynamic->census_id_ < DYN_CENSUS_SLOTS) {
+              g_dyn_stats[dynamic->census_id_].trimmed_n.fetch_add(n, std::memory_order_relaxed);
+              g_dyn_stats[dynamic->census_id_].trimmed_bytes.fetch_add(bytes, std::memory_order_relaxed);
+            }
+            detached_bytes += bytes;
+            detached_count += n;
+          }
+          if (n || (!dynamic->fifo.empty() && dynamic->census_coherent_ != coherent_seq_id))
+            dynamic->updateCensusLocked(coherent_seq_id);
         }
-        // Empty dormant buffers already have an exact zero snapshot. Avoid
-        // protected-global atomic writes for every live resource on every GPU
-        // completion. Recount only a changed cache or a nonempty new frontier.
-        if (n || (!dynamic->fifo.empty() && dynamic->census_coherent_ != coherent_seq_id))
-          dynamic->updateCensusLocked(coherent_seq_id);
       }
+      // All native releases happen after BOTH locks, in a bounded stack batch.
+      if (!count) break;
     }
-    if (!count)
-      break;
   }
   if (detached_count) {
     g_trim_total_n.fetch_add(detached_count, std::memory_order_relaxed);
@@ -153,9 +266,9 @@ DynamicBuffer::TrimCompletedForQueue(uint64_t queue_domain, uint64_t coherent_se
     static std::atomic<uint64_t> reports{0};
     const uint64_t report = reports.fetch_add(1, std::memory_order_relaxed);
     if (report < 4 || (report & 63) == 0)
-      ERR("[dynamic-memory-pressure-v1] cache-detached=", detached_bytes,
+      ERR("[dynamic-memory-pressure-v1] policy=bounded-hot-v2 cache-detached=", detached_bytes,
           " entries=", detached_count, " coherent=", coherent_seq_id,
-          " physical-freed=unmeasured");
+          " warm-budget=", warm_budget, " physical-freed=unmeasured");
   }
   return detached_bytes;
 }
@@ -163,16 +276,17 @@ DynamicBuffer::TrimCompletedForQueue(uint64_t queue_domain, uint64_t coherent_se
 
 
 def stage_file(path, source):
-    if '[dynamic-memory-pressure-v1]' in source or 'TrimCompletedForQueue' in source:
+    if '[dynamic-memory-pressure-v' in source or 'TrimCompletedForQueue' in source:
         raise ValueError('dynamic memory input is already staged')
     if path == FILES[0]:
+        source = replace_once(source, 'class DynamicBuffer {', 'struct MemoryPressureSnapshot;\n\nclass DynamicBuffer {')
         source = replace_once(source,
             '  DynamicBuffer(Buffer *buffer, Flags<BufferAllocationFlag> flags);',
             '''  DynamicBuffer(Buffer *buffer, Flags<BufferAllocationFlag> flags, uint64_t queue_domain = 0);
 
   // Drops only this queue's GPU-complete cached names. Returned bytes are
   // detached cache capacity; other allocation owners can still retain backing.
-  static uint64_t TrimCompletedForQueue(uint64_t queue_domain, uint64_t coherent_seq_id, bool critical = false);''')
+  static uint64_t TrimCompletedForQueue(uint64_t queue_domain, uint64_t coherent_seq_id, bool critical = false, const DynamicBuffer *pending_request = nullptr);''')
         source = replace_once(source,
             '  bool trimmed_last_ = false;      /* ml685: trim-regret latch */',
             '''  bool trimmed_last_ = false;      /* ml685: trim-regret latch */
@@ -180,6 +294,18 @@ def stage_file(path, source):
   DynamicBuffer *registry_prev_ = nullptr;
   DynamicBuffer *registry_next_ = nullptr;
   uint64_t census_coherent_ = 0;
+  std::atomic<bool> has_cached_names_{false};
+  std::atomic<bool> lease_pending_{false};
+  uint64_t cache_credit_bytes_ = 0;
+  uint64_t request_epoch_ = 0, lease_attempt_epoch_ = ~0ull;
+  uint64_t request_gap_ = 1, reuse_age_ = 0;
+  uint32_t request_count_ = 0, epoch_demand_ = 0, peak_demand_ = 1;
+  uint64_t allocationCostLocked() const;
+  void noteRequestLocked(uint64_t coherent_seq_id);
+  bool hotAtLocked(uint64_t coherent_seq_id) const;
+  uint64_t desiredCacheBytesLocked() const;
+  void updateLeaseLocked(uint64_t coherent_seq_id, uint64_t budget, bool critical, bool allow_new);
+  static void EnsureWorkingSetLease(DynamicBuffer *, uint64_t coherent_seq_id, const MemoryPressureSnapshot &);
   void updateCensusLocked(uint64_t coherent_seq_id);
   void recordQueuePushLocked();
   void recordQueuePopLocked(uint64_t bytes, uint64_t will_free_at);''')
@@ -211,6 +337,8 @@ def stage_file(path, source):
       if (registry_prev_) registry_prev_->registry_next_ = registry_next_;
       else g_dynamic_registry_head = registry_next_;
       if (registry_next_) registry_next_->registry_prev_ = registry_prev_;
+      g_dynamic_warm_cache_credit -= cache_credit_bytes_;
+      cache_credit_bytes_ = 0;
     }
     if (census_id_ < DYN_CENSUS_SLOTS) {
       auto &st = g_dyn_stats[census_id_];
@@ -227,41 +355,62 @@ def stage_file(path, source):
         source = replace_once(source,
             'DynamicBuffer::allocate(uint64_t coherent_seq_id, bool *out_minted_fresh) {\n  std::lock_guard<dxmt::mutex> lock(mutex_);',
             '''DynamicBuffer::allocate(uint64_t coherent_seq_id, bool *out_minted_fresh) {
-  // Before taking an instance lock, reclaim completed caches across this queue,
-  // including dormant buffers which will never call allocate again.
+  Rc<BufferAllocation> pressure_reuse;
+  std::unique_lock<dxmt::mutex> lock(mutex_, std::defer_lock);
   if (queue_domain_) {
     const auto pressure = memoryPressureSnapshot();
+    EnsureWorkingSetLease(this, coherent_seq_id, pressure);
     const uint64_t upcoming = buffer ? buffer->length() : 0;
     if (pressure.needsReclaim(upcoming)) {
-      const bool critical = pressure.available < pressure.reserve / 2 || upcoming > pressure.available;
-      // Map/Update can execute thousands of times in one submission. A new
-      // retirement is fenced by CurrentSeqId > CoherentSeqId, so repeating this
-      // whole-domain sweep before coherence advances cannot expose new caches.
-      // Bounded TLS stores one domain only; a new queue, fence or critical
-      // transition always permits a fresh sweep. GPU completion also sweeps.
-      struct SweepStamp { uint64_t domain = 0, coherent = 0; bool critical = false, valid = false; };
-      static thread_local SweepStamp last_sweep;
-      if (!last_sweep.valid || last_sweep.domain != queue_domain_ ||
-          last_sweep.coherent != coherent_seq_id || (critical && !last_sweep.critical)) {
-        last_sweep = {queue_domain_, coherent_seq_id, critical, true};
-        TrimCompletedForQueue(queue_domain_, coherent_seq_id, critical);
+      // Reuse first: a completed name is already real backing. Do not purge it
+      // and then treat this request as a fresh allocation under pressure.
+      lock.lock();
+      if (!fifo.empty() && fifo.front().will_free_at <= coherent_seq_id) {
+        auto &entry = fifo.front();
+        const uint64_t bytes = entry.allocation.ptr() ? entry.allocation->census_bytes_ : 0;
+        const uint64_t seq = entry.will_free_at;
+        const uint64_t age = std::min<uint64_t>(1024, coherent_seq_id - seq);
+        reuse_age_ = std::max(age, (reuse_age_ * 7 + age) / 8);
+        pressure_reuse = std::move(entry.allocation);
+        fifo.pop_front();
+        recordQueuePopLocked(bytes, seq);
+      } else {
+        lock.unlock();
+        // Upcoming can trigger emergency handling ONLY for a genuine miss.
+        const bool critical = pressure.valid &&
+            (pressure.available <= pressure.reserve / 4 || upcoming >= pressure.available);
+        struct SweepStamp { uint64_t domain = 0, coherent = 0; bool critical = false, valid = false; };
+        static thread_local SweepStamp last_sweep;
+        if (!last_sweep.valid || last_sweep.domain != queue_domain_ ||
+            last_sweep.coherent != coherent_seq_id || (critical && !last_sweep.critical)) {
+          last_sweep = {queue_domain_, coherent_seq_id, critical, true};
+          TrimCompletedForQueue(queue_domain_, coherent_seq_id, false, this);
+        }
       }
     }
   }
-  std::lock_guard<dxmt::mutex> lock(mutex_);
+  if (!lock.owns_lock()) lock.lock();
+  noteRequestLocked(coherent_seq_id);
   // Keep the optional large rename cache free of per-draw census walks.
-  // Eligibility is refreshed only once per completed submission in that mode.
   if (dynKeepFor(buffer ? buffer->length() : 0) && census_coherent_ != coherent_seq_id)
     updateCensusLocked(coherent_seq_id);''')
         buffer_source, linear_source = source.split('DynamicLinearTexture::DynamicLinearTexture', 1)
         buffer_source = replace_once(buffer_source,
+            '  Rc<BufferAllocation> ret;\n  for (;;) {',
+            '  Rc<BufferAllocation> ret = std::move(pressure_reuse);\n  for (;;) {\n    if (ret.ptr()) break;')
+        buffer_source = replace_once(buffer_source,
             '    ret = std::move(entry.allocation);\n    fifo.pop_front();\n    break;',
             '''    const uint64_t pop_bytes = entry.allocation.ptr() ? entry.allocation->census_bytes_ : 0;
     const uint64_t pop_seq = entry.will_free_at;
+    const uint64_t age = coherent_seq_id - pop_seq;
+    reuse_age_ = std::max<uint64_t>(std::min<uint64_t>(1024, age), (reuse_age_ * 7 + std::min<uint64_t>(1024, age)) / 8);
     ret = std::move(entry.allocation);
     fifo.pop_front();
     recordQueuePopLocked(pop_bytes, pop_seq);
     break;''')
+        buffer_source = replace_once(buffer_source,
+            '    enum { DYN_KEEP_ELIGIBLE = 64 };',
+            '    const uint64_t DYN_KEEP_ELIGIBLE = std::max<uint64_t>(64, allocationCostLocked() ? cache_credit_bytes_ / allocationCostLocked() : 0);')
         buffer_source = replace_once(buffer_source,
             '    const bool stats = census_id_ < DYN_CENSUS_SLOTS;',
             '    census_coherent_ = coherent_seq_id;\n    const bool stats = census_id_ < DYN_CENSUS_SLOTS;')

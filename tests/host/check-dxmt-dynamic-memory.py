@@ -7,6 +7,7 @@ Queue completion is supplied explicitly; Metal execution/footprint still need
 the iPhone. A popped Rc is never reported as physical memory recovered here.
 """
 import importlib.util
+import hashlib
 from pathlib import Path
 import subprocess
 import tempfile
@@ -44,10 +45,33 @@ namespace env { std::string getEnvVar(const char *) { return {}; } }
 namespace Logger { template<class... T> void info(T&&...) {} }
 template<class T> struct Flags {};
 enum class BufferAllocationFlag { GpuReadonly };
-struct Pressure { uint64_t available=1000000000,reserve=1000; bool needsReclaim(uint64_t=0) const {return false;} };
-Pressure memoryPressureSnapshot() {return {}; }
+struct MemoryPressureSnapshot {
+  uint64_t available=0, reserve=0, limit=0, footprint=0, sampled_ns=0;
+  bool valid=false, enabled=false;
+  bool needsReclaim(uint64_t=0) const { return enabled; }
+};
+MemoryPressureSnapshot g_pressure=[] {
+  MemoryPressureSnapshot p;
+  p.available=p.reserve=uint64_t{256}<<20;
+  p.limit=uint64_t{6}<<30;
+  p.footprint=p.limit-p.available;
+  p.sampled_ns=1;
+  p.valid=true;
+  return p;
+}();
+MemoryPressureSnapshot memoryPressureSnapshot(bool=false) {return g_pressure; }
+// Snapshot inputs are controlled; the actual shared pressure controller is
+// inserted here, so the cache tests do not substitute a separate budget policy.
+/* ACTUAL_MEMORY_PRESSURE_CONTROLLER */
 }
 '''
+
+
+def prelude():
+    source=(ROOT/"build/dxmt-ios/memory_pressure.hpp").read_text()
+    start=source.index("struct MemoryPressureDecision")
+    end=source.index("namespace memory_pressure_detail",start)
+    return PRELUDE.replace("/* ACTUAL_MEMORY_PRESSURE_CONTROLLER */",source[start:end])
 
 
 COUNTERS = r'''
@@ -172,11 +196,13 @@ int main() {
   {
     Buffer buffer;
     Rc<DynamicBuffer> dynamic=new DynamicBuffer(&buffer,{},q1);
-    dynamic->updateImmediateName(12,dynamic->allocate(0),0,false);
-    auto old=buffer.rename(dynamic->immediateName()); old=nullptr;
+    for (unsigned rename=0;rename<2;++rename) {
+      dynamic->updateImmediateName(12,dynamic->allocate(11),0,false);
+      auto old=buffer.rename(dynamic->immediateName()); old=nullptr;
+    }
     DynamicBuffer::TrimCompletedForQueue(q1,12,false);
     DynamicBuffer::TrimCompletedForQueue(q1,13,false);
-    require(backing.bytes==512,"normal pressure discarded hot rename reserve");
+    require(backing.bytes==768,"normal pressure discarded bounded hot rename reserve");
     probe_dynamic=dynamic.ptr();
     release_probe=+[] {
       require(g_dynamic_registry_mutex.try_lock(),"native destruction held registry mutex");
@@ -184,8 +210,8 @@ int main() {
       require(probe_dynamic->mutex_.try_lock(),"native destruction held instance mutex");
       probe_dynamic->mutex_.unlock();
     };
-    DynamicBuffer::TrimCompletedForQueue(q1,14,false);
-    require(backing.bytes==256 && release_probe==nullptr,"normal pressure failed to trim dormant cache");
+    DynamicBuffer::TrimCompletedForQueue(q1,100,false);
+    require(backing.bytes==256 && release_probe==nullptr,"normal pressure failed to trim expired dormant cache");
     probe_dynamic=nullptr;
   }
   {
@@ -261,6 +287,38 @@ int main() {
     require(backing.bytes==256,"skipped instance never reclaimed after unlock");
   }
   {
+    // Emptying a reusable FIFO does not retire its warm-cache credit. The
+    // pressure scan must still expire that dormant lease and return the budget.
+    Buffer buffer;
+    Rc<DynamicBuffer> dynamic=new DynamicBuffer(&buffer,{},q1);
+    for (unsigned rename=0;rename<2;++rename) {
+      dynamic->updateImmediateName(1,dynamic->allocate(0),0,false);
+      auto old=buffer.rename(dynamic->immediateName()); old=nullptr;
+    }
+    DynamicBuffer::TrimCompletedForQueue(q1,3,false);
+    const uint64_t old_credit=dynamic->cache_credit_bytes_;
+    require(old_credit>0,"hot fixture never obtained bounded cache credit");
+    auto first=dynamic->allocate(3);
+    auto second=dynamic->allocate(3);
+    first->data[0]=0x4a; second->data[0]=0x4b;
+    require(dynamic->fifo.empty() && !dynamic->has_cached_names_.load(),"consumed FIFO left a cached-name hint");
+    require(dynamic->cache_credit_bytes_==old_credit,"consuming backing prematurely returned its warm credit");
+    const uint64_t total_credit=g_dynamic_warm_cache_credit;
+    DynamicBuffer::TrimCompletedForQueue(q1,100,false);
+    require(dynamic->cache_credit_bytes_==0 && g_dynamic_warm_cache_credit==total_credit-old_credit,
+            "empty credited owner retained its expired lease");
+    require(first->data[0]==0x4a && second->data[0]==0x4b,"lease expiry reclaimed caller-owned backing");
+    Buffer fresh;
+    Rc<DynamicBuffer> active=new DynamicBuffer(&fresh,{},q1);
+    for (unsigned rename=0;rename<2;++rename) {
+      active->updateImmediateName(101,active->allocate(100),0,false);
+      auto old=fresh.rename(active->immediateName()); old=nullptr;
+    }
+    DynamicBuffer::TrimCompletedForQueue(q1,101,false);
+    require(active->cache_credit_bytes_>0,"expired empty credit was unavailable to a new active resource");
+  }
+  require(g_dynamic_warm_cache_credit==0,"destroyed resources left orphan cache credit");
+  {
     // Real log has thousands of resources renamed only once. The old per-object
     // 64-entry cache cap cannot reclaim even one entry from this workload.
     constexpr size_t count=6000;
@@ -305,6 +363,250 @@ int main() {
                "6000 resources, 10000 concurrent unregister/delete cycles\n";
 }
 '''
+
+
+# Synthetic bounded stress using the exact production allocation paths. The
+# archive establishes severe churn, but does not expose every rename request;
+# these demand/gap values are not presented as an exact CS2 scheduling replay.
+HOT_WORKING_SET_MAIN = r'''
+int main() {
+  using namespace dxmt;
+  auto exercise=[](uint64_t domain,unsigned demand,bool pressure) {
+    Buffer buffer;
+#ifdef VENDOR_ONLY
+    Rc<DynamicBuffer> dynamic=new DynamicBuffer(&buffer,{});
+#else
+    Rc<DynamicBuffer> dynamic=new DynamicBuffer(&buffer,{},domain);
+#endif
+    uint64_t sampled_hits=0,sampled_misses=0;
+    for (unsigned frame=0;frame<20;++frame) {
+      const uint64_t coherent=frame*8;
+      for (unsigned draw=0;draw<demand;++draw) {
+        bool minted=true;
+        auto allocation=dynamic->allocate(coherent,&minted);
+        dynamic->updateImmediateName(coherent+1,std::move(allocation),0,false);
+        auto previous=buffer.rename(dynamic->immediateName()); previous=nullptr;
+        if (frame>=4) {
+          sampled_hits+=!minted;
+          sampled_misses+=minted;
+        }
+      }
+#ifndef VENDOR_ONLY
+      if (pressure) DynamicBuffer::TrimCompletedForQueue(domain,coherent+3,false);
+#endif
+    }
+    return std::pair{sampled_hits,sampled_misses};
+  };
+  // >64 eligible names reproduces the independent legacy allocate-time cap.
+  auto burst=exercise(0x9870,80,false);
+  const uint64_t burst_regret=g_trim_regret.load();
+  std::cout << "hot-80 without global trim: hits=" << burst.first << " misses=" << burst.second
+            << " immediate-regret=" << burst_regret << '\n';
+#ifndef VENDOR_ONLY
+  // The installed registry's two-submission age makes even a two-name working
+  // set cold between uses. Actual future/current/GPU references are unchanged.
+  auto gap=exercise(0x9871,2,true);
+  std::cout << "hot-2 across completion gaps: hits=" << gap.first << " misses=" << gap.second
+            << " immediate-regret=" << g_trim_regret.load()-burst_regret << '\n';
+  require(gap.second==0 && gap.first==32,"completed hot working-set cache discarded by pressure sweep");
+#endif
+  require(burst.second==0 && burst.first==1280,"completed hot working-set cache discarded by legacy 64 cap");
+  require(backing.bytes==0,"hot cache workload leaked backing");
+  std::cout << "PASS actual DynamicBuffer: stable hot caches survive completion gaps and bursts\n";
+}
+'''
+
+
+SELF_TRIM_MAIN = r'''
+int main() {
+  using namespace dxmt;
+  Buffer buffer;
+  Rc<DynamicBuffer> dynamic=new DynamicBuffer(&buffer,{},0x9879);
+  dynamic->updateImmediateName(100,dynamic->allocate(0),0,false);
+  auto previous=buffer.rename(dynamic->immediateName()); previous=nullptr;
+  auto spare=dynamic->fifo.front().allocation.ptr();
+  const uint64_t allocated=backing.allocated;
+  // The completed spare already satisfies this exact request. Draining it in
+  // the preceding global pressure sweep replaces backing for no memory gain.
+  g_pressure.enabled=true;
+  g_pressure.available=0;
+  bool minted=true;
+  auto replacement=dynamic->allocate(100,&minted);
+  require(!minted && replacement.ptr()==spare && backing.allocated==allocated,
+          "allocation pressure sweep discarded its own immediately reusable spare");
+  g_pressure.enabled=false;
+  std::cout << "PASS actual DynamicBuffer: requesting buffer reuses its completed spare under critical pressure\n";
+}
+'''
+
+
+BOUNDED_CACHE_MAIN = r'''
+int main() {
+  using namespace dxmt;
+  constexpr uint64_t domain=0x9880;
+  constexpr uint64_t size=uint64_t{64}<<10;
+  constexpr size_t count=600;
+  std::vector<std::unique_ptr<Buffer>> buffers;
+  std::vector<Rc<DynamicBuffer>> dynamics;
+  auto cached=[&] {
+    uint64_t bytes=0;
+    for (auto &dynamic:dynamics)
+      for (auto &entry:dynamic->fifo) bytes+=entry.allocation->census_bytes_;
+    return bytes;
+  };
+  for (size_t i=0;i<count;++i) {
+    buffers.push_back(std::make_unique<Buffer>(size));
+    dynamics.emplace_back(new DynamicBuffer(buffers.back().get(),{},domain));
+    auto &dynamic=dynamics.back();
+    for (unsigned rename=0;rename<2;++rename) {
+      dynamic->updateImmediateName(1,dynamic->allocate(0),0,false);
+      auto old=buffers.back()->rename(dynamic->immediateName()); old=nullptr;
+    }
+  }
+  require(cached()==count*size*2,"bounded cache workload did not create real spares");
+  DynamicBuffer::TrimCompletedForQueue(domain,3,false);
+  const uint64_t budget=std::min(uint64_t{128}<<20,g_pressure.reserve/8);
+  const uint64_t hot=cached();
+  require(hot>0 && hot<=budget,"normal warm cache exceeded queue byte budget or discarded all hot spares");
+  require(backing.bytes==count*size+hot,"cache accounting confused current resources with spare capacity");
+  // A new cold one-shot spare must not displace the bounded active working set.
+  {
+    Buffer cold(uint64_t{2}<<20);
+    Rc<DynamicBuffer> dynamic=new DynamicBuffer(&cold,{},domain);
+    dynamic->updateImmediateName(4,dynamic->allocate(3),0,false);
+    auto old=cold.rename(dynamic->immediateName()); old=nullptr;
+    // One oversized allocation cannot fit this resource's 4MiB hot-cache credit.
+    Buffer oversized(uint64_t{8}<<20);
+    Rc<DynamicBuffer> large=new DynamicBuffer(&oversized,{},domain);
+    for (unsigned rename=0;rename<2;++rename) {
+      large->updateImmediateName(4,large->allocate(3),0,false);
+      auto old_large=oversized.rename(large->immediateName()); old_large=nullptr;
+    }
+    DynamicBuffer::TrimCompletedForQueue(domain,6,false);
+    require(dynamic->fifo.empty(),"normal pressure retained a cold one-shot allocation");
+    require(large->fifo.empty(),"oversized resource exceeded per-resource warm-cache byte cap");
+    require(cached()==hot,"cold/oversized cache displaced smaller active working set");
+  }
+  DynamicBuffer::TrimCompletedForQueue(domain,100,true);
+  require(cached()==0,"critical pressure retained completed warm-cache entries");
+  require(backing.bytes==count*size,"critical trim released current buffers or retained unused backing");
+  for (auto &dynamic:dynamics) dynamic->immediateName()->data[0]=0x7a;
+  std::cout << "PASS actual DynamicBuffer: queue warm cache=" << hot << " <= budget=" << budget
+            << ", cold/oversized-first, critical draining preserves current backing\n";
+}
+'''
+
+
+MID_BATCH_PRESSURE_MAIN = r'''
+int main() {
+  using namespace dxmt;
+  auto cold_at=[](uint64_t coherent,bool retained,const char *message) {
+    Buffer buffer;
+    Rc<DynamicBuffer> dynamic=new DynamicBuffer(&buffer,{},0x9887);
+    dynamic->updateImmediateName(coherent+1,dynamic->allocate(coherent),0,false);
+    auto old=buffer.rename(dynamic->immediateName()); old=nullptr;
+    DynamicBuffer::TrimCompletedForQueue(0x9887,coherent+1,false);
+    require((!dynamic->fifo.empty())==retained,message);
+  };
+  g_pressure.available=g_pressure.reserve*2;
+  g_pressure.sampled_ns=10;
+  cold_at(0,true,"healthy completion unexpectedly reclaimed cold cache");
+  g_pressure.available=g_pressure.reserve;
+  ++g_pressure.sampled_ns;
+  cold_at(1,false,"soft high-water entry did not reclaim completed cold cache");
+  g_pressure.available=g_pressure.reserve+1;
+  ++g_pressure.sampled_ns;
+  cold_at(2,false,"reclaim stopped before low-water recovery threshold");
+  g_pressure.available=g_pressure.reserve+g_pressure.reserve/4;
+  ++g_pressure.sampled_ns;
+  cold_at(3,true,"low-water recovery failed to stop completion reclamation");
+  g_pressure.available=g_pressure.reserve;
+  ++g_pressure.sampled_ns;
+  constexpr uint64_t domain=0x9888;
+  std::vector<std::unique_ptr<Buffer>> buffers;
+  std::vector<Rc<DynamicBuffer>> dynamics;
+  auto create=[&](unsigned demand,uint64_t coherent) {
+    buffers.push_back(std::make_unique<Buffer>());
+    dynamics.emplace_back(new DynamicBuffer(buffers.back().get(),{},domain));
+    auto &dynamic=dynamics.back();
+    for (unsigned rename=0;rename<demand;++rename) {
+      dynamic->updateImmediateName(coherent+1,dynamic->allocate(coherent),0,false);
+      auto old=buffers.back()->rename(dynamic->immediateName()); old=nullptr;
+    }
+    dynamic->immediateName()->data[0]=0x67;
+  };
+  for (unsigned i=0;i<100;++i) create(2,0);
+  DynamicBuffer::TrimCompletedForQueue(domain,3,false);
+  require(g_dynamic_warm_cache_credit>0,"batch fixture never obtained hot cache credit");
+  for (unsigned i=0;i<70;++i) create(1,3);
+  release_probe=+[] {
+    const auto older_normal=g_pressure;
+    g_pressure.available=0;
+    g_pressure.sampled_ns=older_normal.sampled_ns+1;
+    // A second caller latches a newer emergency while the outer sweep has
+    // dropped both locks to release its first fixed-size native batch.
+    DynamicBuffer::TrimCompletedForQueue(0x9999,4,false);
+    require(g_dynamic_pressure_decision.critical,"newer caller failed to latch emergency pressure");
+    g_pressure=older_normal;
+  };
+  DynamicBuffer::TrimCompletedForQueue(domain,4,false);
+  require(release_probe==nullptr,"outer trim did not reach native release batch");
+  require(g_dynamic_pressure_decision.critical,"older normal snapshot erased newer emergency");
+  require(g_dynamic_warm_cache_credit==0,"outer normal pass regranted warm credit after newer emergency");
+  for (auto &dynamic:dynamics) {
+    require(dynamic->fifo.empty(),"outer normal batch retained hot cache after newer emergency");
+    require(dynamic->immediateName()->data[0]==0x67,"emergency batch corrupted current backing");
+  }
+  // Unknown snapshots must not erase the last valid emergency or authorize
+  // a fresh warm-cache lease for a newly active resource.
+  g_pressure.valid=false;
+  create(2,5);
+  DynamicBuffer::TrimCompletedForQueue(domain,6,false);
+  require(g_dynamic_pressure_decision.critical,"unknown snapshot erased last valid emergency");
+  require(g_dynamic_warm_cache_credit==0 && dynamics.back()->cache_credit_bytes_==0,
+          "unknown pressure granted a new warm-cache lease");
+  require(dynamics.back()->fifo.empty(),"unknown snapshot disabled the previously latched emergency drain");
+  require(backing.bytes==dynamics.size()*256,"batch retirement released current or retained spare backing");
+  std::cout << "PASS actual DynamicBuffer/controller: healthy/latched/recovered completion gates, newer emergency wins across native-release batches, stale/unknown readings grant no cache\n";
+}
+'''
+
+
+def function_body(source, signature):
+    start=source.index(signature)
+    opening=source.index("{",start)
+    depth=0
+    for offset in range(opening,len(source)):
+        depth += (source[offset]=="{") - (source[offset]=="}")
+        if depth==0:
+            return source[start:offset+1]
+    raise ValueError("unterminated production function: "+signature)
+
+
+def installed_pressure_trim(source):
+    fixture=ROOT/"tests/host/fixtures/dynamic-buffer-installed-pressure-trim.cpp"
+    contents=fixture.read_text()
+    assert "source 2059087c" in contents
+    signature="uint64_t\\nDynamicBuffer::TrimCompletedForQueue(".replace("\\n","\n")
+    body=function_body(contents,signature)
+    expected="63f6d9097fd534eb140819a30c2ea455a2430d97c17719255d9ca765014a1005"
+    assert hashlib.sha256((body+"\n").encode()).hexdigest()==expected,"installed trim fixture changed"
+    current=function_body(source,signature)
+    if "pending_request" in current[:current.index("{")]:
+        body=body.replace("bool critical) {","bool critical, const DynamicBuffer *pending_request) {",1)
+    return source.replace(current,body,1)
+
+
+def installed_allocate(source):
+    fixture=ROOT/"tests/host/fixtures/dynamic-buffer-installed-allocate.cpp"
+    contents=fixture.read_text()
+    assert "source 2059087c" in contents
+    signature="Rc<BufferAllocation>\nDynamicBuffer::allocate("
+    body=function_body(contents,signature)
+    expected="1cb3a8d162eed7dc896cea0cbaa4e0b5a136bc2ea6a3164b1fa1266df7625738"
+    assert hashlib.sha256((body+"\n").encode()).hexdigest()==expected,"installed allocate fixture changed"
+    current=function_body(source,signature)
+    return source.replace(current,body,1)
 
 
 def dynamic_header(source):
@@ -400,7 +702,7 @@ def allocation_destructor(source):
 def compile_placed(directory, name, source):
     cpp = directory / (name + ".cpp")
     exe = directory / name
-    cpp.write_text(PRELUDE + census_types()
+    cpp.write_text(prelude() + census_types()
                    + 'void require(bool ok,const char *s) { if (!ok) { std::cerr<<s; std::exit(1); } }\n'
                    + PLACED_PRELUDE + allocation_destructor(source) + PLACED_MAIN)
     subprocess.run(["g++", "-std=c++20", "-O1", "-g", "-pthread",
@@ -412,7 +714,7 @@ def compile_placed(directory, name, source):
 def compile_and_run(directory, name, header, implementation, main):
     cpp = directory / (name + ".cpp")
     exe = directory / name
-    cpp.write_text(PRELUDE + census_types() + COUNTERS + dynamic_header(header)
+    cpp.write_text(prelude() + census_types() + COUNTERS + dynamic_header(header)
                    + dynamic_methods(implementation) + queue_domain_fixture() + main)
     subprocess.run(["g++", "-std=c++20", "-O1", "-g", "-pthread",
                     "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
@@ -451,6 +753,27 @@ def main():
         after = compile_and_run(directory,"after",new_h,new_c,NEW_MAIN)
         assert after.returncode == 0, after.stdout + after.stderr
         print(after.stdout.strip())
+        cap_before=compile_and_run(directory,"before-hot-cap",old_h,old_c,"#define VENDOR_ONLY\n"+HOT_WORKING_SET_MAIN)
+        assert cap_before.returncode != 0 and "legacy 64 cap" in cap_before.stderr, cap_before.stdout+cap_before.stderr
+        print("BEFORE reproduced: "+cap_before.stdout.strip())
+        pressure_before=compile_and_run(directory,"before-hot-pressure",new_h,installed_pressure_trim(new_c),HOT_WORKING_SET_MAIN)
+        assert pressure_before.returncode != 0 and "pressure sweep" in pressure_before.stderr, pressure_before.stdout+pressure_before.stderr
+        print("BEFORE reproduced: "+pressure_before.stdout.strip())
+        self_before=compile_and_run(directory,"before-self-trim",new_h,installed_allocate(installed_pressure_trim(new_c)),SELF_TRIM_MAIN)
+        assert self_before.returncode != 0 and "its own immediately reusable spare" in self_before.stderr,self_before.stdout+self_before.stderr
+        print("BEFORE reproduced: allocation pressure sweep destroys its own reusable spare")
+        self_after=compile_and_run(directory,"after-self-trim",new_h,new_c,SELF_TRIM_MAIN)
+        assert self_after.returncode==0,self_after.stdout+self_after.stderr
+        print(self_after.stdout.strip())
+        hot_after=compile_and_run(directory,"after-hot",new_h,new_c,HOT_WORKING_SET_MAIN)
+        assert hot_after.returncode == 0, hot_after.stdout+hot_after.stderr
+        print(hot_after.stdout.strip())
+        bounded=compile_and_run(directory,"after-bounded",new_h,new_c,BOUNDED_CACHE_MAIN)
+        assert bounded.returncode==0,bounded.stdout+bounded.stderr
+        print(bounded.stdout.strip())
+        batch=compile_and_run(directory,"after-mid-batch",new_h,new_c,MID_BATCH_PRESSURE_MAIN)
+        assert batch.returncode==0,batch.stdout+batch.stderr
+        print(batch.stdout.strip())
         placed_before=compile_placed(directory,"placed-before",old_buffer)
         assert placed_before.returncode != 0, "old placed-buffer release order unexpectedly passed"
         assert "heap-use-after-free" in placed_before.stderr or "CPU-placed backing" in placed_before.stderr, placed_before.stderr

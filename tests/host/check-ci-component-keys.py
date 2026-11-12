@@ -29,6 +29,10 @@ cases = {
     # Native Unix is rebuilt in each app job; only complete IPA reuse owns it.
     'native-provenance-generator': ('tools/build/native-provenance.py', {'ipa'}),
     'native-provenance-parser': ('build/native_build_provenance.h', {'ipa'}),
+    'native-srw-wake-stage': ('tools/build/stage-native-srw-wake.py', {'ipa'}),
+    'native-srw-code-proof': ('tools/check-native-srw-code.py', {'ipa'}),
+    'native-counter-source-stage': ('tools/build/stage-native-counter-writes.py', {'ipa'}),
+    'native-srw-build': ('build/wine-pe/build-ntdll.sh', {'wine-host', 'ipa'}),
     # The private ABI is compiled into the staged PE producer as well as Unix.
     'native-code-buffer-abi': ('build/ntdll-unix/fex_code_buffer_abi.h', {'fex-pe', 'ipa'}),
     'native-code-guard-registry': ('build/ntdll-unix/fex_code_guards.h', {'ipa'}),

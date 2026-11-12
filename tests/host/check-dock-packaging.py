@@ -38,6 +38,7 @@ with tempfile.TemporaryDirectory() as temp:
         native_path.write_bytes(package_fixture.ntdll_fixture(machine)[0])
     stage_verifier=t/'tools/build/stage-native-counter-writes.py';stage_verifier.parent.mkdir(parents=True,exist_ok=True)
     stage_verifier.write_bytes((root/'tools/build/stage-native-counter-writes.py').read_bytes())
+    (stage_verifier.parent/'stage-native-srw-wake.py').write_bytes((root/'tools/build/stage-native-srw-wake.py').read_bytes())
     # Keep the real provenance gate active. Xcode below supplies a structural
     # Mach-O with real fixture source digests; it is deliberately not executable.
     # The separate native-provenance check compiles the actual accessors/decoder.
@@ -250,7 +251,7 @@ if [ "${STALE_NATIVE_NTDLL:-}" = 1 ]; then printf 'old ntdll' > "$TEST_APP/arm64
 if [ "${STALE_SCM:-}" = 1 ]; then printf 'old SCM' > "$TEST_APP/aarch64-windows/services.exe"; fi
 printf '[native-group-retire-v1][wow-placement-v1][wow-native-export-v1][fex-callback-v2][child-native-dll-v1][process-wow64-v1][child-native-ntdll-v1][guest-trap-context-v1][surface-expose-v1][steam-client-update-v1][alias-prot-compat][image-alias-retire-v1][swp-context-v1][alias-prot-v2][fex-exit-v1][native-thread-cancel-v1][io-abi] v2 native-owned IOSB scopes active[wow-write][guest32-symbols][guest32-cxx-first-v1][cef-atexit-v1][steam-handoff-v1]_madeira_child_server_exited[fex-owner-v1] pre-crt[fex-owner-v1] retired[fex-owner-census-v2][hold-release-v2][deliver-hold-v2][native-window-retire-v1]_winios_native_window_create_winios_native_window_retire[guest32-fault-v1][steam-progress-v1]_winios_ui_progress_snapshot[srv-poll-drop-v1]poll-slots-highwater=' > "$TEST_APP/Madeira.debug.dylib"
 printf '[cef-image-owner-v1][guest-breakpoint64-v1]' >> "$TEST_APP/Madeira.debug.dylib"
-printf '[dynamic-memory-pressure-v1][upload-memory-v1][madeira-memory-pressure-v1]' >> "$TEST_APP/Madeira.debug.dylib"
+printf '[dynamic-memory-pressure-v1] policy=bounded-hot-v2 [upload-memory-v1][madeira-memory-pressure-v1]' >> "$TEST_APP/Madeira.debug.dylib"
 if [ "${STALE_DXMT_NATIVE:-}" = 1 ]; then
   sed 's/\\[madeira-memory-pressure-v1\\]//g' "$TEST_APP/Madeira.debug.dylib" > "$TEST_APP/native.stale"
   mv "$TEST_APP/native.stale" "$TEST_APP/Madeira.debug.dylib"

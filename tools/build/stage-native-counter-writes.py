@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Stage the private, source-built ntdll diagnostic-counter writer contract.
 
-Only diagnostic counter/history accesses change. Counter layout/exports, QPC arithmetic,
-Windows APIs and synchronization results are retained. Restore refuses unrelated
-edits; the pinned Wine worktree is never committed with this overlay applied.
+Counter/history accesses use their private writer, and shared SRW release omits
+an exclusive wake when no exclusive contender exists. Counter layout/exports,
+QPC arithmetic and synchronization results are retained. Restore refuses
+unrelated edits; the pinned Wine worktree is never committed with this overlay.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import re
@@ -20,6 +22,10 @@ FILES = ("dlls/ntdll/time.c", "dlls/ntdll/sync.c", "dlls/ntdll/ntdll_misc.h", "d
 ABI_NAME = "dlls/ntdll/madeira_native_counter_alias_abi.h"
 ABI_SOURCE = ROOT / "build/ntdll-unix/native_counter_alias_abi.h"
 MARKER = "/* Madeira native counter writer: unpublished-copy binding only. */"
+
+_srw_spec = importlib.util.spec_from_file_location("native_srw_wake", ROOT / "tools/build/stage-native-srw-wake.py")
+_srw_wake = importlib.util.module_from_spec(_srw_spec)
+_srw_spec.loader.exec_module(_srw_wake)
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
@@ -114,6 +120,7 @@ static inline LONG *ios_srw_index_writer(void)
     out[FILES[1]] = replace_once(out[FILES[1]],
         "&ios_srw_ring[(i - n) & 511]", "&ios_srw_ring_writer()[(i - n) & 511]", FILES[1])
     out[FILES[3]] += "\n@ extern -private ios_srw_ring\n@ extern -private ios_srw_ring_idx\n@ extern -private ios_srw_history_write_contract\n"
+    out[FILES[1]] = _srw_wake.stage(out[FILES[1]])
     return out
 
 

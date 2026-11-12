@@ -59,10 +59,14 @@ def function(source, name):
 def producer_header():
     captured_producer_proof()
     original, staged = staged_source()
-    # Changes to Windows locking bodies are outside this optimization. Preserve
-    # every call site and all synchronization arithmetic/control flow exactly.
+    # The SRW wake overlay has one separately exercised last-reader guard.
+    # Normalize only that exact condition, then preserve every other call site
+    # and all synchronization arithmetic/control flow byte-for-byte.
     start, end = original.index('void WINAPI RtlAcquireSRWLockExclusive'), original.index('/* RtlWaitOnAddress()')
-    assert staged[staged.index('void WINAPI RtlAcquireSRWLockExclusive'):staged.index('/* RtlWaitOnAddress()')] == original[start:end]
+    lock_bodies = staged[staged.index('void WINAPI RtlAcquireSRWLockExclusive'):staged.index('/* RtlWaitOnAddress()')]
+    guard = 'if (!new.s.owners && new.s.exclusive_waiters)'
+    assert lock_bodies.count(guard) == 1
+    assert lock_bodies.replace(guard, 'if (!new.s.owners)', 1) == original[start:end]
     struct = original[original.index('struct ios_srw_ring_ent {'):original.index('\n', original.index('struct ios_srw_ring_ent {'))]
     contract_start = staged.index('struct ios_srw_history_write_contract\n')
     contract = staged[contract_start:staged.index('\n};', contract_start) + 3]
