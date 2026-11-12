@@ -203,7 +203,11 @@ python3 "$REPO_ROOT/tools/build/stage-dxmt-lifecycle.py" \
     --source "$BUILD_DIR/staged/winemetal_diagnostics.c" \
     --output "$BUILD_DIR/staged/winemetal_unix.c" \
     --headers "$BUILD_DIR"
-compile_objc "$BUILD_DIR/staged/winemetal_unix.c" winemetal_unix
+python3 "$REPO_ROOT/tools/build/stage-dxmt-memory-pressure.py" \
+    --source "$BUILD_DIR/staged/winemetal_unix.c" \
+    --output "$BUILD_DIR/staged/winemetal_memory.c" \
+    --headers "$BUILD_DIR"
+compile_objc "$BUILD_DIR/staged/winemetal_memory.c" winemetal_unix
 compile_objc "$DXMT_SRC/winemetal/unix/cache.c"          cache
 
 echo "=== airconv shader headers ==="

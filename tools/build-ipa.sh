@@ -64,7 +64,7 @@ log "Building Wine unix libraries"
 # Xcode 26 installs the Metal compiler separately; returns at once when present.
 xcodebuild -downloadComponent MetalToolchain >/dev/null 2>&1 || true
 "$ROOT/tools/build/build-shader-headers.sh"
-"$ROOT/tools/build/build-dxmt-ios.sh"
+"$ROOT/tools/build/build-dxmt-memory-compat.sh"
 "$ROOT/tools/build/prepare-vcruntime.sh"
 "$ROOT/build/stage-licenses.sh"
 "$ROOT/tools/build/package-ipa.sh"

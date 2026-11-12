@@ -36,6 +36,7 @@ for path in "${required[@]}"; do
 done
 
 python3 "$ROOT/tools/check-dxmt-pixel-probe.py" "$ROOT/app/Madeira/arm64ec-windows/pixel-readback-x64.exe"
+python3 "$ROOT/tools/check-dxmt-memory-package.py" --root "$ROOT/app/Madeira" --repo-root "$ROOT"
 
 python3 "$ROOT/tools/check-htmlipc-image.py" \
   --staged "$ROOT/app/Madeira/arm64ec-windows/madeira-htmlipc-bridge.dll" \
@@ -157,6 +158,8 @@ python3 "$ROOT/tools/check-io-abi-package.py" \
 
 python3 "$ROOT/tools/check-system-programs.py" \
   --root "$ROOT/app/Madeira" --source-root "$ROOT/wine" --app "$APP" --ipa "$DIST/Madeira.ipa"
+python3 "$ROOT/tools/check-dxmt-memory-package.py" \
+  --root "$ROOT/app/Madeira" --repo-root "$ROOT" --app "$APP" --ipa "$DIST/Madeira.ipa"
 python3 "$ROOT/tools/check-trust-diagnostics-package.py" \
   --root "$ROOT/app/Madeira" --source-root "$ROOT/wine" --repo-root "$ROOT" \
   --app "$APP" --ipa "$DIST/Madeira.ipa"

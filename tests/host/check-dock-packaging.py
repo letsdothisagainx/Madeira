@@ -162,6 +162,48 @@ with tempfile.TemporaryDirectory() as temp:
     for farm in registry.CHECK.code.FARMS:
         shutil.copyfile(registry_stage/farm/'advapi32.dll',t/'app/Madeira'/farm/'advapi32.dll')
     shutil.copyfile(registry_stage/registry.CHECK.MANIFEST,t/'app/Madeira'/registry.CHECK.MANIFEST)
+    # Keep the actual memory-recipe provenance gate active. These owned PE
+    # fixtures carry checked ABI/export structures, not working DXMT code.
+    # Real stagers operate transactionally on copied pinned source bytes; no
+    # production bypass or hand-written successful manifest is supplied.
+    memory_spec=importlib.util.spec_from_file_location('dock_dxmt_memory_fixture',root/'tools/check-dxmt-memory-package.py')
+    memory=importlib.util.module_from_spec(memory_spec);memory_spec.loader.exec_module(memory)
+    for relative in memory.RECIPES:
+        target=t/relative;target.parent.mkdir(parents=True,exist_ok=True)
+        target.write_bytes((root/relative).read_bytes())
+    compat_spec=importlib.util.spec_from_file_location('dock_dxmt_memory_stage',root/'tools/build/stage-dxmt-memory-compat.py')
+    compat=importlib.util.module_from_spec(compat_spec);compat_spec.loader.exec_module(compat)
+    source_names=['src/dxmt/'+name for name in compat.UPLOAD]+list(compat.DYNAMIC)
+    source_names+=['src/winemetal/unix/winemetal_unix.c']
+    for relative in source_names:
+        target=t/'dxmt'/relative;target.parent.mkdir(parents=True,exist_ok=True)
+        target.write_bytes((root/'dxmt'/relative).read_bytes())
+    for name in ('wine','dxmt'):
+        subprocess.run(['git','init','-q',str(t/name)],check=True)
+        subprocess.run(['git','-C',str(t/name),'-c','user.name=Madeira package fixture',
+                        '-c','user.email=fixture@invalid','-c','core.hooksPath=/dev/null',
+                        'commit','-q','--allow-empty','-m','Structural packaging fixture pin'],check=True)
+    for farm in memory.FARMS:
+        for module,export in memory.MODULES.items():
+            data=bytearray(registration.fixture(farm))
+            if export:
+                dirs=0x98+(96 if farm=='i386-windows' else 112)
+                struct.pack_into('<II',data,dirs,0x2000,0xa0)
+                struct.pack_into('<IIHHIIIIIII',data,0x600,0,0,0,0,0,1,1,1,0x2040,0x2050,0x2060)
+                struct.pack_into('<I',data,0x640,0x1000)
+                struct.pack_into('<I',data,0x650,0x2070)
+                struct.pack_into('<H',data,0x660,0)
+                name=export.encode()+b'\0';data[0x670:0x670+len(name)]=name
+            if module=='d3d11.dll':
+                data.extend(b'\0'.join(memory.PE_MARKERS))
+            (t/'app/Madeira'/farm/module).write_bytes(data)
+    (t/'app/Madeira/libdxmt_combined.a').write_bytes(b'!<arch>\nstructural fixture\0'+b'\0'.join(memory.NATIVE_MARKERS))
+    memory_state=t/'memory-transaction'
+    subprocess.run(['python3',str(t/'tools/build/stage-dxmt-memory-compat.py'),
+                    'apply',str(memory_state),'--root',str(t)],check=True,stdout=subprocess.PIPE)
+    subprocess.run(['python3',str(t/'tools/build/stage-dxmt-memory-compat.py'),
+                    'restore',str(memory_state)],check=True,stdout=subprocess.PIPE)
+    memory.check(t/'app/Madeira',t,write=True,transaction=memory_state)
     (t/'tools').mkdir(exist_ok=True)
     (t/'tools/check-io-abi-package.py').write_text((root/'tools/check-io-abi-package.py').read_text())
     bodies = {
@@ -186,6 +228,13 @@ cp "$ROOT/app/Madeira/arm64ec-windows/madeira-system-programs.json" "$TEST_APP/a
 cp "$ROOT/app/Madeira/arm64ec-windows/madeira-trust-diagnostics.json" "$TEST_APP/arm64ec-windows/"
 cp "$ROOT/app/Madeira/arm64ec-windows/madeira-security-compat.json" "$TEST_APP/arm64ec-windows/"
 cp "$ROOT/app/Madeira/arm64ec-windows/madeira-registry-security.json" "$TEST_APP/arm64ec-windows/"
+for farm in aarch64-windows arm64ec-windows i386-windows; do
+  for resource in d3d11.dll dxgi.dll d3d10core.dll winemetal.dll; do
+    cp "$ROOT/app/Madeira/$farm/$resource" "$TEST_APP/$farm/"
+  done
+done
+cp "$ROOT/app/Madeira/arm64ec-windows/madeira-dxmt-memory.json" "$TEST_APP/arm64ec-windows/"
+if [ "${STALE_DXMT_MEMORY:-}" = 1 ]; then printf 'stale DXMT' > "$TEST_APP/arm64ec-windows/d3d11.dll"; fi
 if [ "${STALE_REGISTRATION_TOOL:-}" = 1 ]; then printf 'stale registration program' > "$TEST_APP/arm64ec-windows/regsvr32.exe"; fi
 if [ "${STALE_TRUST_OBSERVER:-}" = 1 ]; then printf 'stale trust observer' > "$TEST_APP/arm64ec-windows/wintrust.dll"; fi
 if [ "${STALE_SECURITY_CRYPTO:-}" = 1 ]; then printf 'stale crypto provider' > "$TEST_APP/arm64ec-windows/crypt32.dll"; fi
@@ -194,6 +243,11 @@ if [ "${STALE_NATIVE_NTDLL:-}" = 1 ]; then printf 'old ntdll' > "$TEST_APP/arm64
 if [ "${STALE_SCM:-}" = 1 ]; then printf 'old SCM' > "$TEST_APP/aarch64-windows/services.exe"; fi
 printf '[native-group-retire-v1][wow-placement-v1][wow-native-export-v1][fex-callback-v2][child-native-dll-v1][process-wow64-v1][child-native-ntdll-v1][guest-trap-context-v1][surface-expose-v1][steam-client-update-v1][alias-prot-compat][image-alias-retire-v1][swp-context-v1][alias-prot-v2][fex-exit-v1][native-thread-cancel-v1][io-abi] v2 native-owned IOSB scopes active[wow-write][guest32-symbols][guest32-cxx-first-v1][cef-atexit-v1][steam-handoff-v1]_madeira_child_server_exited[fex-owner-v1] pre-crt[fex-owner-v1] retired[fex-owner-census-v2][hold-release-v2][deliver-hold-v2][native-window-retire-v1]_winios_native_window_create_winios_native_window_retire[guest32-fault-v1][steam-progress-v1]_winios_ui_progress_snapshot[srv-poll-drop-v1]poll-slots-highwater=' > "$TEST_APP/Madeira.debug.dylib"
 printf '[cef-image-owner-v1][guest-breakpoint64-v1]' >> "$TEST_APP/Madeira.debug.dylib"
+printf '[dynamic-memory-pressure-v1][upload-memory-v1][madeira-memory-pressure-v1]' >> "$TEST_APP/Madeira.debug.dylib"
+if [ "${STALE_DXMT_NATIVE:-}" = 1 ]; then
+  sed 's/\\[madeira-memory-pressure-v1\\]//g' "$TEST_APP/Madeira.debug.dylib" > "$TEST_APP/native.stale"
+  mv "$TEST_APP/native.stale" "$TEST_APP/Madeira.debug.dylib"
+fi
 if [ "${STALE_SUBFLOOR_CONTRACT:-}" != 1 ]; then printf '[subfloor-contract-v1]' >> "$TEST_APP/Madeira.debug.dylib"; fi
 if [ "${STALE_NATIVE_SRW_ALIAS:-}" != 1 ]; then printf '[native-srw-alias-v1]' >> "$TEST_APP/Madeira.debug.dylib"; fi
 if [ "${STALE_FEX_NATIVE_DIAGNOSTICS:-}" != 1 ]; then
@@ -307,6 +361,11 @@ done
     assert result.returncode and 'stale app security DLL' in result.stderr,result.stderr
     result=run({'STALE_REGISTRY_SECURITY':'1'})
     assert result.returncode and ('stale app registry security' in result.stderr or 'missing or truncated PE' in result.stderr),result.stderr
+    result=run({'STALE_DXMT_MEMORY':'1'})
+    assert result.returncode and 'stale app DXMT memory binary' in result.stderr,result.stderr
+    result=run({'STALE_DXMT_NATIVE':'1'})
+    assert result.returncode and 'stale compiled DXMT memory contract' in result.stderr,result.stderr
+    print('PASS real DXMT memory recipe, source transaction and all-farm ABI/export provenance survive actual app/IPA packaging; stale PE/native copies fail actual gates; no GPU or memory reduction claim')
     print('PASS stale native registration utility and trust observer fail their actual final provenance/package gates')
     print('PASS all-farm security corrections and provenance survive actual app/IPA packaging; stale crypto provider fails its real gate')
     print('PASS all-farm registry security corrections and compiler provenance survive actual app/IPA packaging; stale I386 advapi32 fails its real gate')
