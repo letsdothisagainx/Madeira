@@ -240,6 +240,124 @@ class Inspector:
                 'strings': strings, 'error_producer_functions_and_direct_callees': list(bodies.values()),
                 'interpretation': 'Static code evidence only. Unknown indirect callees, runtime paths and last-error provenance require separate evidence.'}
 
+    def imported_calls(self, wanted):
+        """Decode direct calls and cached IAT loads; never infer register calls."""
+        matches = {}
+        for section in self.code:
+            raw = self.pe.at(section['rva'], section['bytes'])
+            for match in re.finditer(rb'\xff\x15....', raw, re.S):
+                at = section['rva']+match.start()
+                slot = at+6+struct.unpack_from('<i', match[0], 2)[0] if self.pe.bits == 64 else \
+                       struct.unpack_from('<I', match[0], 2)[0]-self.pe.base
+                if self.imports.get(slot) not in wanted:
+                    continue
+                instruction = next(self.md.disasm(match[0], at, count=1), None)
+                require(instruction and instruction.id and instruction.size == 6 and instruction.mnemonic == 'call',
+                        'invalid IAT call candidate')
+                matches[at] = {**self.row(instruction), 'reference_kind': 'direct IAT call'}
+            if self.pe.bits == 32:
+                for slot, name in self.imports.items():
+                    if name not in wanted:
+                        continue
+                    address = struct.pack('<I', self.pe.base+slot)
+                    for match in re.finditer(re.escape(address), raw):
+                        for back in range(1, 7):
+                            offset = match.start()-back
+                            if offset < 0:
+                                continue
+                            at = section['rva']+offset
+                            instruction = next(self.md.disasm(raw[offset:offset+15], at, count=1), None)
+                            if not instruction or not instruction.id or instruction.size != back+4 or \
+                                    instruction.mnemonic not in ('mov', 'call', 'jmp', 'push'):
+                                continue
+                            if any(op.type == cs.x86.X86_OP_MEM and not op.mem.base and not op.mem.index
+                                   and op.mem.disp == self.pe.base+slot for op in instruction.operands):
+                                matches.setdefault(at, {**self.row(instruction), 'reference_kind': 'cached IAT reference; inspect later use'})
+        require(len(matches) <= 256, 'registry IAT call bound exceeded')
+        return [matches[at] for at in sorted(matches)]
+
+    def x86_frame_cfg(self, target):
+        """Trace a decoded frame prologue, without pretending to have symbols."""
+        require(self.pe.bits == 32, 'registry frame proof requires captured I386 image')
+        section = self.pe.section_for(target)
+        low = max(section['rva'], target-8192)
+        raw = self.pe.at(low, target-low)
+        starts = [low+m.start() for m in re.finditer(rb'\x55\x8b\xec', raw)]
+        start = None
+        for candidate in reversed(starts):
+            prefix = list(self.md.disasm(self.pe.at(candidate, target-candidate), candidate))
+            if prefix and prefix[-1].address+prefix[-1].size == target and all(i.id for i in prefix):
+                start = candidate
+                break
+        if start is None:
+            return {'target_rva': hex(target), 'scope': 'unresolved: no decoded preceding x86 frame prologue',
+                    'instructions': []}
+        pending, decoded, exits = [start], {}, []
+        while pending:
+            at = pending.pop()
+            if at in decoded:
+                continue
+            current = self.pe.section_for(at)
+            if not current or not current['flags'] & 0x20000000 or abs(at-start) >= 16384 or len(decoded) >= 4096:
+                exits.append(hex(at))
+                continue
+            instruction = next(self.md.disasm(self.at(at, 15), at, count=1), None)
+            if not instruction or not instruction.id:
+                exits.append(hex(at))
+                continue
+            decoded[at] = instruction
+            if instruction.group(cs.CS_GRP_RET) or instruction.mnemonic in ('int3', 'ud2'):
+                continue
+            if instruction.group(cs.CS_GRP_JUMP):
+                if len(instruction.operands) == 1 and instruction.operands[0].type == cs.x86.X86_OP_IMM:
+                    pending.append(instruction.operands[0].imm)
+                else:
+                    exits.append(hex(at))
+                if instruction.mnemonic == 'jmp':
+                    continue
+            pending.append(at+instruction.size)
+        return {'start_rva': hex(start), 'target_rva': hex(target),
+                'scope': 'CFG from nearest preceding decoded x86 frame prologue; no PDB identity',
+                'target_reachable': target in decoded, 'unresolved_exits': exits,
+                'instructions': [self.row(decoded[at]) for at in sorted(decoded)]}
+
+    def direct_calls_to(self, targets):
+        calls = []
+        for section in self.code:
+            raw = self.pe.at(section['rva'], section['bytes'])
+            for match in re.finditer(rb'\xe8....', raw, re.S):
+                at = section['rva']+match.start()
+                target = at+5+struct.unpack_from('<i', match[0], 1)[0]
+                if target in targets:
+                    calls.append({'rva': hex(at), 'target_rva': hex(target)})
+        require(len(calls) <= 128, 'registry direct caller bound exceeded')
+        return calls
+
+    def inspect_registry_security(self):
+        wanted = {name for name in self.imports.values() if re.search(
+            r'!Reg(?:QueryInfoKey[AW]|OpenKeyEx[AW]|CreateKeyEx[AW]|GetKeySecurity|CloseKey)$', name)}
+        calls = self.imported_calls(wanted)
+        query_calls = [row for row in calls if any('!RegQueryInfoKey' in ref.get('import', '')
+                                                  for ref in row.get('references', []))]
+        functions = {}
+        for row in query_calls:
+            at = int(row['rva'], 16)
+            body = self.x86_frame_cfg(at)
+            key = body.get('start_rva', row['rva'])
+            functions[key] = {**body, 'relationship': 'contains genuine RegQueryInfoKey IAT call or cached reference'}
+        parents = self.direct_calls_to({int(key, 16) for key in functions})
+        for row in parents:
+            at = int(row['rva'], 16)
+            body = self.x86_frame_cfg(at)
+            key = body.get('start_rva', row['rva'])
+            if key not in functions:
+                functions[key] = {**body, 'relationship': 'direct caller of query wrapper',
+                                  'wrapper_target_rva': row['target_rva']}
+        return {'pe': self.pe.describe(), 'registry_import_slots': {
+                    hex(slot): name for slot, name in self.imports.items() if name in wanted},
+                'iat_calls': calls, 'query_wrapper_callers': parents, 'functions': list(functions.values()),
+                'scope': 'Public unmodified I386 PE. Static code only; handle rights and output use require actual dataflow proof.'}
+
 
 def emit_summary(report):
     """Make bounded evidence readable when artifact downloads are unavailable."""
@@ -282,16 +400,43 @@ def emit_summary(report):
                       'complete_evidence': 'steam-service-loader.json artifact', 'vac_verdict': 'unmeasured'}))
 
 
+def emit_registry_summary(report):
+    remaining, omitted = 60000, 0
+    def emit(row):
+        nonlocal remaining, omitted
+        encoded = json.dumps(row, separators=(',', ':'))
+        if len(encoded)+1 <= remaining:
+            print(encoded)
+            remaining -= len(encoded)+1
+        else:
+            omitted += 1
+    emit({'kind': 'registry-manifest', 'manifest': report.get('manifest'), 'packages': report['packages']})
+    for name, component in report['components'].items():
+        pe = component['pe']
+        emit({'kind': 'registry-component', 'name': name, 'machine': pe['machine'], 'sha256': pe['sha256'],
+              'bytes': pe['bytes'], 'registry_import_slots': component['registry_import_slots'],
+              'iat_calls': component['iat_calls'], 'query_wrapper_callers': component['query_wrapper_callers']})
+        for body in component['functions']:
+            emit({'kind': 'registry-function', 'component': name,
+                  **{key: value for key, value in body.items() if key != 'instructions'}})
+            for row in body['instructions']:
+                emit({'component': name, **row})
+    print(json.dumps({'kind': 'registry-summary-bound', 'omitted_records': omitted,
+                      'complete_evidence': 'steam-service-loader.json artifact', 'vac_verdict': 'unmeasured'}))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--inspect-file', type=Path, action='append', default=[])
+    parser.add_argument('--registry-security', action='store_true', help='Inspect genuine I386 registry query handle rights and output use')
     args = parser.parse_args()
     report = {'format': 1, 'mode': 'read-only-public-file-inspection', 'vac_verdict': 'unmeasured',
               'service_functionality': 'unmeasured', 'components': {}, 'packages': []}
     if args.inspect_file:
         for path in args.inspect_file:
-            report['components'][path.name] = Inspector(path.read_bytes()).inspect()
+            inspector = Inspector(path.read_bytes())
+            report['components'][path.name] = inspector.inspect_registry_security() if args.registry_security else inspector.inspect()
     else:
         with tempfile.TemporaryDirectory(prefix='madeira-steam-service-inspection-') as name:
             temporary = Path(name)
@@ -321,6 +466,8 @@ def main():
                         if 'service' in member:
                             report['archive_service_inventory'].append({'package': package, 'member': member, 'bytes': item.file_size})
                         leaf = member.rsplit('/', 1)[-1]
+                        if args.registry_security and leaf != 'steamservice.dll':
+                            continue
                         if leaf not in ('steam.exe', 'steamclient.dll', 'steamclient64.dll',
                                         'vstdlib_s64.dll', 'tier0_s64.dll') and not (
                                 'service' in leaf and member.endswith(('.dll', '.exe'))):
@@ -332,14 +479,18 @@ def main():
                         require(key not in report['components'] and len(report['components']) < 16, 'duplicate or excessive selected PE')
                         data = z.read(item)
                         require(len(data) == item.file_size, 'selected PE length mismatch')
-                        report['components'][key] = Inspector(data).inspect()
+                        inspector = Inspector(data)
+                        report['components'][key] = inspector.inspect_registry_security() if args.registry_security else inspector.inspect()
             require(report['components'], 'no selected public components')
     encoded = json.dumps(report, indent=2).encode()+b'\n'
     require(len(encoded) <= 16 << 20, 'static inspection output bound exceeded')
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(encoded)
     print(f'Inspected {len(report["components"])} public PE files; report {len(encoded)} bytes; no PE executed')
-    emit_summary(report)
+    if args.registry_security:
+        emit_registry_summary(report)
+    else:
+        emit_summary(report)
 
 
 if __name__ == '__main__':

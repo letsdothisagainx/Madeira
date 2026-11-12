@@ -1,6 +1,12 @@
 name: Inspect genuine Steam service loader
 on:
   workflow_dispatch:
+    inputs:
+      focus:
+        type: choice
+        description: Read-only inspection focus
+        options: [registry-security, loader]
+        default: registry-security
   push:
     branches: ['codex/inspect-*']
     paths:
@@ -19,7 +25,12 @@ jobs:
       - name: Install pinned static PE inspection dependencies
         run: python3 -m pip install --disable-pip-version-check capstone==5.0.3 protobuf==5.29.5 pefile==2024.8.26
       - name: Inspect current authenticated Valve packages without executing components
-        run: python3 tools/inspect-steam-service-loader.py --output inspection/steam-service-loader.json
+        env:
+          INSPECT_FOCUS: ${{ inputs.focus || 'registry-security' }}
+        run: |
+          args=()
+          if [ "$INSPECT_FOCUS" = registry-security ]; then args+=(--registry-security); fi
+          python3 tools/inspect-steam-service-loader.py "${args[@]}" --output inspection/steam-service-loader.json
       - uses: actions/upload-artifact@v4
         with:
           name: steam-service-loader-inspection
