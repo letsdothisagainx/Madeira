@@ -1,0 +1,28 @@
+name: Inspect genuine Steam service loader
+on:
+  workflow_dispatch:
+  push:
+    branches: ['codex/inspect-*']
+    paths:
+      - tools/inspect-steam-service-loader.py
+      - .github/workflows/steam-service-loader-inspect.yml
+permissions:
+  contents: read
+jobs:
+  public-service-inspection:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pinned static PE inspection dependencies
+        run: python3 -m pip install --disable-pip-version-check capstone==5.0.3 protobuf==5.29.5 pefile==2024.8.26
+      - name: Inspect current authenticated Valve packages without executing components
+        run: python3 tools/inspect-steam-service-loader.py --output inspection/steam-service-loader.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: steam-service-loader-inspection
+          path: inspection/steam-service-loader.json
+          if-no-files-found: error
+          retention-days: 3
