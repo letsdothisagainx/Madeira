@@ -162,6 +162,22 @@ class Inspector:
 
     def body(self, rva):
         start, end, scope = self.containing(rva)
+        if self.pe.bits == 64:
+            # One RUNTIME_FUNCTION entry can contain only a prologue fragment.
+            # Follow actual branch/fallthrough edges through all fragments;
+            # do not mistake the unwind entry's end for the function's end.
+            graph = public.disassemble_function(self.pe, start, {})
+            instructions = []
+            for item in graph['instructions']:
+                at = start+int(item['offset'], 16)
+                raw = bytes.fromhex(item['bytes'])
+                instruction = next(self.md.disasm(raw, at, count=1), None)
+                require(instruction is not None and instruction.size == len(raw), 'CFG instruction identity mismatch')
+                instructions.append(self.row(instruction))
+            return {'start_rva': hex(start), 'end_rva': graph['end_rva'],
+                    'scope': graph['scope'], 'initial_unwind_end_rva': graph['initial_unwind_end_rva'],
+                    'indirect_exits': graph['indirect_exits'], 'sha256': graph['code_sha256'],
+                    'instructions': instructions}
         instructions = list(self.md.disasm(self.pe.at(start, end-start), start))
         require(len(instructions) <= 8192, 'function instruction bound exceeded')
         return {'start_rva': hex(start), 'end_rva': hex(end), 'scope': scope,
