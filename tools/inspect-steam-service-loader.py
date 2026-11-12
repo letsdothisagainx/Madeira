@@ -282,12 +282,19 @@ class Inspector:
         section = self.pe.section_for(target)
         low = max(section['rva'], target-8192)
         raw = self.pe.at(low, target-low)
-        starts = [low+m.start() for m in re.finditer(rb'\x55\x8b\xec', raw)]
+        starts = [(low+m.start(), 'decoded x86 frame prologue') for m in re.finditer(rb'\x55\x8b\xec', raw)]
+        # MSVC also emits frame-pointer-omitted wrappers. INT3 alignment is a
+        # useful candidate boundary, but remains explicitly weaker than symbols.
+        starts.extend((low+m.end(), 'preceding x86 INT3 padding boundary') for m in re.finditer(rb'\xcc+', raw))
         start = None
-        for candidate in reversed(starts):
+        boundary_scope = ''
+        for candidate, candidate_scope in sorted(starts, reverse=True):
+            if candidate >= target:
+                continue
             prefix = list(self.md.disasm(self.pe.at(candidate, target-candidate), candidate))
             if prefix and prefix[-1].address+prefix[-1].size == target and all(i.id for i in prefix):
                 start = candidate
+                boundary_scope = candidate_scope
                 break
         if start is None:
             return {'target_rva': hex(target), 'scope': 'unresolved: no decoded preceding x86 frame prologue',
@@ -317,7 +324,7 @@ class Inspector:
                     continue
             pending.append(at+instruction.size)
         return {'start_rva': hex(start), 'target_rva': hex(target),
-                'scope': 'CFG from nearest preceding decoded x86 frame prologue; no PDB identity',
+                'scope': 'CFG from nearest '+boundary_scope+'; no PDB identity',
                 'target_reachable': target in decoded, 'unresolved_exits': exits,
                 'instructions': [self.row(decoded[at]) for at in sorted(decoded)]}
 
