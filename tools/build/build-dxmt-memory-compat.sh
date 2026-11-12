@@ -11,7 +11,7 @@ cleanup() {
   local status=$?
   trap - EXIT
   for pending in "${PENDING_OUTPUTS[@]:-}"; do
-    [[ -n "$pending" ]] && rm -f "$pending"
+    if [[ -n "$pending" ]]; then rm -f "$pending"; fi
   done
   if [[ -f "$STATE/state.json" ]]; then
     if ! python3 "$ROOT/tools/build/stage-dxmt-memory-compat.py" restore "$STATE"; then
