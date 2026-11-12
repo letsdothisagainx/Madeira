@@ -166,7 +166,17 @@ class Inspector:
             # One RUNTIME_FUNCTION entry can contain only a prologue fragment.
             # Follow actual branch/fallthrough edges through all fragments;
             # do not mistake the unwind entry's end for the function's end.
-            graph = public.disassemble_function(self.pe, start, {})
+            try:
+                graph = public.disassemble_function(self.pe, start, {})
+            except ValueError as error:
+                # An unsupported or exceptionally large helper must not stop
+                # inspection of the actual service-load call. Keep the bounded
+                # window and explicitly report that CFG proof is incomplete.
+                instructions = list(self.md.disasm(self.pe.at(start, end-start), start))
+                return {'start_rva': hex(start), 'end_rva': hex(end),
+                        'scope': 'bounded unwind fragment; CFG incomplete', 'cfg_error': str(error),
+                        'sha256': hashlib.sha256(self.pe.at(start, end-start)).hexdigest(),
+                        'instructions': [self.row(i) for i in instructions]}
             instructions = []
             for item in graph['instructions']:
                 at = start+int(item['offset'], 16)
