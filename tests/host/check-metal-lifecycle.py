@@ -25,7 +25,7 @@ def module(name):
     return result
 
 
-diagnostics, lifecycle = module('diagnostics'), module('lifecycle')
+diagnostics, lifecycle, pressure = module('diagnostics'), module('lifecycle'), module('memory-pressure')
 observed = diagnostics.stage(original.decode())
 staged = lifecycle.stage(observed)
 start = staged.index('\n_MTLCommandBuffer_commit(void *obj) {')
@@ -50,7 +50,7 @@ assert '[pending->buffer commit];\n  [pending->buffer release];\n  free(pending)
 assert 'waitUntilCompleted' not in adapter and 'dispatch_sync' not in adapter
 assert 'MTLCommandBufferStatusCompleted' not in adapter and 'STATUS_SUCCESS' not in adapter
 build = (ROOT / 'build/dxmt-ios/build.sh').read_text()
-assert build.index('stage-dxmt-diagnostics.py') < build.index('stage-dxmt-lifecycle.py') < build.index('compile_objc "$BUILD_DIR/staged/winemetal_unix.c"')
+assert build.index('stage-dxmt-diagnostics.py') < build.index('stage-dxmt-lifecycle.py') < build.index('stage-dxmt-memory-pressure.py') < build.index('compile_objc "$BUILD_DIR/staged/winemetal_memory.c"')
 view = (ROOT / 'app/Madeira/ContentView.swift').read_text()
 for notification, active in (('willResignActiveNotification', 0), ('didEnterBackgroundNotification', 0),
                              ('didBecomeActiveNotification', 1)):
@@ -74,6 +74,11 @@ with tempfile.TemporaryDirectory(prefix='madeira-metal-lifecycle-') as directory
                     '--source', str(observed_path), '--output', str(output),
                     '--headers', str(ROOT / 'build/dxmt-ios')], check=True)
     assert output.read_text() == staged
+    final_output = temp / 'winemetal_memory.c'
+    subprocess.run(['python3', str(ROOT / 'tools/build/stage-dxmt-memory-pressure.py'),
+                    '--source', str(output), '--output', str(final_output),
+                    '--headers', str(ROOT / 'build/dxmt-ios')], check=True)
+    assert final_output.read_text() == pressure.stage(staged)
     assert hashlib.sha256(producer.read_bytes()).hexdigest() == digest
     if sys.platform == 'darwin':
         (temp / 'graphics_diagnostics.h').write_bytes((ROOT / 'build/dxmt-ios/graphics_diagnostics.h').read_bytes())
@@ -82,6 +87,6 @@ with tempfile.TemporaryDirectory(prefix='madeira-metal-lifecycle-') as directory
                    '-miphoneos-version-min=18.0', '-fblocks', '-x', 'objective-c', '-fsyntax-only']
         for include in ('include', 'libs', 'src/winemetal', 'src/winemetal/unix', 'src/airconv'):
             command += ['-I', str(args.dxmt_root / include)]
-        subprocess.run(command + [str(output)], check=True)
-        print('PASS actual combined diagnostics/lifecycle Objective-C source against iPhoneOS SDK')
+        subprocess.run(command + [str(final_output)], check=True)
+        print('PASS actual combined diagnostics/lifecycle/pressure Objective-C source against iPhoneOS SDK')
 print('PASS real native Metal commit staging: input immutable, remote path/status/error/completion/event APIs unchanged; actual GPU background/foreground run still required')
