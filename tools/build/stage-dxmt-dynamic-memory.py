@@ -137,7 +137,11 @@ DynamicBuffer::TrimCompletedForQueue(uint64_t queue_domain, uint64_t coherent_se
           detached_bytes += bytes;
           detached_count += n;
         }
-        dynamic->updateCensusLocked(coherent_seq_id);
+        // Empty dormant buffers already have an exact zero snapshot. Avoid
+        // protected-global atomic writes for every live resource on every GPU
+        // completion. Recount only a changed cache or a nonempty new frontier.
+        if (n || (!dynamic->fifo.empty() && dynamic->census_coherent_ != coherent_seq_id))
+          dynamic->updateCensusLocked(coherent_seq_id);
       }
     }
     if (!count)
