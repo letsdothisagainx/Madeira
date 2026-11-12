@@ -1,0 +1,148 @@
+name: Verify an already built IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Existing Build IPA run ID (empty selects the latest nonexpired Madeira-ipa artifact)
+        type: string
+        required: false
+        default: ''
+  workflow_call:
+    inputs:
+      run_id:
+        type: string
+        required: false
+        default: ''
+  push:
+    branches: [main, 'codex/pr-build-*']
+    paths: ['.github/workflows/verify-built-ipa.yml']
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: verify-built-ipa-${{ github.ref }}-${{ inputs.run_id || 'latest' }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Select the exact existing artifact and its source
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_RUN_ID: ${{ inputs.run_id || '' }}
+        run: |
+          python3 - <<'PY_SELECT'
+          import json, os, re, urllib.request
+          repo = os.environ['GITHUB_REPOSITORY']
+          requested = os.environ['INPUT_RUN_ID'].strip()
+          assert not requested or re.fullmatch(r'[0-9]{1,20}', requested), 'run_id must contain decimal digits only'
+          def api(path):
+              request = urllib.request.Request('https://api.github.com/repos/' + repo + path,
+                  headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                           'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28'})
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  return json.load(response)
+          path = '/actions/runs/' + requested + '/artifacts?per_page=100' if requested else '/actions/artifacts?name=Madeira-ipa&per_page=100'
+          candidates = [a for a in api(path)['artifacts'] if a['name'] == 'Madeira-ipa' and not a['expired']]
+          assert candidates, 'No nonexpired Madeira-ipa artifact was found'
+          artifact = max(candidates, key=lambda a: (a['created_at'], a['id']))
+          recorded = artifact.get('workflow_run') or {}
+          run_id = requested or str(recorded.get('id', ''))
+          assert re.fullmatch(r'[0-9]{1,20}', run_id), 'artifact run identity missing'
+          run = api('/actions/runs/' + run_id)
+          assert str(run['id']) == run_id, 'run identity mismatch'
+          assert run['head_repository']['full_name'].lower() == repo.lower(), 'artifact source belongs to a different repository'
+          revision = run['head_sha']
+          assert re.fullmatch(r'[0-9a-f]{40}', revision), 'invalid artifact source revision'
+          if recorded:
+              assert str(recorded['id']) == run_id and recorded['head_sha'] == revision, 'artifact/run source mismatch'
+              assert recorded['head_repository_id'] == recorded['repository_id'], 'artifact source repository mismatch'
+          assert isinstance(artifact['id'], int) and artifact['id'] > 0, 'invalid artifact identity'
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('run_id=' + run_id + '\nsource_revision=' + revision + '\nartifact_id=' + str(artifact['id']) + '\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write('Verifying existing IPA from source `' + revision + '` and [build run ' + run_id + '](https://github.com/' + repo + '/actions/runs/' + run_id + '). No runtime rebuild.\n')
+          print('Selected artifact=' + str(artifact['id']) + ' run=' + run_id + ' source=' + revision)
+          PY_SELECT
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.source.outputs.source_revision }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: Madeira-ipa
+          path: scm-ipa
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.source.outputs.run_id }}
+      - name: Verify the complete existing IPA against its exact source
+        env:
+          SOURCE_REVISION: ${{ steps.source.outputs.source_revision }}
+        run: |
+          python3 tools/build/native-provenance.py check --root "$GITHUB_WORKSPACE" --revision "$SOURCE_REVISION" --ipa scm-ipa/Madeira.ipa
+          python3 -m venv "$RUNNER_TEMP/scm-abi-tools"
+          "$RUNNER_TEMP/scm-abi-tools/bin/pip" install -r build/scm-rpc/test-requirements.txt
+          unzip -oq scm-ipa/Madeira.ipa 'Payload/Madeira.app/arm64ec-windows/*' -d scm-ipa
+          farm=scm-ipa/Payload/Madeira.app/arm64ec-windows
+          python3 tests/host/check-pe-x64-write-spans.py --pe-images "$farm/user32.dll" "$farm/kernel32.dll" "$farm/ntdll.dll" "$farm/shell32.dll"
+          test -s "$farm/madeira-steam-service.exe"
+          test -s "$farm/madeira-scm-probe.exe"
+          test -s "$farm/dock-notices.txt"
+          python3 tools/check-scm-rpc-image.py "$farm/sechost.dll" "$farm/ntdll.dll"
+          "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-scm-rpc-abi.py --producer "$farm/sechost.dll" --runtime "$farm/rpcrt4.dll"
+          git submodule update --init --depth 1 wine dxmt
+          unzip -oq scm-ipa/Madeira.ipa 'Payload/Madeira.app/*-windows/d3d11.dll' 'Payload/Madeira.app/*-windows/dxgi.dll' 'Payload/Madeira.app/*-windows/d3d10core.dll' 'Payload/Madeira.app/*-windows/winemetal.dll' 'Payload/Madeira.app/arm64ec-windows/madeira-dxmt-memory.json' 'Payload/Madeira.app/Madeira.debug.dylib' -d scm-ipa
+          python3 tools/check-dxmt-memory-package.py --root scm-ipa/Payload/Madeira.app --repo-root "$GITHUB_WORKSPACE" --ipa scm-ipa/Madeira.ipa
+          unzip -oq scm-ipa/Madeira.ipa 'Payload/Madeira.app/*-windows/crypt32.dll' 'Payload/Madeira.app/*-windows/kernelbase.dll' 'Payload/Madeira.app/arm64ec-windows/madeira-security-compat.json' -d scm-ipa
+          python3 tools/check-security-compat-package.py --root scm-ipa/Payload/Madeira.app --source-root wine --repo-root "$GITHUB_WORKSPACE" --ipa scm-ipa/Madeira.ipa
+          unzip -oq scm-ipa/Madeira.ipa 'Payload/Madeira.app/*-windows/advapi32.dll' 'Payload/Madeira.app/arm64ec-windows/madeira-registry-security.json' -d scm-ipa
+          python3 tools/check-registry-security-package.py --root scm-ipa/Payload/Madeira.app --source-root wine --repo-root "$GITHUB_WORKSPACE" --ipa scm-ipa/Madeira.ipa
+          "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-x18-loads.py --emulate
+          "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-fex-native-callback.py --emulate
+          unzip -oq scm-ipa/Madeira.ipa 'Payload/Madeira.app/i386-windows/madeira-wow64-*' 'Payload/Madeira.app/Madeira.debug.dylib' -d scm-ipa
+          "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-wow64-probe-image.py scm-ipa/Payload/Madeira.app/i386-windows
+          "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-native-apc-image.py
+          python3 - <<'PY'
+          from pathlib import Path
+          image = Path('scm-ipa/Payload/Madeira.app/Madeira.debug.dylib').read_bytes()
+          for marker in (b'[udp-send-failure-v1]',
+                         b'same-image PyInstaller child of a live tracked Steam helper',
+                         b'[wow-gl-attach] phase=', b'[steam-ui-host]', b'[iosb-register]', b'[async-apc]', b'[guard-protect]',
+                         b'[x18-load] signed-load recovered', b'[steam-cef] request role=browser', b'[steam-cef] request role=crashpad',
+                         b'[pool-section]', b'[stik-protocol]', b'[cef-origin]', b'[cef-adjacent]', b'[steam-frame]', b'[steam-helper]',
+                         b'[wow-startup]', b'[process-quarantine]', b'[fex-fault] original guest AV', b'[io-apc-handoff-v1]',
+                         b'[va-scan-owner]', b'[thread-context-v1]', b'placement=alignment-ends-v1',
+                         b'WINE_IOS_JIT_HEAD_RESERVE_MB', b'[cs2-pool]', b'[wow-session]',
+                         b'[steam-validation]', b'[steam-launch-v1]', b'[wow-budget]',
+                         b'above-FEX=', b'[fixed-main-placement]', b'[htmlipc-log-v1]',
+                         b'scratch-placement=span-grid-v2', b'policy=preserve-pool-rx-v1',
+                         b'[alias-exclusive-loop]', b'[alias-str-immediate]', b'access=independent-images-v1',
+                         b'[alias-exclusive-add]', b'[native-srw-alias-v1]', b'[startup-app-v1]',
+                         b'[startup-timeline-v1]', b'[steam-session-v1]', b'[metal-resource-v1]',
+                         b'[metal-api-v1]', b'[metal-progress-v1]', b'[metal-lifecycle-v1]',
+                         b'[cs2-window-geometry-v1]', b'[pool-accounting]', b'[pool-code-wait]',
+                         b'[native-build-provenance-v1]', b'[pool-policy-runtime-v1]'):
+              assert marker in image, 'missing native diagnostic: ' + repr(marker)
+          assert b'SEGV LOOP FATAL' not in image, 'legacy fault-skipping path is still bundled'
+          print('PASS native attach/UI/I/O/guard/process-isolation diagnostics included in IPA')
+          import os, plistlib, struct, uuid, zipfile
+          pos = 32
+          image_uuid = None
+          for _ in range(struct.unpack_from('<I', image, 16)[0]):
+              command, size = struct.unpack_from('<II', image, pos)
+              if command == 0x1b:
+                  image_uuid = str(uuid.UUID(bytes=image[pos+8:pos+24])).upper()
+              pos += size
+          assert image_uuid, 'native image UUID missing'
+          with zipfile.ZipFile('scm-ipa/Madeira.ipa') as ipa:
+              info = plistlib.loads(ipa.read('Payload/Madeira.app/Info.plist'))
+              bundle = info['CFBundleIdentifier']
+          assert info['MadeiraBuild'].endswith(' source=' + os.environ['SOURCE_REVISION']), 'IPA source revision differs from workflow commit'
+          print('::notice title=IPA source revision::' + info['MadeiraBuild'])
+          print('::notice title=Steam candidate image::bundle=' + bundle + ' native-UUID=' + image_uuid)
+          PY

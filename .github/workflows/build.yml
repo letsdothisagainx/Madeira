@@ -436,7 +436,7 @@ jobs:
           python3 tools/check-registry-security-package.py --root scm-ipa/Payload/Madeira.app --source-root wine --repo-root "$GITHUB_WORKSPACE" --ipa scm-ipa/Madeira.ipa
           "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-x18-loads.py --emulate
           "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-fex-native-callback.py --emulate
-          unzip -q scm-ipa/Madeira.ipa 'Payload/Madeira.app/i386-windows/madeira-wow64-*' 'Payload/Madeira.app/Madeira.debug.dylib' -d scm-ipa
+          unzip -oq scm-ipa/Madeira.ipa 'Payload/Madeira.app/i386-windows/madeira-wow64-*' 'Payload/Madeira.app/Madeira.debug.dylib' -d scm-ipa
           "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-wow64-probe-image.py scm-ipa/Payload/Madeira.app/i386-windows
           "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-native-apc-image.py
           python3 - <<'PY'
