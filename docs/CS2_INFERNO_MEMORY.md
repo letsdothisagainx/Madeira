@@ -86,7 +86,9 @@ They do not execute an iOS GPU or load Inferno.
 
 The build compiles corrected D3D11/DXGI/Winemetal/D3D10Core PE binaries for
 AArch64, ARM64EC and I386, as well as the native DXMT substrate. A temporary
-source transaction restores the pinned submodule bytes. Packaging verifies
+source transaction restores its owned pinned source bytes. The existing
+Xcode 27 Metal atomic compatibility patch is separately verified against its
+exact recipe and recorded with original/compiled shader hashes. Packaging verifies
 PE architecture/exports, original/staged source hashes, recipe hashes, native
 contract markers and exact IPA copies, rejecting stale tracked DLLs.
 

@@ -178,11 +178,18 @@ with tempfile.TemporaryDirectory() as temp:
     for relative in source_names:
         target=t/'dxmt'/relative;target.parent.mkdir(parents=True,exist_ok=True)
         target.write_bytes((root/'dxmt'/relative).read_bytes())
+    # Pin the pristine shader so the real checker can independently derive the
+    # existing, exact Xcode atomic compatibility transform from HEAD + recipe.
+    shader=t/'dxmt'/memory.SHADER;shader.parent.mkdir(parents=True,exist_ok=True)
+    shader.write_bytes(subprocess.check_output(['git','-C',str(root/'dxmt'),'show','HEAD:'+memory.SHADER]))
     for name in ('wine','dxmt'):
         subprocess.run(['git','init','-q',str(t/name)],check=True)
+        if name=='dxmt':
+            subprocess.run(['git','-C',str(t/name),'add','--',memory.SHADER],check=True)
         subprocess.run(['git','-C',str(t/name),'-c','user.name=Madeira package fixture',
                         '-c','user.email=fixture@invalid','-c','core.hooksPath=/dev/null',
                         'commit','-q','--allow-empty','-m','Structural packaging fixture pin'],check=True)
+    shader.write_bytes(memory.shader_bytes(t)[1])
     for farm in memory.FARMS:
         for module,export in memory.MODULES.items():
             data=bytearray(registration.fixture(farm))

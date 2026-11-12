@@ -100,6 +100,52 @@ with tempfile.TemporaryDirectory(prefix='madeira-dxmt-transaction-') as director
         raise AssertionError('stale native DXMT image passed marker gate')
     print('PASS compiled native marker gate rejects the old native implementation; fixture supplies no Metal execution result')
 
+
+# The existing shader-header builder intentionally changes one tracked Metal
+# source for Xcode 27. Attribute only its exact known bytes, never a wildcard.
+with tempfile.TemporaryDirectory(prefix='madeira-dxmt-shader-proof-') as directory:
+    repo = Path(directory)
+    shader = repo / 'dxmt' / package.SHADER
+    shader.parent.mkdir(parents=True)
+    original, canonical = package.shader_bytes(ROOT)
+    shader.write_bytes(original)
+    unrelated = repo / 'dxmt/unrelated.cpp'
+    unrelated.write_text('original tracked source\n')
+    recipe = repo / 'tools/build/build-shader-headers.sh'
+    recipe.parent.mkdir(parents=True)
+    recipe.write_bytes((ROOT / 'tools/build/build-shader-headers.sh').read_bytes())
+    subprocess.run(['git', 'init', '-q', str(repo / 'dxmt')], check=True)
+    subprocess.run(['git', '-C', str(repo / 'dxmt'), 'add', package.SHADER, 'unrelated.cpp'], check=True)
+    subprocess.run(['git', '-C', str(repo / 'dxmt'), '-c', 'user.name=DXMT build fixture',
+                    '-c', 'user.email=fixture@invalid', '-c', 'core.hooksPath=/dev/null',
+                    'commit', '-qm', 'Pinned shader fixture'], check=True)
+    pristine_proof = package.compiled_shader_inputs(repo)
+    try:
+        package.check_source_tree(repo)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError('build preflight must require the shader bytes actually compiled by the existing builder')
+    shader.write_bytes(canonical)
+    package.check_source_tree(repo)
+    assert package.compiled_shader_inputs(repo, writing=True) == pristine_proof
+    shader.write_bytes(canonical + b'\n// unowned source change\n')
+    try:
+        package.check_source_tree(repo)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError('unattributed shader modification accepted')
+    shader.write_bytes(canonical)
+    unrelated.write_text('unrecorded tracked source change\n')
+    try:
+        package.check_source_tree(repo)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError('unrelated source change accepted')
+    print('PASS actual build guard accepts only the exact pre-existing Metal atomic patch; modified shader/other tracked files fail; pristine post-IPA checkout derives identical compiled-source provenance')
+
 entry = (ROOT / 'tools/build-ipa.sh').read_text()
 recipe = (ROOT / 'tools/build/build-dxmt-memory-compat.sh').read_text()
 assert '"$ROOT/tools/build/build-dxmt-memory-compat.sh"' in entry

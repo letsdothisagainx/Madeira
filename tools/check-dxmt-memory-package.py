@@ -4,6 +4,7 @@
 This is binary/source provenance, not an iPhone memory or rendered-pixel test.
 """
 import argparse
+import ast
 import hashlib
 import importlib.util
 import json
@@ -23,6 +24,7 @@ RECIPES = (
     'tools/build/stage-dxmt-memory-compat.py', 'tools/build/stage-dxmt-upload-memory.py',
     'tools/build/stage-dxmt-dynamic-memory.py', 'tools/build/stage-dxmt-memory-pressure.py',
     'tools/build/build-dxmt-memory-compat.sh', 'tools/build/build-dxmt-ios.sh',
+    'tools/build/build-shader-headers.sh',
     'tools/check-dxmt-memory-package.py', 'tools/check-system-programs.py',
     'build/dxmt-ios/build.sh', 'build/dxmt-ios/memory_pressure.hpp',
     'build/dxmt-ios/memory_pressure_native.h', 'build/dxmt-ios/graphics_diagnostics.h',
@@ -72,6 +74,48 @@ def pin(repo, name):
     return subprocess.check_output(['git', '-C', str(repo / name), 'rev-parse', 'HEAD'], text=True).strip()
 
 
+SHADER = 'src/airconv/shaders/air_tessellation.metal'
+
+
+def shader_bytes(repo):
+    """Attribute the existing Xcode 27 shader fix without allowing other edits."""
+    original = subprocess.check_output(['git', '-C', str(repo / 'dxmt'), 'show', 'HEAD:' + SHADER])
+    recipe = (repo / 'tools/build/build-shader-headers.sh').read_text()
+    # Read, never execute, the existing owned recipe's Python here-document.
+    body = recipe.split("<<'PY'\n", 1)[1].split('\nPY\n', 1)[0]
+    tree = ast.parse(body)
+    assignments = {node.targets[0].id: node.value for node in ast.walk(tree)
+                   if isinstance(node, ast.Assign) and len(node.targets) == 1
+                   and isinstance(node.targets[0], ast.Name)}
+    old = ast.literal_eval(assignments['old'])
+    expected = '  return __metal_atomic_fetch_add_explicit(out_count, 1, int(memory_order_relaxed), __METAL_MEMORY_SCOPE_THREADGROUP__);\n'
+    assert old == expected, 'existing Metal atomic compatibility anchor changed'
+    expected_new = ast.parse('new = ("#ifdef __METAL_MEMORY_FLAGS_NONE__\\n" + old.replace("__);", "__, __METAL_MEMORY_FLAGS_NONE__);") + "#else\\n" + old + "#endif\\n")').body[0].value
+    assert ast.dump(assignments['new']) == ast.dump(expected_new), 'existing Metal atomic compatibility transform changed'
+    new = '#ifdef __METAL_MEMORY_FLAGS_NONE__\n' + old.replace('__);', '__, __METAL_MEMORY_FLAGS_NONE__);') + '#else\n' + old + '#endif\n'
+    text = original.decode()
+    assert text.count(old) == 1 and '__METAL_MEMORY_FLAGS_NONE__' not in text, 'pinned Metal shader compatibility input changed'
+    return original, text.replace(old, new, 1).encode()
+
+
+def compiled_shader_inputs(repo, writing=False):
+    original, patched = shader_bytes(repo)
+    path = repo / 'dxmt' / SHADER
+    assert path.is_file() and not path.is_symlink(), 'missing or symlinked Metal shader input'
+    current = path.read_bytes()
+    assert current in ((patched,) if writing else (original, patched)), 'unattributed Metal shader source modification'
+    return {'path': SHADER, 'original_sha256': hashlib.sha256(original).hexdigest(),
+            'compiled_sha256': hashlib.sha256(patched).hexdigest(),
+            'recipe_sha256': sha(repo / 'tools/build/build-shader-headers.sh')}
+
+
+def check_source_tree(repo):
+    changed = subprocess.check_output(['git', '-C', str(repo / 'dxmt'), 'diff', '--name-only', 'HEAD', '--'], text=True).splitlines()
+    assert set(changed) <= {SHADER}, 'unrecorded modified DXMT source paths: ' + ', '.join(changed)
+    compiled_shader_inputs(repo, writing=True)
+    print('PASS DXMT preflight: only the exact pre-existing Xcode Metal atomic compatibility transform is present')
+
+
 def check(root, repo, write=False, transaction=None, app=None, ipa=None):
     spec = importlib.util.spec_from_file_location('dxmt_pe_inspection', repo / 'tools/check-system-programs.py')
     pe = importlib.util.module_from_spec(spec)
@@ -87,9 +131,10 @@ def check(root, repo, write=False, transaction=None, app=None, ipa=None):
                 for marker in PE_MARKERS:
                     assert marker in data, 'stale real D3D11 implementation: ' + name + ': ' + marker.decode()
     recipe = recipe_inputs(repo)
+    shader = compiled_shader_inputs(repo, writing=write)
     staged_sources = sources(repo, transaction if write else None)
     metadata = {'recipe': 1, 'pins': {name: pin(repo, name) for name in ('wine', 'dxmt')},
-                'inputs': recipe, 'sources': staged_sources, 'binaries': binaries,
+                'inputs': recipe, 'shader': shader, 'sources': staged_sources, 'binaries': binaries,
                 'scope': 'completed-only upload and dynamic backing retirement; measured native process budget',
                 'device_acceptance': 'unmeasured'}
     native = root / 'libdxmt_combined.a'
@@ -148,8 +193,12 @@ if __name__ == '__main__':
     parser.add_argument('--repo-root', type=Path, required=True)
     parser.add_argument('--transaction', type=Path)
     parser.add_argument('--write-manifest', action='store_true')
+    parser.add_argument('--check-source-tree', action='store_true')
     parser.add_argument('--app', type=Path)
     parser.add_argument('--ipa', type=Path)
     args = parser.parse_args()
-    check(args.root.resolve(), args.repo_root.resolve(), args.write_manifest,
-          args.transaction, args.app, args.ipa)
+    if args.check_source_tree:
+        check_source_tree(args.repo_root.resolve())
+    else:
+        check(args.root.resolve(), args.repo_root.resolve(), args.write_manifest,
+              args.transaction, args.app, args.ipa)

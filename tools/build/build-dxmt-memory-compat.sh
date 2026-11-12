@@ -25,9 +25,10 @@ cleanup() {
 trap cleanup EXIT
 [[ "$(uname -s)" == Darwin ]] || { echo 'ERROR: DXMT PE/native build requires Xcode on macOS' >&2; exit 1; }
 [[ -x "$TC/arm64ec-w64-mingw32-clang++" ]] || { echo 'ERROR: llvm-mingw is missing' >&2; exit 1; }
-git -C "$DXMT" diff --quiet HEAD -- || {
-  echo 'ERROR: refusing to build an unrecorded modified DXMT source tree' >&2; exit 1;
-}
+# build-shader-headers.sh applies an existing Xcode Metal atomic compatibility
+# fix. Accept only its exact attributed transform; all other tracked edits fail.
+python3 "$ROOT/tools/check-dxmt-memory-package.py" --root "$ROOT/app/Madeira" \
+  --repo-root "$ROOT" --check-source-tree
 python3 "$ROOT/tools/build/stage-dxmt-memory-compat.py" apply "$STATE"
 
 # Avoid PATH-dependent native compiler selection: generic clang in an LLVM
