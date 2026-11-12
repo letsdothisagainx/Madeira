@@ -1,0 +1,33 @@
+--- a/dlls/kernelbase/winerror.mc
++++ b/dlls/kernelbase/winerror.mc
+@@ -3777,15 +3777,30 @@
+ Language=ENU
+ Cannot assign requested address.
+ .
++MessageId=10051
++SymbolicName=WSAENETUNREACH
++Language=ENU
++A socket operation was attempted to an unreachable network.
++.
+ MessageId=10054
+ SymbolicName=WSAECONNRESET
+ Language=ENU
+ Connection reset by peer.
+ .
++MessageId=10060
++SymbolicName=WSAETIMEDOUT
++Language=ENU
++A connection attempt failed because the connected party did not properly respond after a period of time, or established connection failed because connected host has failed to respond.
++.
+ MessageId=10061
+ SymbolicName=WSAECONNREFUSED
+ Language=ENU
+ Connection refused.
++.
++MessageId=10065
++SymbolicName=WSAEHOSTUNREACH
++Language=ENU
++A socket operation was attempted to an unreachable host.
+ .
+ MessageId=11001
+ SymbolicName=WSAHOST_NOT_FOUND

@@ -1,0 +1,28 @@
+{
+  "format": 1,
+  "purpose": "Provide ordinary Windows message-table entries for real Winsock network failures; preserves errors and transport behavior.",
+  "references": [
+    "https://learn.microsoft.com/en-us/windows/win32/winsock/windows-sockets-error-codes-2"
+  ],
+  "messages": {
+    "10051": {
+      "symbol": "WSAENETUNREACH",
+      "text": "A socket operation was attempted to an unreachable network."
+    },
+    "10060": {
+      "symbol": "WSAETIMEDOUT",
+      "text": "A connection attempt failed because the connected party did not properly respond after a period of time, or established connection failed because connected host has failed to respond."
+    },
+    "10065": {
+      "symbol": "WSAEHOSTUNREACH",
+      "text": "A socket operation was attempted to an unreachable host."
+    }
+  },
+  "patchSHA256": "d863e1c86f422c8c25e5d8419bc605f51950c1c191700f257a896d4cb40d3eb4",
+  "files": {
+    "dlls/kernelbase/winerror.mc": {
+      "beforeSHA256": "58b82ba1fd94f995cf8da643589946eaef895304731bdc4a9e81f536ece7793f",
+      "afterSHA256": "402db41b016ef970cbd2f6e8e71c4d26212da45a753dce820c726bd787cb02f1"
+    }
+  }
+}

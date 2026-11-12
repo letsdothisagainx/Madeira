@@ -331,6 +331,8 @@ output.write_text(text)
 PYCODE
             if [ "$name" = file ]; then
                 python3 "$REPO_ROOT/tools/build/stage-htmlipc-log-file.py" "$OBJ_DIR/${name}_ios.c"
+            else
+                python3 "$REPO_ROOT/tools/build/stage-ios-socket-errors.py" "$OBJ_DIR/${name}_ios.c"
             fi
             IO_FAILED_BEFORE=$FAILED
             compile_one "$OBJ_DIR/${name}_ios.c" "$name"

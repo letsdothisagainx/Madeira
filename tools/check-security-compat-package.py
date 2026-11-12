@@ -17,6 +17,9 @@ ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('security_pe', ROOT / 'tools/check-system-programs.py')
 PE = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(PE)
+spec = importlib.util.spec_from_file_location('winsock_messages', ROOT / 'tools/check-winsock-message-resources.py')
+WSA_MESSAGES = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(WSA_MESSAGES)
 FARMS = PE.FARMS
 TREES = {'aarch64-windows': 'build-macos', 'arm64ec-windows': 'build-arm64ec', 'i386-windows': 'build-i386'}
 MANIFEST = 'arm64ec-windows/madeira-security-compat.json'
@@ -25,6 +28,7 @@ STOCK_INPUTS = (
     'dlls/crypt32/crypt32_private.h', 'dlls/crypt32/encode.c', 'dlls/crypt32/msg.c',
     'dlls/crypt32/Makefile.in', 'dlls/crypt32/crypt32.spec',
     'dlls/kernelbase/debug.c', 'dlls/kernelbase/Makefile.in', 'dlls/kernelbase/kernelbase.spec',
+    'dlls/kernelbase/winerror.mc',
     'include/wincrypt.h', 'include/winbase.h', 'include/winerror.h', 'include/winnt.h',
 )
 OWNED_INPUTS = (
@@ -33,6 +37,8 @@ OWNED_INPUTS = (
     'build/wine-pe/build-system-programs.sh', 'tools/build/stage-process-lookup.py',
     'tools/build/stage-crypt32-authattrs.py', 'tools/build/stage-mapped-filename-contract.py',
     'tools/check-security-compat-package.py',
+    'build/wine-pe/winsock-error-messages.patch', 'build/wine-pe/winsock-error-messages.json',
+    'tools/build/stage-winsock-error-messages.py', 'tools/check-winsock-message-resources.py',
 )
 
 
@@ -240,6 +246,12 @@ def source_inputs(source, repo):
     assert set(reviewed.get('files', {})) == {'dlls/crypt32/' + name for name in ('crypt32_private.h', 'encode.c', 'msg.c')}, 'crypt32 backport source coverage differs'
     for name, record in reviewed['files'].items():
         assert record['beforeSHA256'] == result['wine/' + name], 'crypt32 stock source differs from reviewed input'
+    messages = json.loads(read(repo / 'build/wine-pe/winsock-error-messages.json', 1 << 20), object_pairs_hook=unique_object)
+    assert messages.get('format') == 1, 'invalid socket message provenance format'
+    assert messages.get('patchSHA256') == result['build/wine-pe/winsock-error-messages.patch'], 'socket message patch differs from reviewed input'
+    assert set(messages.get('files', {})) == {'dlls/kernelbase/winerror.mc'}, 'socket message source coverage differs'
+    assert messages['files']['dlls/kernelbase/winerror.mc']['beforeSHA256'] == result['wine/dlls/kernelbase/winerror.mc'], 'socket message stock source differs'
+    assert {int(key): value['text'] for key, value in messages.get('messages', {}).items()} == WSA_MESSAGES.EXPECTED, 'socket message descriptions differ'
     return result
 
 
@@ -272,6 +284,8 @@ def check(root, source, write=False, app=None, ipa=None, repo=ROOT, build_root=N
         for dll, export in (('crypt32.dll', 'CryptMsgControl'), ('kernelbase.dll', 'GetMappedFileNameW')):
             relative = farm + '/' + dll
             data = read(root / relative)
+            if dll == 'kernelbase.dll':
+                WSA_MESSAGES.check(data)
             records[relative] = PE.inspect(data, farm, required_export=export)
             images[farm][dll] = Code(data)
             payload[relative] = data

@@ -10,9 +10,13 @@ JOBS="${JOBS:-$(sysctl -n hw.ncpu 2>/dev/null || echo 8)}"
 STATE="$(mktemp -d)"
 crypto_staged=0
 filename_staged=0
+messages_staged=0
 cleanup() {
     status=$?
     restored=1
+    if [[ "$messages_staged" == 1 ]]; then
+        python3 "$ROOT/tools/build/stage-winsock-error-messages.py" restore "$STATE/messages" || restored=0
+    fi
     if [[ "$filename_staged" == 1 ]]; then
         python3 "$ROOT/tools/build/stage-mapped-filename-contract.py" restore "$STATE/filename" || restored=0
     fi
@@ -39,6 +43,8 @@ python3 "$ROOT/tools/build/stage-crypt32-authattrs.py" apply "$STATE/crypto" --s
 crypto_staged=1
 python3 "$ROOT/tools/build/stage-mapped-filename-contract.py" apply "$STATE/filename" --source "$WINE"
 filename_staged=1
+python3 "$ROOT/tools/build/stage-winsock-error-messages.py" apply "$STATE/messages" --source "$WINE"
+messages_staged=1
 
 # Build kernelbase while its filename correction and the existing process-
 # lookup overlay are both present. The nested transaction restores only its
@@ -46,6 +52,9 @@ filename_staged=1
 for config in 'build-macos:aarch64-windows' 'build-arm64ec:arm64ec-windows' 'build-i386:i386-windows'; do
     IFS=: read -r tree farm <<< "$config"
     rm -f "$WINE/$tree/dlls/kernelbase/$farm/debug.o"
+    # Message resources are shared across PE architectures within each tree.
+    # Force WMC to compile the staged source rather than reuse cached tables.
+    rm -f "$WINE/$tree/dlls/kernelbase/winerror.res" "$WINE/$tree/dlls/kernelbase/winerror.pot"
 done
 "$ROOT/build/wine-pe/build-system-programs.sh"
 

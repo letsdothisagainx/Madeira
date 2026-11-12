@@ -15,7 +15,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 FILES = ('dlls/crypt32/crypt32_private.h', 'dlls/crypt32/encode.c',
-         'dlls/crypt32/msg.c', 'dlls/kernelbase/debug.c')
+         'dlls/crypt32/msg.c', 'dlls/kernelbase/debug.c', 'dlls/kernelbase/winerror.mc')
 CONFIGS = (('build-macos', 'aarch64', 'aarch64-windows'),
            ('build-arm64ec', 'arm64ec', 'arm64ec-windows'),
            ('build-i386', 'i686', 'i386-windows'))
@@ -28,6 +28,9 @@ def setup(directory):
                      'build/wine-pe/crypt32-authattrs-order.json',
                      'build/wine-pe/mapped-filename-contract.patch',
                      'tools/build/stage-crypt32-authattrs.py',
+                     'build/wine-pe/winsock-error-messages.patch',
+                     'build/wine-pe/winsock-error-messages.json',
+                     'tools/build/stage-winsock-error-messages.py',
                      'tools/build/stage-mapped-filename-contract.py'):
         target = root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -50,9 +53,11 @@ from pathlib import Path
 r=Path(os.environ['ROOT']);w=r/'wine'
 assert 'return min( len, size );' in (w/'dlls/kernelbase/debug.c').read_text()
 assert 'CRYPT_AsnEncodePKCSAttributesUnsorted(' in (w/'dlls/crypt32/msg.c').read_text()
+assert 'MessageId=10065\\n' in (w/'dlls/kernelbase/winerror.mc').read_text()
 for tree,farm in [('build-macos','aarch64-windows'),('build-arm64ec','arm64ec-windows'),('build-i386','i386-windows')]:
  p=w/tree/'dlls/kernelbase'/farm/'debug.o'
  assert not p.exists(),'stale debug object survived'
+ assert not (w/tree/'dlls/kernelbase/winerror.res').exists(),'stale message resource survived'
  p.write_bytes(b'fresh debug object')
 PY
 ''')
@@ -93,6 +98,7 @@ for n in ('encode.o','msg.o','crypt32.dll'):(folder/n).write_bytes(('fresh '+n).
         debug = build/'dlls/kernelbase'/farm/'debug.o'
         debug.parent.mkdir(parents=True)
         debug.write_bytes(b'stale debug object')
+        (debug.parent.parent/'winerror.res').write_bytes(b'stale message resource')
         dest = root/'app/Madeira'/farm
         dest.mkdir(parents=True)
         (dest/'crypt32.dll').write_bytes(b'previous DLL')

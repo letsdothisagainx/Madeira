@@ -1,0 +1,37 @@
+name: Verify native UDP send compatibility
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'codex/pr-build-*', 'codex/inspect-*']
+    paths:
+      - build/ntdll-unix/build.sh
+      - build/ntdll-unix/socket_error_context.h
+      - tools/build/stage-ios-socket-errors.py
+      - tests/host/check-native-udp-send.py
+      - .github/workflows/udp-send-compat.yml
+  pull_request:
+    paths:
+      - build/ntdll-unix/build.sh
+      - build/ntdll-unix/socket_error_context.h
+      - tools/build/stage-ios-socket-errors.py
+      - tests/host/check-native-udp-send.py
+      - .github/workflows/udp-send-compat.yml
+permissions:
+  contents: read
+jobs:
+  actual-native-udp:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, xcode-27]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: git submodule update --init --depth 1 wine
+      - name: Exercise production send path, original errors and real packet exchanges
+        env:
+          CC: clang
+        run: python3 tests/host/check-native-udp-send.py

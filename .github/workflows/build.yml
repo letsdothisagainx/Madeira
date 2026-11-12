@@ -344,7 +344,7 @@ jobs:
             app/Madeira/legal/LICENSES-rppairing-crates.txt
       - uses: actions/cache@v4
         with:
-          key: plan19-${{ steps.sdk.outputs.key }}-wine-host-${{ steps.pins.outputs.wine }}-${{ hashFiles('tools/build/build-wine.sh', 'tools/build/setup-llvm-mingw.sh', 'build/wine-pe/**', 'tools/build/stage-process-lookup.py', 'tools/build/stage-trust-diagnostics.py', 'tools/build/stage-crypt32-authattrs.py', 'tools/build/stage-mapped-filename-contract.py', 'tools/build/stage-registry-security-views.py', 'tools/check-security-compat-package.py', 'tools/check-registry-security-package.py', 'tools/check-system-programs.py', 'tools/check-trust-diagnostics-*.py') }}
+          key: plan19-${{ steps.sdk.outputs.key }}-wine-host-${{ steps.pins.outputs.wine }}-${{ hashFiles('tools/build/build-wine.sh', 'tools/build/setup-llvm-mingw.sh', 'build/wine-pe/**', 'tools/build/stage-process-lookup.py', 'tools/build/stage-trust-diagnostics.py', 'tools/build/stage-crypt32-authattrs.py', 'tools/build/stage-mapped-filename-contract.py', 'tools/build/stage-registry-security-views.py', 'tools/build/stage-winsock-error-messages.py', 'tools/check-security-compat-package.py', 'tools/check-registry-security-package.py', 'tools/check-system-programs.py', 'tools/check-trust-diagnostics-*.py') }}
           path: |
             wine/build-macos
             wine/build-arm64ec
@@ -436,7 +436,8 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           image = Path('scm-ipa/Payload/Madeira.app/Madeira.debug.dylib').read_bytes()
-          for marker in (b'same-image PyInstaller child of a live tracked Steam helper',
+          for marker in (b'[udp-send-failure-v1]',
+                         b'same-image PyInstaller child of a live tracked Steam helper',
                          b'[wow-gl-attach] phase=', b'[steam-ui-host]', b'[iosb-register]', b'[async-apc]', b'[guard-protect]',
                          b'[x18-load] signed-load recovered', b'[steam-cef] request role=browser', b'[steam-cef] request role=crashpad',
                          b'[pool-section]', b'[stik-protocol]', b'[cef-origin]', b'[cef-adjacent]', b'[steam-frame]', b'[steam-helper]',

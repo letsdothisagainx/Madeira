@@ -28,6 +28,7 @@ def module(name, path):
 
 CHECKER = module('security_package', ROOT / 'tools/check-security-compat-package.py')
 FIXTURE = module('security_owned_pe', ROOT / 'tests/host/check-native-registration-tools.py')
+MESSAGES = module('owned_message_resource', ROOT / 'tests/host/fixtures/winsock_message_resource.py')
 CALLER = 'CSignedMsgData_UpdateAuthenticatedAttributes'
 CODE = {name: bytes((seed + i) % 256 for i in range(48)) for name, seed in
         ((CHECKER.HELPER, 0x20), (CALLER, 0x60), ('GetMappedFileNameW', 0xa0))}
@@ -108,6 +109,8 @@ def dll_bytes(farm, dll):
     data[0xe80:0xe80 + len(text)] = text
     text = export.encode() + b'\0'
     data[0xe90:0xe90 + len(text)] = text
+    if not crypto:
+        data = MESSAGES.add_to_owned_pe(data, CHECKER.WSA_MESSAGES.EXPECTED)
     struct.pack_into('<II', data, 0x80 + 12, len(data), len(names))
     data += symbol_table(names)
     return bytes(data)

@@ -15,6 +15,8 @@ commands = [
     ['python3', 'tests/host/check-mapped-filename-contract.py'],
     ['python3', 'tests/host/check-security-compat-package.py'],
     ['python3', 'tests/host/check-security-compat-build.py'],
+    ['python3', 'tests/host/check-winsock-error-messages.py'],
+    ['python3', 'tests/host/check-native-udp-send.py'],
     ['python3', 'tests/host/check-stale-runtime-links.py'],
     ['python3', 'tests/host/check-steam-integrity-launch.py', '--require-swift'],
     ['python3', 'tests/host/check-cs2-observation.py'],
