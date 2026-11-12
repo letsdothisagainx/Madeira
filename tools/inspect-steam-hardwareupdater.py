@@ -86,6 +86,45 @@ def carchive(raw):
             'scope': 'Read-only table/decompression/PE inspection; Python bytecode and native code never executed.'}
 
 
+def bootloader(raw):
+    """Record the actual bootloader's ordinary process-creation evidence."""
+    inspector = service.Inspector(raw)
+    names = ('_PYI_PARENT_PROCESS_LEVEL', '_PYI_APPLICATION_HOME_DIR', '_PYI_ARCHIVE_FILE',
+             'Failed to create child process!', 'CreateProcessW', 'GetCommandLineW')
+    strings = []
+    for name in names:
+        for encoding, value in (('ascii', name.encode()), ('utf16le', name.encode('utf-16le'))):
+            offset = raw.find(value)
+            if offset < 0:
+                continue
+            rva = inspector.pe.rva_of(offset)
+            strings.append({'name': name, 'encoding': encoding, 'file_offset': hex(offset),
+                            'rva': hex(rva) if rva is not None else None,
+                            'references': [hex(x) for x in inspector.string_refs(rva)] if rva is not None else []})
+    slots = {rva: name for rva, name in inspector.imports.items()
+             if name.rsplit('!', 1)[-1] in ('CreateProcessW', 'CreateProcessA', 'GetCommandLineW',
+                                          'GetModuleFileNameW', 'SetEnvironmentVariableW')}
+    calls, bodies = [], {}
+    for section in inspector.code:
+        body = inspector.pe.at(section['rva'], section['bytes'])
+        for match in re.finditer(b'\xff\x15....', body, re.S):
+            rva = section['rva'] + match.start()
+            ins = next(inspector.md.disasm(body[match.start():match.start() + 15], rva, count=1), None)
+            if ins is None:
+                continue
+            row = inspector.row(ins)
+            if not any(ref.get('import', '').rsplit('!', 1)[-1] in ('CreateProcessW', 'CreateProcessA')
+                       for ref in row.get('references', [])):
+                continue
+            require(len(calls) < 8, 'process-creation callsite bound exceeded')
+            calls.append(row)
+            function = inspector.body(rva)
+            bodies[function['start_rva']] = function
+    return {'strings': strings, 'imports': {hex(rva): name for rva, name in slots.items()},
+            'process_creation_calls': calls, 'process_creation_functions': list(bodies.values()),
+            'scope': 'Actual PE bytes and ordinary process APIs; no code executed. The upstream PyInstaller algorithm is a separate reference, not a runtime result.'}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
@@ -97,6 +136,7 @@ def main():
         raw = args.inspect_file.read_bytes()
         report['helper'] = pe_summary(raw)
         report['pyinstaller'] = carchive(raw)
+        report['bootloader'] = bootloader(raw)
     else:
         with tempfile.TemporaryDirectory(prefix='madeira-official-hardware-') as name:
             temporary = Path(name)
@@ -136,6 +176,7 @@ def main():
                     report['helper_package'] = {'name': key, **downloaded}
                     report['helper'] = {'member': selected[0].filename, **pe_summary(raw)}
                     report['pyinstaller'] = carchive(raw)
+                    report['bootloader'] = bootloader(raw)
                     break
             require('helper' in report, 'official current packages did not provide the requested helper')
     encoded = json.dumps(report, indent=2).encode() + b'\n'
@@ -152,6 +193,21 @@ def main():
                                                if key not in ('entries', 'native_components')}}))
     for name, data in py['native_components'].items():
         print(json.dumps({'record': 'native-component', 'name': name, **data}, separators=(',', ':')))
+    bl = report['bootloader']
+    print(json.dumps({'record': 'bootloader', **{key: value for key, value in bl.items()
+                                               if key != 'process_creation_functions'}}, separators=(',', ':')))
+    for function in bl['process_creation_functions']:
+        print(json.dumps({'record': 'process-creation-function', **{key: value for key, value in function.items()
+                                                                  if key != 'instructions'}}, separators=(',', ':')))
+        rows = function['instructions']
+        selected = set()
+        for index, row in enumerate(rows):
+            if any(ref.get('import', '').rsplit('!', 1)[-1] in ('CreateProcessW', 'CreateProcessA', 'GetCommandLineW')
+                   for ref in row.get('references', [])):
+                selected.update(range(max(0, index - 64), min(len(rows), index + 25)))
+        require(len(selected) <= 512, 'process creation stdout bound exceeded')
+        for index in sorted(selected):
+            print(json.dumps({'record': 'process-creation-instruction', **rows[index]}, separators=(',', ':')))
     print(f'PASS public helper inspection report-bytes={len(encoded)} executed=0 runtime=unmeasured VAC=unmeasured')
 
 
