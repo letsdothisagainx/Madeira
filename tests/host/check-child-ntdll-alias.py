@@ -83,9 +83,11 @@ static unsigned long long ios_thread_process_lease(void *owner,int create) {(voi
 static int ios_subfloor_extended_owner(void *owner,unsigned long long lease) {(void)owner;(void)lease;return 0;}
 static void abort_process(int status) {(void)status;assert(!"unexpected fixed-image guard");abort();}
 '''
-code += between(native, '#define IOS_JIT_MAX_MAPPINGS', '\n};')
+code += between(native, '#define IOS_JIT_MAX_MAPPINGS', '\n};').replace(
+    '#include "pe_x64_write_span.h"', 'struct madeira_pe_x64_span { size_t offset, size; };')
 code += 'static struct ios_jit_mapping ios_jit_mappings[IOS_JIT_MAX_MAPPINGS];\n'
 code += 'static int ios_jit_mapping_count = 0;\n'
+code += 'static void ios_jit_cache_x64_write_spans(struct ios_jit_mapping *mapping, void *source) {(void)source;mapping->x64_write_range_count=0;}\n'
 code += function(native, 'static unsigned long long ios_jit_new_generation(void)')
 start = native.index('static void (*ios_jit_alias_pushback_cb)')
 end = native.index('\n}', native.index('static void ios_alias_cb_drop( void *peb )', start)) + 2

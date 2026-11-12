@@ -165,6 +165,8 @@ WINE_DECLARE_DEBUG_CHANNEL(virtual_ranges);
  * never registered → raw-VA DllMain call → unfixable exec-fault loop. */
 #define IOS_JIT_MAX_MAPPINGS 512
 #define IOS_JIT_MAX_CODE_RANGES 96
+#include "pe_x64_write_span.h"
+#define IOS_JIT_MAX_X64_WRITE_RANGES 32
 struct ios_jit_mapping {
     unsigned long long generation; /* 0 while unpublished, retired or being replaced */
     void *pe_base;      /* Original PE image base address (unix mapping) */
@@ -174,6 +176,10 @@ struct ios_jit_mapping {
     size_t text_size;   /* Size of .text section (0 if unknown) */
     unsigned code_range_count;
     struct { size_t offset, size; } code_ranges[IOS_JIT_MAX_CODE_RANGES];
+    /* Immutable map-time ISA evidence. A later guest-writable PE header must
+     * never turn native ARM64 bytes into an authorized x64 self-write span. */
+    unsigned x64_write_range_count;
+    struct madeira_pe_x64_span x64_write_ranges[IOS_JIT_MAX_X64_WRITE_RANGES];
     uint64_t pe_image_base; /* PE optional header ImageBase */
     intptr_t reloc_delta;   /* JIT dest - PE ImageBase */
     unsigned int reloc_rva; /* RVA of .reloc section */
@@ -5410,6 +5416,32 @@ static void ios_jit_lower_native_atomics(void *source, void *rw, void *rx, size_
             (unsigned long)stats.data, (unsigned long)stats.ranges);
 }
 
+struct ios_pe_span_reader { uintptr_t base; size_t size; };
+static int ios_pe_span_read(void *context, size_t offset, void *output, size_t bytes)
+{
+    const struct ios_pe_span_reader *reader = context;
+    mach_vm_size_t copied = 0;
+    if (!madeira_pe_span_bound(offset,bytes,reader->size) || reader->base > UINTPTR_MAX-offset) return 0;
+    return mach_vm_read_overwrite(mach_task_self(),reader->base+offset,bytes,
+                                  (mach_vm_address_t)(uintptr_t)output,&copied) == KERN_SUCCESS && copied == bytes;
+}
+
+static void ios_jit_cache_x64_write_spans(struct ios_jit_mapping *mapping, void *source)
+{
+    uintptr_t pe = (uintptr_t)source, rx = (uintptr_t)mapping->jit_base;
+    uintptr_t thunk = (uintptr_t)pLdrInitializeThunk;
+    struct ios_pe_span_reader reader = { pe, mapping->size };
+    mapping->x64_write_range_count = 0;
+    /* S1 copies ntdll from shared original backing, including before their
+     * publication. A unique current RX copy does not prove that source is
+     * process-private. Keep that entire class on the existing denied path. */
+    if ((thunk >= pe && thunk-pe < mapping->size) ||
+        (thunk >= rx && thunk-rx < mapping->size)) return;
+    mapping->x64_write_range_count = madeira_pe_cache_x64_write_spans(mapping->size,pe,rx,
+        (uintptr_t)ios_jit_rw_base_global + (rx-(uintptr_t)ios_jit_rx_base_global),
+        ios_pe_span_read,&reader,mapping->x64_write_ranges,IOS_JIT_MAX_X64_WRITE_RANGES);
+}
+
 void ios_jit_add_mapping(void *pe_base, void *jit_base, size_t size)
 {
     ios_alias_cb_t own_cb;
@@ -5480,6 +5512,7 @@ void ios_jit_add_mapping(void *pe_base, void *jit_base, size_t size)
         ios_jit_mappings[slot].text_offset = 0;
         ios_jit_mappings[slot].text_size = 0;
         ios_jit_mappings[slot].code_range_count = 0;
+        ios_jit_mappings[slot].x64_write_range_count = 0;
         ios_jit_mappings[slot].pe_image_base = 0;
         ios_jit_mappings[slot].reloc_delta = 0;
         ios_jit_mappings[slot].reloc_rva = 0;
@@ -5492,6 +5525,7 @@ void ios_jit_add_mapping(void *pe_base, void *jit_base, size_t size)
         ios_jit_mappings[slot].hybrid_cached = 0;    /* ml1245: same for the EC memo */
         ios_jit_mappings[slot].hybrid_valid = 0;
         ios_jit_mappings[slot].is_fex = ios_image_is_fex( pe_base, size );
+        ios_jit_cache_x64_write_spans(&ios_jit_mappings[slot],pe_base);
         if (ios_jit_mappings[slot].is_fex)
             dprintf( 2, "[jit-pool] FEX module copy pe=%p jit=%p+0x%lx\n", pe_base, jit_base, (unsigned long)size );
         __sync_synchronize();
@@ -21367,9 +21401,21 @@ int ios_jit_copy_module_for_child(void *module_addr, void *child_peb)
      * last (readers' match key) behind a barrier. */
     {
         int slot = -1, si;
+        /* This publisher runs outside virtual_mutex. Match reclamation and
+         * native self-write snapshots while publishing the slot/count only;
+         * no VM operation, allocation or guest callback runs under this lock. */
+        pthread_mutex_lock(&ios_pool_lock);
         for (si = 0; si < ios_jit_mapping_count; si++)
             if (!ios_jit_mappings[si].pe_base) { slot = si; break; }
         if (slot < 0) slot = ios_jit_mapping_count;
+        if (slot >= IOS_JIT_MAX_MAPPINGS)
+        {
+            pthread_mutex_unlock(&ios_pool_lock);
+            /* The unpublished range remains in this child's ledger for
+             * ordinary owner cleanup; never overwrite a live table entry. */
+            dprintf(2,"[child-ntdll] mapping table filled during copy; publication refused\n");
+            return -1;
+        }
         __atomic_exchange_n( &ios_jit_mappings[slot].generation, 0, __ATOMIC_ACQ_REL );
         ios_jit_mappings[slot].machine_cached = 0;   /* a reused tombstone keeps no memo */
         ios_jit_mappings[slot].machine_valid = 0;
@@ -21383,6 +21429,9 @@ int ios_jit_copy_module_for_child(void *module_addr, void *child_peb)
         ios_jit_mappings[slot].text_size = m->text_size;
         ios_jit_mappings[slot].code_range_count = m->code_range_count;
         memcpy( ios_jit_mappings[slot].code_ranges, m->code_ranges, sizeof m->code_ranges );
+        /* S1-backed images are deliberately ineligible. Never inherit the
+         * parent's write authorization into a process-private native copy. */
+        ios_jit_mappings[slot].x64_write_range_count = 0;
         ios_jit_mappings[slot].pe_image_base = pe_image_base;
         ios_jit_mappings[slot].reloc_delta = child_delta;
         ios_jit_mappings[slot].reloc_rva = m->reloc_rva;
@@ -21393,6 +21442,7 @@ int ios_jit_copy_module_for_child(void *module_addr, void *child_peb)
         ios_jit_mappings[slot].pe_base = m->pe_base;
         __atomic_store_n( &ios_jit_mappings[slot].generation, ios_jit_new_generation(), __ATOMIC_RELEASE );
         if (slot == ios_jit_mapping_count) ios_jit_mapping_count++;
+        pthread_mutex_unlock(&ios_pool_lock);
     }
 
     dprintf(2, "[child-ntdll] copied %p+0x%lx -> %p (pool+0x%lx) owner_peb=%p\n",
@@ -38157,6 +38207,168 @@ static NTSTATUS ios_wow_write_self( void *addr, const void *buffer, SIZE_T size 
      * invalidates FEX translations. No native RX mapping is made writable. */
     return status;
 }
+
+/* Native pseudo-processes share a Mach task but do not have a remote task
+ * port. The server must continue denying those remote writes. An ordinary
+ * current-process write can instead use its proven private original PE
+ * backing, after the normal logical and actual protection checks below.
+ *
+ * Deliberately bounded to short x64 code writes. Unknown ownership, heap,
+ * native ARM64 code, S1/shared backing, JIT aliases and larger writes retain
+ * their existing server path. No instruction bytes go into an ARM64 copy. */
+#define IOS_NATIVE_IMAGE_WRITE_MAX 0x10000
+/* Caller holds virtual_mutex -> ios_pool_lock. Never take either lock here,
+ * invoke a guest callback, query a process handle or change protections. */
+static struct ios_jit_mapping *ios_native_self_image_mapping(uintptr_t start, size_t size,
+                                                            void *owner, const struct file_view *view)
+{
+    uintptr_t end = start+size, pool = (uintptr_t)ios_jit_rx_base_global;
+    uintptr_t thunk = (uintptr_t)pLdrInitializeThunk;
+    struct ios_jit_mapping *selected = NULL;
+    size_t offset;
+    int matches=0,i;
+    /* The global session ntdll is the sole source of S1 clones. It may have
+     * been cached before the thunk was published; exclude it at every write,
+     * even before any child copy exists. A fresh private native64 ntdll with
+     * a different PE backing is not that source. */
+    if (!thunk || ios_jit_mapping_count < 0 || ios_jit_mapping_count > IOS_JIT_MAX_MAPPINGS) return NULL;
+    for (i=0;i<ios_jit_mapping_count;i++)
+    {
+        struct ios_jit_mapping *m = &ios_jit_mappings[i];
+        uintptr_t base = (uintptr_t)m->pe_base;
+        if (!base || !m->size || m->unmapped || !m->generation ||
+            (base >= end ? 1 : start >= base && start-base >= m->size)) continue;
+        /* Any overlapping foreign or unowned claim forbids a same-task write,
+         * even if this process also has a private native RX copy. */
+        if (m->map_peb != owner || (m->owner_peb && m->owner_peb != owner) ||
+            start < base || size > m->size-(start-base) || view->base != m->pe_base ||
+            view->size < m->size || (thunk >= base && thunk-base < m->size) ||
+            (thunk >= (uintptr_t)m->jit_base && thunk-(uintptr_t)m->jit_base < m->size)) return NULL;
+        selected = m; matches++;
+    }
+    if (matches != 1 || !selected->x64_write_range_count ||
+        selected->x64_write_range_count > IOS_JIT_MAX_X64_WRITE_RANGES ||
+        !pool || (uintptr_t)selected->jit_base < pool ||
+        (uintptr_t)selected->jit_base-pool > ios_jit_pool_size_global ||
+        selected->size > ios_jit_pool_size_global-((uintptr_t)selected->jit_base-pool)) return NULL;
+    offset = start-(uintptr_t)selected->pe_base;
+    for (i=0;i<(int)selected->x64_write_range_count;i++)
+        if (offset >= selected->x64_write_ranges[i].offset &&
+            offset-selected->x64_write_ranges[i].offset <= selected->x64_write_ranges[i].size &&
+            size <= selected->x64_write_ranges[i].size-(offset-selected->x64_write_ranges[i].offset)) break;
+    if (i == (int)selected->x64_write_range_count) return NULL;
+    for (i=0;i<ios_pool_ledger_count;i++)
+        if (ios_pool_ledger[i].peb == owner &&
+            (uintptr_t)selected->jit_base-pool >= ios_pool_ledger[i].off &&
+            (uintptr_t)selected->jit_base-pool-ios_pool_ledger[i].off <= ios_pool_ledger[i].size &&
+            selected->size <= ios_pool_ledger[i].size-((uintptr_t)selected->jit_base-pool-ios_pool_ledger[i].off)) return selected;
+    return NULL;
+}
+
+static int ios_native_self_image_write(HANDLE process, void *addr, const void *buffer,
+                                       SIZE_T size, unsigned int *result)
+{
+    uintptr_t start = (uintptr_t)addr, end, rw;
+    void *owner = ios_jit_current_peb();
+    unsigned pid, threads;
+    unsigned long long lease, generation = 0;
+    OBJECT_BASIC_INFORMATION obi;
+    PROCESS_BASIC_INFORMATION pbi;
+    struct ios_jit_mapping *selected = NULL;
+    struct file_view *view;
+    unsigned char local[256], *snapshot = local;
+    mach_vm_size_t copied = 0;
+    sigset_t sigset;
+    int handled = 0, exiting, reclaimed;
+    BOOL watch = FALSE;
+    size_t page;
+
+    if (ios_wow_base() || !owner || !NtCurrentTeb() || !size || size > IOS_NATIVE_IMAGE_WRITE_MAX ||
+        size > UINTPTR_MAX-start || !(pid = (unsigned)(ULONG_PTR)NtCurrentTeb()->ClientId.UniqueProcess)) return 0;
+    if (process != NtCurrentProcess())
+    {
+        HANDLE pinned = NULL;
+        NTSTATUS status;
+        /* Pin the handle object once. A concurrent close/reuse of the public
+         * value cannot mix the old object's rights with a new object's PID. */
+        status = NtDuplicateObject(NtCurrentProcess(),process,NtCurrentProcess(),&pinned,
+                                   0,0,DUPLICATE_SAME_ACCESS);
+        if (status) return 0;
+        status = NtQueryObject(pinned,ObjectBasicInformation,&obi,sizeof(obi),NULL);
+        if (!status && !(obi.GrantedAccess & PROCESS_VM_WRITE)) status = STATUS_ACCESS_DENIED;
+        if (!status) status = NtQueryInformationProcess(pinned,ProcessBasicInformation,&pbi,sizeof(pbi),NULL);
+        if (!status && pbi.UniqueProcessId != (ULONG_PTR)NtCurrentTeb()->ClientId.UniqueProcess)
+            status = STATUS_ACCESS_DENIED;
+        NtClose(pinned);
+        if (status) return 0;
+    }
+    /* Never take the thread-group registry lock inside VM/pool locks. This
+     * executing native thread prevents its lease reaching quiescent reuse. */
+    lease = ios_thread_process_snapshot(owner,&threads,&exiting,&reclaimed);
+    if (!lease || !threads || exiting || reclaimed ||
+        ios_thread_process_query_lease(owner,pid) != lease) return 0;
+    end = start+size;
+    if (!virtual_check_buffer_for_read(buffer,size)) return 0;
+    if (size > sizeof(local) && !(snapshot = malloc(size)))
+    {
+        *result = STATUS_NO_MEMORY;
+        return 1;
+    }
+    /* Mach's bounded copy fails on inaccessible source bytes without a fault
+     * under either Wine lock. Snapshot preserves overlapping-write semantics. */
+    if (mach_vm_read_overwrite(mach_task_self(),(mach_vm_address_t)(uintptr_t)buffer,size,
+        (mach_vm_address_t)(uintptr_t)snapshot,&copied) != KERN_SUCCESS || copied != size)
+    {
+        *result = STATUS_PARTIAL_COPY;
+        handled = 1;
+        goto out;
+    }
+
+    server_enter_uninterrupted_section(&virtual_mutex,&sigset);
+    rw = (uintptr_t)ios_jit_rw_base_global;
+    if (ios_kw_has_rw_alias(start,end) ||
+        (rw && start < rw+ios_jit_pool_size_global && rw < end) ||
+        !(view = find_view(addr,size)) || !(view->protect & SEC_IMAGE) ||
+        (view->protect & (VPROT_SYSTEM | VPROT_PLACEHOLDER))) goto unlock_vm;
+    /* Same order as delete_view -> ios_jit_note_image_unmapped. Image
+     * publication/unmap uses virtual_mutex; reclamation uses ios_pool_lock.
+     * Reject shared S1 sources from the immutable map-time classification. */
+    pthread_mutex_lock(&ios_pool_lock);
+    if (!(selected = ios_native_self_image_mapping(start,size,owner,view))) goto unlock_pool;
+    generation = selected->generation;
+    handled = 1;
+    *result = STATUS_ACCESS_VIOLATION;
+    for (page=start & ~(uintptr_t)page_mask; page<end; page+=page_size)
+    {
+        BYTE prot = get_page_vprot((void *)page);
+        if (!(prot & VPROT_COMMITTED) || (prot & VPROT_GUARD) ||
+            !(prot & (VPROT_WRITE | VPROT_WRITECOPY))) goto unlock_pool;
+    }
+    /* Write-watch unprotection may call mprotect_exec or invalidation hooks.
+     * Keep the backing pinned with virtual_mutex, but release the pool lock
+     * around the existing machinery, then revalidate the complete identity. */
+    pthread_mutex_unlock(&ios_pool_lock);
+    *result = check_write_access(addr,size,&watch);
+    pthread_mutex_lock(&ios_pool_lock);
+    if (*result) goto unlock_pool;
+    *result = STATUS_ACCESS_VIOLATION;
+    if (ios_native_self_image_mapping(start,size,owner,view) != selected) goto unlock_pool;
+    if (!ios_native_jit_span_has_protection(start,size,VM_PROT_READ | VM_PROT_WRITE,VM_PROT_EXECUTE,0,0) ||
+        selected->generation != generation || selected->unmapped) goto unlock_pool;
+    /* FEX reverse-translates pool RIPs before decoding type-2 CodeMap bytes
+     * from this original PE address. WPM's existing PE-side cache flush then
+     * invalidates that guest range. Never mirror x64 bytes into native code. */
+    memcpy(addr,snapshot,size);
+    *result = STATUS_SUCCESS;
+unlock_pool:
+    pthread_mutex_unlock(&ios_pool_lock);
+    if (watch) update_write_watches(addr,size,*result ? 0 : size);
+unlock_vm:
+    server_leave_uninterrupted_section(&virtual_mutex,&sigset);
+out:
+    if (snapshot != local) free(snapshot);
+    return handled;
+}
 #endif
 
 /***********************************************************************
@@ -38169,6 +38381,11 @@ NTSTATUS WINAPI NtWriteVirtualMemory( HANDLE process, void *addr, const void *bu
     unsigned int status;
 #ifdef WINE_IOS
     ios_trace_wow_write_begin( process, addr, buffer, size );
+    if (ios_native_self_image_write(process,addr,buffer,size,&status))
+    {
+        if (bytes_written) *bytes_written = status ? 0 : size;
+        return status;
+    }
     if (ios_wow_self_write_target( process, addr, size ))
     {
         status = ios_wow_write_self( addr, buffer, size );

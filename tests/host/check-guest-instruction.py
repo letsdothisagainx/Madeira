@@ -20,7 +20,8 @@ def function(source, signature):
 
 
 first = native.index('#define IOS_JIT_MAX_MAPPINGS')
-mapping = native[first:native.index('\n};', first) + 3]
+mapping = native[first:native.index('\n};', first) + 3].replace(
+    '#include "pe_x64_write_span.h"', 'struct madeira_pe_x64_span { size_t offset, size; };')
 functions = ''.join(function(native, signature) for signature in (
     'void ios_jit_set_text_section(',
     'static int ios_jit_code_bounds(',

@@ -48,7 +48,8 @@ code = r'''
 #include <string.h>
 #include <unistd.h>
 '''
-code += between(native, '#define IOS_JIT_MAX_MAPPINGS', '\n};')
+code += between(native, '#define IOS_JIT_MAX_MAPPINGS', '\n};').replace(
+    '#include "pe_x64_write_span.h"', 'struct madeira_pe_x64_span { size_t offset, size; };')
 code += 'static struct ios_jit_mapping ios_jit_mappings[IOS_JIT_MAX_MAPPINGS];\n'
 code += 'static int ios_jit_mapping_count = 0;\n'
 code += function(native, 'static int ios_iat_sync_pick_mapping( uintptr_t rgn_start, uintptr_t rgn_end, void *peb )')

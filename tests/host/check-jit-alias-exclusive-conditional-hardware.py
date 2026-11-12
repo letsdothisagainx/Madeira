@@ -37,7 +37,8 @@ def function(source, name):
 
 first = virtual.index('#define IOS_JIT_MAX_MAPPINGS')
 last = virtual.index('static int ios_jit_mapping_count = 0;', first)
-ledger = virtual[first:last + len('static int ios_jit_mapping_count = 0;')]
+ledger = virtual[first:last + len('static int ios_jit_mapping_count = 0;')].replace(
+    '#include "pe_x64_write_span.h"', 'struct madeira_pe_x64_span { size_t offset, size; };')
 first = signal.index('                        /* Advance PC past the emulated instruction */')
 pc_advance = signal[first:signal.index('                        static volatile int emul_count', first)]
 header = ledger + r'''

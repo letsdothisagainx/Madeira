@@ -126,7 +126,8 @@ static void sys_icache_invalidate( void *p, size_t n ) { (void)p; (void)n; }
 void *ios_jit_rx_base_global, *ios_jit_rw_base_global;
 size_t ios_jit_pool_size_global;
 '''
-code += between(native, '#define IOS_JIT_MAX_MAPPINGS', '\n};')
+code += between(native, '#define IOS_JIT_MAX_MAPPINGS', '\n};').replace(
+    '#include "pe_x64_write_span.h"', 'struct madeira_pe_x64_span { size_t offset, size; };')
 code += 'static struct ios_jit_mapping ios_jit_mappings[IOS_JIT_MAX_MAPPINGS];\n'
 code += 'static int ios_jit_mapping_count = 0;\n'
 code += r'''

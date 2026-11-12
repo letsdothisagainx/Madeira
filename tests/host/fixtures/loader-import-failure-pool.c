@@ -10,6 +10,8 @@
 #include <time.h>
 
 #define IOS_JIT_MAX_CODE_RANGES 96
+#define IOS_JIT_MAX_X64_WRITE_RANGES 32
+struct madeira_pe_x64_span { size_t offset, size; };
 /* PRODUCTION_MAPPING_STRUCT */
 
 static unsigned char pool[0x30000], first_pe[0x10000], retry_pe[0x10000], sibling_pe[0x10000];

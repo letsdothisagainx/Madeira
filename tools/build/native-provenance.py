@@ -23,6 +23,11 @@ COMPONENTS = {
                      'MADEIRA_JIT_ALLOCATOR_SOURCE_SHA256', 'MADEIRA_JIT_BUILD_REVISION'),
 }
 KEY = 'MadeiraNativeBuildProvenance'
+EXTRA_SOURCES = {
+    # The immutable ISA proof is part of the virtual-memory implementation.
+    # Bind it into the linked compile-input digest, including header-only edits.
+    'virtual': ('build/ntdll-unix/pe_x64_write_span.h',),
+}
 
 
 def revision(value):
@@ -32,7 +37,11 @@ def revision(value):
 
 
 def source_hash(root, component):
-    return hashlib.sha256((root / COMPONENTS[component][0]).read_bytes()).hexdigest()
+    digest = hashlib.sha256((root / COMPONENTS[component][0]).read_bytes())
+    for relative in EXTRA_SOURCES.get(component, ()):
+        digest.update(b'\0included-source\0' + relative.encode() + b'\0')
+        digest.update((root / relative).read_bytes())
+    return digest.hexdigest()
 
 
 def write_header(root, component, output, build_revision):

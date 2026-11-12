@@ -1,0 +1,67 @@
+name: Verify native self-image write ownership and hybrid PE spans
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'codex/pr-build-*', 'codex/inspect-*']
+    paths:
+      - build/ntdll-unix/virtual_ios.c
+      - build/ntdll-unix/pe_x64_write_span.h
+      - tests/host/check-native-self-image-write.py
+      - tests/host/check-pe-x64-write-spans.py
+      - tests/host/fixtures/native-self-write-dispatch-before.c
+      - app/Madeira/arm64ec-windows/user32.dll
+      - app/Madeira/arm64ec-windows/kernel32.dll
+      - app/Madeira/arm64ec-windows/ntdll.dll
+      - app/Madeira/arm64ec-windows/shell32.dll
+      - .github/workflows/native-self-image-write.yml
+  pull_request:
+    paths:
+      - build/ntdll-unix/virtual_ios.c
+      - build/ntdll-unix/pe_x64_write_span.h
+      - tests/host/check-native-self-image-write.py
+      - tests/host/check-pe-x64-write-spans.py
+      - tests/host/fixtures/native-self-write-dispatch-before.c
+      - app/Madeira/arm64ec-windows/user32.dll
+      - app/Madeira/arm64ec-windows/kernel32.dll
+      - app/Madeira/arm64ec-windows/ntdll.dll
+      - app/Madeira/arm64ec-windows/shell32.dll
+      - .github/workflows/native-self-image-write.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-self-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  production-dispatch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Load pinned Wine and FEX byte-source contracts
+        run: git submodule update --init --depth 1 wine FEX
+      - name: Execute production before/after dispatch against real private file mappings
+        env:
+          CC: clang
+        run: python3 tests/host/check-native-self-image-write.py
+
+  hybrid-parser:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Execute production parser on the four real bundled hybrid PE images
+        env:
+          CC: clang
+        run: python3 tests/host/check-pe-x64-write-spans.py

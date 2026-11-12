@@ -53,7 +53,8 @@ code = r'''
 #include <unistd.h>
 void *ios_jit_rx_base_global, *ios_jit_rw_base_global;
 '''
-code += between(native, '#define IOS_JIT_MAX_MAPPINGS', '\n};')
+code += between(native, '#define IOS_JIT_MAX_MAPPINGS', '\n};').replace(
+    '#include "pe_x64_write_span.h"', 'struct madeira_pe_x64_span { size_t offset, size; };')
 code += 'static struct ios_jit_mapping ios_jit_mappings[IOS_JIT_MAX_MAPPINGS];\n'
 code += 'static int ios_jit_mapping_count = 0;\n'
 code += function(native, 'void *ios_jit_translate_addr_for_owner(void *addr, void *owner_peb)')

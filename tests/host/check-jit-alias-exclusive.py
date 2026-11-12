@@ -131,7 +131,8 @@ MAPPINGS
 
 decl_start = virtual.index('#define IOS_JIT_MAX_MAPPINGS')
 decl_end = virtual.index('static int ios_jit_mapping_count = 0;', decl_start) + len('static int ios_jit_mapping_count = 0;')
-prefix = prefix.replace('MAPPINGS', virtual[decl_start:decl_end])
+prefix = prefix.replace('MAPPINGS', virtual[decl_start:decl_end].replace(
+    '#include "pe_x64_write_span.h"', 'struct madeira_pe_x64_span { size_t offset, size; };'))
 
 helpers = ''.join(function(source, name) for name in (
     'ios_write_alias', 'ios_alias_write_is_trapped', 'ios_fault_read_insn'))

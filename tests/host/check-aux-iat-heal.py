@@ -82,6 +82,8 @@ harness = r'''
 #include <sys/mman.h>
 #include <unistd.h>
 #define IOS_JIT_MAX_CODE_RANGES 96
+#define IOS_JIT_MAX_X64_WRITE_RANGES 32
+struct madeira_pe_x64_span { size_t offset, size; };
 #define dprintf(fd, ...) fprintf(stderr, __VA_ARGS__)
 ''' + struct_def + r'''
 static struct ios_jit_mapping ios_jit_mappings[8];

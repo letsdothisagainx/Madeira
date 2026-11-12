@@ -162,6 +162,15 @@ int main(void) {
     for relative, *_ in tool.COMPONENTS.values():
         target = copy / relative; target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / relative, target)
+    for relatives in tool.EXTRA_SOURCES.values():
+        for relative in relatives:
+            target = copy / relative; target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / relative, target)
+    header = copy / tool.EXTRA_SOURCES['virtual'][0]
+    original_header = header.read_bytes()
+    header.write_bytes(original_header + b'\n/* changed header after compile */\n')
+    refuses(lambda: tool.verified_manifest(copy, package_revision, image))
+    header.write_bytes(original_header)
     with (copy / tool.COMPONENTS['virtual'][0]).open('a') as file:
         file.write('\n/* changed after compile */\n')
     refuses(lambda: tool.verified_manifest(copy, package_revision, image))

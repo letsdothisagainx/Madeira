@@ -53,7 +53,7 @@ assert delete.index('ios_jit_retire_image') < delete.index('ios_jit_note_image_u
 
 add = function(native, 'void ios_jit_add_mapping(void *pe_base, void *jit_base, size_t size)')
 assert add.index('ios_jit_mappings[slot].unmapped = 0;') < add.index('ios_jit_mappings[slot].pe_base = pe_base;')
-child = native[native.index('ios_jit_mappings[slot].jit_base = rx_dest;'):][:900]
+child = function(native, 'int ios_jit_copy_module_for_child(')
 assert 'ios_jit_mappings[slot].owner_peb = child_peb;' in child
 assert child.index('ios_jit_mappings[slot].unmapped = 0;') < child.index('ios_jit_mappings[slot].pe_base = m->pe_base;')
 
@@ -102,6 +102,7 @@ static kern_return_t mach_vm_read_overwrite(int task, mach_vm_address_t a, mach_
 #define IOS_JIT_MAX_MAPPINGS 8
 '''
 code += re.search(r'^#define IOS_JIT_MAX_CODE_RANGES .*$', native, re.MULTILINE).group(0) + '\n'
+code += '#define IOS_JIT_MAX_X64_WRITE_RANGES 32\nstruct madeira_pe_x64_span { size_t offset, size; };\n'
 code += struct(native, 'ios_jit_mapping')
 code += r'''
 static struct ios_jit_mapping ios_jit_mappings[IOS_JIT_MAX_MAPPINGS];

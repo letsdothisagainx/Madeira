@@ -80,6 +80,8 @@ code = r'''
 #define ARRAY_SIZE(a) (sizeof(a)/sizeof((a)[0]))
 #define IOS_JIT_MAX_MAPPINGS 512
 #define IOS_JIT_MAX_CODE_RANGES 96
+#define IOS_JIT_MAX_X64_WRITE_RANGES 32
+struct madeira_pe_x64_span { size_t offset, size; };
 typedef uint32_t NTSTATUS;
 typedef void *HANDLE, *PVOID;
 typedef const void *LPCVOID;

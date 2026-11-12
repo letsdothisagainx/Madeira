@@ -71,6 +71,9 @@ static HANDLE wine_server_obj_handle(HANDLE h){return h;}
 static uintptr_t wine_server_client_ptr(void* p){return (uintptr_t)p;}
 static void wine_server_add_data(struct request* r,const void* b,size_t n){(void)r;(void)b;(void)n;}
 static NTSTATUS wine_server_call(struct request* r){(void)r;server_calls++;response.written=0;return STATUS_ACCESS_DENIED;}
+/* The separate native-image production test exercises the native selector.
+ * This harness keeps its established WoW-window and remote-denial coverage. */
+static int ios_native_self_image_write(HANDLE p,void* a,const void* b,SIZE_T n,unsigned int* s){(void)p;(void)a;(void)b;(void)n;(void)s;return 0;}
 ''' + fn('static BOOL ios_kw_dest_ok(')+fn('static BOOL ios_kw_store(')+fn('static int ios_wow_self_write_target(')+fn('static NTSTATUS ios_wow_write_self(')+fn('NTSTATUS WINAPI NtWriteVirtualMemory(')+r'''
 int main(void){
  char name[]="/tmp/madeira-write-XXXXXX";int fd=mkstemp(name);assert(fd>=0);unlink(name);assert(!ftruncate(fd,16384));

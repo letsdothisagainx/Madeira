@@ -42,7 +42,8 @@ with tempfile.TemporaryDirectory() as temp:
     # Mach-O with real fixture source digests; it is deliberately not executable.
     # The separate native-provenance check compiles the actual accessors/decoder.
     (t/'tools/build/native-provenance.py').write_bytes((root/'tools/build/native-provenance.py').read_bytes())
-    for relative in ('build/ntdll-unix/virtual_ios.c','app/Madeira/JITAllocator.c'):
+    for relative in ('build/ntdll-unix/virtual_ios.c','build/ntdll-unix/pe_x64_write_span.h',
+                     'app/Madeira/JITAllocator.c'):
         target=t/relative;target.parent.mkdir(parents=True,exist_ok=True)
         target.write_bytes((root/relative).read_bytes())
     native_abi=t/'build/ntdll-unix/native_counter_alias_abi.h';native_abi.parent.mkdir(parents=True,exist_ok=True)
@@ -220,10 +221,12 @@ if [ "${STALE_WOW_PLACEMENT:-}" = 1 ]; then
   mv "$TEST_APP/native.stale" "$TEST_APP/Madeira.debug.dylib"
 fi
 python3 - "$ROOT" "$TEST_APP/Madeira.debug.dylib" <<'PY_FIXTURE_NATIVE'
-import hashlib, os, struct, sys
+import hashlib, importlib.util, os, struct, sys
 from pathlib import Path
 root,image=Path(sys.argv[1]),Path(sys.argv[2])
-native=hashlib.sha256((root/'build/ntdll-unix/virtual_ios.c').read_bytes()).hexdigest()
+spec=importlib.util.spec_from_file_location('native_provenance',root/'tools/build/native-provenance.py')
+provenance=importlib.util.module_from_spec(spec);spec.loader.exec_module(provenance)
+native=provenance.source_hash(root,'virtual')
 jit=hashlib.sha256((root/'app/Madeira/JITAllocator.c').read_bytes()).hexdigest()
 generated=(root/'app/Madeira/.build-provenance/JITAllocator.generated.h').read_text()
 assert jit in generated and os.environ['GITHUB_SHA'] in generated, 'Xcode fixture needs the actual pre-build JIT provenance header'

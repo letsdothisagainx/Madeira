@@ -23,7 +23,8 @@ def function(signature):
 
 
 start = source.index("#define IOS_JIT_MAX_MAPPINGS")
-mapping = source[start:source.index("\n};", start) + 3]
+mapping = source[start:source.index("\n};", start) + 3].replace(
+    '#include "pe_x64_write_span.h"', 'struct madeira_pe_x64_span { size_t offset, size; };')
 trace = source.split("/* image-patch-test:begin", 1)[1].split("/* image-patch-test:end */", 1)[0]
 trace = trace[trace.index("static void ios_trace_image_patch"):]
 protect = function("NTSTATUS WINAPI NtProtectVirtualMemory(")

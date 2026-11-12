@@ -168,6 +168,8 @@ commands = [
     ['python3', 'tests/host/check-wow-query-zero.py'],
     ['python3', 'tests/host/check-wow-code-write.py'],
     ['python3', 'tests/host/check-wow-self-write.py'],
+    ['python3', 'tests/host/check-native-self-image-write.py'],
+    ['python3', 'tests/host/check-pe-x64-write-spans.py'],
     ['python3', 'tests/host/check-guest32-origin.py'],
     ['python3', 'tests/host/check-steam-allocation.py'],
     ['python3', 'tests/host/check-ios-host-va-floor.py'],

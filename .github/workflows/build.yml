@@ -417,6 +417,7 @@ jobs:
           "$RUNNER_TEMP/scm-abi-tools/bin/pip" install -r build/scm-rpc/test-requirements.txt
           unzip -q scm-ipa/Madeira.ipa 'Payload/Madeira.app/arm64ec-windows/*' -d scm-ipa
           farm=scm-ipa/Payload/Madeira.app/arm64ec-windows
+          python3 tests/host/check-pe-x64-write-spans.py --pe-images "$farm/user32.dll" "$farm/kernel32.dll" "$farm/ntdll.dll" "$farm/shell32.dll"
           test -s "$farm/madeira-steam-service.exe"
           test -s "$farm/madeira-scm-probe.exe"
           test -s "$farm/dock-notices.txt"
