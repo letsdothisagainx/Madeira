@@ -1,0 +1,28 @@
+name: Inspect genuine Steam hardware updater
+on:
+  workflow_dispatch:
+  push:
+    branches: ['codex/inspect-*']
+    paths:
+      - tools/inspect-steam-hardwareupdater.py
+      - .github/workflows/steam-hardwareupdater-inspect.yml
+permissions:
+  contents: read
+jobs:
+  official-static-inspection:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pinned static PE inspection dependencies
+        run: python3 -m pip install --disable-pip-version-check capstone==5.0.3 pefile==2024.8.26
+      - name: Inspect the authenticated official helper without executing it
+        run: python3 tools/inspect-steam-hardwareupdater.py --output inspection/steam-hardwareupdater.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: steam-hardwareupdater-inspection
+          path: inspection/steam-hardwareupdater.json
+          if-no-files-found: error
+          retention-days: 3
