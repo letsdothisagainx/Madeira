@@ -212,6 +212,39 @@ class Inspector:
                 'interpretation': 'Static code evidence only. Unknown indirect callees, runtime paths and last-error provenance require separate evidence.'}
 
 
+def emit_summary(report):
+    """Make bounded evidence readable when artifact downloads are unavailable."""
+    remaining = 60000
+    omitted = 0
+    def emit(value):
+        nonlocal remaining, omitted
+        encoded = json.dumps(value, separators=(',', ':'))
+        if len(encoded)+1 > remaining:
+            omitted += 1
+            return
+        print(encoded)
+        remaining -= len(encoded)+1
+    emit({'kind': 'manifest', 'manifest': report.get('manifest'), 'packages': report['packages']})
+    emit({'kind': 'service-archive-inventory', 'entries': report.get('archive_service_inventory', [])})
+    candidates = []
+    for name, component in report['components'].items():
+        pe = component['pe']
+        emit({'kind': 'component', 'name': name, 'machine': pe['machine'], 'sha256': pe['sha256'],
+              'bytes': pe['bytes'], 'imports': pe['imports'], 'strings': component['strings'],
+              'relevant_import_slots': component['relevant_import_slots']})
+        for body in component['error_producer_functions_and_direct_callees']:
+            relevant = any(re.search(r'LoadLibrary|GetLastError|GetProcAddress|IsWow64|GetNativeSystemInfo',
+                                    ref.get('import', ''), re.I)
+                           for row in body['instructions'] for ref in row.get('references', []))
+            candidates.append((body['depth_from_error_producer'] != 0, not relevant, name, body))
+    for _, _, name, body in sorted(candidates, key=lambda row: (row[0], row[1], row[2], row[3]['start_rva'])):
+        emit({'kind': 'function', 'component': name, **{k: v for k, v in body.items() if k != 'instructions'}})
+        for row in body['instructions']:
+            emit({'component': name, **row})
+    print(json.dumps({'kind': 'summary-bound', 'omitted_records': omitted,
+                      'complete_evidence': 'steam-service-loader.json artifact', 'vac_verdict': 'unmeasured'}))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
@@ -268,6 +301,7 @@ def main():
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(encoded)
     print(f'Inspected {len(report["components"])} public PE files; report {len(encoded)} bytes; no PE executed')
+    emit_summary(report)
 
 
 if __name__ == '__main__':
