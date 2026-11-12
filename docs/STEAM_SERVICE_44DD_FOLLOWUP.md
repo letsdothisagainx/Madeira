@@ -34,7 +34,7 @@ The current persistent service log has one `Failed to load Steam Service
 (GLE 126)` at November 12 00:37:26 UTC. Native64 Steam PID `0068`, TID `00b4`,
 receives `c000007b` followed by `c0000135` between local 19:37:26.746 and
 19:37:26.999; the measured offset is -300 minutes. This is timestamp correlation,
-not proof of the writer of the persistent log. A native I386 DLL cannot execute
+not by itself proof of the writer of the persistent log. A native I386 DLL cannot execute
 inside an AMD64 process. The failed bare-name fallback can produce module-not-
 found independently of a transitive import failure.
 
@@ -46,6 +46,19 @@ that state itself. The observed SCM pipe waits finish with `outcome=event`.
 None of this alone establishes all private Valve service IPC operations.
 No missing static dependency in those successful DLL loads is identified.
 The registry fix must not be described as a proven cure for GLE 126.
+
+Read-only inspection of the authenticated current Steam 1794424036 packages
+locates that log producer in AMD64 `steamclient64.dll`,
+`CSteamServiceBaseImpl::BlockingServiceStart`. It attempts executable loading of
+`bin/steamservice.dll`; the published DLL and EXE are I386, and the package has
+no SteamService64.dll. The module loader performs ordinary W/A loading or
+`LoadLibraryEx` with `LOAD_WITH_ALTERED_SEARCH_PATH` (8). The caller's argument 4
+is an internal flag, not a Windows load flag. A null module logs the error and
+then invokes a further service-start fallback at RVA `0x9c99dc`. A false fallback
+result emits a separate `BlockingServiceStart: failed to start`, absent from the
+current persistent service log. Thus GLE 126 is not itself evidence of terminal
+service failure or a missing transitive import. The static proof is retained in
+[Actions 43131940386](https://github.com/letsdothisagainx/Madeira/actions/runs/43131940386).
 
 ## Real content verification and VAC limits
 
@@ -77,6 +90,13 @@ restoration are checked under sanitizers. Its transport edges are controlled;
 it is not a running Steam service. The native Windows test separately uses real
 registry/security APIs and independent Windows reference calls in both process
 architectures. The IPA gate verifies the built binaries rather than test fixtures.
+
+The native Windows comparison passed in both x86 and x64 processes: 102 checks
+per architecture, real DACL writes to distinct registry views, errors matching
+stock Windows on nonexistent/permission-denied keys, unchanged neighboring
+view/owner/group, and 128 concurrent writes. This is
+[Actions 43132009766](https://github.com/letsdothisagainx/Madeira/actions/runs/43132009766),
+not an on-device Steam or VAC test.
 
 The iPhone must still establish service operations after the correction and
 real secure-server acceptance. JIT placement/preparation, 1152 MiB partition,

@@ -151,6 +151,16 @@ with tempfile.TemporaryDirectory() as temp:
         shutil.copyfile(kernelbase,t/'app/Madeira'/farm/'kernelbase.dll')
     security.check(security_stage,security_source,security_recipes,writing=True,objects=security_source)
     shutil.copyfile(security_stage/security.CHECKER.MANIFEST,t/'app/Madeira'/security.CHECKER.MANIFEST)
+    # Compose the registry security compiler/linked-code provenance fixture
+    # through its real checker. Do not stub the new final packaging gate.
+    registry_spec=importlib.util.spec_from_file_location('dock_registry_fixture',root/'tests/host/check-registry-security-package.py')
+    registry=importlib.util.module_from_spec(registry_spec);registry_spec.loader.exec_module(registry)
+    registry_stage,registry_source,registry_recipes,_,_=registry.setup(t/'registry-fixture')
+    shutil.copytree(registry_source,t/'wine',dirs_exist_ok=True)
+    shutil.copytree(registry_recipes,t,dirs_exist_ok=True)
+    for farm in registry.CHECK.code.FARMS:
+        shutil.copyfile(registry_stage/farm/'advapi32.dll',t/'app/Madeira'/farm/'advapi32.dll')
+    shutil.copyfile(registry_stage/registry.CHECK.MANIFEST,t/'app/Madeira'/registry.CHECK.MANIFEST)
     (t/'tools').mkdir(exist_ok=True)
     (t/'tools/check-io-abi-package.py').write_text((root/'tools/check-io-abi-package.py').read_text())
     bodies = {
@@ -167,16 +177,18 @@ cp "$ROOT/app/Madeira/aarch64-windows/services.exe" "$TEST_APP/aarch64-windows/"
 cp "$ROOT/app/Madeira/aarch64-windows/ntdll.dll" "$TEST_APP/aarch64-windows/"
 cp "$ROOT/app/Madeira/arm64ec-windows/ntdll.dll" "$TEST_APP/arm64ec-windows/"
 for farm in aarch64-windows arm64ec-windows i386-windows; do
-  for resource in regsvr32.exe rundll32.exe user32.dll ole32.dll kernelbase.dll wintrust.dll crypt32.dll; do
+  for resource in regsvr32.exe rundll32.exe user32.dll ole32.dll kernelbase.dll wintrust.dll crypt32.dll advapi32.dll; do
     cp "$ROOT/app/Madeira/$farm/$resource" "$TEST_APP/$farm/"
   done
 done
 cp "$ROOT/app/Madeira/arm64ec-windows/madeira-system-programs.json" "$TEST_APP/arm64ec-windows/"
 cp "$ROOT/app/Madeira/arm64ec-windows/madeira-trust-diagnostics.json" "$TEST_APP/arm64ec-windows/"
 cp "$ROOT/app/Madeira/arm64ec-windows/madeira-security-compat.json" "$TEST_APP/arm64ec-windows/"
+cp "$ROOT/app/Madeira/arm64ec-windows/madeira-registry-security.json" "$TEST_APP/arm64ec-windows/"
 if [ "${STALE_REGISTRATION_TOOL:-}" = 1 ]; then printf 'stale registration program' > "$TEST_APP/arm64ec-windows/regsvr32.exe"; fi
 if [ "${STALE_TRUST_OBSERVER:-}" = 1 ]; then printf 'stale trust observer' > "$TEST_APP/arm64ec-windows/wintrust.dll"; fi
 if [ "${STALE_SECURITY_CRYPTO:-}" = 1 ]; then printf 'stale crypto provider' > "$TEST_APP/arm64ec-windows/crypt32.dll"; fi
+if [ "${STALE_REGISTRY_SECURITY:-}" = 1 ]; then printf 'stale registry security' > "$TEST_APP/i386-windows/advapi32.dll"; fi
 if [ "${STALE_NATIVE_NTDLL:-}" = 1 ]; then printf 'old ntdll' > "$TEST_APP/arm64ec-windows/ntdll.dll"; fi
 if [ "${STALE_SCM:-}" = 1 ]; then printf 'old SCM' > "$TEST_APP/aarch64-windows/services.exe"; fi
 printf '[native-group-retire-v1][wow-placement-v1][wow-native-export-v1][fex-callback-v2][child-native-dll-v1][process-wow64-v1][child-native-ntdll-v1][guest-trap-context-v1][surface-expose-v1][steam-client-update-v1][alias-prot-compat][image-alias-retire-v1][swp-context-v1][alias-prot-v2][fex-exit-v1][native-thread-cancel-v1][io-abi] v2 native-owned IOSB scopes active[wow-write][guest32-symbols][guest32-cxx-first-v1][cef-atexit-v1][steam-handoff-v1]_madeira_child_server_exited[fex-owner-v1] pre-crt[fex-owner-v1] retired[fex-owner-census-v2][hold-release-v2][deliver-hold-v2][native-window-retire-v1]_winios_native_window_create_winios_native_window_retire[guest32-fault-v1][steam-progress-v1]_winios_ui_progress_snapshot[srv-poll-drop-v1]poll-slots-highwater=' > "$TEST_APP/Madeira.debug.dylib"
@@ -290,8 +302,11 @@ done
     assert result.returncode and 'stale app trust observer' in result.stderr,result.stderr
     result=run({'STALE_SECURITY_CRYPTO':'1'})
     assert result.returncode and 'stale app security DLL' in result.stderr,result.stderr
+    result=run({'STALE_REGISTRY_SECURITY':'1'})
+    assert result.returncode and ('stale app registry security' in result.stderr or 'missing or truncated PE' in result.stderr),result.stderr
     print('PASS stale native registration utility and trust observer fail their actual final provenance/package gates')
     print('PASS all-farm security corrections and provenance survive actual app/IPA packaging; stale crypto provider fails its real gate')
+    print('PASS all-farm registry security corrections and compiler provenance survive actual app/IPA packaging; stale I386 advapi32 fails its real gate')
     result=run({'STALE_SUBFLOOR_CONTRACT':'1'})
     assert result.returncode and 'stale native fixed-image subfloor protocol consumer' in result.stderr, result.stderr
     result=run({'STALE_NATIVE_SRW_ALIAS':'1'})
