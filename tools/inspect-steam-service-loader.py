@@ -172,6 +172,9 @@ class Inspector:
         strings = []
         bodies = {}
         roots = []
+        loader_exports = {name: hex(rva) for name, rva in self.pe.exports().items()
+                          if 'Sys_LoadModule' in name or 'Sys_GetLastError' in name}
+        roots.extend(int(rva, 16) for rva in loader_exports.values())
         for needle in NEEDLES:
             for encoding, value in [('ascii', needle), ('utf16le', needle.decode().encode('utf-16le'))]:
                 cursor = 0
@@ -205,7 +208,7 @@ class Inspector:
                         for ref in row.get('references', []):
                             if 'import' not in ref:
                                 queue.append((int(ref['rva'], 16), depth+1))
-        return {'pe': self.pe.describe(), 'relevant_import_slots': {
+        return {'pe': self.pe.describe(), 'loader_exports': loader_exports, 'relevant_import_slots': {
                     hex(rva): name for rva, name in self.imports.items()
                     if re.search(r'LoadLibrary|GetProcAddress|GetLastError|CreateService|OpenService|ConnectNamedPipe|CreateFile|IsWow64|GetNativeSystemInfo', name, re.I)},
                 'strings': strings, 'error_producer_functions_and_direct_callees': list(bodies.values()),
@@ -231,16 +234,24 @@ def emit_summary(report):
         pe = component['pe']
         emit({'kind': 'component', 'name': name, 'machine': pe['machine'], 'sha256': pe['sha256'],
               'bytes': pe['bytes'], 'imports': pe['imports'], 'strings': component['strings'],
+              'loader_exports': component.get('loader_exports', {}),
               'relevant_import_slots': component['relevant_import_slots']})
         for body in component['error_producer_functions_and_direct_callees']:
             relevant = any(re.search(r'LoadLibrary|GetLastError|GetProcAddress|IsWow64|GetNativeSystemInfo',
                                     ref.get('import', ''), re.I)
                            for row in body['instructions'] for ref in row.get('references', []))
-            candidates.append((body['depth_from_error_producer'] != 0, not relevant, name, body))
-    for _, _, name, body in sorted(candidates, key=lambda row: (row[0], row[1], row[2], row[3]['start_rva'])):
+            candidates.append((pe['machine'] != '8664', body['depth_from_error_producer'] != 0, not relevant, name, body))
+    for _, _, _, name, body in sorted(candidates, key=lambda row: (row[0], row[1], row[2], row[3], row[4]['start_rva'])):
         emit({'kind': 'function', 'component': name, **{k: v for k, v in body.items() if k != 'instructions'}})
-        for row in body['instructions']:
-            emit({'component': name, **row})
+        # Full small functions; for large helper bodies retain import-call
+        # argument/return contexts rather than unrelated profiler/logging code.
+        instructions = body['instructions']
+        indices = set(range(len(instructions))) if len(instructions) <= 200 else set(range(24))
+        for index, row in enumerate(instructions):
+            if any('import' in ref or 'literal' in ref for ref in row.get('references', [])):
+                indices.update(range(max(0, index-10), min(len(instructions), index+5)))
+        for index in sorted(indices):
+            emit({'component': name, **instructions[index]})
     print(json.dumps({'kind': 'summary-bound', 'omitted_records': omitted,
                       'complete_evidence': 'steam-service-loader.json artifact', 'vac_verdict': 'unmeasured'}))
 
@@ -284,7 +295,8 @@ def main():
                         if 'service' in member:
                             report['archive_service_inventory'].append({'package': package, 'member': member, 'bytes': item.file_size})
                         leaf = member.rsplit('/', 1)[-1]
-                        if leaf not in ('steam.exe', 'steamclient.dll', 'steamclient64.dll') and not (
+                        if leaf not in ('steam.exe', 'steamclient.dll', 'steamclient64.dll',
+                                        'vstdlib_s64.dll', 'tier0_s64.dll') and not (
                                 'service' in leaf and member.endswith(('.dll', '.exe'))):
                             continue
                         require(item.orig_filename == item.filename and not item.flag_bits & 1 and
