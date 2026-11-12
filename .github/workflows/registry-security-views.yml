@@ -1,0 +1,61 @@
+name: Verify named registry security on native Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'codex/pr-build-*']
+    paths:
+      - build/wine-pe/registry-security-views.*
+      - tools/build/stage-registry-security-views.py
+      - build/wine-pe/build-registry-security.sh
+      - tools/check-registry-security-package.py
+      - tests/host/check-registry-security-*.py
+      - tests/integration/check-registry-security-views.py
+      - tests/integration/registry-security-views.c
+      - .github/workflows/registry-security-views.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: registry-security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  production-contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Load the pinned Wine security source
+        run: git submodule update --init --depth 1 wine
+      - name: Reproduce false success and verify production correction, build and packaging
+        run: |
+          python3 tests/host/check-registry-security-views.py
+          python3 tests/host/check-registry-security-build.py
+          python3 tests/host/check-registry-security-package.py
+  native-windows:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        architecture: [x86, x64]
+    steps:
+      - name: Preserve byte-exact pinned sources and compatibility patches
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+      - name: Load the pinned Wine security source
+        run: git submodule update --init --depth 1 wine
+      - name: Compile production functions and execute against the real Windows registry
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do call "%%i\VC\Auxiliary\Build\vcvarsall.bat" ${{ matrix.architecture }}
+          if errorlevel 1 exit /b %errorlevel%
+          python tests\integration\check-registry-security-views.py --output-dir registry-security-${{ matrix.architecture }}
+          if errorlevel 1 exit /b %errorlevel%
+      - name: Preserve native reference comparisons and exact compiled source bodies
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: registry-security-native-${{ matrix.architecture }}
+          path: registry-security-${{ matrix.architecture }}/
+          if-no-files-found: error

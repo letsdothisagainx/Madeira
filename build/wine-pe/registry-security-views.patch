@@ -1,0 +1,34 @@
+--- a/dlls/advapi32/security.c
++++ b/dlls/advapi32/security.c
+@@ -2430,9 +2430,14 @@
+         }
+         break;
+     case SE_REGISTRY_KEY:
++    case SE_REGISTRY_WOW64_32KEY:
++    case SE_REGISTRY_WOW64_64KEY:
++        /* The selector controls the named-key open, not the handle API type. */
++        if (ObjectType == SE_REGISTRY_WOW64_32KEY) access |= KEY_WOW64_32KEY;
++        if (ObjectType == SE_REGISTRY_WOW64_64KEY) access |= KEY_WOW64_64KEY;
+         if (!(err = get_security_regkey( pObjectName, access, &handle )))
+         {
+-            err = SetSecurityInfo( handle, ObjectType, SecurityInfo, psidOwner, psidGroup, pDacl, pSacl );
++            err = SetSecurityInfo( handle, SE_REGISTRY_KEY, SecurityInfo, psidOwner, psidGroup, pDacl, pSacl );
+             RegCloseKey( handle );
+         }
+         break;
+@@ -2790,9 +2795,14 @@
+         }
+         break;
+     case SE_REGISTRY_KEY:
++    case SE_REGISTRY_WOW64_32KEY:
++    case SE_REGISTRY_WOW64_64KEY:
++        /* The selector controls the named-key open, not the handle API type. */
++        if (type == SE_REGISTRY_WOW64_32KEY) access |= KEY_WOW64_32KEY;
++        if (type == SE_REGISTRY_WOW64_64KEY) access |= KEY_WOW64_64KEY;
+         if (!(err = get_security_regkey( name, access, &handle )))
+         {
+-            err = GetSecurityInfo( handle, type, info, owner, group, dacl, sacl, descriptor );
++            err = GetSecurityInfo( handle, SE_REGISTRY_KEY, info, owner, group, dacl, sacl, descriptor );
+             RegCloseKey( handle );
+         }
+         break;

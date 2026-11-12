@@ -1,0 +1,16 @@
+{
+  "format": 1,
+  "purpose": "Perform actual registry security operations for explicitly selected WOW64 views; no fabricated success or trust decision.",
+  "observedCall": "2026-11-12 SteamService x86 worker PID00bc TID01c0 SetNamedSecurityInfoW ObjectType13 (SE_REGISTRY_WOW64_64KEY)",
+  "references": [
+    "https://learn.microsoft.com/en-us/windows/win32/api/accctrl/ne-accctrl-se_object_type",
+    "https://learn.microsoft.com/en-us/windows/win32/winprog64/accessing-an-alternate-registry-view"
+  ],
+  "patchSHA256": "1769a32caa17ff735602f01b1dbe1013957c23b81593bbd79641439e0f0e4408",
+  "files": {
+    "dlls/advapi32/security.c": {
+      "beforeSHA256": "00b0c6076c7b6846bb05080cec4bd4eccc4a9bf988c5fbf40949340c60544f18",
+      "afterSHA256": "a40cbe8c7f48a67d1f525b622bae27ca91c21c9f3113eea0bf4b6c200ae89752"
+    }
+  }
+}

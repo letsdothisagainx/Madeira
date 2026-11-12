@@ -382,8 +382,10 @@ jobs:
             wine/build-*/dlls/crypt32/*-windows/encode.o
             wine/build-*/dlls/crypt32/*-windows/msg.o
             wine/build-*/dlls/kernelbase/*-windows/debug.o
+            wine/build-*/dlls/advapi32/*-windows/security.o
             app/Madeira/*-windows/crypt32.dll
             app/Madeira/*-windows/kernelbase.dll
+            app/Madeira/*-windows/advapi32.dll
           if-no-files-found: warn
           retention-days: 3
       - uses: actions/cache/save@v4
@@ -423,6 +425,8 @@ jobs:
           git submodule update --init --depth 1 wine
           unzip -oq scm-ipa/Madeira.ipa 'Payload/Madeira.app/*-windows/crypt32.dll' 'Payload/Madeira.app/*-windows/kernelbase.dll' 'Payload/Madeira.app/arm64ec-windows/madeira-security-compat.json' -d scm-ipa
           python3 tools/check-security-compat-package.py --root scm-ipa/Payload/Madeira.app --source-root wine --repo-root "$GITHUB_WORKSPACE" --ipa scm-ipa/Madeira.ipa
+          unzip -oq scm-ipa/Madeira.ipa 'Payload/Madeira.app/*-windows/advapi32.dll' 'Payload/Madeira.app/arm64ec-windows/madeira-registry-security.json' -d scm-ipa
+          python3 tools/check-registry-security-package.py --root scm-ipa/Payload/Madeira.app --source-root wine --repo-root "$GITHUB_WORKSPACE" --ipa scm-ipa/Madeira.ipa
           "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-x18-loads.py --emulate
           "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-fex-native-callback.py --emulate
           unzip -q scm-ipa/Madeira.ipa 'Payload/Madeira.app/i386-windows/madeira-wow64-*' 'Payload/Madeira.app/Madeira.debug.dylib' -d scm-ipa
