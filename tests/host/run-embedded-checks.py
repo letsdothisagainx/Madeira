@@ -28,6 +28,7 @@ commands = [
     ['python3', 'tests/host/check-cs2-vac-markers.py', '--require-swift'],
     ['python3', 'tests/host/check-crypt32-root-fd.py'],
     ['python3', 'tests/host/check-process-image-lookup.py'],
+    ['python3', 'tests/host/check-steam-hardware-updater-gate.py'],
     ['python3', 'tests/host/check-registration-program-behavior.py'],
     ['python3', 'tests/host/check-native-registration-tools.py'],
     ['python3', 'tests/host/check-system-program-build.py'],

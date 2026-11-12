@@ -1,0 +1,32 @@
+name: Verify Steam hardware updater process creation policy
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'codex/pr-build-*']
+    paths:
+      - build/ntdll-unix/process_ios.c
+      - build/ntdll-unix/steam_handoff.h
+      - tests/host/check-steam-hardware-updater-gate.py
+      - tests/host/check-steam-handoff.py
+      - tests/host/fixtures/steam-helper-gate-68461258.c.inc
+      - .github/workflows/steam-hardwareupdater-gate.yml
+permissions:
+  contents: read
+jobs:
+  production-gate:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, xcode-27]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Load pinned Wine declarations
+        run: git submodule update --init --depth 1 wine
+      - name: Reproduce twelve refusals and exercise production gate and owner ledger
+        run: |
+          python3 tests/host/check-steam-hardware-updater-gate.py
+          python3 tests/host/check-steam-handoff.py

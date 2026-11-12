@@ -49,23 +49,29 @@ static void require(BOOL okay, const char *operation)
 static void query(const char *phase, const char *name, HKEY key, DWORD rights)
 {
     DWORD a = SENTINEL, w = SENTINEL, meta_a = SENTINEL, meta_w = SENTINEL;
-    DWORD count_a = SENTINEL, count_w = SENTINEL, reserved = 0, invalid_size = SENTINEL;
+    DWORD count_a = SENTINEL, count_w = SENTINEL, reserved = 0;
+    DWORD invalid_a_size = SENTINEL, invalid_w_size = SENTINEL;
     DWORD native_size = SENTINEL, all_size = SENTINEL, reg_size = 0;
     LONG nt, all_nt, fill = (LONG)SENTINEL, fill_all = (LONG)SENTINEL;
     DWORD actual_length = 0, actual_all_length = 0;
     PSECURITY_DESCRIPTOR descriptor = NULL;
     WCHAR class_buffer[2] = {0};
-    LSTATUS ra, rw, ma, mw, null_a, null_w, invalid_class, nonnull_reserved, reg;
+    CHAR class_a[2] = {0};
+    LSTATUS ra, rw, ma, mw, null_a, null_w, invalid_class_a, invalid_class_w, reserved_a, reserved_w, reg;
     ra = RegQueryInfoKeyA(key, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, &a, NULL);
     rw = RegQueryInfoKeyW(key, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, &w, NULL);
     ma = RegQueryInfoKeyA(key, NULL, NULL, NULL, &count_a, NULL, NULL, NULL, NULL, NULL, &meta_a, NULL);
     mw = RegQueryInfoKeyW(key, NULL, NULL, NULL, &count_w, NULL, NULL, NULL, NULL, NULL, &meta_w, NULL);
     null_a = RegQueryInfoKeyA(key, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
     null_w = RegQueryInfoKeyW(key, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
-    invalid_class = RegQueryInfoKeyW(key, class_buffer, NULL, NULL, NULL, NULL, NULL,
-                                    NULL, NULL, NULL, &invalid_size, NULL);
-    nonnull_reserved = RegQueryInfoKeyW(key, NULL, NULL, &reserved, NULL, NULL, NULL,
-                                       NULL, NULL, NULL, NULL, NULL);
+    invalid_class_a = RegQueryInfoKeyA(key, class_a, NULL, NULL, NULL, NULL, NULL,
+                                      NULL, NULL, NULL, &invalid_a_size, NULL);
+    invalid_class_w = RegQueryInfoKeyW(key, class_buffer, NULL, NULL, NULL, NULL, NULL,
+                                      NULL, NULL, NULL, &invalid_w_size, NULL);
+    reserved_a = RegQueryInfoKeyA(key, NULL, NULL, &reserved, NULL, NULL, NULL,
+                                  NULL, NULL, NULL, NULL, NULL);
+    reserved_w = RegQueryInfoKeyW(key, NULL, NULL, &reserved, NULL, NULL, NULL,
+                                  NULL, NULL, NULL, NULL, NULL);
     nt = query_security(key, BASIC_SECURITY, NULL, 0, &native_size);
     all_nt = query_security(key, BASIC_SECURITY | SACL_SECURITY_INFORMATION, NULL, 0, &all_size);
     /* The bounded second query records genuine descriptor bytes/lengths only
@@ -90,12 +96,13 @@ static void query(const char *phase, const char *name, HKEY key, DWORD rights)
            "\"metadataAStatus\":%ld,\"metadataASize\":%lu,\"subkeysA\":%lu,"
            "\"metadataWStatus\":%ld,\"metadataWSize\":%lu,\"subkeysW\":%lu,"
            "\"nullOutputsAStatus\":%ld,\"nullOutputsWStatus\":%ld,"
-           "\"classWithoutSizeStatus\":%ld,\"classWithoutSizeSecurity\":%lu,\"nonnullReservedStatus\":%ld,"
+           "\"classWithoutSizeAStatus\":%ld,\"classWithoutSizeASecurity\":%lu,"
+           "\"classWithoutSizeWStatus\":%ld,\"classWithoutSizeWSecurity\":%lu,\"nonnullReservedAStatus\":%ld,\"nonnullReservedWStatus\":%ld,"
            "\"ntSecurityStatus\":\"%08lx\",\"ntSecuritySize\":%lu,\"ntFillStatus\":\"%08lx\",\"descriptorLength\":%lu,"
            "\"ntWithSaclStatus\":\"%08lx\",\"ntWithSaclSize\":%lu,\"ntWithSaclFillStatus\":\"%08lx\",\"descriptorWithSaclLength\":%lu,"
            "\"regGetSecurityStatus\":%ld,\"regGetSecuritySize\":%lu}\n",
            phase, name, rights, ra, a, rw, w, ma, meta_a, count_a, mw, meta_w, count_w,
-           null_a, null_w, invalid_class, invalid_size, nonnull_reserved,
+           null_a, null_w, invalid_class_a, invalid_a_size, invalid_class_w, invalid_w_size, reserved_a, reserved_w,
            (ULONG)nt, native_size, (ULONG)fill, actual_length,
            (ULONG)all_nt, all_size, (ULONG)fill_all, actual_all_length, reg, reg_size);
     ++rows;
@@ -145,7 +152,7 @@ int main(void)
 {
     HANDLE token;
     TOKEN_USER *user;
-    DWORD bytes = 0, disposition, length;
+    DWORD bytes = 0, disposition, length, compact_length;
     FILETIME time;
     BYTE world[SECURITY_MAX_SID_SIZE], users[SECURITY_MAX_SID_SIZE];
     DWORD world_length = sizeof(world), users_length = sizeof(users);
@@ -154,6 +161,7 @@ int main(void)
     LSTATUS status;
     WCHAR missing_name[240];
     BOOL privilege;
+    setvbuf(stdout, NULL, _IONBF, 0);
     atexit(cleanup);
     query_security = (query_security_t)(void *)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQuerySecurityObject");
     require(query_security != NULL, "resolve-native-NtQuerySecurityObject");
@@ -166,10 +174,13 @@ int main(void)
             CreateWellKnownSid(WinBuiltinUsersSid, NULL, users, &users_length), "create-known-test-SIDs");
     length = sizeof(ACL) + 3 * (sizeof(ACCESS_ALLOWED_ACE) - sizeof(DWORD)) +
         GetLengthSid(user->User.Sid) + world_length + users_length;
-    compact = calloc(1, length); expanded = calloc(1, length); empty = calloc(1, length); audit = calloc(1, length);
+    compact_length = sizeof(ACL) + sizeof(ACCESS_ALLOWED_ACE) - sizeof(DWORD) + GetLengthSid(user->User.Sid);
+    compact = calloc(1, compact_length); expanded = calloc(1, length);
+    empty = calloc(1, sizeof(ACL)); audit = calloc(1, compact_length);
     require(compact && expanded && empty && audit, "allocate-bounded-test-ACLs");
-    require(InitializeAcl(compact, length, ACL_REVISION) && InitializeAcl(expanded, length, ACL_REVISION) &&
-            InitializeAcl(empty, length, ACL_REVISION) && InitializeAcl(audit, length, ACL_REVISION), "initialize-test-ACLs");
+    require(InitializeAcl(compact, compact_length, ACL_REVISION) && InitializeAcl(expanded, length, ACL_REVISION) &&
+            InitializeAcl(empty, sizeof(ACL), ACL_REVISION) && InitializeAcl(audit, compact_length, ACL_REVISION),
+            "initialize-test-ACLs");
     require(AddAccessAllowedAce(compact, ACL_REVISION, KEY_ALL_ACCESS, user->User.Sid) &&
             AddAccessAllowedAce(expanded, ACL_REVISION, KEY_ALL_ACCESS, user->User.Sid) &&
             AddAccessAllowedAce(expanded, ACL_REVISION, KEY_READ, world) &&
@@ -180,6 +191,7 @@ int main(void)
              L"SOFTWARE\\MadeiraRegQueryContract_%lu_%08lx%08lx", GetCurrentProcessId(), time.dwHighDateTime, time.dwLowDateTime);
     status = RegCreateKeyExW(HKEY_LOCAL_MACHINE, relative_name, 0, L"MadeiraContractClass", 0,
                              KEY_ALL_ACCESS | KEY_WOW64_64KEY, NULL, &owned_key, &disposition);
+    printf("{\"event\":\"owned-key-create\",\"status\":%ld}\n", status);
     require(status == ERROR_SUCCESS, "create-owned-test-key-requires-administrator-runner");
     require(disposition == REG_CREATED_NEW_KEY, "exclusive-test-key-ownership");
     owned = TRUE;
@@ -218,10 +230,10 @@ int main(void)
     matrix("empty-DACL");
     query("invalid-handles", "null", NULL, 0);
     query("invalid-handles", "invalid-unaligned", (HKEY)(ULONG_PTR)0x123, 0);
-    require(RegOpenKeyExW(HKEY_LOCAL_MACHINE, relative_name, 0, READ_CONTROL | KEY_WOW64_64KEY, &closed)
-            == ERROR_SUCCESS, "open-owned-handle-to-close");
+    require(DuplicateHandle(GetCurrentProcess(), owned_key, GetCurrentProcess(), (HANDLE *)&closed,
+                             0, FALSE, DUPLICATE_SAME_ACCESS), "duplicate-owned-handle-to-close");
     RegCloseKey(closed);
-    query("invalid-handles", "closed-handle", closed, READ_CONTROL);
+    query("invalid-handles", "closed-handle", closed, KEY_ALL_ACCESS);
     free(compact); free(expanded); free(empty); free(audit); free(user);
     printf("{\"event\":\"complete\",\"queryRows\":%u,\"contractOutcomes\":\"observed-not-assumed\",\"SteamData\":\"untouched\"}\n", rows);
     return 0;

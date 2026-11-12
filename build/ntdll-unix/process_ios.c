@@ -930,6 +930,59 @@ static int ios_image_name_is( const WCHAR *image, int image_len, const char *nam
     return 1;
 }
 
+/* The one-file PyInstaller parent starts the same executable after extraction.
+ * Compare only known spellings of that counted path; do not guess filesystem
+ * aliases, resolve another binary by basename, or change the caller's path. */
+static int ios_same_image_path( const UNICODE_STRING *left, const UNICODE_STRING *right )
+{
+    unsigned int a = 0, b = 0, i, left_len, right_len;
+
+    if (!left || !right || !left->Buffer || !right->Buffer || !left->Length ||
+        !right->Length || left->Length > left->MaximumLength || right->Length > right->MaximumLength ||
+        left->Length % sizeof(WCHAR) || right->Length % sizeof(WCHAR)) return 0;
+    left_len = left->Length / sizeof(WCHAR);
+    right_len = right->Length / sizeof(WCHAR);
+    if (left_len >= 4 && left->Buffer[0] == '\\' && left->Buffer[2] == '?' &&
+        left->Buffer[3] == '\\' && (left->Buffer[1] == '?' || left->Buffer[1] == '\\')) a = 4;
+    if (right_len >= 4 && right->Buffer[0] == '\\' && right->Buffer[2] == '?' &&
+        right->Buffer[3] == '\\' && (right->Buffer[1] == '?' || right->Buffer[1] == '\\')) b = 4;
+    if (left_len - a < 3 || left_len - a != right_len - b) return 0;
+    if (!(((left->Buffer[a] >= 'A' && left->Buffer[a] <= 'Z') ||
+           (left->Buffer[a] >= 'a' && left->Buffer[a] <= 'z')) && left->Buffer[a + 1] == ':' &&
+          ios_steam_path_char(left->Buffer[a + 2]) == '\\') &&
+        !(left_len - a >= 5 && ios_steam_path_char(left->Buffer[a]) == '\\' &&
+          ios_steam_path_char(left->Buffer[a + 1]) == '\\' &&
+          ios_steam_path_char(left->Buffer[a + 2]) != '\\')) return 0;
+    for (i = 0; i < left_len - a; i++)
+        if (ios_steam_path_char(left->Buffer[a + i]) != ios_steam_path_char(right->Buffer[b + i])) return 0;
+    return left_len > a;
+}
+
+/* This is a narrow process-containment exception, not a publisher/trust verdict.
+ * Reuse the existing owner/PID/generation ledger populated by real child startup
+ * and cleared by server last-thread death. No extra inheritance flag is added.
+ * An untracked, retired, foreign or Dock helper cannot justify a self-reexec. */
+static int ios_steam_hardware_updater_reexec( const RTL_USER_PROCESS_PARAMETERS *params )
+{
+    const RTL_USER_PROCESS_PARAMETERS *cur = NtCurrentTeb()->Peb->ProcessParameters;
+    void *owner = NtCurrentTeb()->Peb;
+    unsigned int pid = HandleToULong( NtCurrentTeb()->ClientId.UniqueProcess ), i;
+    int allowed = 0;
+
+    if (!cur || !ios_image_name_is( cur->ImagePathName.Buffer,
+                                   cur->ImagePathName.Length / sizeof(WCHAR), "hardwareupdater.exe" ) ||
+        !ios_same_image_path( &cur->ImagePathName, &params->ImagePathName )) return 0;
+    pthread_mutex_lock( &ios_child_lock );
+    if (ios_steam_session.enabled)
+        for (i = 0; i < IOS_CHILD_SLOTS; i++)
+            if (ios_child_slots[i].used && ios_child_slots[i].generation && ios_child_slots[i].anchor &&
+                ios_child_slots[i].owner == owner && ios_child_slots[i].pid == pid &&
+                !strcmp( ios_child_slots[i].name, "hardwareupdater.exe" ))
+            { allowed = 1; break; }
+    pthread_mutex_unlock( &ios_child_lock );
+    return allowed;
+}
+
 /* conhost.exe in an ARM64EC session. Wine's conhost.exe is a native aarch64
  * image, but the session's ARM64EC ntdll loads the emulator into it all the
  * same, while its threads get no CHPE CPU area (init_thread_stack: "NOT
@@ -1470,17 +1523,17 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
      * to reach or use the login UI, and tolerates a failed spawn exactly like
      * gldriverquery. Refusing it is strictly better than letting it fault. */
     {
-        /* ml601: hardwareupdater joins the gate. Steam spawns
+        /* ml601 originally refused hardwareupdater. Steam spawns
          *   bin\hardwareupdater\hardwareupdater.exe --check-for-updates
          * at ~t+94s. It is a PyInstaller binary: it unpacks _MEI6362 and drags in
          * python314.dll plus a COM init, which cost JIT-pool space (712MB/896MB
          * live when combase mapped) and pulled combase in and out of the address
-         * space. Nothing about reaching or using Steam's UI needs a hardware
-         * survey update check, and Steam tolerates a refused spawn exactly like
-         * gldriverquery. (The db 7244 crash that this coincided with was OUR
+         * space. The db 7244 crash that this coincided with was OUR
          * ec-recheck probe reading combase's IAT after it unloaded — fixed
-         * separately in loader.c; gating this simply removes the churn and the
-         * pool pressure from the consistency baseline.) */
+         * separately in loader.c. The full Steam client now owns this request
+         * below, just as it owns its other helpers. Let the real loader and
+         * child report their actual result instead of manufacturing an access
+         * denial for an otherwise valid update check. */
         /* iOS-Madeira ml628: UnityCrashHandler64.exe — same class as steamerrorreporter.
          *
          * It is Unity's OPTIONAL crash-reporting helper; the game runs fine without it.
@@ -1571,10 +1624,12 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
          * self-terminate took the whole app down; now each ends only its own
          * pseudo-process. When the PARENT is steam.exe they may start (Dock sessions
          * host Valve's client in dockhost.exe, so their spawns keep the gate).
-         * hardwareupdater (pool churn) and the web helper's --type= children (a second
-         * CEF instance, see below) stay refused. env.MADEIRA_PROC_GATE_STEAM=0 refuses
-         * them all as before. */
-        int full_client_parent = 0;
+         * This includes the exact hardwareupdater.exe child: the old unconditional
+         * refusal made Steam retry --check-for-updates twelve times. The web
+         * helper's --type= policy is separate below. env.MADEIRA_PROC_GATE_STEAM=0
+         * refuses the gated helpers as before, and MADEIRA_SPAWN_BLOCK still
+         * applies after this exception. */
+        int full_client_parent = 0, hardware_self_reexec = 0;
         {
             const char *g = getenv( "MADEIRA_PROC_GATE_STEAM" );
             const RTL_USER_PROCESS_PARAMETERS *cur = NtCurrentTeb()->Peb->ProcessParameters;
@@ -1582,6 +1637,7 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
                 ios_image_name_is( cur->ImagePathName.Buffer, cur->ImagePathName.Length / sizeof(WCHAR),
                                    "steam.exe" ))
                 full_client_parent = 1;
+            if (!(g && g[0] == '0')) hardware_self_reexec = ios_steam_hardware_updater_reexec( params );
         }
 
         for (b = 0; b < sizeof(blocked_names)/sizeof(blocked_names[0]); b++)
@@ -1589,10 +1645,16 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
             const char *blocked = blocked_names[b];
             int bl = (int)strlen( blocked ), k, j;
 
-            if (full_client_parent && b < 4)
+            if ((full_client_parent &&
+                 (!strcmp( blocked, "steamerrorreporter" ) ||
+                  !strcmp( blocked, "gldriverquery" ) ||
+                  !strcmp( blocked, "vulkandriverquery" ) ||
+                  !strcmp( blocked, "steamsysinfo" ))) ||
+                (!strcmp( blocked, "hardwareupdater" ) && (full_client_parent || hardware_self_reexec) &&
+                 ios_image_name_is( ip, ip_len, "hardwareupdater.exe" )))
             {
-                /* the first four names: steamerrorreporter, gldriverquery,
-                 * vulkandriverquery, steamsysinfo (keep that order above) */
+                /* Name the policy explicitly; array order must not decide
+                 * which helper a full client may create. */
                 int hit = 0;
                 for (k = 0; k + bl <= ip_len && !hit; k++)
                 {
@@ -1605,10 +1667,11 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
                     if (j == bl) hit = 1;
                 }
                 if (hit)
-                    dprintf( 2, "[proc-gate] ml1357 allowing %s: started by the full Steam client "
-                             "(steam.exe), whose own helpers run in this session "
+                    dprintf( 2, "[proc-gate] ml1357 allowing %s: %s "
                              "(env.MADEIRA_PROC_GATE_STEAM=0 refuses them as before)\n",
-                             debugstr_us( &params->ImagePathName ) );
+                             debugstr_us( &params->ImagePathName ), hardware_self_reexec ?
+                             "same-image PyInstaller child of a live tracked Steam helper" :
+                             "started by the full Steam client (steam.exe)" );
                 continue;
             }
 
