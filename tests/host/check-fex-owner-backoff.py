@@ -133,8 +133,8 @@ with tempfile.TemporaryDirectory(prefix='madeira-owner-backoff-') as tmp:
     build = d / 'production/build'
     ns['configure'](source, build)
     checked = (build / 'madeira-fex-compat/rpmalloc-checked.c').read_text()
-    for name in ('windows.h', 'winternl.h'):
-        (d / name).write_text(WINDOWS)
+    (d / 'windows.h').write_text(WINDOWS)
+    (d / 'winternl.h').write_text('#include "windows.h"\n')
     cc = shlex.split(os.environ.get('CC', 'cc'))
     for label, text in (('original', ORIGINAL), ('backoff', checked)):
         path = d / (label + '.c')
