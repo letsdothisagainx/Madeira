@@ -7,7 +7,7 @@ on:
         description: Existing Build IPA artifact run (read-only inspection)
         type: string
         required: true
-        default: '43302112853'
+        default: '43358338124'
   workflow_call:
     inputs:
       run_id:
@@ -40,14 +40,14 @@ jobs:
               headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json'})
           with urllib.request.urlopen(request, timeout=60) as response:
               run = json.load(response)
-          expected = '5621b019d26fb1a080307c5f272208c2928c3e47'
-          assert run['head_sha'] == expected, 'source run is not the captured 5621 build'
+          expected = 'd73f2583a79f7c402edaec3646f2d0d1d89c0752'
+          assert run['head_sha'] == expected, 'source run is not the captured run 7 build'
           assert run['head_repository']['full_name'].lower() == repo.lower(), 'unexpected source repository'
           print('SOURCE run=' + run_id + ' revision=' + expected + ' conclusion=' + str(run['conclusion']))
           PY
       - uses: actions/download-artifact@v4
         with:
-          name: Madeira-ipa
+          artifact-ids: '14008451599'
           run-id: ${{ inputs.run_id }}
           github-token: ${{ github.token }}
           path: previous-ipa
@@ -62,11 +62,12 @@ jobs:
           path = Path('previous-ipa/Madeira.ipa')
           print('IPA sha256=' + hashlib.sha256(path.read_bytes()).hexdigest())
           images = ('aarch64-windows/xtajit.dll', 'arm64ec-windows/xtajit64.dll',
-                    'arm64ec-windows/d3d11.dll', 'arm64ec-windows/ntdll.dll')
+                    'arm64ec-windows/d3d11.dll', 'arm64ec-windows/ntdll.dll',
+                    'aarch64-windows/ntdll.dll')
           with zipfile.ZipFile(path) as ipa:
               info = plistlib.loads(ipa.read('Payload/Madeira.app/Info.plist'))
               build = info['MadeiraBuild']
-              assert build.endswith(' source=5621b019d26fb1a080307c5f272208c2928c3e47'), 'IPA source mismatch'
+              assert build.endswith(' source=d73f2583a79f7c402edaec3646f2d0d1d89c0752'), 'IPA source mismatch'
               print('MadeiraBuild=' + build)
               for image in images:
                   member = 'Payload/Madeira.app/' + image
@@ -76,13 +77,13 @@ jobs:
                   output.write_bytes(data)
                   print('ARCHIVE path=' + member + ' bytes=' + str(len(data)) + ' sha256=' + hashlib.sha256(data).hexdigest())
           PY
-          python3 tools/build/inspect-fex-image.py previous-ipa/Payload/Madeira.app/aarch64-windows/xtajit.dll --code-rva 0x102ef0 --data-rva 0x386e38 --context 96 --log-symbols | tee inspection/xtajit.txt
+          python3 tools/build/inspect-fex-image.py previous-ipa/Payload/Madeira.app/aarch64-windows/xtajit.dll --code-rva 0x1a1aac --code-rva 0x1a1b44 --data-rva 0x386ed0 --data-rva 0x387080 --context 96 --log-symbols | tee inspection/xtajit.txt
           python3 tools/build/inspect-fex-image.py previous-ipa/Payload/Madeira.app/arm64ec-windows/xtajit64.dll --code-rva 0x118960 --code-rva 0x11896c --code-rva 0x10d90 --data-rva 0x3c3ec0 --data-rva 0x3c4b00 --context 96 --log-symbols | tee inspection/xtajit64.txt
-          python3 tools/build/inspect-fex-image.py previous-ipa/Payload/Madeira.app/arm64ec-windows/d3d11.dll --code-rva 0x118774 --data-rva 0x301b50 --context 96 --log-symbols | tee inspection/d3d11.txt
-          python3 tools/build/inspect-fex-image.py previous-ipa/Payload/Madeira.app/arm64ec-windows/ntdll.dll --code-rva 0x65290 --context 96 --log-symbols | tee inspection/ntdll.txt
+          python3 tools/build/inspect-fex-image.py previous-ipa/Payload/Madeira.app/arm64ec-windows/d3d11.dll --code-rva 0x118928 --code-rva 0x11892c --code-rva 0x11895c --code-rva 0x77a94 --code-rva 0x7d690 --code-rva 0x9777c --code-rva 0x107ef0 --data-rva 0x370fb0 --data-rva 0x370fb8 --data-rva 0x340fd0 --data-rva 0x404c40 --data-rva 0x40ce94 --data-rva 0x40ceb8 --context 96 --log-symbols | tee inspection/d3d11.txt
+          python3 tools/build/inspect-fex-image.py previous-ipa/Payload/Madeira.app/aarch64-windows/ntdll.dll --code-rva 0x6dc60 --code-rva 0x6dbe8 --context 96 --log-symbols | tee inspection/ntdll.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: team-picker-5621-image-inspection
+          name: team-picker-run7-exact-image-inspection
           path: inspection
           if-no-files-found: error
           retention-days: 3
