@@ -22,7 +22,7 @@ extern const unsigned char madeira_transition_template[];
 enum { TRANSITION_ROUNDS=2048,TRANSITION_BYTES=35968,TRANSITION_RING=3200,
        TRANSITION_RING_COUNT=3136,TRANSITION_RING_SEED=4090 };
 static uint64_t transition_families[MADEIRA_STORE_FAMILIES];
-static unsigned transition_operation;
+static unsigned transition_operation,transition_mode;
 static _Alignas(64) unsigned char transition_frame[4160];
 static unsigned char transition_reference[TRANSITION_BYTES];
 static uint64_t transition_results[TRANSITION_ROUNDS];
@@ -63,10 +63,38 @@ static int transition_target_valid(uintptr_t address,uint32_t instruction,const 
 
 static uintptr_t ios_write_alias(uintptr_t address)
 {
-    if(!inside(address,8,(uintptr_t)active.rx+FEX_DIAG_TRANSITION,TRANSITION_BYTES))return 0;
+    /* The production span writer queries both endpoint BYTES. Requiring eight
+     * bytes here incorrectly refuses the last byte of the last valid ring
+     * slot. transition_target_valid independently proves the whole store. */
+    if(!inside(address,1,(uintptr_t)active.rx+FEX_DIAG_TRANSITION,TRANSITION_BYTES))return 0;
     return (uintptr_t)active.rw+address-(uintptr_t)active.rx;
 }
 static int ios_alias_write_is_trapped(uintptr_t address){return !ios_write_alias(address);}
+static void transition_require(int condition,const char *reason)
+{
+    if(condition)return;
+    fprintf(stderr,"transition fixture failure operation=%u mode=%u: %s\n",
+            transition_operation,transition_mode,reason);
+    abort();
+}
+static void transition_boundary_checks(void)
+{
+    uintptr_t end=(uintptr_t)active.rx+FEX_DIAG_TRANSITION+TRANSITION_BYTES;
+    uintptr_t writable_end=(uintptr_t)active.rw+FEX_DIAG_TRANSITION+TRANSITION_BYTES,blocked=0;
+    uint64_t before[2],value=UINT64_C(0x0123456789abcdef),observed;
+    memcpy(before,(void *)(writable_end-8),sizeof(before));
+    transition_require(ios_write_alias(end-8)==writable_end-8,"last full ring slot alias");
+    transition_require(ios_write_alias(end-1)==writable_end-1,"last payload byte alias");
+    transition_require(!ios_write_alias(end),"one-past payload byte refused");
+    transition_require(ios_alias_write(end-8,&value,8,&blocked,1),"production writer accepts complete last ring slot");
+    memcpy(&observed,(void *)(writable_end-8),8);
+    transition_require(observed==value,"complete last ring slot value preserved");
+    transition_require(!memcmp((void *)writable_end,before+1,8),"last ring slot leaves following bytes unchanged");
+    memcpy((void *)(writable_end-8),before,sizeof(before));
+    transition_require(!ios_alias_write(end-7,&value,8,&blocked,1),"crossing payload end refused");
+    transition_require(!ios_alias_write(end,&value,1,&blocked,1),"one-past payload write refused");
+    transition_require(!memcmp((void *)(writable_end-8),before,sizeof(before)),"refused writes change no payload or following bytes");
+}
 static void transition_record_fault(uint32_t instruction)
 {
     unsigned family=madeira_jit_store_family(instruction);assert(family<MADEIRA_STORE_FAMILIES);
@@ -117,8 +145,9 @@ static void transition_phase(unsigned operation,unsigned mode)
 {
     /* Use one calling thread and identical wrappers in all three phases, so
      * the production SP-shard and all target-ring positions must agree. */
-    active=transition_map_image();transition_operation=operation;
+    active=transition_map_image();transition_operation=operation;transition_mode=mode;
     diagnostic_pe_fixture(active.rw);
+    transition_boundary_checks();
     assert(!((uintptr_t)madeira_transition_template&0x3fff));
     memcpy(active.rw+0x2000,madeira_transition_template+0x2000,0x800);
     if(mode==2)assert(ios_native_fex_diagnostics_bind(active.rw,active.size,UINT64_C(0x500000000),
