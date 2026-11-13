@@ -1,0 +1,88 @@
+name: Inspect exact team picker Windows images
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Existing Build IPA artifact run (read-only inspection)
+        type: string
+        required: true
+        default: '43302112853'
+  workflow_call:
+    inputs:
+      run_id:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify the source run identity without rebuilding
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ inputs.run_id }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, urllib.request
+          run_id = os.environ['SOURCE_RUN_ID']
+          assert re.fullmatch(r'[0-9]{1,20}', run_id), 'run_id must contain decimal digits'
+          repo = os.environ['GITHUB_REPOSITORY']
+          request = urllib.request.Request('https://api.github.com/repos/' + repo + '/actions/runs/' + run_id,
+              headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json'})
+          with urllib.request.urlopen(request, timeout=60) as response:
+              run = json.load(response)
+          expected = '5621b019d26fb1a080307c5f272208c2928c3e47'
+          assert run['head_sha'] == expected, 'source run is not the captured 5621 build'
+          assert run['head_repository']['full_name'].lower() == repo.lower(), 'unexpected source repository'
+          print('SOURCE run=' + run_id + ' revision=' + expected + ' conclusion=' + str(run['conclusion']))
+          PY
+      - uses: actions/download-artifact@v4
+        with:
+          name: Madeira-ipa
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+          path: previous-ipa
+      - name: Install bounded static disassembly dependency
+        run: python3 -m pip install --disable-pip-version-check capstone==5.0.6
+      - name: Inspect the actual archived code, data symbols and log formats
+        run: |
+          mkdir -p inspection
+          python3 - <<'PY' | tee inspection/source.txt
+          import hashlib, plistlib, zipfile
+          from pathlib import Path
+          path = Path('previous-ipa/Madeira.ipa')
+          print('IPA sha256=' + hashlib.sha256(path.read_bytes()).hexdigest())
+          images = ('aarch64-windows/xtajit.dll', 'arm64ec-windows/xtajit64.dll',
+                    'arm64ec-windows/d3d11.dll', 'arm64ec-windows/ntdll.dll')
+          with zipfile.ZipFile(path) as ipa:
+              info = plistlib.loads(ipa.read('Payload/Madeira.app/Info.plist'))
+              build = info['MadeiraBuild']
+              assert build.endswith(' source=5621b019d26fb1a080307c5f272208c2928c3e47'), 'IPA source mismatch'
+              print('MadeiraBuild=' + build)
+              for image in images:
+                  member = 'Payload/Madeira.app/' + image
+                  data = ipa.read(member)
+                  output = Path('previous-ipa') / member
+                  output.parent.mkdir(parents=True, exist_ok=True)
+                  output.write_bytes(data)
+                  print('ARCHIVE path=' + member + ' bytes=' + str(len(data)) + ' sha256=' + hashlib.sha256(data).hexdigest())
+          PY
+          python3 tools/build/inspect-fex-image.py previous-ipa/Payload/Madeira.app/aarch64-windows/xtajit.dll --code-rva 0x102ef0 --data-rva 0x386e38 --context 96 --log-symbols | tee inspection/xtajit.txt
+          python3 tools/build/inspect-fex-image.py previous-ipa/Payload/Madeira.app/arm64ec-windows/xtajit64.dll --code-rva 0x118960 --code-rva 0x11896c --code-rva 0x10d90 --data-rva 0x3c3ec0 --data-rva 0x3c4b00 --context 96 --log-symbols | tee inspection/xtajit64.txt
+          python3 tools/build/inspect-fex-image.py previous-ipa/Payload/Madeira.app/arm64ec-windows/d3d11.dll --code-rva 0x118774 --data-rva 0x301b50 --context 96 --log-symbols | tee inspection/d3d11.txt
+          python3 tools/build/inspect-fex-image.py previous-ipa/Payload/Madeira.app/arm64ec-windows/ntdll.dll --code-rva 0x65290 --context 96 --log-symbols | tee inspection/ntdll.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: team-picker-5621-image-inspection
+          path: inspection
+          if-no-files-found: error
+          retention-days: 3

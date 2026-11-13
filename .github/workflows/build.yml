@@ -508,22 +508,12 @@ jobs:
 
   inspect-fex:
     if: inputs.inspect_fex_run_id != ''
-    runs-on: xcode-27
     permissions:
       contents: read
       actions: read
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: Madeira-ipa
-          run-id: ${{ inputs.inspect_fex_run_id }}
-          github-token: ${{ github.token }}
-          path: previous-ipa
-      - name: Symbolicate the allocation stack from the exact packaged CPU image
-        run: |
-          unzip -q previous-ipa/Madeira.ipa 'Payload/Madeira.app/aarch64-windows/xtajit.dll' -d previous-ipa
-          python3 tools/build/inspect-fex-image.py previous-ipa/Payload/Madeira.app/aarch64-windows/xtajit.dll --assert-known-fault
+    uses: ./.github/workflows/team-picker-images.yml
+    with:
+      run_id: ${{ inputs.inspect_fex_run_id }}
 
   inspect-steam:
     if: inputs.inspect_steam_run_id != ''
