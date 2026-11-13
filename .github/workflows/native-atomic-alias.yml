@@ -103,7 +103,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Load pinned Wine and FEX counter producer source
-        run: git submodule update --init --depth 1 wine FEX
+        run: |
+          git submodule update --init --depth 1 wine FEX
+          git -C FEX submodule update --init --depth 1 External/rpmalloc
       - name: Prove native address lowering and exact packaged image invariants
         run: |
           python3 tests/host/check-native-data-alias.py

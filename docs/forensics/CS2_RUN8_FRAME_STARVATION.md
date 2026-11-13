@@ -8,8 +8,9 @@ not establish playable 60 FPS or independent VAC-secured gameplay acceptance.
 ## Phase and clock limits
 
 The 49–60 FPS intervals end around the runtime wall-clock sample at 03:15:17.
-The console records the remote connection at 03:15:19, a full update at
-03:15:20, Dust II physics creation at 03:15:28 and timeout at 03:16:35.
+The console records the remote handshake at 03:13:47, game-loop activation at
+03:15:19, a full update at 03:15:20, Dust II physics creation at 03:15:28 and
+timeout at 03:16:35.
 There is no completed 64-frame performance window after full sign-on.
 Runtime timestamps attached to aggregate frame reports are nearby observations,
 not exact start/end times or a cross-thread causal trace. The exported console

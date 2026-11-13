@@ -389,16 +389,28 @@ static void run_real_metal(int required) {
 '''
 
 
+def darwin_recording_matrix():
+    matrix=PORTABLE_MAIN.replace('int main(void)', 'static void run_recording_matrix(void)')
+    matrix=matrix.replace('  union node nodes[2048];', '  RecordingEncoder *encoder=[RecordingEncoder new];encoder->supports=support;\n  union node nodes[2048];')
+    # Only the encoder replay calls take an Objective-C object. The outer
+    # matrix check still takes its integer capability flag; a global argument
+    # replacement incorrectly referenced an out-of-scope encoder there.
+    for name in ('old_compute','old_render','new_compute','new_render'):
+        before=name+'(count?&nodes[0].base:NULL,support)'
+        assert matrix.count(before)==1
+        matrix=matrix.replace(before,name+'(count?&nodes[0].base:NULL,encoder)',1)
+    matrix=matrix.replace('\n}\nstatic void run_recording_matrix', '\n  [encoder release];\n}\nstatic void run_recording_matrix')
+    assert 'check(kind,bounds[i],pattern,support)' in matrix
+    return matrix
+
+
 def run_darwin(tmp, original, changed, actual_helpers, require_metal):
     source='#import <Foundation/Foundation.h>\n#import <Metal/Metal.h>\n#import <dispatch/dispatch.h>\n#import <objc/runtime.h>\n'
     source+=PRELUDE+actual_helpers+OBJC_RECORDERS
     for kind in ('Render','Compute'):
         source+=replay(case(original,kind),kind,'old_'+kind.lower(),True)
         source+=replay(case(changed,kind),kind,'new_'+kind.lower(),True)
-    matrix=PORTABLE_MAIN.replace('int main(void)', 'static void run_recording_matrix(void)')
-    matrix=matrix.replace('  union node nodes[2048];', '  RecordingEncoder *encoder=[RecordingEncoder new];encoder->supports=support;\n  union node nodes[2048];')
-    matrix=matrix.replace(',support);', ',encoder);')
-    matrix=matrix.replace('\n}\nstatic void run_recording_matrix', '\n  [encoder release];\n}\nstatic void run_recording_matrix')
+    matrix=darwin_recording_matrix()
     source+=matrix+METAL_SMOKE+OBJC_RELEASE
     for name,input_source in (('old_release',original),('new_release',changed)):
         source+=release_body(input_source).replace('_NSObject_release',name).replace('object_getClassName(*obj)','counted_class(*obj)')
@@ -471,6 +483,13 @@ def main():
             code+=replay(case(original,kind),kind,'old_'+kind.lower())
             code+=replay(case(changed,kind),kind,'new_'+kind.lower())
         run_c(tmp,'replay',code+PORTABLE_MAIN)
+        # Compile the actual Darwin matrix on every host, replacing only its
+        # two Objective-C ownership expressions. This catches argument/scope
+        # mistakes before the separate unchanged Objective-C compilation.
+        matrix=darwin_recording_matrix().replace(
+            'RecordingEncoder *encoder=[RecordingEncoder new];encoder->supports=support;',
+            'int encoder=support;').replace('  [encoder release];','')
+        run_c(tmp,'darwin-matrix',code+matrix+'\nint main(void) { run_recording_matrix(); }\n')
         for old,source in ((True,original),(False,changed)):
             body=release_body(source)
             body=body.replace('[*obj retainCount]','fake_retain_count(*obj)').replace('[*obj release]','fake_release(*obj)')
