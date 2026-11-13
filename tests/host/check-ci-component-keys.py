@@ -81,6 +81,8 @@ cases = {
     'ios-route-provider': ('tools/build/stage-ios-route-table.py', {'ipa'}),
     'ios-route-wrapper': ('build/ntdll-unix/nsi_ip_ios.c', {'ipa'}),
     'ios-socket-context': ('build/ntdll-unix/socket_error_context.h', {'ipa'}),
+    'ios-swap-decommit': ('build/ntdll-unix/virtual_ios.c', {'ipa'}),
+    'ios-read-observer-owner': ('build/ntdll-unix/js_read_trace.h', {'ipa'}),
     'cs2-window-allowlist': ('build/ntdll-unix/cs2_observation.h', {'ipa'}),
     'system-programs': ('build/wine-pe/build-system-programs.sh', {'wine-host', 'ipa'}),
     'process-lookup-stage': ('tools/build/stage-process-lookup.py', {'wine-host', 'ipa'}),

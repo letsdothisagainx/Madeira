@@ -87,6 +87,7 @@ prelude = r'''
 #include <fcntl.h>
 #include <assert.h>
 #include <signal.h>
+#include <pthread.h>
 #include <sys/mman.h>
 #include <linux/falloc.h>
 typedef unsigned long ULONG_PTR;
@@ -132,6 +133,14 @@ static int get_unix_prot( unsigned char v )
 static unsigned char page_vprot = VPROT_READ | VPROT_COMMITTED;   /* what the image's pages carry */
 static unsigned char get_host_page_vprot( const void *addr ) { (void)addr; return page_vprot; }
 static int locked;   /* virtual_mutex depth (the stubs below) */
+static pthread_mutex_t virtual_mutex = PTHREAD_MUTEX_INITIALIZER;
+/* The production punch worker is compiled even though this fixture selects
+ * synchronous punches. glibc names an explicit thread; Darwin names self. */
+#define pthread_setname_np( name ) pthread_setname_np( pthread_self(), name )
+/* This Linux fixture verifies backing/bookkeeping, not Darwin's page discard. */
+#ifndef MS_KILLPAGES
+#define MS_KILLPAGES 0
+#endif
 static int mprotect_range( void *base, size_t size, unsigned char set, unsigned char clear )
 {
     char *a = (char *)((uintptr_t)base & ~host_page_mask);
@@ -174,9 +183,10 @@ static ssize_t test_pwrite( int fd, const void *buf, size_t len, off_t off )
     return pwrite( fd, buf, len, off );
 }
 #define pwrite( fd, buf, len, off ) test_pwrite( fd, buf, len, off )
-static int virtual_mutex;
-static void server_enter_uninterrupted_section( int *m, sigset_t *s ) { (void)m; (void)s; locked++; }
-static void server_leave_uninterrupted_section( int *m, sigset_t *s ) { (void)m; (void)s; locked--; }
+static void server_enter_uninterrupted_section( pthread_mutex_t *m, sigset_t *s )
+{ (void)s; pthread_mutex_lock( m ); locked++; }
+static void server_leave_uninterrupted_section( pthread_mutex_t *m, sigset_t *s )
+{ (void)s; locked--; pthread_mutex_unlock( m ); }
 /* the view table: one image view at most */
 static struct file_view the_view;
 static int have_view;
@@ -397,6 +407,7 @@ int main( void )
     setenv( "MADEIRA_SWAP_FILE", path, 1 );
     setenv( "MADEIRA_SWAP_MB", "256", 1 );
     setenv( "MADEIRA_SWAP_COVERAGE", "blocks", 1 );   /* merged free list: given-back ranges lower the bump */
+    setenv( "MADEIRA_SWAP_PUNCH_DEFER", "0", 1 );   /* deterministic legacy release/accounting assertions */
     ios_swap_init();
     {
         char pm[5]; unsigned long ino = 0;
@@ -425,7 +436,7 @@ else:
     c = Path(tmp) / 'swapimg.c'
     exe = Path(tmp) / 'swapimg'
     c.write_text(prelude + core + glue_stubs + pend_decl + note_fn + enabled_fn + flush_fn + harness)
-    r = subprocess.run(['cc', '-O1', '-Wall', '-Wno-unused-function', '-Werror', '-o', str(exe), str(c)],
+    r = subprocess.run(['cc', '-O1', '-pthread', '-Wall', '-Wno-unused-function', '-Werror', '-o', str(exe), str(c)],
                        capture_output=True, text=True)
     check(r.returncode == 0, 'core + glue compile with -Wall -Werror' + ('' if r.returncode == 0 else ':\n' + r.stderr[-3000:]))
     if r.returncode == 0:

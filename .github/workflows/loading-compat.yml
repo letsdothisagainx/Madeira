@@ -1,0 +1,42 @@
+name: Verify loading memory and file-read compatibility
+
+on:
+  push:
+    paths:
+      - build/ntdll-unix/virtual_ios.c
+      - build/ntdll-unix/js_read_trace.h
+      - tests/host/check-swap-coverage.py
+      - tests/host/check-swap-decommit-remap.py
+      - tests/host/check-js-read-owner-fastpath.py
+      - .github/workflows/loading-compat.yml
+  pull_request:
+    paths:
+      - build/ntdll-unix/virtual_ios.c
+      - build/ntdll-unix/js_read_trace.h
+      - tests/host/check-swap-coverage.py
+      - tests/host/check-swap-decommit-remap.py
+      - tests/host/check-js-read-owner-fastpath.py
+      - .github/workflows/loading-compat.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  actual-loading-paths:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, xcode-27]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Actual sparse-file decommit and file-observer checks
+        env:
+          CC: ${{ runner.os == 'Linux' && 'gcc' || 'clang' }}
+          MADEIRA_REMAP_SANITIZERS: '1'
+        run: |
+          python3 tests/host/check-swap-coverage.py
+          python3 tests/host/check-swap-decommit-remap.py
+          python3 tests/host/check-js-read-owner-fastpath.py
