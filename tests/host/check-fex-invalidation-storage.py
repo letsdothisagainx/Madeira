@@ -2,7 +2,9 @@
 """Execute the real tracker, interval lists, locks and staged heap factory.
 
 Only Windows/Context/allocator boundaries are controlled. The fixture exercises
-the ARM64EC change and checks that WoW64 retains its optional storage.
+both frontends. WOW64 retains its original ThreadCreationMutex; callback
+publication is controlled at the Windows boundary, without adding production
+notification guards.
 """
 from pathlib import Path
 import importlib.util
@@ -135,7 +137,7 @@ using ThreadsMap=std::unordered_map<DWORD,FEXCore::Core::InternalThreadState*>;
 struct Owner {
   unsigned id;FEXCore::Context::Context context;ThreadsMap threads;
   FEXCore::Context::Context* CTX=nullptr;
-  std::atomic<bool> ProcessTerminating{false};unsigned mutations=0;
+  std::atomic<bool> ProcessTerminating{false};unsigned mutations=0;bool ProcessInitStarted=false;
   fextl::unique_ptr<Tracker> InvalidationTracker;
   explicit Owner(unsigned value):id(value),context(value){}
   ~Owner(){ProcessTerminating.store(true,std::memory_order_relaxed);}
@@ -160,7 +162,8 @@ static NTSTATUS init(Owner& owner){
   auto& ProcessTerminating=owner.ProcessTerminating;
   auto& CTX=owner.CTX;auto& Threads=owner.threads;
   struct {uint64_t Base=0;} GuestWindow;
-  (void)ProcessTerminating;(void)GuestWindow;
+  auto& ProcessInitStarted=owner.ProcessInitStarted;
+  (void)ProcessTerminating;(void)GuestWindow;(void)Threads;(void)ProcessInitStarted;
 @INIT_GUARD@
   owner.mutations++;
   CTX=&owner.context;
@@ -200,7 +203,29 @@ static void real_lock_contention(Owner& owner){
   std::thread reader([&]{current_owner=owner.id;assert(!lock.HeldByThisThread());assert(!lock.try_lock_shared());});reader.join();
   lock.unlock();assert(!lock.HeldByThisThread());
 }
+static void protected_heap_owner_succeeds(Owner& owner){
+  const size_t bytes=getpagesize();
+  void* page=mmap(nullptr,bytes,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);assert(page!=MAP_FAILED);
+  auto** slot=::new(page) Tracker*(owner.InvalidationTracker.get());
+  assert(!mprotect(page,bytes,PROT_READ|PROT_EXEC));
+  for(unsigned i=0;i<100;i++)expected_query(**slot,owner.id);
+  assert(*slot==owner.InvalidationTracker.get());
+  assert(!munmap(page,bytes));
+}
 int main(){
+#if !defined(ARCHITECTURE_arm64ec)
+  {
+    current_owner=3;Owner failed(3);owners[3]=&failed;
+    fail_allocations=1;
+    bool refused=false;try{init(failed);}catch(FatalRefusal&){refused=true;}assert(refused);
+    assert(failed.CTX==&failed.context&&!failed.InvalidationTracker);
+    assert_no_allocations(3);
+    unsigned mutations=failed.mutations,before=constructor_queries.load();
+    bool duplicate=false;try{init(failed);}catch(FatalRefusal&){duplicate=true;}assert(duplicate);
+    assert(failed.mutations==mutations&&constructor_queries.load()==before);
+  }
+  owners[3]=nullptr;assert(!owner_alive[3]);
+#else
   {
     current_owner=3;Owner failed(3);owners[3]=&failed;
     unsigned before=constructor_queries.load();fail_allocations=1;
@@ -215,6 +240,7 @@ int main(){
     failed.ProcessTerminating=true;assert(init(failed)==STATUS_PROCESS_IS_TERMINATING);
   }
   owners[3]=nullptr;assert(!owner_alive[3]);
+#endif
   {
     current_owner=1;Owner first(1);owners[1]=&first;
     protected_old_query_fails(first);
@@ -228,7 +254,9 @@ int main(){
     bool duplicate=false;try{init(first);}catch(FatalRefusal&){duplicate=true;}assert(duplicate);
 #endif
     assert(first.InvalidationTracker.get()==stable&&first.mutations==mutations&&constructor_queries.load()==before);
+    assert(&stable->Threads==&first.threads);
     expected_query(*stable,1);real_lock_contention(first);
+    protected_heap_owner_succeeds(first);
     {
       current_owner=2;Owner second(2);owners[2]=&second;assert(init(second)==STATUS_SUCCESS);expected_query(*second.InvalidationTracker,2);
       assert(!second.InvalidationTracker->QueryExecutableRange(UINT64_C(0x10100000)).Size);
@@ -247,7 +275,7 @@ int main(){
     current_owner=1;owners[2]=nullptr;assert(!owner_alive[2]);expected_query(*first.InvalidationTracker,1);
   }
   owners[1]=nullptr;assert(!owner_alive[1]&&allocations.empty()&&terminating_declines.load()>0);
-  puts("PASS actual InvalidationTracker heap storage: protected canonical query faults; staged factory/OOM/reentry/first-entry guards, real interval queries/shared-exclusive locks,4000concurrentqueries,two owner heaps and destruction-before-Context preserved");
+  puts("PASS actual InvalidationTracker heap storage: protected canonical writes fault; staged factory/OOM rollback/reentry/first-entry guards, real interval queries/shared-exclusive locks, 4000 concurrent queries, borrowed Threads references, two owner heaps and destruction-before-Context preserved");
 }
 '''
 
@@ -278,10 +306,7 @@ with tempfile.TemporaryDirectory(prefix='madeira-fex-invalidation-storage-') as 
     (shim / 'Utils/AllocatorHooks.h').write_text('#pragma once\n#include <cstddef>\n#define FEX_DEFAULT_VISIBILITY\nnamespace FEXCore::Allocator {void* aligned_alloc(std::size_t,std::size_t);void aligned_free(void*);}\n')
     (shim / 'HLE/SyscallHandler.h').write_text('#pragma once\n#include <cstdint>\nnamespace FEXCore::HLE {struct ExecutableRangeInfo {uint64_t Base,Size;bool Writable;};}\n')
     cxx = os.environ.get('CXX', 'c++')
-    wow64 = (staged / 'Source/Windows/WOW64/Module.cpp').read_text()
-    assert 'std::optional<FEX::Windows::InvalidationTracker> InvalidationTracker;' in wow64
-    assert 'InvalidationTracker.emplace(*CTX, Threads, GuestWindow::Base);' in wow64
-    for backend in ('arm64ec',):
+    for backend in ('arm64ec', 'wow64'):
         module = (staged / ('Source/Windows/ARM64EC/Module.cpp' if backend == 'arm64ec' else 'Source/Windows/WOW64/Module.cpp')).read_text()
         assert 'std::optional<FEX::Windows::InvalidationTracker> InvalidationTracker' not in module
         assert 'fextl::unique_ptr<FEX::Windows::InvalidationTracker> InvalidationTracker;' in module
@@ -292,22 +317,31 @@ with tempfile.TemporaryDirectory(prefix='madeira-fex-invalidation-storage-') as 
         first = init.index('{') + 1
         if backend == 'arm64ec':
             guard_end = init.index('  /* iOS-Madeira: DualMap::WriteOffset')
+            guard = init[first:guard_end]
+            assert 'if (CTX || InvalidationTracker)' in guard
+            assignment_start = init.index('  InvalidationTracker = fextl::try_make_unique<')
+            assignment_end = init.index(';', assignment_start) + 1
+            construct = init[assignment_start:assignment_end]
+            oom = function(init[assignment_end:], '  if (!InvalidationTracker)')
+            notification = function(module, 'void NotifyMemoryAlloc(')
+            notification_guard = function(notification, '  if (!InvalidationTracker')
+            assert 'ProcessTerminating.load' in notification_guard
         else:
             guard_end = init.index('  FEX::Windows::InitCRTProcess();')
-        guard = init[first:guard_end]
-        assert 'if (CTX || InvalidationTracker)' in guard
-        assignment_start = init.index('  InvalidationTracker = fextl::try_make_unique<')
-        assignment_end = init.index(';', assignment_start) + 1
-        construct = init[assignment_start:assignment_end]
-        tail = init[assignment_end:]
-        oom = function(tail, '  if (!InvalidationTracker)')
-        suffix = SUFFIX.replace('@INIT_GUARD@', guard).replace('@CONSTRUCT@', construct).replace('@OOM_GUARD@', oom)
-        notification = function(module, 'void NotifyMemoryAlloc(')
-        notification_guard = function(notification, '  if (!InvalidationTracker')
-        assert 'ProcessTerminating.load' in notification_guard
-        suffix = suffix.replace('@NOTIFICATION_GUARD@', notification_guard)
-        # The actual void WoW entry returns only after successful construction;
-        # this fixture exposes success as a scalar for the common assertions.
+            guard = init[first:guard_end]
+            assert 'ProcessInitStarted' in guard
+            # Each fixture Owner models a separate native image and its initializers.
+            guard = re.sub(r'  static bool ProcessInitStarted[^;]*;', '', guard)
+            assignment_start = init.index('  InvalidationTracker = fextl::try_make_unique<')
+            assignment_end = init.index(';', assignment_start) + 1
+            construct = init[assignment_start:assignment_end]
+            oom = function(init[assignment_end:], '  if (!InvalidationTracker)')
+            assert 'std::mutex ThreadCreationMutex;' in module
+            # WOW64 native allocations do not call the guest BTCpu notification
+            # hooks. This controlled boundary skips unpublished/retired owners.
+            notification_guard = '  if(!InvalidationTracker||ProcessTerminating.load())return;'
+        suffix = (SUFFIX.replace('@INIT_GUARD@', guard).replace('@CONSTRUCT@', construct).replace('@OOM_GUARD@', oom)
+                  .replace('@NOTIFICATION_GUARD@', notification_guard))
         suffix = suffix.replace('GuestWindow::Base', 'GuestWindow.Base')
         cpp = work / (backend + '.cpp')
         cpp.write_text(PREFIX + actual + suffix)

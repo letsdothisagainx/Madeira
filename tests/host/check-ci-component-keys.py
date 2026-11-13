@@ -34,6 +34,7 @@ cases = {
     'native-counter-source-stage': ('tools/build/stage-native-counter-writes.py', {'ipa'}),
     'native-lfh-size-stage': ('tools/build/stage-native-lfh-size.py', {'ipa'}),
     'native-lfh-size-proof': ('tools/check-native-lfh-size-code.py', {'ipa'}),
+    'native-fastsync-deadline': ('tools/build/stage-fastsync-timeout.py', {'ipa'}),
     'native-srw-build': ('build/wine-pe/build-ntdll.sh', {'wine-host', 'ipa'}),
     # The private ABI is compiled into the staged PE producer as well as Unix.
     'native-code-buffer-abi': ('build/ntdll-unix/fex_code_buffer_abi.h', {'fex-pe', 'ipa'}),
@@ -63,6 +64,8 @@ cases = {
     'dxmt-dynamic-retirement': ('tools/build/stage-dxmt-dynamic-memory.py', {'dxmt', 'ipa'}),
     'dxmt-pressure-producer': ('tools/build/stage-dxmt-memory-pressure.py', {'dxmt', 'ipa'}),
     'dxmt-memory-transaction': ('tools/build/stage-dxmt-memory-compat.py', {'dxmt', 'ipa'}),
+    'dxmt-census-heap': ('tools/build/stage-dxmt-census-heap.py', {'dxmt', 'ipa'}),
+    'dxmt-perf-heap': ('tools/build/stage-dxmt-perf-heap.py', {'dxmt', 'ipa'}),
     'dxmt-memory-build': ('tools/build/build-dxmt-memory-compat.sh', {'dxmt', 'ipa'}),
     'dxmt-memory-package': ('tools/check-dxmt-memory-package.py', {'dxmt', 'ipa'}),
     # Native win32u is rebuilt in every app job; no component cache owns it.

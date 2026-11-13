@@ -58,3 +58,65 @@
 +
 +; ARM64EC native tracker uses one owner-heap address for its full lifetime.
 +  IosInvalidationHeapABIV1 DATA
+--- a/Source/Windows/WOW64/Module.cpp
++++ b/Source/Windows/WOW64/Module.cpp
+@@ -346,4 +346,10 @@
+ } // namespace GuestWindow
+ 
++/* Source-built DATA capability: the private tracker is constructed once in
++ * the native owner heap; its real locks and interval checks remain enabled. */
++extern "C" {
++uint64_t IosInvalidationHeapABIV1 = 0x4d49480100000001ull;
++}
++
+ namespace {
+ namespace BridgeInstrs {
+@@ -362,5 +368,10 @@
+ fextl::unique_ptr<FEX::Windows::StatAlloc> StatAllocHandler;
+ 
+-std::optional<FEX::Windows::InvalidationTracker> InvalidationTracker;
++/* As for CTX and ARM64EC, keep the complete tracker and its native mutexes
++ * at one ordinary RW owner-heap address for the existing process lifetime. */
++fextl::unique_ptr<FEX::Windows::InvalidationTracker> InvalidationTracker;
++/* Wine's process_init invokes this once. This plain scalar is valid before
++ * InitCRTProcess on both the custom CRT and iOS MinGW startup paths. */
++bool ProcessInitStarted;
+ std::optional<FEX::Windows::CPUFeatures> CPUFeatures;
+ std::optional<FEX::Windows::OvercommitTracker> OvercommitTracker;
+@@ -1201,4 +1212,12 @@
+ 
+ void BTCpuProcessInit() {
++  if (ProcessInitStarted) {
++#ifdef FEX_IOS_HOST
++    IOS_WOW64_REPORT_AND_DIE("WOW64 process initialization repeated; live tracker owner is unchanged");
++#else
++    ERROR_AND_DIE_FMT("WOW64 process initialization repeated; live tracker owner is unchanged");
++#endif
++  }
++  ProcessInitStarted = true;
+   FEX::Windows::InitCRTProcess();
+ 
+@@ -1422,5 +1441,14 @@
+   Context::HandlerConfig.emplace(*CTX);
+   // The tracker speaks host addresses to the OS and converts at its calls into FEXCore.
+-  InvalidationTracker.emplace(*CTX, Threads, GuestWindow::Base);
++  InvalidationTracker = fextl::try_make_unique<FEX::Windows::InvalidationTracker>(*CTX, Threads, GuestWindow::Base);
++  if (!InvalidationTracker) {
++#ifdef FEX_IOS_HOST
++    IOS_WOW64_REPORT_AND_DIE("WOW64 tracker owner allocation failed; process initialization cannot continue");
++#else
++    ERROR_AND_DIE_FMT("WOW64 tracker owner allocation failed; process initialization cannot continue");
++#endif
++  }
++  LogMan::Msg::IFmt("[fex-tracker-heap-v1] WOW64 tracker={} bytes={} storage=owner-heap mutexes=native",
++                    static_cast<void*>(InvalidationTracker.get()), sizeof(FEX::Windows::InvalidationTracker));
+   ImageTracker.emplace(*CTX, false);
+ 
+--- a/Source/Windows/WOW64/libwow64fex.def
++++ b/Source/Windows/WOW64/libwow64fex.def
+@@ -25,4 +25,5 @@
+   BTCpuUpdateProcessorInformation
+   __wine_get_unix_opcode
++  IosInvalidationHeapABIV1 DATA
+ 
+ ; Native Wine fills these private data slots before CRT/rpmalloc initialization.

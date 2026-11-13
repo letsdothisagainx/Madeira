@@ -47,3 +47,5 @@ jobs:
           python3 tests/host/check-dxmt-dynamic-memory.py
           python3 tests/host/check-dxmt-upload-memory.py
           python3 tests/host/check-dxmt-memory-build.py
+          python3 tests/host/check-dxmt-census-heap.py
+          python3 tests/host/check-dxmt-perf-heap.py

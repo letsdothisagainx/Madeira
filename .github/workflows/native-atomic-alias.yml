@@ -10,6 +10,9 @@ on:
       - build/ntdll-unix/native_fex_diagnostics_alias.h
       - build/fex-compat/native-diagnostics.patch
       - build/fex-compat/native-tracker-storage.patch
+      - tools/build/stage-fastsync-timeout.py
+      - tests/host/check-fastsync-timeout.py
+      - tests/host/fastsync-timeout-test.c
       - build/fex-compat/transition-writer.patch
       - build/fex-compat/wow-syscall-writer.patch
       - build/fex-compat/shufps-broadcast.patch
@@ -50,6 +53,9 @@ on:
       - build/ntdll-unix/native_fex_diagnostics_alias.h
       - build/fex-compat/native-diagnostics.patch
       - build/fex-compat/native-tracker-storage.patch
+      - tools/build/stage-fastsync-timeout.py
+      - tests/host/check-fastsync-timeout.py
+      - tests/host/fastsync-timeout-test.c
       - build/fex-compat/transition-writer.patch
       - build/fex-compat/wow-syscall-writer.patch
       - build/fex-compat/shufps-broadcast.patch
@@ -105,6 +111,7 @@ jobs:
           python3 tests/host/check-native-srw-alias.py
           python3 tests/host/check-native-srw-history.py
           python3 tests/host/check-native-srw-wake.py
+          python3 tests/host/check-fastsync-timeout.py
           python3 tests/host/check-native-atomic-alias.py
           python3 tests/host/check-native-atomic-image.py
           python3 tests/host/check-jit-store-census.py

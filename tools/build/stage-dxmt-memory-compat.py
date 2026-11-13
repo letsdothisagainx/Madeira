@@ -19,6 +19,10 @@ UPLOAD = ('dxmt_ring_bump_allocator.hpp', 'dxmt_resource_initializer.hpp',
 DYNAMIC = ('src/dxmt/dxmt_dynamic.hpp', 'src/dxmt/dxmt_dynamic.cpp',
            'src/d3d11/d3d11_buffer.cpp', 'src/d3d11/d3d11_texture_dynamic.cpp',
            'src/dxmt/dxmt_buffer.cpp')
+CENSUS = ('src/dxmt/dxmt_mem_census.hpp', 'src/dxmt/dxmt_mem_census.cpp',
+          'src/dxmt/dxmt_dynamic.cpp', 'src/dxmt/dxmt_buffer.cpp')
+PERF = ('src/dxmt/dxmt_command_queue.hpp', 'src/dxmt/dxmt_command_queue.cpp',
+        'src/d3d11/d3d11_context_impl.cpp', 'src/d3d11/d3d11_context_imm.cpp')
 HEADER = 'src/dxmt/memory_pressure.hpp'
 
 
@@ -58,6 +62,31 @@ def prepare(root, state):
                     '--source-dir', str(source), '--output-dir', str(dynamic)], check=True)
     outputs = {'src/dxmt/' + name: upload / name for name in UPLOAD}
     outputs.update({name: dynamic / name for name in DYNAMIC})
+    # Compose from the already staged upload/cache implementation. These
+    # additional passes change storage, not the cache or GPU lifetime policy.
+    overlay = generated / 'composed'
+    for name, staged in outputs.items():
+        target = overlay / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(read(staged))
+    for kind, names in (('census', CENSUS), ('perf', PERF)):
+        destination = generated / kind
+        subprocess.run([sys.executable, str(root / ('tools/build/stage-dxmt-' + kind + '-heap.py')),
+                        '--source-dir', str(source), '--output-dir', str(destination),
+                        '--overlay-dir', str(overlay)], check=True)
+        for name in names:
+            staged = destination / name
+            outputs[name] = staged
+            target = overlay / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(read(staged))
+    # The existing bounded pressure report also identifies the compiled storage
+    # contract. Packaging rejects stale PE/native implementations by this marker.
+    path = outputs['src/dxmt/dxmt_dynamic.cpp']
+    text = read(path).decode()
+    marker = 'storage=owner-heap-v1 cache-detached='
+    assert text.count(marker) == 1, 'DXMT counter storage capability anchor changed'
+    path.write_text(text.replace(marker, 'storage=owner-heap-v1 counter-storage=census-perf-heap-v1 cache-detached=', 1))
     outputs[HEADER] = root / 'build/dxmt-ios/memory_pressure.hpp'
     records = {}
     for name, staged in outputs.items():

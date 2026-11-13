@@ -52,6 +52,8 @@ def fex_fixture(backend='arm64ec'):
         put('<III',raw(0x1400),1,0x1420,1);put('<II',raw(0x1420),0x3001,0x1000)
     else:
         names += [b'MadeiraBTCpuIosReleaseThreadHolds',b'MadeiraBTCpuIosRetireThread'];targets += [0x3000,0x3004]
+        names += [b'IosInvalidationHeapABIV1'];targets += [0x2010]
+        put('<Q',raw(0x2010),0x4d49480100000001)
     diagnostics = {}
     for index,(name,tag,length,payload) in enumerate((
         (b'MadeiraFEXTelemetryWriteContract',0x31544d584546574d,136,0x2300),
@@ -192,7 +194,16 @@ def run():
     bad(lambda b:struct.pack_into('<I',b,text_section+36,0xe0000020),'writable native code')
     bad(lambda b:struct.pack_into('<H',b,meta['pe']+4,0xaa64),'wrong backend architecture')
     bad(lambda b:struct.pack_into('<I',b,meta['raw'](0x1000)+24,5),'old backend without named protocol export')
-    print(f'PASS production FEX package verifier: valid ARM64EC protocol and unchanged WoW64 accepted; {count} missing/forwarded/wrong-value/protection/bounds/CHPE/old-backend cases rejected')
+    wow,wow_meta=fex_fixture('wow64')
+    for missing in (True,False):
+        stale=bytearray(wow)
+        if missing:stale[wow_meta['strings'][tracker]]=ord('x')
+        else:struct.pack_into('<Q',stale,wow_meta['raw'](0x2010),0)
+        try:package.fex_cpu(bytes(stale),'wow64')
+        except (AssertionError,ValueError) as error:
+            assert 'exports missing' in str(error) or 'IosInvalidationHeapABIV1' in str(error)
+        else:raise AssertionError('stale WOW64 tracker heap contract accepted')
+    print(f'PASS production FEX package verifier: both tracker heap capabilities accepted; {count+2} missing/forwarded/wrong-value/protection/bounds/CHPE/old-backend cases rejected')
     with tempfile.TemporaryDirectory(prefix='madeira-subfloor-package-') as directory:
         path=Path(directory)/'ntdll.dll'
         for machine,name in ((0xaa64,'aarch64'),(0x8664,'arm64ec'),(0xa641,'arm64ec')):
