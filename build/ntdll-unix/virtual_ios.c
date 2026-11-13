@@ -23995,9 +23995,14 @@ static int ios_swap_punch_resv( char *lo, size_t len )
                 ios_swap_n = out;
             }
             ios_swap_holes++;
-            if (++ios_swap_decommit_remaps <= 8 || !(ios_swap_decommit_remaps % 1024))
-                dprintf( 2, "[swap-decommit-remap-v1] bytes=%zu old-parts=%u live-bytes=%llu result=zero-file-backed\n",
-                         len, parts, ios_swap_bytes );
+            /* The low-frequency native census reads these without the VM
+             * lock. Keep its counters atomic; they never govern ownership. */
+            {
+                unsigned long long remaps = __atomic_add_fetch( &ios_swap_decommit_remaps, 1, __ATOMIC_RELAXED );
+                if (remaps <= 8 || !(remaps % 1024))
+                    dprintf( 2, "[swap-decommit-remap-v1] bytes=%zu old-parts=%u live-bytes=%llu result=zero-file-backed\n",
+                             len, parts, ios_swap_bytes );
+            }
             return 1;
         }
         /* Failed discard stays synchronous to avoid retaining old dirty pages
@@ -24006,7 +24011,7 @@ static int ios_swap_punch_resv( char *lo, size_t len )
         ios_swap_free_add( fresh, len );
     }
 
-    ios_swap_decommit_fallbacks++;
+    __atomic_fetch_add( &ios_swap_decommit_fallbacks, 1, __ATOMIC_RELAXED );
     for (i = 0; i < original_n; i++)
     {
         char *a = ios_swap_ext[i].va, *b = a + ios_swap_ext[i].len;
@@ -24046,7 +24051,8 @@ void ios_swap_stats_line( void )
     dprintf( 2, "[swap] ml1291 punches: %llu deferred done, %u queued, %llu slow (>=100 ms), max %llu ms; ml1297 %llu ranges not reused after a failed punch\n",
              ios_swap_pq_done, ios_swap_pq_n, ios_swap_punch_slow, ios_swap_punch_max_ms, ios_swap_punch_leaks );
     dprintf( 2, "[swap-decommit-remap-v1] remaps=%llu synchronous-fallbacks=%llu\n",
-             ios_swap_decommit_remaps, ios_swap_decommit_fallbacks );
+             __atomic_load_n( &ios_swap_decommit_remaps, __ATOMIC_RELAXED ),
+             __atomic_load_n( &ios_swap_decommit_fallbacks, __ATOMIC_RELAXED ) );
     /* ml1221: the census (bytes by reason) with every stats line, ~10 s, not only
      * after its own 30 s: Ori and the Will of the Wisps was jetsammed at 26 s and never printed one. */
     ios_swap_tick( 1 );
