@@ -49,3 +49,5 @@ jobs:
           python3 tests/host/check-dxmt-memory-build.py
           python3 tests/host/check-dxmt-census-heap.py
           python3 tests/host/check-dxmt-perf-heap.py
+          python3 tests/host/check-dxmt-command-state.py
+          python3 tests/host/check-dxmt-native-batch.py

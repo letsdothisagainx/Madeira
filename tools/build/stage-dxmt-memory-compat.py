@@ -23,6 +23,7 @@ CENSUS = ('src/dxmt/dxmt_mem_census.hpp', 'src/dxmt/dxmt_mem_census.cpp',
           'src/dxmt/dxmt_dynamic.cpp', 'src/dxmt/dxmt_buffer.cpp')
 PERF = ('src/dxmt/dxmt_command_queue.hpp', 'src/dxmt/dxmt_command_queue.cpp',
         'src/d3d11/d3d11_context_impl.cpp', 'src/d3d11/d3d11_context_imm.cpp')
+COMMAND_STATE = ('src/d3d11/d3d11_context_impl.cpp', 'src/d3d11/d3d11_swapchain.cpp')
 HEADER = 'src/dxmt/memory_pressure.hpp'
 
 
@@ -69,9 +70,13 @@ def prepare(root, state):
         target = overlay / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(read(staged))
-    for kind, names in (('census', CENSUS), ('perf', PERF)):
+    for kind, recipe, names in (
+        ('census', 'stage-dxmt-census-heap.py', CENSUS),
+        ('perf', 'stage-dxmt-perf-heap.py', PERF),
+        ('command-state', 'stage-dxmt-command-state.py', COMMAND_STATE),
+    ):
         destination = generated / kind
-        subprocess.run([sys.executable, str(root / ('tools/build/stage-dxmt-' + kind + '-heap.py')),
+        subprocess.run([sys.executable, str(root / 'tools/build' / recipe),
                         '--source-dir', str(source), '--output-dir', str(destination),
                         '--overlay-dir', str(overlay)], check=True)
         for name in names:
@@ -86,7 +91,7 @@ def prepare(root, state):
     text = read(path).decode()
     marker = 'storage=owner-heap-v1 cache-detached='
     assert text.count(marker) == 1, 'DXMT counter storage capability anchor changed'
-    path.write_text(text.replace(marker, 'storage=owner-heap-v1 counter-storage=census-perf-heap-v1 cache-detached=', 1))
+    path.write_text(text.replace(marker, 'storage=owner-heap-v1 counter-storage=census-perf-heap-v1 pe-command-state=dedup-hud-v1 cache-detached=', 1))
     outputs[HEADER] = root / 'build/dxmt-ios/memory_pressure.hpp'
     records = {}
     for name, staged in outputs.items():

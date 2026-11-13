@@ -16,6 +16,7 @@
 extern "C" {
 void fex_ios_rpm_lock(void);
 void fex_ios_rpm_unlock(void);
+void fex_ios_rpm_enable_backoff(void);
 extern uintptr_t ios_fex_band_base;
 extern uintptr_t ios_fex_band_end;
 extern volatile int FEX_AllocWatch_Armed;
@@ -97,7 +98,11 @@ rpmalloc_heap_t* EnsureHeap() {
   Acquiring = false;
   if (Heap) {
     ++Stats.heap_acquires;
-    Report("ready image-private=1 shared-tls=0", nullptr, 0);
+    Report("ready image-private=1 shared-tls=0 lock=bounded-spin-park-v1", nullptr, 0);
+    // The successful heap mapper and readiness WriteFile have already used
+    // Wine's NT interfaces. Only now may contending native threads park; the
+    // first constructor-time lock remains free of CRT and syscall dependencies.
+    fex_ios_rpm_enable_backoff();
   }
   return Heap;
 }

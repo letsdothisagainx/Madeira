@@ -358,7 +358,7 @@ jobs:
             FEX/build-arm64ec
       - uses: actions/cache@v4
         with:
-          key: plan19-${{ steps.sdk.outputs.graphics }}-dxmt-ios-${{ steps.pins.outputs.dxmt }}-${{ steps.pins.outputs.wine }}-${{ hashFiles('build/dxmt-ios/build.sh', 'build/dxmt-ios/graphics_diagnostics.h', 'build/dxmt-ios/metal_lifecycle.h', 'build/dxmt-ios/metal_submission_gate.h', 'tools/build/stage-dxmt-lifecycle.py', 'tools/build/stage-dxmt-diagnostics.py', 'tools/build/build-dxmt-ios.sh', 'tools/build/build-dxmt-memory-compat.sh', 'tools/build/stage-dxmt-memory-compat.py', 'tools/build/stage-dxmt-census-heap.py', 'tools/build/stage-dxmt-perf-heap.py', 'tools/build/stage-dxmt-upload-memory.py', 'tools/build/stage-dxmt-dynamic-memory.py', 'tools/build/stage-dxmt-memory-pressure.py', 'tools/check-dxmt-memory-package.py', 'tools/check-system-programs.py', 'build/dxmt-ios/memory_pressure.hpp', 'build/dxmt-ios/memory_pressure_native.h', 'tools/build/build-shader-headers.sh', 'tools/build/build-llvm-ios.sh', 'build/madeira-d3d12/deps.sh', 'madeira-d3d12/src/**', 'madeira-d3d12/tests/native/**', 'madeira-d3d12/third_party/**', 'app/Madeira/d3d12/**') }}
+          key: plan19-${{ steps.sdk.outputs.graphics }}-dxmt-ios-${{ steps.pins.outputs.dxmt }}-${{ steps.pins.outputs.wine }}-${{ hashFiles('build/dxmt-ios/build.sh', 'build/dxmt-ios/graphics_diagnostics.h', 'build/dxmt-ios/metal_lifecycle.h', 'build/dxmt-ios/metal_submission_gate.h', 'tools/build/stage-dxmt-lifecycle.py', 'tools/build/stage-dxmt-diagnostics.py', 'tools/build/build-dxmt-ios.sh', 'tools/build/build-dxmt-memory-compat.sh', 'tools/build/stage-dxmt-memory-compat.py', 'tools/build/stage-dxmt-census-heap.py', 'tools/build/stage-dxmt-perf-heap.py', 'tools/build/stage-dxmt-command-state.py', 'tools/build/stage-dxmt-native-batch.py', 'tools/build/stage-dxmt-upload-memory.py', 'tools/build/stage-dxmt-dynamic-memory.py', 'tools/build/stage-dxmt-memory-pressure.py', 'tools/check-dxmt-memory-package.py', 'tools/check-system-programs.py', 'build/dxmt-ios/memory_pressure.hpp', 'build/dxmt-ios/memory_pressure_native.h', 'tools/build/build-shader-headers.sh', 'tools/build/build-llvm-ios.sh', 'build/madeira-d3d12/deps.sh', 'madeira-d3d12/src/**', 'madeira-d3d12/tests/native/**', 'madeira-d3d12/third_party/**', 'app/Madeira/d3d12/**') }}
           path: |
             app/Madeira/libdxmt_combined.a
             build/dxmt-ios/shader-headers
@@ -377,6 +377,12 @@ jobs:
           build/wine-i386/build.sh
       - name: Build IPA
         run: tools/build-ipa.sh
+      - name: Verify owner lock aliases in both final FEX CPUs
+        run: |
+          LLVM_MINGW="$GITHUB_WORKSPACE/toolchains/llvm-mingw-20260421-ucrt-macos-universal" \
+            python3 tests/host/check-fex-owner-backoff-native.py \
+              --wow64 app/Madeira/aarch64-windows/xtajit.dll \
+              --arm64ec app/Madeira/arm64ec-windows/xtajit64.dll
       - name: Retain compiled security evidence on build failure
         if: failure()
         uses: actions/upload-artifact@v4

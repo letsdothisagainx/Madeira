@@ -41,6 +41,7 @@ cases = {
     'native-code-guard-registry': ('build/ntdll-unix/fex_code_guards.h', {'ipa'}),
     'fex': ('pin:FEX', {'fex', 'fex-pe', 'ipa'}),
     'fex-code-buffer-producer': ('build/fex-compat/code-buffer-guard.patch', {'fex-pe', 'ipa'}),
+    'fex-owner-backoff': ('build/fex-compat/owner_allocator_backoff.h', {'fex-pe', 'ipa'}),
     'fex-shufps-broadcast': ('build/fex-compat/shufps-broadcast.patch', {'fex-pe', 'ipa'}),
     'fex-pe-recipe': ('tools/build/build-fex-pe-compat.sh', {'fex-pe', 'ipa'}),
     'wine': ('pin:wine', {'wine-host', 'i386', 'dxmt', 'ipa'}),
@@ -66,6 +67,8 @@ cases = {
     'dxmt-memory-transaction': ('tools/build/stage-dxmt-memory-compat.py', {'dxmt', 'ipa'}),
     'dxmt-census-heap': ('tools/build/stage-dxmt-census-heap.py', {'dxmt', 'ipa'}),
     'dxmt-perf-heap': ('tools/build/stage-dxmt-perf-heap.py', {'dxmt', 'ipa'}),
+    'dxmt-command-state': ('tools/build/stage-dxmt-command-state.py', {'dxmt', 'ipa'}),
+    'dxmt-native-batch': ('tools/build/stage-dxmt-native-batch.py', {'dxmt', 'ipa'}),
     'dxmt-memory-build': ('tools/build/build-dxmt-memory-compat.sh', {'dxmt', 'ipa'}),
     'dxmt-memory-package': ('tools/check-dxmt-memory-package.py', {'dxmt', 'ipa'}),
     # Native win32u is rebuilt in every app job; no component cache owns it.

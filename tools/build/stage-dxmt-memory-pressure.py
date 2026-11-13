@@ -2,12 +2,13 @@
 """Stage measured process pressure into the existing pointer-free runtime ABI."""
 import argparse
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import shutil
 
 
-def stage(source):
+def stage_pressure_only(source):
     include = '#include "memory_pressure_native.h"'
     if include in source or 'case 40:' in source:
         raise ValueError('native memory-pressure input is already staged or op 40 is occupied')
@@ -29,6 +30,17 @@ def stage(source):
     if staged.count(wow64) != 1:
         raise ValueError('DXMT pointer-free WoW64 forwarding contract changed')
     return staged.replace(wow64, '  if (a && (a->op == 7 || a->op == 40)) return _madeira_ctl(args);')
+
+
+def stage(source):
+    # Keep the native build recipe and shader converter identity unchanged.
+    # This owned pass composes after diagnostics/lifecycle and leaves their
+    # command submission and completion ordering intact.
+    path = Path(__file__).with_name('stage-dxmt-native-batch.py')
+    spec = importlib.util.spec_from_file_location('madeira_native_batch', path)
+    batch = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(batch)
+    return batch.stage(stage_pressure_only(source))
 
 
 def main():

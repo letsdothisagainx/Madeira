@@ -310,7 +310,8 @@ def fex_cpu(data, backend):
     # These live producer strings must reach both rebuilt CPUs and the final
     # IPA. They establish patch presence, not successful device guard arming.
     for marker in (b'[fex-core-init-v1]', b'[fex-ir-pool-v1]', b'[fex-owner-allocator-v1]',
-                   b'[code-buffer-grow-v1]', b'WINE_IOS_FEX_CODE_GUARD_V1'):
+                   b'[code-buffer-grow-v1]', b'WINE_IOS_FEX_CODE_GUARD_V1',
+                   b'lock=bounded-spin-park-v1'):
         assert marker in data, f'stale {backend} FEX shared protection: {marker!r}'
     fex_arena_exports(data, require_hold_release=backend == 'wow64', code_exports=code_exports,
                       require_hybrid=backend == 'arm64ec',

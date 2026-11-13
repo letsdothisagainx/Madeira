@@ -21,6 +21,10 @@ SECOND = 'heap_t* heap = heap_allocate(1);\n\trpmalloc_assume(heap != 0);'
 assert ORIGINAL.count(FIRST) == ORIGINAL.count(SECOND) == 1
 EXPECTED = ORIGINAL.replace(FIRST, FIRST.replace('\n#if', '\n\tif (!block)\n\t\treturn 0;\n#if')).replace(
     SECOND, SECOND.replace('\n\trpmalloc_assume', '\n\tif (!heap)\n\t\treturn 0;\n\trpmalloc_assume'))
+EXPECTED = EXPECTED.replace('void fex_ios_rpm_lock(void) {\n\tuintptr_t self, expected = 0;',
+    '#include "owner_allocator_backoff.h"\nvoid fex_ios_rpm_lock(void) {\n\tuintptr_t self;\n\tunsigned madeira_contended_polls = 0;').replace(
+    '\twhile (!atomic_compare_exchange_weak_explicit(&fex_ios_rpm_owner, &expected, self, memory_order_acquire,\n\t                                              memory_order_relaxed)) {\n\t\texpected = 0;\n\t\twait_spin();\n\t}\n\tfex_ios_rpm_depth = 1;',
+    '\twhile (!madeira_fex_rpm_try_owner(self)) {\n\t\tif (++madeira_contended_polls == 64) {\n\t\t\tmadeira_contended_polls = 0;\n\t\t\tmadeira_fex_rpm_backoff();\n\t\t} else {\n\t\t\twait_spin();\n\t\t}\n\t}\n\tmadeira_fex_rpm_publish_depth();')
 
 
 def configure(source, build, *, windows=True, host=True, allocator=True, success=True):
@@ -81,7 +85,7 @@ with tempfile.TemporaryDirectory(prefix='madeira-owner-config-') as directory:
     assert 'ENABLE_DECOMMIT=1' in observed['rpm_definitions'].split(';')
     assert 'DYNAMIC_TLS_NO_FLS=1' in observed['rpm_definitions'].split(';')
     assert 'RPMALLOC_FIRST_CLASS_HEAPS=1' in observed['owner_definitions'].split(';')
-    assert checked.read_text() == EXPECTED, 'The build copy must contain exactly two NULL guards'
+    assert checked.read_text() == EXPECTED, 'Unexpected generated allocator changes'
     timestamp = checked.stat().st_mtime_ns
     configure(source, build)
     assert report(build) == observed
@@ -110,4 +114,4 @@ with tempfile.TemporaryDirectory(prefix='madeira-owner-config-') as directory:
         assert message in output
 
 assert hashlib.sha256((ALLOCATOR / 'rpmalloc.c').read_bytes()).hexdigest() == 'd810c3695daab1c74e92ba971f1f068b44b3d6172e0a69c5a0c6f8a07234f96b'
-print('PASS owner allocator CMake: deferred Windows targets, cached reconfigure, exact two NULL guards, source/API pins, native/OFF unchanged')
+print('PASS owner allocator CMake: deferred Windows targets, cached reconfigure, two NULL guards + bounded owner-lock backoff, source/API pins, native/OFF unchanged')

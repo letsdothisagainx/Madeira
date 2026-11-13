@@ -9,6 +9,8 @@ on:
       - build/ntdll-unix/native_srw_alias.h
       - build/ntdll-unix/native_fex_diagnostics_alias.h
       - build/fex-compat/native-diagnostics.patch
+      - build/fex-compat/owner_allocator*
+      - tests/host/check-fex-owner-backoff*.py
       - build/fex-compat/native-tracker-storage.patch
       - tools/build/stage-fastsync-timeout.py
       - tests/host/check-fastsync-timeout.py
@@ -52,6 +54,8 @@ on:
       - build/ntdll-unix/native_srw_alias.h
       - build/ntdll-unix/native_fex_diagnostics_alias.h
       - build/fex-compat/native-diagnostics.patch
+      - build/fex-compat/owner_allocator*
+      - tests/host/check-fex-owner-backoff*.py
       - build/fex-compat/native-tracker-storage.patch
       - tools/build/stage-fastsync-timeout.py
       - tests/host/check-fastsync-timeout.py
@@ -144,6 +148,10 @@ jobs:
           set -o pipefail
           python3 tests/host/check-fex-wow-syscall-writer.py
           python3 tests/host/check-fex-transition-writer-performance.py --require-arm64-darwin | tee native-fex-transition-throughput.txt
+      - name: Measure actual owner lock contention and verify recursion/readiness
+        run: |
+          set -o pipefail
+          python3 tests/host/check-fex-owner-backoff.py | tee native-fex-owner-backoff.txt
       - name: Execute captured Phonon broadcast lowering on Apple ARM64
         run: |
           set -o pipefail
@@ -172,5 +180,6 @@ jobs:
             native-fex-diagnostics-throughput.txt
             native-fex-transition-throughput.txt
             native-fex-shufps.txt
+            native-fex-owner-backoff.txt
           if-no-files-found: ignore
           retention-days: 14

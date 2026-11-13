@@ -89,6 +89,7 @@ void mem_census_report(const char *) {}
 struct BackingCounts {
   std::atomic<uint64_t> allocated{0}, destroyed{0}, bytes{0};
 } backing;
+std::atomic<uint64_t> registry_node_visits{0};
 void (*release_probe)()=nullptr;
 struct BufferAllocation {
   std::atomic<unsigned> refs{0};
@@ -346,10 +347,11 @@ int main() {
   {
     std::atomic<bool> done{false};
     std::atomic<uint64_t> completed{0};
-    std::thread scanner([&] {
+    auto scan=[&] {
       while (!done.load(std::memory_order_acquire))
         DynamicBuffer::TrimCompletedForQueue(q1,completed.load(std::memory_order_acquire),true);
-    });
+    };
+    std::thread scanner(scan),second_scanner(scan);
     for (uint64_t seq=1;seq<=10000;++seq) {
       Buffer buffer;
       Rc<DynamicBuffer> dynamic=new DynamicBuffer(&buffer,{},q1);
@@ -358,7 +360,7 @@ int main() {
       completed.store(seq,std::memory_order_release);
       dynamic=nullptr; // unregister must precede delete; scanner never resurrects.
     }
-    done.store(true,std::memory_order_release); scanner.join();
+    done.store(true,std::memory_order_release); scanner.join(); second_scanner.join();
     DynamicBuffer::TrimCompletedForQueue(q1,completed.load(),true);
   }
   require(backing.bytes==0 && backing.allocated==backing.destroyed,"registry lifetime race leaked backing");
@@ -576,6 +578,156 @@ int main() {
 '''
 
 
+LINEAR_SWEEP_MAIN = r'''
+namespace {
+std::vector<dxmt::Rc<dxmt::DynamicBuffer>> *probe_dynamics;
+std::vector<std::unique_ptr<dxmt::Buffer>> *probe_buffers;
+std::atomic<bool> busy_locked{false}, busy_release{false}, busy_unlocked{false};
+uint64_t nested_retired = 0;
+void delete_next_and_reenter() {
+  using namespace dxmt;
+  require(dynamicRegistryState().sweeps != nullptr,"outer cursor absent during native release");
+  (*probe_dynamics)[35]=nullptr;
+  (*probe_buffers)[35]=nullptr;
+  nested_retired=DynamicBuffer::TrimCompletedForQueue(0x98a2,10,true);
+}
+void release_busy() {
+  busy_release.store(true,std::memory_order_release);
+  while (!busy_unlocked.load(std::memory_order_acquire)) std::this_thread::yield();
+}
+}
+int main() {
+  using namespace dxmt;
+  {
+    constexpr size_t cold_count=6000,hot_count=2000,count=cold_count+hot_count;
+    std::vector<std::unique_ptr<Buffer>> buffers;
+    std::vector<Rc<DynamicBuffer>> dynamics;
+    for (size_t i=0;i<count;++i) {
+      buffers.push_back(std::make_unique<Buffer>());
+      dynamics.emplace_back(new DynamicBuffer(buffers.back().get(),{},0x98a0));
+      auto &dynamic=dynamics.back();
+      for (unsigned rename=0;rename<(i<cold_count?1u:2u);++rename) {
+        dynamic->updateImmediateName(1,dynamic->allocate(0),0,false);
+        auto old=buffers.back()->rename(dynamic->immediateName()); old=nullptr;
+      }
+      dynamic->immediateName()->data[0]=0x6d;
+      for (auto &entry:dynamic->fifo) entry.allocation->data[0]=0x39;
+    }
+    registry_node_visits=0;
+    const uint64_t retired=DynamicBuffer::TrimCompletedForQueue(0x98a0,3,false);
+    const uint64_t visits=registry_node_visits.load();
+    uint64_t retained=0;
+    for (size_t i=0;i<count;++i) {
+      auto &dynamic=dynamics[i];
+      require(dynamic->immediateName()->data[0]==0x6d,"sweep changed current resource bytes");
+      const uint64_t names=i<cold_count?0:2;
+      require(dynamic->fifo.size()==names,"cursor changed cold/hot retirement decisions");
+      auto &st=g_dyn_stats[dynamic->census_id_];
+      require(st.depth==names && st.eligible_n==names && st.inelig_n==0,"cursor changed census eligibility");
+      require(st.wfa_min==(names?1:0) && st.wfa_max==(names?1:0),"cursor changed census extrema");
+      for (auto &entry:dynamic->fifo) {
+        require(entry.allocation->data[0]==0x39,"sweep changed retained spare bytes");
+        retained+=entry.allocation->census_bytes_;
+      }
+    }
+    require(retired==cold_count*256 && retained==hot_count*2*256,"cursor changed returned/retained capacity");
+    require(backing.bytes==count*256+retained,"cursor reports phantom memory recovery");
+    std::cout << "trim-linear nodes=" << count << " visits=" << visits << " detached=" << retired
+              << " retained=" << retained << " credit=" << dynamicRegistryState().warm_cache_credit << '\n';
+    require(visits<=count*2,"pressure sweep repeatedly rescanned retained/trimmed registry prefixes");
+  }
+  require(backing.bytes==0 && dynamicRegistryState().sweeps==nullptr,"linear sweep leaked backing or cursor");
+  {
+    Buffer buffer;
+    Rc<DynamicBuffer> dynamic=new DynamicBuffer(&buffer,{},0x98a1);
+    for (unsigned seq=1;seq<=193;++seq) {
+      dynamic->updateImmediateName(seq,buffer.allocate({},nullptr),0,false);
+      auto old=buffer.rename(dynamic->immediateName()); old=nullptr;
+    }
+    registry_node_visits=0;
+    require(DynamicBuffer::TrimCompletedForQueue(0x98a1,150,true)==150*256,"large FIFO failed to resume after a 64-entry batch");
+    require(registry_node_visits==3,"large FIFO cursor did not resume only necessary batches");
+    auto &st=g_dyn_stats[dynamic->census_id_];
+    require(dynamic->fifo.size()==43 && st.depth==43 && st.eligible_n==0 && st.inelig_n==43,
+            "partial large FIFO changed completion eligibility");
+    require(st.wfa_min==151 && st.wfa_max==193,"partial FIFO extrema changed");
+    require(DynamicBuffer::TrimCompletedForQueue(0x98a1,193,true)==43*256 && dynamic->fifo.empty(),
+            "large FIFO did not finish when the GPU frontier advanced");
+  }
+  require(backing.bytes==0,"large FIFO leaked backing");
+  {
+    std::vector<std::unique_ptr<Buffer>> buffers;
+    std::vector<Rc<DynamicBuffer>> dynamics;
+    for (unsigned i=0;i<100;++i) {
+      buffers.push_back(std::make_unique<Buffer>());
+      dynamics.emplace_back(new DynamicBuffer(buffers.back().get(),{},0x98a2));
+      dynamics.back()->updateImmediateName(10,dynamics.back()->allocate(0),0,false);
+      auto old=buffers.back()->rename(dynamics.back()->immediateName()); old=nullptr;
+    }
+    probe_dynamics=&dynamics; probe_buffers=&buffers;
+    release_probe=delete_next_and_reenter;
+    const uint64_t outer=DynamicBuffer::TrimCompletedForQueue(0x98a2,10,true);
+    require(outer==64*256 && nested_retired==35*256,"reentrant retirement lost or double-counted an extent");
+    require(backing.bytes==99*256 && dynamicRegistryState().sweeps==nullptr,"unregister left a dangling cursor");
+  }
+  require(backing.bytes==0,"reentrant deletion leaked backing");
+  {
+    std::vector<std::unique_ptr<Buffer>> buffers;
+    std::vector<Rc<DynamicBuffer>> dynamics;
+    for (unsigned i=0;i<100;++i) {
+      buffers.push_back(std::make_unique<Buffer>());
+      dynamics.emplace_back(new DynamicBuffer(buffers.back().get(),{},0x98a3));
+      dynamics.back()->updateImmediateName(10,dynamics.back()->allocate(0),0,false);
+      auto old=buffers.back()->rename(dynamics.back()->immediateName()); old=nullptr;
+    }
+    std::thread holder([&] {
+      {
+        std::lock_guard<mutex> lock(dynamics.back()->mutex_);
+        busy_locked.store(true,std::memory_order_release);
+        while (!busy_release.load(std::memory_order_acquire)) std::this_thread::yield();
+      }
+      busy_unlocked.store(true,std::memory_order_release);
+    });
+    while (!busy_locked.load(std::memory_order_acquire)) std::this_thread::yield();
+    // Unlock completes before this callback returns; the registry and instance
+    // locks must be absent while any native release callback executes.
+    release_probe=release_busy;
+    registry_node_visits=0;
+    const uint64_t retired=DynamicBuffer::TrimCompletedForQueue(0x98a3,10,true);
+    holder.join();
+    require(retired==100*256 && backing.bytes==100*256,"bounded retry missed newly available completed storage");
+    require(registry_node_visits<=200,"persistently busy prefix caused repeated batch rescans");
+  }
+  require(backing.bytes==0 && dynamicRegistryState().sweeps==nullptr,"busy retry leaked backing or cursor");
+  {
+    // A newer emergency can arrive during native release of the LAST hot
+    // batch. The cursor must recheck the controller even after reaching end.
+    Buffer buffer(uint64_t{64}<<10);
+    Rc<DynamicBuffer> dynamic=new DynamicBuffer(&buffer,{},0x98a4);
+    for (unsigned rename=0;rename<80;++rename) {
+      dynamic->updateImmediateName(1,dynamic->allocate(0),0,false);
+      auto old=buffer.rename(dynamic->immediateName()); old=nullptr;
+    }
+    dynamic->immediateName()->data[0]=0x7d;
+    release_probe=+[] {
+      const auto older_normal=g_pressure;
+      g_pressure.available=0;
+      g_pressure.sampled_ns=older_normal.sampled_ns+1;
+      DynamicBuffer::TrimCompletedForQueue(0x999a,3,false);
+      require(dynamicRegistryState().pressure_decision.critical,"final release failed to latch emergency");
+      g_pressure=older_normal;
+    };
+    const uint64_t retired=DynamicBuffer::TrimCompletedForQueue(0x98a4,3,false);
+    require(release_probe==nullptr && dynamic->fifo.empty() && retired==80*(uint64_t{64}<<10),
+            "final hot batch missed a newer emergency during native release");
+    require(dynamic->immediateName()->data[0]==0x7d,"final emergency changed current resource bytes");
+  }
+  require(backing.bytes==0 && dynamicRegistryState().sweeps==nullptr,"final emergency leaked backing or cursor");
+  std::cout << "PASS actual trim cursor: linear cold/hot pass, large FIFO resume, exact census/bytes, cursor invalidation on delete, nested sweep, bounded busy retry\n";
+}
+'''
+
+
 def function_body(source, signature):
     start=source.index(signature)
     opening=source.index("{",start)
@@ -585,6 +737,26 @@ def function_body(source, signature):
         if depth==0:
             return source[start:offset+1]
     raise ValueError("unterminated production function: "+signature)
+
+
+def trim_visit_instrumentation(source):
+    old='for (auto *dynamic = dynamicRegistryState().head; dynamic && count < retired.size(); dynamic = dynamic->registry_next_) {'
+    new='while (sweep.cursor.next && count < retired.size()) {'
+    if old in source:
+        return source.replace(old,old+'\n          registry_node_visits.fetch_add(1,std::memory_order_relaxed);',1)
+    assert source.count(new)==1,"trim visit instrumentation anchor changed"
+    return source.replace(new,new+'\n          registry_node_visits.fetch_add(1,std::memory_order_relaxed);',1)
+
+
+def head_restart_trim(source):
+    fixture=ROOT/'tests/host/fixtures/dxmt-trim-head-87feb2.cpp'
+    contents=fixture.read_text()
+    assert contents.startswith('// Captured actual production trim from Madeira 87feb2aa.')
+    signature='uint64_t\nDynamicBuffer::TrimCompletedForQueue('
+    old=function_body(contents,signature)
+    assert hashlib.sha256((old+'\n').encode()).hexdigest()=='11bbbe4be5b4e4912539981540dd005f30f43c3299027574cbdf6f1a3721304e',\
+        'captured 87feb2 trim function changed'
+    return source.replace(function_body(source,signature),old,1)
 
 
 def registry_storage_names(source):
@@ -883,25 +1055,22 @@ def protected_registry_source(source, before):
     padding="\nstatic unsigned char g_registry_image_padding[65536] REGISTRY_IMAGE = {};\n"
     if not before:
         return source.replace(owner,owner.replace(" =", " REGISTRY_IMAGE =",1)+padding,1)
-    # Reconstruct only the pre-fix private storage. All methods, pressure policy,
-    # locks, counters and cache limits remain the production code under test.
-    globals_source=r'''
-static dxmt::mutex g_dynamic_registry_mutex;
-static DynamicBuffer *g_dynamic_registry_head = nullptr;
-static uint64_t g_dynamic_warm_cache_credit REGISTRY_IMAGE = 0;
-static MemoryPressureController g_dynamic_pressure_controller;
-static auto g_dynamic_pressure_decision = g_dynamic_pressure_controller.evaluate(MemoryPressureSnapshot{});
-static std::atomic<uint64_t> g_dynamic_reports{0};
-'''+padding
-    source=source.replace(registry_block(source),globals_source,1)
-    return legacy_registry_storage_names(source)
+    # Place the observed pre-fix warm-credit member back in image storage.
+    # Keep the actual registry/cursor implementation intact; only the target
+    # storage differs, so native retirement and policy remain comparable.
+    globals_source='static uint64_t g_dynamic_warm_cache_credit REGISTRY_IMAGE = 0;\n'+padding
+    block=registry_block(source)
+    assert block.count('uint64_t warm_cache_credit = 0;')==1
+    proxy=block.replace('uint64_t warm_cache_credit = 0;',
+                        'uint64_t &warm_cache_credit = g_dynamic_warm_cache_credit;',1)
+    return source.replace(block,globals_source+proxy,1)
 
 
 def compile_protected_registry(directory, name, header, implementation, before, writable=False):
     cpp=directory/(name+".cpp")
     exe=directory/name
     main=REGISTRY_IMAGE_MAIN
-    if before: main="#define BEFORE_IMAGE_GLOBALS\n"+legacy_registry_storage_names(main)
+    if before: main="#define BEFORE_IMAGE_GLOBALS\n"+main
     if writable: main="#define WRITABLE_IMAGE_GLOBALS\n"+main
     cpp.write_text(prelude()+census_types()+COUNTERS+REGISTRY_IMAGE_PRELUDE
                    +dynamic_header(header)+dynamic_methods(protected_registry_source(implementation,before))+main)
@@ -934,7 +1103,7 @@ struct DynamicRegistryState {
     ++registry_state_deallocations; ::operator delete(pointer);
   }
   ~DynamicRegistryState() {
-    require(head==nullptr && warm_cache_credit==0,"registry owner died while resources or credit remained live");
+    require(head==nullptr && sweeps==nullptr && warm_cache_credit==0,"registry owner died while resources, sweep cursors or credit remained live");
     ++registry_state_destructions;
   }
 '''
@@ -1041,6 +1210,14 @@ def main():
         after = compile_and_run(directory,"after",new_h,new_c,NEW_MAIN)
         assert after.returncode == 0, after.stdout + after.stderr
         print(after.stdout.strip())
+        restart=compile_and_run(directory,"before-linear-sweep",new_h,
+                                trim_visit_instrumentation(head_restart_trim(new_c)),LINEAR_SWEEP_MAIN)
+        assert restart.returncode!=0 and 'repeatedly rescanned' in restart.stderr,restart.stdout+restart.stderr
+        print('BEFORE reproduced: '+restart.stdout.strip())
+        linear=compile_and_run(directory,"after-linear-sweep",new_h,
+                               trim_visit_instrumentation(new_c),LINEAR_SWEEP_MAIN)
+        assert linear.returncode==0,linear.stdout+linear.stderr
+        print(linear.stdout.strip())
         cap_before=compile_and_run(directory,"before-hot-cap",old_h,old_c,"#define VENDOR_ONLY\n"+HOT_WORKING_SET_MAIN)
         assert cap_before.returncode != 0 and "legacy 64 cap" in cap_before.stderr, cap_before.stdout+cap_before.stderr
         print("BEFORE reproduced: "+cap_before.stdout.strip())

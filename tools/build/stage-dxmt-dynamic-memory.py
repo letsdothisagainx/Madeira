@@ -27,13 +27,19 @@ REGISTRY = r'''
  * ownership. Credit accounting is protected by the registry mutex. */
 namespace {
 struct DynamicRegistryState {
+  struct SweepCursor {
+    DynamicBuffer *next = nullptr;
+    SweepCursor *active_next = nullptr;
+  };
   dxmt::mutex mutex;
   DynamicBuffer *head = nullptr;
+  SweepCursor *sweeps = nullptr;
   uint64_t warm_cache_credit = 0;
   MemoryPressureController pressure_controller;
   MemoryPressureDecision pressure_decision = pressure_controller.evaluate(MemoryPressureSnapshot{});
   std::atomic<uint64_t> reports{0};
 };
+using DynamicSweepCursor = DynamicRegistryState::SweepCursor;
 
 // Copied native images are executable/read-only. Publish one heap owner during
 // the same module initialization as the former registry globals; only its
@@ -48,6 +54,34 @@ static DynamicRegistryState &
 dynamicRegistryState() {
   return *g_dynamic_registry;
 }
+
+// The cursor never pins or resurrects a DynamicBuffer. Its raw next pointer
+// is read only with the registry locked; unregister redirects every affected
+// cursor before deleting a node. One fixed stack record survives native
+// releases between bounded retirement batches, including reentrant sweeps.
+class DynamicSweep {
+public:
+  DynamicSweepCursor cursor;
+
+  DynamicSweep() {
+    auto &registry = dynamicRegistryState();
+    std::lock_guard<dxmt::mutex> lock(registry.mutex);
+    cursor.next = registry.head;
+    cursor.active_next = registry.sweeps;
+    registry.sweeps = &cursor;
+  }
+
+  ~DynamicSweep() {
+    auto &registry = dynamicRegistryState();
+    std::lock_guard<dxmt::mutex> lock(registry.mutex);
+    auto **entry = &registry.sweeps;
+    while (*entry != &cursor) entry = &(*entry)->active_next;
+    *entry = cursor.active_next;
+  }
+
+  DynamicSweep(const DynamicSweep &) = delete;
+  DynamicSweep &operator=(const DynamicSweep &) = delete;
+};
 } // namespace
 
 // All calls hold the registry mutex. An unknown reading grants no new credit,
@@ -225,17 +259,26 @@ DynamicBuffer::TrimCompletedForQueue(uint64_t queue_domain, uint64_t coherent_se
   uint64_t detached_bytes = 0, detached_count = 0;
   // Return cold/oversized leases before distributing the bounded hot credits.
   for (unsigned phase = 0; phase < (critical ? 1u : 2u); ++phase) {
+    DynamicSweep sweep;
+    bool saw_busy = false, made_progress = false, retried_busy = false;
     for (;;) {
       std::array<Rc<BufferAllocation>, 64> retired;
       size_t count = 0;
+      bool finished = false;
       {
         std::lock_guard<dxmt::mutex> registry_lock(dynamicRegistryState().mutex);
         // Another requester may have latched emergency while this sweep released
         // its previous batch. Never grant warm credit from an older normal pass.
         const auto decision = pressureDecisionLocked(pressure, upcoming);
+        const bool was_critical = critical;
         critical = force_critical || decision.critical;
         warm_budget = critical ? 0 : decision.warm_cache_budget;
-        for (auto *dynamic = dynamicRegistryState().head; dynamic && count < retired.size(); dynamic = dynamic->registry_next_) {
+        // An emergency must also visit hot nodes skipped earlier in this
+        // normal phase. Hysteresis/sample ordering is still controller-owned.
+        if (critical && !was_critical) sweep.cursor.next = dynamicRegistryState().head;
+        while (sweep.cursor.next && count < retired.size()) {
+          auto *dynamic = sweep.cursor.next;
+          sweep.cursor.next = dynamic->registry_next_;
           if (dynamic->queue_domain_ != queue_domain) continue;
           // Credit is registry-owned metadata, so this read needs no instance
           // lock. Empty-but-credited cold owners must return their lease; wholly
@@ -243,7 +286,7 @@ DynamicBuffer::TrimCompletedForQueue(uint64_t queue_domain, uint64_t coherent_se
           if (!dynamic->has_cached_names_.load(std::memory_order_acquire) &&
               !dynamic->cache_credit_bytes_) continue;
           std::unique_lock<dxmt::mutex> instance_lock(dynamic->mutex_, std::try_to_lock);
-          if (!instance_lock.owns_lock()) continue;
+          if (!instance_lock.owns_lock()) { saw_busy = true; continue; }
           const bool hot = dynamic->hotAtLocked(coherent_seq_id) && dynamic->desiredCacheBytesLocked();
           if (!critical && hot != (phase == 1)) continue;
           dynamic->updateLeaseLocked(coherent_seq_id, warm_budget, critical, pressure.valid && pressure.reserve);
@@ -273,10 +316,29 @@ DynamicBuffer::TrimCompletedForQueue(uint64_t queue_domain, uint64_t coherent_se
           }
           if (n || (!dynamic->fifo.empty() && dynamic->census_coherent_ != coherent_seq_id))
             dynamic->updateCensusLocked(coherent_seq_id);
+          // A single FIFO can exceed one stack batch. Resume that owner only
+          // when it still has completed names beyond its unchanged allowance.
+          if (count == retired.size() && dynamic->fifo.size() > keep_names &&
+              dynamic->fifo.front().will_free_at <= coherent_seq_id)
+            sweep.cursor.next = dynamic;
+        }
+        made_progress = made_progress || count != 0;
+        finished = sweep.cursor.next == nullptr;
+        // Busy skips remain nonblocking. After useful work/native releases,
+        // retry once so a temporarily held instance can return its completed
+        // storage. A persistently busy node cannot induce unbounded rescans.
+        if (finished && saw_busy && made_progress && !retried_busy) {
+          sweep.cursor.next = dynamicRegistryState().head;
+          retried_busy = true;
+          saw_busy = false;
+          finished = sweep.cursor.next == nullptr;
         }
       }
       // All native releases happen after BOTH locks, in a bounded stack batch.
-      if (!count) break;
+      // Even the final batch can latch a newer emergency during its native
+      // releases. Recheck once without revisiting any node; a critical upgrade
+      // above restarts the cursor so previously retained hot names are drained.
+      if (finished && !count) break;
     }
   }
   if (detached_count) {
@@ -284,7 +346,7 @@ DynamicBuffer::TrimCompletedForQueue(uint64_t queue_domain, uint64_t coherent_se
     g_trim_total_bytes.fetch_add(detached_bytes, std::memory_order_relaxed);
     const uint64_t report = dynamicRegistryState().reports.fetch_add(1, std::memory_order_relaxed);
     if (report < 4 || (report & 63) == 0)
-      ERR("[dynamic-memory-pressure-v1] policy=bounded-hot-v2 storage=owner-heap-v1 cache-detached=", detached_bytes,
+      ERR("[dynamic-memory-pressure-v1] policy=bounded-hot-v2 scan=registered-cursor-v1 storage=owner-heap-v1 cache-detached=", detached_bytes,
           " entries=", detached_count, " coherent=", coherent_seq_id,
           " warm-budget=", warm_budget, " physical-freed=unmeasured");
   }
@@ -352,6 +414,8 @@ def stage_file(path, source):
     if (queue_domain_) {
       // Remove before destructor begins: the registry pins the object lifetime.
       std::lock_guard<dxmt::mutex> registry_lock(dynamicRegistryState().mutex);
+      for (auto *cursor = dynamicRegistryState().sweeps; cursor; cursor = cursor->active_next)
+        if (cursor->next == this) cursor->next = registry_next_;
       if (registry_prev_) registry_prev_->registry_next_ = registry_next_;
       else dynamicRegistryState().head = registry_next_;
       if (registry_next_) registry_next_->registry_prev_ = registry_prev_;

@@ -176,7 +176,7 @@ with tempfile.TemporaryDirectory() as temp:
     compat_spec=importlib.util.spec_from_file_location('dock_dxmt_memory_stage',root/'tools/build/stage-dxmt-memory-compat.py')
     compat=importlib.util.module_from_spec(compat_spec);compat_spec.loader.exec_module(compat)
     source_names=['src/dxmt/'+name for name in compat.UPLOAD]+list(compat.DYNAMIC)
-    source_names+=list(compat.CENSUS)+list(compat.PERF)
+    source_names+=list(compat.CENSUS)+list(compat.PERF)+list(compat.COMMAND_STATE)
     source_names+=['src/winemetal/unix/winemetal_unix.c']
     for relative in source_names:
         target=t/'dxmt'/relative;target.parent.mkdir(parents=True,exist_ok=True)
@@ -253,7 +253,7 @@ if [ "${STALE_NATIVE_NTDLL:-}" = 1 ]; then printf 'old ntdll' > "$TEST_APP/arm64
 if [ "${STALE_SCM:-}" = 1 ]; then printf 'old SCM' > "$TEST_APP/aarch64-windows/services.exe"; fi
 printf '[native-group-retire-v1][wow-placement-v1][wow-native-export-v1][fex-callback-v2][child-native-dll-v1][process-wow64-v1][child-native-ntdll-v1][guest-trap-context-v1][surface-expose-v1][steam-client-update-v1][alias-prot-compat][image-alias-retire-v1][swp-context-v1][alias-prot-v2][fex-exit-v1][native-thread-cancel-v1][io-abi] v2 native-owned IOSB scopes active[wow-write][guest32-symbols][guest32-cxx-first-v1][cef-atexit-v1][steam-handoff-v1]_madeira_child_server_exited[fex-owner-v1] pre-crt[fex-owner-v1] retired[fex-owner-census-v2][hold-release-v2][deliver-hold-v2][native-window-retire-v1]_winios_native_window_create_winios_native_window_retire[guest32-fault-v1][steam-progress-v1]_winios_ui_progress_snapshot[srv-poll-drop-v1]poll-slots-highwater=' > "$TEST_APP/Madeira.debug.dylib"
 printf '[cef-image-owner-v1][guest-breakpoint64-v1]' >> "$TEST_APP/Madeira.debug.dylib"
-printf '[dynamic-memory-pressure-v1] policy=bounded-hot-v2 storage=owner-heap-v1 counter-storage=census-perf-heap-v1 [upload-memory-v1][madeira-memory-pressure-v1]' >> "$TEST_APP/Madeira.debug.dylib"
+printf '[dynamic-memory-pressure-v1] policy=bounded-hot-v2 storage=owner-heap-v1 counter-storage=census-perf-heap-v1 scan=registered-cursor-v1 pe-command-state=dedup-hud-v1 [upload-memory-v1][madeira-memory-pressure-v1][metal-resource-batch-v1] release-probe=opt-in' >> "$TEST_APP/Madeira.debug.dylib"
 if [ "${STALE_DXMT_NATIVE:-}" = 1 ]; then
   sed 's/\\[madeira-memory-pressure-v1\\]//g' "$TEST_APP/Madeira.debug.dylib" > "$TEST_APP/native.stale"
   mv "$TEST_APP/native.stale" "$TEST_APP/Madeira.debug.dylib"
@@ -401,7 +401,7 @@ done
     print('PASS stale ARM64EC subfloor DATA capability fails actual final packaging; WoW64 retains the d73 tracker contract')
     result=run({'STALE_EC_CPU':'1'})
     assert result.returncode and 'Xcode packaged stale ARM64EC FEX' in result.stderr, result.stderr
-    for marker in (b'[fex-ir-pool-v1]', b'[fex-owner-allocator-v1]'):
+    for marker in (b'[fex-ir-pool-v1]', b'[fex-owner-allocator-v1]', b'lock=bounded-spin-park-v1'):
         ec_cpu_path.write_bytes(ec_cpu.replace(marker, b'old'))
         result=run()
         assert result.returncode and 'stale arm64ec FEX shared protection' in result.stderr, result.stderr

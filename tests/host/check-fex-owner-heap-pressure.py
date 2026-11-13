@@ -44,12 +44,18 @@ for before, after in [
 ]:
     assert checked.count(before) == 1
     checked = checked.replace(before,after)
+checked = checked.replace('void fex_ios_rpm_lock(void) {\n\tuintptr_t self, expected = 0;',
+    '#include "owner_allocator_backoff.h"\nvoid fex_ios_rpm_lock(void) {\n\tuintptr_t self;\n\tunsigned madeira_contended_polls = 0;').replace(
+    '\twhile (!atomic_compare_exchange_weak_explicit(&fex_ios_rpm_owner, &expected, self, memory_order_acquire,\n\t                                              memory_order_relaxed)) {\n\t\texpected = 0;\n\t\twait_spin();\n\t}\n\tfex_ios_rpm_depth = 1;',
+    '\twhile (!madeira_fex_rpm_try_owner(self)) {\n\t\tif (++madeira_contended_polls == 64) {\n\t\t\tmadeira_contended_polls = 0;\n\t\t\tmadeira_fex_rpm_backoff();\n\t\t} else {\n\t\t\twait_spin();\n\t\t}\n\t}\n\tmadeira_fex_rpm_publish_depth();')
 
 WINDOWS = r'''
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
 #define WINAPI
+#define NTAPI
+#define NTSYSAPI
 #define CALLBACK
 #define VOID void
 #define FALSE 0
@@ -70,6 +76,9 @@ typedef size_t SIZE_T;
 typedef unsigned long ULONG;
 typedef unsigned long DWORD;
 typedef int BOOL;
+typedef int32_t NTSTATUS;
+typedef unsigned char BOOLEAN;
+typedef union { int64_t QuadPart; } LARGE_INTEGER;
 typedef struct { void* LowestStartingAddress; void* HighestEndingAddress; size_t Alignment; } MEM_ADDRESS_REQUIREMENTS;
 typedef struct { unsigned long Type; void* Pointer; } MEM_EXTENDED_PARAMETER;
 typedef struct { size_t dwPageSize; size_t dwAllocationGranularity; void* lpMaximumApplicationAddress; } SYSTEM_INFO;
@@ -120,11 +129,16 @@ MODULE_C = r'''
 #include <pthread.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 #include <sys/mman.h>
 static struct bridge host;
 static unsigned owner;
 static _Thread_local struct { unsigned char pad[0x30]; void* self; } teb;
 void* NtCurrentTeb(void) { teb.self=&teb;return &teb; }
+NTSTATUS NtDelayExecution(BOOLEAN alertable,const LARGE_INTEGER* timeout) {
+ assert(!alertable && timeout->QuadPart==-1000);
+ struct timespec t={0,100000}; nanosleep(&t,NULL); return 0;
+}
 void* GetCurrentProcess(void) { return (void*)1; }
 void GetSystemInfo(SYSTEM_INFO* i) { memset(i,0,sizeof(*i));i->dwPageSize=4096;i->dwAllocationGranularity=65536;i->lpMaximumApplicationAddress=(void*)UINTPTR_MAX; }
 void* GetModuleHandleW(const void* n) { (void)n;return (void*)1; }
@@ -493,7 +507,7 @@ int main(int argc,char** argv) {
 
 with tempfile.TemporaryDirectory(prefix='madeira-owner-heap-pressure-') as directory:
     d=Path(directory)
-    for name,data in [('windows.h',WINDOWS),('fibersapi.h','#include "windows.h"\n'),('abi.h',ABI),('rpmalloc-checked.c',checked),('module.c',MODULE_C),('module.cpp',MODULE_CPP),('arena.c',arena),('main.cpp',MAIN)]:
+    for name,data in [('windows.h',WINDOWS),('winternl.h','#include "windows.h"\n'),('fibersapi.h','#include "windows.h"\n'),('abi.h',ABI),('rpmalloc-checked.c',checked),('module.c',MODULE_C),('module.cpp',MODULE_CPP),('arena.c',arena),('main.cpp',MAIN)]:
         (d/name).write_text(data)
     cc=shlex.split(os.environ.get('CC','cc'));cxx=shlex.split(os.environ.get('CXX','c++'))
     common=['-O1','-g','-pthread','-fPIC','-fsanitize=undefined','-fno-sanitize-recover=all','-I'+str(d),'-I'+str(RPM),'-I'+str(RPM/'rpmalloc'),'-I'+str(COMPAT)]
@@ -517,4 +531,4 @@ with tempfile.TemporaryDirectory(prefix='madeira-owner-heap-pressure-') as direc
                                   env=dict(os.environ,MADEIRA_PRESSURE_HOST_PAGE_SIZE=str(host_page)))
             print(''.join(line+'\n' for line in result.stdout.splitlines() if not line.startswith('[fex-owner-v1]')),end='')
             if result.returncode:print(result.stderr,end='');result.check_returncode()
-print('PASS pinned input hash; only the two reviewed NULL guards differ in the generated allocation-failure build copy')
+print('PASS pinned input hash; generated copy contains the two NULL guards and bounded recursive-owner backoff')

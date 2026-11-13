@@ -19,12 +19,15 @@ MODULES = {'d3d11.dll': 'D3D11CreateDevice', 'dxgi.dll': 'CreateDXGIFactory1',
            'd3d10core.dll': 'D3D10CoreCreateDevice', 'winemetal.dll': None}
 MANIFEST = 'arm64ec-windows/madeira-dxmt-memory.json'
 PE_MARKERS = (b'[dynamic-memory-pressure-v1]', b'policy=bounded-hot-v2', b'storage=owner-heap-v1',
-              b'counter-storage=census-perf-heap-v1', b'[upload-memory-v1]')
-NATIVE_MARKERS = (*PE_MARKERS, b'[madeira-memory-pressure-v1]')
+              b'counter-storage=census-perf-heap-v1', b'scan=registered-cursor-v1',
+              b'pe-command-state=dedup-hud-v1', b'[upload-memory-v1]')
+NATIVE_MARKERS = (*PE_MARKERS, b'[madeira-memory-pressure-v1]',
+                  b'[metal-resource-batch-v1]', b'release-probe=opt-in')
 RECIPES = (
     'tools/build/stage-dxmt-memory-compat.py', 'tools/build/stage-dxmt-upload-memory.py',
     'tools/build/stage-dxmt-dynamic-memory.py', 'tools/build/stage-dxmt-memory-pressure.py',
     'tools/build/stage-dxmt-census-heap.py', 'tools/build/stage-dxmt-perf-heap.py',
+    'tools/build/stage-dxmt-command-state.py', 'tools/build/stage-dxmt-native-batch.py',
     'tools/build/build-dxmt-memory-compat.sh', 'tools/build/build-dxmt-ios.sh',
     'tools/build/build-shader-headers.sh',
     'tools/check-dxmt-memory-package.py', 'tools/check-system-programs.py',
