@@ -48,6 +48,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           artifact-ids: '14008451599'
+          merge-multiple: true
           run-id: ${{ inputs.run_id }}
           github-token: ${{ github.token }}
           path: previous-ipa
@@ -55,6 +56,7 @@ jobs:
         run: python3 -m pip install --disable-pip-version-check capstone==5.0.6
       - name: Inspect the actual archived code, data symbols and log formats
         run: |
+          set -euo pipefail
           mkdir -p inspection
           python3 - <<'PY' | tee inspection/source.txt
           import hashlib, plistlib, zipfile
