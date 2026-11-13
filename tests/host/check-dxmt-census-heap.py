@@ -315,7 +315,8 @@ with tempfile.TemporaryDirectory(prefix='madeira-census-heap-') as directory:
     compiler = shutil.which('clang++') or shutil.which('g++')
     common = [compiler, '-std=c++20', '-O1', '-g', '-pthread', '-DDXMT_NATIVE', '-fPIC',
               '-I', str(include), '-I', str(directory), '-I', str(ROOT / 'dxmt/src/winemetal')]
-    if 'g++' in Path(compiler).name:
+    compiler_version = subprocess.check_output([compiler, '--version'], text=True).lower()
+    if 'clang' not in compiler_version and ('g++' in compiler_version or 'gcc' in compiler_version):
         # GNU-unique template symbols make glibc retain a C++ DSO forever;
         # production Clang PE/Mach-O images do not have that ELF extension.
         common.append('-fno-gnu-unique')
