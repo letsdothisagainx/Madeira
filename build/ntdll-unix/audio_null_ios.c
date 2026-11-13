@@ -36,7 +36,6 @@
 #include <mach/mach.h>
 #include <mach/thread_policy.h>
 #include <unistd.h>
-#include <time.h>
 #include <AudioToolbox/AudioToolbox.h>
 
 /* Struct/enum mirrors from wine/dlls/mmdevapi/unixlib.h. Repeating the
@@ -1403,14 +1402,28 @@ static NTSTATUS ios_timer_loop(void *args) {
     return STATUS_SUCCESS;
 }
 
+/* Readers can query padding while a different thread submits audio. Load the
+ * consumed position first: the callback cannot consume a submission until its
+ * write_pos release-store is visible, so the following acquire of write_pos
+ * cannot trail that play_pos. The reverse order can observe an old write_pos
+ * and a newly consumed play_pos and turn an empty ring into UINT64_MAX frames.
+ * Reset stores the counters separately while stopped; clamp that transient too. */
+static UINT32 ios_stream_padding(const struct ios_stream *s)
+{
+    uint64_t play = atomic_load_explicit(&s->play_pos, memory_order_acquire);
+    uint64_t wr = atomic_load_explicit(&s->write_pos, memory_order_acquire);
+    uint64_t pad = wr > play ? wr - play : 0;
+    return pad > s->buffer_frames ? s->buffer_frames : (UINT32)pad;
+}
+
 static NTSTATUS ios_get_render_buffer(void *args) {
     LOG_FN_CALL(10, "get_render_buffer");
     struct get_render_buffer_params *p = args;
     struct ios_stream *s = stream_from_handle(p->stream);
     if (!s) { if (p->data) *p->data = NULL; p->result = AUDCLNT_E_NOT_INITIALIZED; return STATUS_SUCCESS; }
     if (ios_stream_is_live(s)) {
-        uint64_t padding = atomic_load(&s->write_pos) - atomic_load(&s->play_pos);
-        if (p->frames + padding > s->buffer_frames) {
+        UINT32 padding = ios_stream_padding(s);
+        if (p->frames > s->buffer_frames - padding) {
             p->result = (HRESULT)0x88890006L; /* AUDCLNT_E_BUFFER_TOO_LARGE */
             if (p->data) *p->data = NULL;
             return STATUS_SUCCESS;
@@ -1473,45 +1486,9 @@ static NTSTATUS ios_release_render_buffer(void *args) {
                    s->render_scratch + (size_t)i * fb, (size_t)chunk * fb);
             i += chunk;
         }
-        /* ml1065: what is the game actually handing us? A run has had constant
-         * white noise since audio first worked; this says whether the noise is in
-         * the source data (mean level high and flat, peaks saturating) or made
-         * later (clean source, noisy output). One line per stream per ~10 s. */
-        {
-            static struct { uint64_t frames, clip; double sum_abs; float peak; time_t last; } st[IOS_MAX_STREAMS];
-            int slot = -1, si;
-            for (si = 0; si < IOS_MAX_STREAMS; si++) if (atomic_load_explicit(&g_mix[si], memory_order_relaxed) == s) { slot = si; break; }
-            if (slot >= 0 && slot < IOS_MAX_STREAMS && s->channels) {
-                UINT32 f2, c2, step = n > 4096 ? n / 4096 : 1;
-                for (f2 = 0; f2 < n; f2 += step) {
-                    const BYTE *fr = s->render_scratch + (size_t)f2 * fb;
-                    /* every channel the mixer reads, not just the first two:
-                     * a 5.1 client can carry signal only in its centre */
-                    for (c2 = 0; c2 < s->channels && c2 < 12; c2++) {
-                        float v = s->is_float ? ((const float *)fr)[c2]
-                                : s->sample_bits == 16 ? ((const int16_t *)fr)[c2] * (1.0f / 32768.0f)
-                                : ((const int32_t *)fr)[c2] * (1.0f / 2147483648.0f);
-                        float a = v < 0 ? -v : v;
-                        st[slot].sum_abs += a; if (a > st[slot].peak) st[slot].peak = a; if (a >= 0.99f) st[slot].clip++;
-                        st[slot].frames++;
-                    }
-                }
-                if (time(NULL) - st[slot].last >= 10 && st[slot].frames && !s->is_float) {   /* ml1067: what do the bytes look like */
-                    const uint16_t *w = (const uint16_t *)s->render_scratch;
-                    fprintf(stderr, "[ios_audio] ml1067 slot=%d first 12 words of the last buffer (%u frames asked): "
-                            "%04x %04x %04x %04x %04x %04x %04x %04x %04x %04x %04x %04x\n", slot, n,
-                            w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11]);
-                }
-                if (time(NULL) - st[slot].last >= 10 && st[slot].frames) {
-                    fprintf(stderr, "[ios_audio] ml1065 slot=%d source: %llu samples, mean|x|=%.4f peak=%.3f clipped=%llu (rate %u ch %u float=%d bits=%d)\n",
-                            slot, (unsigned long long)st[slot].frames, st[slot].sum_abs / (double)st[slot].frames, st[slot].peak,
-                            (unsigned long long)st[slot].clip, s->sample_rate, s->channels, s->is_float, s->sample_bits);
-                    st[slot].frames = 0; st[slot].sum_abs = 0; st[slot].peak = 0; st[slot].clip = 0; st[slot].last = time(NULL);
-                }
-            }
-        }
-        /* release-store AFTER the copy so the RT callback never reads
-         * frames that aren't fully written */
+        /* Publish immediately after the copy: source analysis, clock reads or
+         * logging here delay audio that is already ready for the callback.
+         * The release-store keeps partially copied frames invisible. */
         atomic_store_explicit(&s->write_pos, wr + n, memory_order_release);
     }
     s->pending_frames = 0;
@@ -1635,8 +1612,7 @@ static NTSTATUS ios_get_current_padding(void *args) {
     if (!s) { if (p->padding) *p->padding = 0; p->result = AUDCLNT_E_NOT_INITIALIZED; return STATUS_SUCCESS; }
     if (p->padding) {
         if (ios_stream_is_live(s)) {
-            uint64_t pad = atomic_load(&s->write_pos) - atomic_load(&s->play_pos);
-            *p->padding = (UINT32)(pad > s->buffer_frames ? s->buffer_frames : pad);
+            *p->padding = ios_stream_padding(s);
         } else {
             *p->padding = 0; /* null-mode: always hungry */
         }

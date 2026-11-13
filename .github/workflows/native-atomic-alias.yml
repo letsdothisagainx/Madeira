@@ -12,6 +12,12 @@ on:
       - build/fex-compat/native-tracker-storage.patch
       - build/fex-compat/transition-writer.patch
       - build/fex-compat/wow-syscall-writer.patch
+      - build/fex-compat/shufps-broadcast.patch
+      - tests/host/check-fex-shufps-broadcast.py
+      - tests/fixtures/fex-shufps/**
+      - tools/build/stage-native-lfh-size.py
+      - tools/check-native-lfh-size-code.py
+      - tests/host/*native*lfh*size*
       - tests/host/*fex*transition*writer*
       - tests/host/*fex*syscall*writer*
       - tests/host/check-fex-invalidation-storage.py
@@ -46,6 +52,12 @@ on:
       - build/fex-compat/native-tracker-storage.patch
       - build/fex-compat/transition-writer.patch
       - build/fex-compat/wow-syscall-writer.patch
+      - build/fex-compat/shufps-broadcast.patch
+      - tests/host/check-fex-shufps-broadcast.py
+      - tests/fixtures/fex-shufps/**
+      - tools/build/stage-native-lfh-size.py
+      - tools/check-native-lfh-size-code.py
+      - tests/host/*native*lfh*size*
       - tests/host/*fex*transition*writer*
       - tests/host/*fex*syscall*writer*
       - tests/host/check-fex-invalidation-storage.py
@@ -88,6 +100,8 @@ jobs:
           python3 tests/host/check-native-data-direct-call.py
           python3 tests/host/check-native-counter-alias.py
           python3 tests/host/check-native-counter-stage.py
+          python3 tests/host/check-native-lfh-size.py
+          python3 tests/host/check-native-lfh-size-code.py
           python3 tests/host/check-native-srw-alias.py
           python3 tests/host/check-native-srw-history.py
           python3 tests/host/check-native-srw-wake.py
@@ -123,6 +137,10 @@ jobs:
           set -o pipefail
           python3 tests/host/check-fex-wow-syscall-writer.py
           python3 tests/host/check-fex-transition-writer-performance.py --require-arm64-darwin | tee native-fex-transition-throughput.txt
+      - name: Execute captured Phonon broadcast lowering on Apple ARM64
+        run: |
+          set -o pipefail
+          python3 tests/host/check-fex-shufps-broadcast.py --require-arm64-darwin | tee native-fex-shufps.txt
       - name: Measure production QPC counter writer with real Mach faults
         if: always()
         run: |
@@ -146,5 +164,6 @@ jobs:
             native-srw-throughput.txt
             native-fex-diagnostics-throughput.txt
             native-fex-transition-throughput.txt
+            native-fex-shufps.txt
           if-no-files-found: ignore
           retention-days: 14

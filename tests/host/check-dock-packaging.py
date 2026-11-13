@@ -39,6 +39,7 @@ with tempfile.TemporaryDirectory() as temp:
     stage_verifier=t/'tools/build/stage-native-counter-writes.py';stage_verifier.parent.mkdir(parents=True,exist_ok=True)
     stage_verifier.write_bytes((root/'tools/build/stage-native-counter-writes.py').read_bytes())
     (stage_verifier.parent/'stage-native-srw-wake.py').write_bytes((root/'tools/build/stage-native-srw-wake.py').read_bytes())
+    (stage_verifier.parent/'stage-native-lfh-size.py').write_bytes((root/'tools/build/stage-native-lfh-size.py').read_bytes())
     # Keep the real provenance gate active. Xcode below supplies a structural
     # Mach-O with real fixture source digests; it is deliberately not executable.
     # The separate native-provenance check compiles the actual accessors/decoder.

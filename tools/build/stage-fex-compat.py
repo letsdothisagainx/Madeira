@@ -16,6 +16,7 @@ FILES = ('Source/Windows/WOW64/Module.cpp', 'FEXCore/include/FEXCore/Utils/Alloc
          'FEXCore/Source/Interface/IR/IREmitter.h',
          'FEXCore/Source/Interface/Core/Frontend.h',
          'FEXCore/Source/Interface/Core/Frontend.cpp',
+         'FEXCore/Source/Interface/Core/OpcodeDispatcher/Vector.cpp',
          'FEXCore/Source/Interface/Core/Core.cpp',
          'FEXCore/Source/Interface/Core/CPUBackend.cpp',
          'FEXCore/Source/Interface/Core/CPUBackend.h',
@@ -34,7 +35,8 @@ PATCH = ROOT / 'build/fex-compat/thread-init.patch'
 PATCHES = ('thread-init.patch', 'guest-write.patch', 'compiler-startup.patch', 'ir-pool-failure.patch',
            'arena-exports.patch', 'lookup-blocklist.patch', 'hold-release.patch', 'thread-retire.patch',
            'subfloor-domain.patch', 'native-diagnostics.patch', 'native-tracker-storage.patch',
-           'code-buffer-guard.patch', 'transition-writer.patch', 'wow-syscall-writer.patch')
+           'code-buffer-guard.patch', 'transition-writer.patch', 'wow-syscall-writer.patch',
+           'shufps-broadcast.patch')
 ARM64EC_FILES = ('Source/Windows/ARM64EC/Module.cpp', 'Source/Windows/ARM64EC/libarm64ecfex_ios.def',
                  'Source/Windows/ARM64EC/IosJitAlias.cpp', 'Source/Windows/ARM64EC/CMakeLists.txt',
                  'Source/Windows/ARM64EC/Module.S')

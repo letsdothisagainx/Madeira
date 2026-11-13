@@ -3,7 +3,9 @@
 
 Counter/history accesses use their private writer, and shared SRW release omits
 an exclusive wake when no exclusive contender exists. Counter layout/exports,
-QPC arithmetic and synchronization results are retained. Restore refuses
+QPC arithmetic and synchronization results are retained. Ordinary live LFH
+size queries avoid an unrelated shared-heap lock; validation and other heap
+paths retain their original locking. Restore refuses
 unrelated edits; the pinned Wine worktree is never committed with this overlay.
 """
 from __future__ import annotations
@@ -18,7 +20,7 @@ import struct
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[2]
-FILES = ("dlls/ntdll/time.c", "dlls/ntdll/sync.c", "dlls/ntdll/ntdll_misc.h", "dlls/ntdll/ntdll.spec")
+FILES = ("dlls/ntdll/time.c", "dlls/ntdll/sync.c", "dlls/ntdll/ntdll_misc.h", "dlls/ntdll/ntdll.spec", "dlls/ntdll/heap.c")
 ABI_NAME = "dlls/ntdll/madeira_native_counter_alias_abi.h"
 ABI_SOURCE = ROOT / "build/ntdll-unix/native_counter_alias_abi.h"
 MARKER = "/* Madeira native counter writer: unpublished-copy binding only. */"
@@ -26,6 +28,10 @@ MARKER = "/* Madeira native counter writer: unpublished-copy binding only. */"
 _srw_spec = importlib.util.spec_from_file_location("native_srw_wake", ROOT / "tools/build/stage-native-srw-wake.py")
 _srw_wake = importlib.util.module_from_spec(_srw_spec)
 _srw_spec.loader.exec_module(_srw_wake)
+
+_lfh_spec = importlib.util.spec_from_file_location("native_lfh_size", ROOT / "tools/build/stage-native-lfh-size.py")
+_lfh_size = importlib.util.module_from_spec(_lfh_spec)
+_lfh_spec.loader.exec_module(_lfh_size)
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
@@ -36,7 +42,7 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
 
 def stage(sources: dict[str, str]) -> dict[str, str]:
     if set(sources) != set(FILES):
-        raise ValueError("counter overlay requires the exact four source files")
+        raise ValueError("native overlay requires its exact source files")
     if any(MARKER in value for value in sources.values()):
         raise ValueError("counter overlay is already staged")
     out = dict(sources)
@@ -121,6 +127,7 @@ static inline LONG *ios_srw_index_writer(void)
         "&ios_srw_ring[(i - n) & 511]", "&ios_srw_ring_writer()[(i - n) & 511]", FILES[1])
     out[FILES[3]] += "\n@ extern -private ios_srw_ring\n@ extern -private ios_srw_ring_idx\n@ extern -private ios_srw_history_write_contract\n"
     out[FILES[1]] = _srw_wake.stage(out[FILES[1]])
+    out["dlls/ntdll/heap.c"] = _lfh_size.stage(out["dlls/ntdll/heap.c"])
     return out
 
 

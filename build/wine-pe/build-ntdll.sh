@@ -43,6 +43,7 @@ for entry in "arm64ec:$B" "aarch64:$A64_BUILD"; do
     arch="${entry%%:*}"; tree="${entry#*:}"
     rm -f "$tree/dlls/ntdll/$arch-windows/sync.o" \
           "$tree/dlls/ntdll/$arch-windows/time.o" \
+          "$tree/dlls/ntdll/$arch-windows/heap.o" \
           "$tree/dlls/ntdll/$arch-windows/ntdll.dll"
     make -C "$tree" -j"${JOBS:-8}" "dlls/ntdll/$arch-windows/ntdll.dll"
     cp "$tree/dlls/ntdll/$arch-windows/ntdll.dll" "$NATIVE_COUNTER_TMP/$arch-ntdll.dll"
@@ -96,6 +97,10 @@ for entry in "arm64ec:$B" "aarch64:$A64_BUILD"; do
         --image "$NATIVE_COUNTER_TMP/$arch-ntdll.dll" \
         --object "$tree/dlls/ntdll/$arch-windows/sync.o" --machine "$arch" \
         --source-sync "$R/wine/dlls/ntdll/sync.c"
+    python3 "$R/tools/check-native-lfh-size-code.py" \
+        --image "$NATIVE_COUNTER_TMP/$arch-ntdll.dll" \
+        --object "$tree/dlls/ntdll/$arch-windows/heap.o" --machine "$arch" \
+        --source-heap "$R/wine/dlls/ntdll/heap.c"
 done
 mkdir -p "$(dirname "$OUT")" "$(dirname "$A64_OUT")"
 mv "$NATIVE_COUNTER_TMP/arm64ec-ntdll.dll" "$OUT"

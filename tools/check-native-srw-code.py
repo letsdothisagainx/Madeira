@@ -19,9 +19,9 @@ FUNCTION = 'RtlReleaseSRWLockShared'
 
 
 class Image:
-    def __init__(self, data, farm):
+    def __init__(self, data, farm, required_export=FUNCTION):
         self.data = data
-        self.metadata = code.PE.inspect(data, farm, required_export=FUNCTION)
+        self.metadata = code.PE.inspect(data, farm, required_export=required_export)
         pe = struct.unpack_from('<I', data, 0x3c)[0]
         self.opt = pe + 24
         self.base = struct.unpack_from('<Q', data, self.opt + 24)[0]

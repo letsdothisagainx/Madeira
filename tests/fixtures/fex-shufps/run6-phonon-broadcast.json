@@ -1,0 +1,28 @@
+{
+  "archive": "1-Madeira-Run-Diagnostics.zip",
+  "log": "sanitized/madeira-session.log",
+  "module": "phonon.dll",
+  "module_base": "0x71c89d0000",
+  "header": {
+    "address": "0x7c451de240",
+    "log_line": 88383,
+    "words": "000006d0 10ffffea f900038a"
+  },
+  "tail": {
+    "address": "0x7c451de910",
+    "log_line": 88386,
+    "words": "000007c4 00000000 cc3b0330 00000071 0000048b 00000000 0000005a 00000028 00000000 00000000"
+  },
+  "broadcast": {
+    "address": "0x7c451de350",
+    "log_line": 83720,
+    "words": "4e1c05d2 4e1c05d3 4ed33a4e"
+  },
+  "sample": {
+    "generation": 30,
+    "running_samples": 83,
+    "host_bucket": "0x7c451de280",
+    "host_bucket_samples": 5
+  },
+  "limits": "This identifies one sampled compiled block. The saved-frame RIP histogram is not a function CPU profile; sparse captures do not contain the complete guest code or RIP table."
+}
