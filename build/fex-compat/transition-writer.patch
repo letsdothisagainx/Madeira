@@ -1,0 +1,79 @@
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -49,6 +49,7 @@
+ #include "BTInterface.h"
+ #include "Windows/Common/SHMStats.h"
+ 
++#include MADEIRA_FEX_NATIVE_DIAGNOSTICS_HEADER
+ #include <cstdint>
+ #include <cstdio>
+ #include <type_traits>
+@@ -115,6 +116,11 @@
+  * Keep in sync with Module.S and build/ntdll-unix/server_ios.c (ios_xp_fex_*). */
+ extern "C" __attribute__((aligned(64))) uint64_t IosXpFex[4496];
+ __attribute__((aligned(64))) uint64_t IosXpFex[4496] {};
++/* The assembly writers retain the public DATA payload and all native atomic
++ * instructions. Wine binds only this image's private writer before publication. */
++extern "C" MadeiraFEXNativeWriteContract MadeiraFEXTransitionWriteContract = {
++  MadeiraFEXTransitionTag, sizeof(IosXpFex), 64, IosXpFex, 0};
++static_assert(sizeof(IosXpFex) == 35968);
+ /* Non-zero when JIT exits use ExitFunctionECJit (Module.S) instead of ExitFunctionEC; set in ProcessInit. */
+ static uint32_t IosEcExitLean = 0;
+ /* Defined in Module.S and read by RetToEntryThunk: non-zero enters the JIT without testing the EC code
+--- a/Source/Windows/ARM64EC/Module.S
++++ b/Source/Windows/ARM64EC/Module.S
+@@ -19,10 +19,22 @@
+ // The JIT emitters read the same offset at runtime via IosTebTsdOffset.
+ #ifdef FEX_IOS_HOST
+ .arch_extension lse   // ml1131: stadd/ldadd for the transition probe counters
++// The private writer selects the SAME physical IosXpFex bytes. Acquire keeps
++// the descriptor publication contract; CBNZ and the address loads preserve NZCV.
++// A NULL writer retains canonical-address recovery when the ABI is unavailable.
++.macro IOS_XP_WRITER reg
++  adrp \reg, MadeiraFEXTransitionWriteContract
++  add \reg, \reg, #:lo12:MadeiraFEXTransitionWriteContract
++  add \reg, \reg, #24
++  ldar \reg, [\reg]
++  cbnz \reg, .Lmadeira_xp_ready\@
++  adrp \reg, IosXpFex
++  add \reg, \reg, #:lo12:IosXpFex
++.Lmadeira_xp_ready\@:
++.endm
+ // ml1131: add 1 to the sp-sharded counter at IosXpFex + \off. Clobbers \a, \b.
+ .macro IOS_XP_COUNT off, a, b
+-  adrp \a, IosXpFex
+-  add \a, \a, #:lo12:IosXpFex
++  IOS_XP_WRITER \a
+   mov \b, sp
+   ubfx \b, \b, #16, #4
+   add \a, \a, \b, lsl #6
+@@ -298,8 +309,7 @@
+   str x16, [x28, #IOS_FRAME_XP_COUNT]
+   tst x16, #63
+   b.ne 2f
+-  adrp x16, IosXpFex
+-  add x16, x16, #:lo12:IosXpFex
++  IOS_XP_WRITER x16
+   mov x23, sp
+   ubfx x23, x23, #16, #4
+   add x17, x16, x23, lsl #6
+@@ -366,8 +376,7 @@
+   // ml1131: count this x64->EC call (x9 = target as the caller addressed it) and
+   // append every 64th target of a shard to the ring. x4 (x64 R10, volatile at a
+   // call boundary), x16, x17 and x23 are clobbered on every path below anyway.
+-  adrp x16, IosXpFex
+-  add x16, x16, #:lo12:IosXpFex
++  IOS_XP_WRITER x16
+   mov x23, sp
+   ubfx x23, x23, #16, #4
+   add x17, x16, x23, lsl #6
+--- a/Source/Windows/ARM64EC/libarm64ecfex_ios.def
++++ b/Source/Windows/ARM64EC/libarm64ecfex_ios.def
+@@ -53,6 +53,7 @@
+   MadeiraFEXIRTopoWriteContract DATA
+   MadeiraFEXCompileWriteContract DATA
+   MadeiraFEXHistoryWriteContract DATA
++  MadeiraFEXTransitionWriteContract DATA
+ 
+ ; ARM64EC native tracker uses one owner-heap address for its full lifetime.
+   IosInvalidationHeapABIV1 DATA

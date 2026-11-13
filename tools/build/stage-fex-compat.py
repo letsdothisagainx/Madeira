@@ -34,9 +34,10 @@ PATCH = ROOT / 'build/fex-compat/thread-init.patch'
 PATCHES = ('thread-init.patch', 'guest-write.patch', 'compiler-startup.patch', 'ir-pool-failure.patch',
            'arena-exports.patch', 'lookup-blocklist.patch', 'hold-release.patch', 'thread-retire.patch',
            'subfloor-domain.patch', 'native-diagnostics.patch', 'native-tracker-storage.patch',
-           'code-buffer-guard.patch')
+           'code-buffer-guard.patch', 'transition-writer.patch', 'wow-syscall-writer.patch')
 ARM64EC_FILES = ('Source/Windows/ARM64EC/Module.cpp', 'Source/Windows/ARM64EC/libarm64ecfex_ios.def',
-                 'Source/Windows/ARM64EC/IosJitAlias.cpp', 'Source/Windows/ARM64EC/CMakeLists.txt')
+                 'Source/Windows/ARM64EC/IosJitAlias.cpp', 'Source/Windows/ARM64EC/CMakeLists.txt',
+                 'Source/Windows/ARM64EC/Module.S')
 
 
 def files_for(backend):

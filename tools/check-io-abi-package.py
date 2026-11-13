@@ -120,7 +120,7 @@ def producer(data):
     assert PRODUCER in data, 'stale WoW64 IOSB producer'
 
 
-def fex_diagnostics_contracts(data):
+def fex_diagnostics_contracts(data, backend=None):
     """Prove exact private writer descriptors in the packaged native CPU.
 
     Payloads may be legitimate zero-fill DATA. Tags, lengths and canonical
@@ -129,10 +129,10 @@ def fex_diagnostics_contracts(data):
     """
     data = bytes(data)
     required = {
-        b'MadeiraFEXTelemetryWriteContract': (0x31544d584546574d, 136),
-        b'MadeiraFEXIRTopoWriteContract': (0x315249584546574d, 32),
-        b'MadeiraFEXCompileWriteContract': (0x314243584546574d, 48),
-        b'MadeiraFEXHistoryWriteContract': (0x314852584546574d, 192),
+        b'MadeiraFEXTelemetryWriteContract': (0x31544d584546574d, 136, 8),
+        b'MadeiraFEXIRTopoWriteContract': (0x315249584546574d, 32, 8),
+        b'MadeiraFEXCompileWriteContract': (0x314243584546574d, 48, 8),
+        b'MadeiraFEXHistoryWriteContract': (0x314852584546574d, 192, 8),
     }
     pe = struct.unpack_from('<I', data, 0x3c)[0]
     assert data[:2] == b'MZ' and data[pe:pe + 4] == b'PE\0\0', 'invalid diagnostics PE'
@@ -159,8 +159,8 @@ def fex_diagnostics_contracts(data):
                 return raw + rva - start
         raise AssertionError('diagnostics descriptor/metadata must be file-backed')
 
-    def private_data(rva, size):
-        return not rva & 7 and any(start <= rva and rva - start <= span and size <= span - (rva - start)
+    def private_data(rva, size, alignment=8):
+        return not rva & (alignment - 1) and any(start <= rva and rva - start <= span and size <= span - (rva - start)
                                   and flags & 0xf2000000 == 0xc0000000
                                   for start, span, _, _, flags in sections)
 
@@ -174,7 +174,19 @@ def fex_diagnostics_contracts(data):
     module_end = data.find(b'\0', module_at, module_at + 64)
     assert module_end >= module_at, 'unterminated native CPU module name'
     offset(module_rva, module_end - module_at + 1)
-    assert data[module_at:module_end].lower() in (b'libarm64ecfex.dll', b'xtajit64.dll', b'libwow64fex.dll', b'xtajit.dll'), 'foreign native diagnostics module'
+    module_name = data[module_at:module_end].lower()
+    assert module_name in (b'libarm64ecfex.dll', b'xtajit64.dll', b'libwow64fex.dll', b'xtajit.dll'), 'foreign native diagnostics module'
+    module_backend = 'arm64ec' if module_name in (b'libarm64ecfex.dll', b'xtajit64.dll') else 'wow64'
+    assert backend is None or backend == module_backend, 'native diagnostic backend/module mismatch'
+    transition_name = b'MadeiraFEXTransitionWriteContract'
+    syscall_name = b'MadeiraFEXSyscallWriteContract'
+    if module_backend == 'arm64ec':
+        required[transition_name] = (0x315058584546574d, 4496 * 8, 64)
+        writer_contract, writer_export, writer_bytes, writer_alignment = transition_name, b'IosXpFex', 4496 * 8, 64
+    else:
+        required[syscall_name] = (0x315359584546574d, 4, 4)
+        writer_contract, writer_export, writer_bytes, writer_alignment = syscall_name, b'MadeiraFEXSyscallDeclined', 4, 4
+    writer_payload = None
     found = {}
     spans = []
     writers = []
@@ -185,6 +197,13 @@ def fex_diagnostics_contracts(data):
         assert end >= at, 'unterminated diagnostics export name'
         offset(name_rva, end - at + 1)
         name = data[at:end]
+        if name == writer_export:
+            assert writer_payload is None, 'duplicate native writer payload export'
+            ordinal = struct.unpack_from('<H', data, offset(ordinals + 2 * i, 2))[0]
+            assert ordinal < function_count, 'invalid native writer payload ordinal'
+            writer_payload = struct.unpack_from('<I', data, offset(functions + 4 * ordinal, 4))[0]
+            assert not directory <= writer_payload < directory + directory_bytes, 'forwarded native writer payload export'
+            assert private_data(writer_payload, writer_bytes, writer_alignment), 'native writer payload must be aligned private non-executable RW DATA'
         if name not in required:
             continue
         assert name not in found, 'duplicate native diagnostic contract'
@@ -194,15 +213,58 @@ def fex_diagnostics_contracts(data):
         assert not directory <= contract < directory + directory_bytes, 'forwarded native diagnostic contract'
         assert private_data(contract, 32), 'native diagnostic contract must be private non-executable RW DATA'
         tag, length, alignment, canonical, writer = struct.unpack_from('<QIIQQ', data, offset(contract, 32))
-        assert (tag, length) == required[name] and alignment == 8, 'native diagnostic descriptor differs from source ABI'
+        assert (tag, length, alignment) == required[name], 'native diagnostic descriptor differs from source ABI'
         assert writer == 0, 'native diagnostic writer must be NULL in package'
         assert canonical >= preferred, 'foreign native diagnostic payload pointer'
         payload = canonical - preferred
-        assert private_data(payload, length), 'native diagnostic payload must be wholly private non-executable RW DATA'
+        assert private_data(payload, length, alignment), 'native diagnostic payload must be wholly private non-executable RW DATA'
         found[name] = (contract, payload, length)
         spans.extend(((contract, 32), (payload, length)))
         writers.append(contract + 24)
     assert set(found) == set(required), 'stale native CPU missing private diagnostic contracts'
+    assert writer_payload is not None, 'stale native CPU missing writer payload DATA export'
+    assert found[writer_contract][1] == writer_payload, 'native writer must bind the exact exported ' + writer_export.decode('ascii') + ' payload'
+    if module_backend == 'arm64ec':
+        # The hand-written transition probes must load this copy's writer,
+        # preserving their original canonical-address fallback for an unbound
+        # image. Inspect only CHPE-proven native ARM64 code, never x64 thunks.
+        config_rva, config_bytes = struct.unpack_from('<II', data, optional + 112 + 10 * 8)
+        assert config_bytes >= 208, 'transition writer requires native CHPE metadata'
+        config = offset(config_rva, 208)
+        metadata_va = struct.unpack_from('<Q', data, config + 200)[0]
+        assert metadata_va >= preferred, 'transition writer requires native CHPE metadata'
+        metadata = offset(metadata_va - preferred, 12)
+        version, code_map, code_count = struct.unpack_from('<III', data, metadata)
+        assert version in (1, 2) and 0 < code_count <= 65536, 'invalid transition writer native code map'
+
+        def address_pair(first, second, pc):
+            if first & 0x9f00001f != 0x90000010 or second & 0xffc003ff != 0x91000210:
+                return None
+            pages = ((first >> 29) & 3) | (((first >> 5) & 0x7ffff) << 2)
+            if pages & 0x100000:
+                pages -= 0x200000
+            return (pc & ~0xfff) + pages * 4096 + ((second >> 10) & 0xfff)
+
+        writer_sequences = 0
+        previous_end = 0
+        for i in range(code_count):
+            encoded, size = struct.unpack_from('<II', data, offset(code_map + 8 * i, 8))
+            start = encoded & ~3
+            assert encoded & 3 <= 2 and size and start <= image_size and size <= image_size - start and start >= previous_end, 'invalid transition writer native code partition'
+            previous_end = start + size
+            if encoded & 3 != 1:
+                continue
+            assert size and not size & 3 and any(base <= start and start + size <= base + span
+                       and flags & 0xe0000000 == 0x60000000
+                       for base, span, _, _, flags in sections), 'transition writer native code must be RX'
+            words = struct.unpack_from('<' + 'I' * (size // 4), data, offset(start, size))
+            for at in range(len(words) - 6):
+                if address_pair(words[at], words[at + 1], start + 4 * at) != found[transition_name][0]:
+                    continue
+                assert words[at + 2:at + 5] == (0x91006210, 0xc8dffe10, 0xb5000070), 'transition writer must add writer offset 24, use LDAR x16 and preserve its NULL fallback'
+                assert address_pair(words[at + 5], words[at + 6], start + 4 * (at + 5)) == writer_payload, 'transition writer fallback must use exact IosXpFex payload'
+                writer_sequences += 1
+        assert writer_sequences == 4, 'stale transition probes: four native writer-load/fallback sequences required'
     for i, (start, size) in enumerate(spans):
         assert not any(start < other + length and other < start + size for other, length in spans[:i]), 'native diagnostic spans overlap'
     relocations, relocation_bytes = struct.unpack_from('<II', data, optional + 112 + 5 * 8)
@@ -254,7 +316,7 @@ def fex_cpu(data, backend):
                       require_hybrid=backend == 'arm64ec',
                       data_exports={b'IosSubfloorProtocolV1': 0x4d53460100000001,
                                     b'IosInvalidationHeapABIV1': 0x4d49480100000001} if backend == 'arm64ec' else None)
-    fex_diagnostics_contracts(data)
+    fex_diagnostics_contracts(data, backend)
 
 
 def native_ntdll_contract(path, machine):
@@ -280,7 +342,7 @@ def check(staged, app, ipa):
     assert b'[cs2-window-geometry-v1]' in native, 'stale native original-window geometry observer'
     assert b'[subfloor-contract-v1]' in native, 'stale native fixed-image subfloor protocol consumer'
     assert b'[native-srw-alias-v1]' in native, 'stale native private SRW writer binder'
-    assert b'[fex-native-diagnostics-v1] module=%s spans=4 action=%s' in native, 'stale native private FEX diagnostic writer binder (four spans required)'
+    assert b'[fex-native-diagnostics-v1] module=%s spans=%u action=%s' in native, 'stale native private FEX diagnostic writer binder (five validated spans required)'
     assert b'[hold-release-v2]' in native and b'[deliver-hold-v2]' in native, 'native FEX hold-release boundary missing'
     assert b'[native-window-retire-v1]' in native, 'native dead-window layer cleanup missing'
     assert b'_winios_native_window_create' in native and b'_winios_native_window_retire' in native, 'native window lifecycle bridge missing'

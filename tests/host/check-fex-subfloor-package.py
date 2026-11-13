@@ -22,19 +22,23 @@ def load_module(name,path):
 
 
 def fex_fixture(backend='arm64ec'):
-    data=bytearray(0x3400);pe=0x80;opt=0x98
+    data=bytearray(0xc400 if backend=='arm64ec' else 0x3400);pe=0x80;opt=0x98
     def put(fmt,off,*args):struct.pack_into(fmt,data,off,*args)
     data[:2]=b'MZ';put('<I',0x3c,pe);data[pe:pe+4]=b'PE\0\0'
-    put('<HHIIIHH',pe+4,0x8664 if backend=='arm64ec' else 0xaa64,3,0,0,0,240,0x2022)
-    put('<H',opt,0x20b);put('<Q',opt+24,0x180000000);put('<II',opt+56,0x4000,0x400);put('<I',opt+108,16)
+    put('<HHIIIHH',pe+4,0x8664 if backend=='arm64ec' else 0xaa64,4 if backend=='arm64ec' else 3,0,0,0,240,0x2022)
+    put('<H',opt,0x20b);put('<Q',opt+24,0x180000000);put('<II',opt+56,0x19000 if backend=='arm64ec' else 0x4000,0x400);put('<I',opt+108,16)
     put('<II',opt+112,0x1000,0x300)
     sections={}
     for index,(name,rva,raw,flags) in enumerate(((b'.edata',0x1000,0x400,0x40000040),(b'.data',0x2000,0x1400,0xc0000040),(b'.text',0x3000,0x2400,0x60000020))):
         off=opt+240+index*40;data[off:off+len(name)]=name
         put('<IIII',off+8,0x1000,rva,0x1000,raw);put('<I',off+36,flags);sections[name.decode()]=off
+    if backend=='arm64ec':
+        off=opt+240+3*40;data[off:off+3]=b'.xp'
+        put('<IIII',off+8,0x9000,0x10000,0x9000,0x3400);put('<I',off+36,0xc0000040);sections['.xp']=off
     def raw(rva):
         for start,base in ((0x1000,0x400),(0x2000,0x1400),(0x3000,0x2400)):
             if start<=rva<start+0x1000:return base+rva-start
+        if backend=='arm64ec' and 0x10000<=rva<0x19000:return 0x3400+rva-0x10000
         raise AssertionError(rva)
     names=[b'ios_fex_band_base',b'ios_fex_band_end']
     targets=[0x2000,0x2008]
@@ -58,6 +62,21 @@ def fex_fixture(backend='arm64ec'):
         names.append(name);targets.append(contract)
         put('<QIIQQ',raw(contract),tag,length,8,0x180000000+payload,0)
         diagnostics[name]=(contract,payload,length)
+    if backend=='arm64ec':
+        name=b'MadeiraFEXTransitionWriteContract';contract=0x2180;payload=0x10000
+        names += [name,b'IosXpFex'];targets += [contract,payload]
+        put('<QIIQQ',raw(contract),0x315058584546574d,4496*8,64,0x180000000+payload,0)
+        diagnostics[name]=(contract,payload,4496*8)
+        def pair(pc,target):
+            pages=(target//0x1000-pc//0x1000)&0x1fffff
+            return (0x90000010|((pages&3)<<29)|((pages>>2)<<5),0x91000210|((target&0xfff)<<10))
+        for pc in (0x3040,0x3080,0x30c0,0x3100):
+            put('<7I',raw(pc),*pair(pc,contract),0x91006210,0xc8dffe10,0xb5000070,*pair(pc+20,payload))
+    else:
+        name=b'MadeiraFEXSyscallWriteContract';contract=0x2180;payload=0x2e00
+        names += [name,b'MadeiraFEXSyscallDeclined'];targets += [contract,payload]
+        put('<QIIQQ',raw(contract),0x315359584546574d,4,4,0x180000000+payload,0)
+        diagnostics[name]=(contract,payload,4)
     module=b'libarm64ecfex.dll\0' if backend=='arm64ec' else b'libwow64fex.dll\0'
     data[raw(0x17c0):raw(0x17c0)+len(module)]=module
     put('<I',raw(0x1000)+12,0x17c0)

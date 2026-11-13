@@ -1,0 +1,47 @@
+--- a/Source/Windows/WOW64/Module.cpp
++++ b/Source/Windows/WOW64/Module.cpp
+@@ -49,6 +49,7 @@
+ #include "BTInterface.h"
+ #include "Windows/Common/SHMStats.h"
+ 
++#include MADEIRA_FEX_NATIVE_DIAGNOSTICS_HEADER
+ #include <cstdint>
+ #include <cstdlib> // MADEIRA ml1430: getenv for MADEIRA_WOW_SYSCALL_SWEEP
+ #include <type_traits>
+@@ -1025,9 +1026,18 @@
+   uint64_t Target; // DispatcherLoopTopFillSRA when NewSP != 0
+ };
+ 
++/* Preserve the diagnostic count and its relaxed atomic operation. Only the
++ * native writer is bound to this private image's retained writable alias. */
++extern "C" {
++alignas(8) std::atomic<uint32_t> MadeiraFEXSyscallDeclined {0};
++MadeiraFEXNativeWriteContract MadeiraFEXSyscallWriteContract = {
++  MadeiraFEXSyscallTag, sizeof(MadeiraFEXSyscallDeclined), alignof(decltype(MadeiraFEXSyscallDeclined)),
++  &MadeiraFEXSyscallDeclined, 0};
++}
++
+ extern "C" IosSyscallResume IosWowSyscallC(FEXCore::HLE::SyscallHandler* Obj, FEXCore::Core::CpuStateFrame* Frame,
+                                            FEXCore::HLE::SyscallArguments* Args, uint64_t CallerSP) {
+-  static std::atomic<uint32_t> Redirects {0}, Declined {0};
++  static std::atomic<uint32_t> Redirects {0};
+   const auto TLS = GetTLS();
+   auto* TD = GetFrontendThreadData(TLS.ThreadState());
+   const uint32_t Depth = TD->IosSyscallDepth++;
+@@ -1040,7 +1050,7 @@
+   bool Arm = TD->IosSweepRegistered && Depth == 0 && ResumeAt != 0;
+   if (Arm && (DispatcherSP < CallerSP || DispatcherSP - CallerSP > 0x2000 || (DispatcherSP & 15))) {
+     Arm = false;
+-    if (Declined.fetch_add(1, std::memory_order_relaxed) < 4) {
++    if (MadeiraFEXNativeWriter(MadeiraFEXSyscallWriteContract, MadeiraFEXSyscallDeclined).fetch_add(1, std::memory_order_relaxed) < 4) {
+       LogMan::Msg::EFmt("[wow-sweep] ml1430 not parked: dispatcher sp {:#x} caller sp {:#x}", DispatcherSP, CallerSP);
+     }
+   }
+--- a/Source/Windows/WOW64/libwow64fex.def
++++ b/Source/Windows/WOW64/libwow64fex.def
+@@ -40,3 +40,5 @@
+   MadeiraFEXIRTopoWriteContract DATA
+   MadeiraFEXCompileWriteContract DATA
+   MadeiraFEXHistoryWriteContract DATA
++  MadeiraFEXSyscallWriteContract DATA
++  MadeiraFEXSyscallDeclined DATA

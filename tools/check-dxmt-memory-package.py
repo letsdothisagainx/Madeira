@@ -18,7 +18,7 @@ FARMS = ('aarch64-windows', 'arm64ec-windows', 'i386-windows')
 MODULES = {'d3d11.dll': 'D3D11CreateDevice', 'dxgi.dll': 'CreateDXGIFactory1',
            'd3d10core.dll': 'D3D10CoreCreateDevice', 'winemetal.dll': None}
 MANIFEST = 'arm64ec-windows/madeira-dxmt-memory.json'
-PE_MARKERS = (b'[dynamic-memory-pressure-v1]', b'policy=bounded-hot-v2', b'[upload-memory-v1]')
+PE_MARKERS = (b'[dynamic-memory-pressure-v1]', b'policy=bounded-hot-v2', b'storage=owner-heap-v1', b'[upload-memory-v1]')
 NATIVE_MARKERS = (*PE_MARKERS, b'[madeira-memory-pressure-v1]')
 RECIPES = (
     'tools/build/stage-dxmt-memory-compat.py', 'tools/build/stage-dxmt-upload-memory.py',

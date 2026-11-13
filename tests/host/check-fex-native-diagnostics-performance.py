@@ -67,7 +67,7 @@ def prepare(work):
 #include <cassert>
 #include <cstdint>
 #include "native_diagnostics.h"
-#define FEX_DIAG_IMAGE_SIZE 0x10000u
+#define FEX_DIAG_IMAGE_SIZE 0x20000u
 #define FEX_DIAG_CONTRACT 0x5000u
 #define FEX_DIAG_TELEMETRY 0x6000u
 #define FEX_DIAG_IRTOPO 0x6200u
@@ -132,7 +132,7 @@ inline MadeiraFEXDiagnostics::CallRetHistoryState& DiagnosticCanonicalHistory() 
     (work / 'production-fex-diagnostics-source.h').write_text(header)
     (work / 'production-fex-diagnostics-fixture.h').write_text(r'''
 #include "native_fex_diagnostics_alias.h"
-enum { FEX_DIAG_IMAGE_SIZE=0x10000,FEX_DIAG_CONTRACT=0x5000,FEX_DIAG_TELEMETRY=0x6000,FEX_DIAG_IRTOPO=0x6200,FEX_DIAG_COMPILE=0x6400,FEX_DIAG_HISTORY=0x6600 };
+enum { FEX_DIAG_IMAGE_SIZE=0x20000,FEX_DIAG_CONTRACT=0x5000,FEX_DIAG_TELEMETRY=0x6000,FEX_DIAG_IRTOPO=0x6200,FEX_DIAG_COMPILE=0x6400,FEX_DIAG_HISTORY=0x6600,FEX_DIAG_TRANSITION=0x8000 };
 static void diag_w16(unsigned char *p,size_t at,uint16_t value){memcpy(p+at,&value,2);}
 static void diag_w32(unsigned char *p,size_t at,uint32_t value){memcpy(p+at,&value,4);}
 static void diag_w64(unsigned char *p,size_t at,uint64_t value){memcpy(p+at,&value,8);}
@@ -141,19 +141,21 @@ static void diagnostic_pe_fixture(unsigned char *p) {
   diag_w16(p,0x84,0xaa64);diag_w16(p,0x86,3);diag_w16(p,0x94,0xf0);diag_w16(p,0x98,0x20b);
   diag_w64(p,0xb0,0x180000000ULL);diag_w32(p,0xd0,FEX_DIAG_IMAGE_SIZE);diag_w32(p,0x104,16);
   diag_w32(p,0x108,0x1000);diag_w32(p,0x10c,0x1000);
-  const uint32_t starts[]={0x1000,0x2000,0x4000},lengths[]={0x1000,0x1000,0x4000},flags[]={0x40000040,0x60000020,0xc0000040};
+  const uint32_t starts[]={0x1000,0x2000,0x4000},lengths[]={0x1000,0x1000,0x1c000},flags[]={0x40000040,0x60000020,0xc0000040};
   for(unsigned i=0;i<3;i++){size_t a=0x188+i*40;diag_w32(p,a+8,lengths[i]);diag_w32(p,a+12,starts[i]);diag_w32(p,a+16,lengths[i]);diag_w32(p,a+36,flags[i]);}
   diag_w32(p,0x1000+12,0x1180);strcpy((char*)p+0x1180,"libarm64ecfex.dll");
-  diag_w32(p,0x1000+20,4);diag_w32(p,0x1000+24,4);diag_w32(p,0x1000+28,0x1100);diag_w32(p,0x1000+32,0x1120);diag_w32(p,0x1000+36,0x1140);
-  const char *names[]={"MadeiraFEXTelemetryWriteContract","MadeiraFEXIRTopoWriteContract","MadeiraFEXCompileWriteContract","MadeiraFEXHistoryWriteContract"};
-  const uint64_t tags[]={MADEIRA_FEX_TELEMETRY_TAG,MADEIRA_FEX_IRTOPO_TAG,MADEIRA_FEX_COMPILE_TAG,MADEIRA_FEX_HISTORY_TAG};
-  const uint32_t payloads[]={FEX_DIAG_TELEMETRY,FEX_DIAG_IRTOPO,FEX_DIAG_COMPILE,FEX_DIAG_HISTORY},length[]={136,32,48,192};
-  for(unsigned i=0;i<4;i++){
+  diag_w32(p,0x1000+20,6);diag_w32(p,0x1000+24,6);diag_w32(p,0x1000+28,0x1100);diag_w32(p,0x1000+32,0x1120);diag_w32(p,0x1000+36,0x1140);
+  const char *names[]={"MadeiraFEXTelemetryWriteContract","MadeiraFEXIRTopoWriteContract","MadeiraFEXCompileWriteContract","MadeiraFEXHistoryWriteContract","MadeiraFEXTransitionWriteContract"};
+  const uint64_t tags[]={MADEIRA_FEX_TELEMETRY_TAG,MADEIRA_FEX_IRTOPO_TAG,MADEIRA_FEX_COMPILE_TAG,MADEIRA_FEX_HISTORY_TAG,MADEIRA_FEX_TRANSITION_TAG};
+  const uint32_t payloads[]={FEX_DIAG_TELEMETRY,FEX_DIAG_IRTOPO,FEX_DIAG_COMPILE,FEX_DIAG_HISTORY,FEX_DIAG_TRANSITION},length[]={136,32,48,192,35968};
+  for(unsigned i=0;i<5;i++){
     diag_w32(p,0x1100+4*i,FEX_DIAG_CONTRACT+64*i);diag_w32(p,0x1120+4*i,0x1200+64*i);diag_w16(p,0x1140+2*i,(uint16_t)i);
     strcpy((char*)p+0x1200+64*i,names[i]);diag_w64(p,FEX_DIAG_CONTRACT+64*i,tags[i]);
-    diag_w32(p,FEX_DIAG_CONTRACT+64*i+8,length[i]);diag_w32(p,FEX_DIAG_CONTRACT+64*i+12,8);
+    diag_w32(p,FEX_DIAG_CONTRACT+64*i+8,length[i]);diag_w32(p,FEX_DIAG_CONTRACT+64*i+12,i==4?64:8);
     diag_w64(p,FEX_DIAG_CONTRACT+64*i+16,0x180000000ULL+payloads[i]);
   }
+  diag_w32(p,0x1100+4*5,FEX_DIAG_TRANSITION);diag_w32(p,0x1120+4*5,0x1200+64*5);diag_w16(p,0x1140+2*5,5);
+  strcpy((char*)p+0x1200+64*5,"IosXpFex");
 }
 ''')
 

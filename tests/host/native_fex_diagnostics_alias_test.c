@@ -9,18 +9,18 @@
 #include "native_fex_diagnostics_alias.h"
 #include "native_srw_alias.h"
 
-enum { SIZE=0x10000,PE=0x80,OPT=PE+24,TABLE=OPT+0xf0,CONTRACT=0x5000,
-       FUNCTIONS=0x1100,NAMES=0x1120,ORDINALS=0x1140,MODULE=0x1180,DIAGNOSTICS=4 };
+enum { SIZE=0x20000,PE=0x80,OPT=PE+24,TABLE=OPT+0xf0,CONTRACT=0x5000,
+       FUNCTIONS=0x1100,NAMES=0x1120,ORDINALS=0x1140,MODULE=0x1180,DIAGNOSTICS=5 };
 static const uintptr_t preferred=UINT64_C(0x180000000),source=UINT64_C(0x500000000),
     rx=UINT64_C(0x300000000),other=UINT64_C(0x380000000);
 static const intptr_t delta=0x48000000;
-static const unsigned payloads[]={0x6000,0x6200,0x6400,0x6600};
-static const unsigned lengths[]={136,32,48,192};
+static const unsigned payloads[]={0x6000,0x6200,0x6400,0x6600,0x8000};
+static const unsigned lengths[]={136,32,48,192,35968};
 static const char *names[]={"MadeiraFEXTelemetryWriteContract","MadeiraFEXIRTopoWriteContract",
-                            "MadeiraFEXCompileWriteContract","MadeiraFEXHistoryWriteContract"};
+                            "MadeiraFEXCompileWriteContract","MadeiraFEXHistoryWriteContract","MadeiraFEXTransitionWriteContract"};
 /* Tags follow the production ABI, rather than a parallel definition. */
 static const uint64_t tags[]={MADEIRA_FEX_TELEMETRY_TAG,MADEIRA_FEX_IRTOPO_TAG,
-                              MADEIRA_FEX_COMPILE_TAG,MADEIRA_FEX_HISTORY_TAG};
+                              MADEIRA_FEX_COMPILE_TAG,MADEIRA_FEX_HISTORY_TAG,MADEIRA_FEX_TRANSITION_TAG};
 static unsigned checks;
 static void w16(unsigned char*p,size_t a,uint16_t n){memcpy(p+a,&n,2);}
 static void w32(unsigned char*p,size_t a,uint32_t n){memcpy(p+a,&n,4);}
@@ -38,22 +38,34 @@ static unsigned char *fixture(unsigned machine,uintptr_t domain){
     w32(p,OPT+112,0x1000);w32(p,OPT+116,0x1000);
     section(p,0,".edata",0x1000,0x1000,0x40000040);
     section(p,1,".text",0x2000,0x1000,0x60000020);
-    section(p,2,".data",0x4000,0x4000,0xc0000040);
+    section(p,2,".data",0x4000,0x14000,0xc0000040);
     w32(p,0x1000+12,MODULE);memcpy(p+MODULE,"libarm64ecfex.dll",17);
-    w32(p,0x1000+20,DIAGNOSTICS);w32(p,0x1000+24,DIAGNOSTICS);w32(p,0x1000+28,FUNCTIONS);
+    w32(p,0x1000+20,DIAGNOSTICS+1);w32(p,0x1000+24,DIAGNOSTICS+1);w32(p,0x1000+28,FUNCTIONS);
     w32(p,0x1000+32,NAMES);w32(p,0x1000+36,ORDINALS);
     for(unsigned i=0;i<DIAGNOSTICS;i++){
         w32(p,FUNCTIONS+4*i,CONTRACT+64*i);w32(p,NAMES+4*i,0x1200+64*i);w16(p,ORDINALS+2*i,i);
         memcpy(p+0x1200+64*i,names[i],strlen(names[i])+1);
         w64(p,CONTRACT+64*i,tags[i]);w32(p,CONTRACT+64*i+8,lengths[i]);
-        w32(p,CONTRACT+64*i+12,8);w64(p,CONTRACT+64*i+16,domain+payloads[i]);
+        w32(p,CONTRACT+64*i+12,i==4?64:8);w64(p,CONTRACT+64*i+16,domain+payloads[i]);
         memset(p+payloads[i],0xa0+i,lengths[i]);
     }
+    w32(p,FUNCTIONS+4*DIAGNOSTICS,payloads[4]);w32(p,NAMES+4*DIAGNOSTICS,0x1400);
+    w16(p,ORDINALS+2*DIAGNOSTICS,DIAGNOSTICS);memcpy(p+0x1400,"IosXpFex",9);
+    return p;
+}
+static unsigned char *wow_fixture(void){
+    unsigned char*p=fixture(0xaa64,preferred);
+    memset(p+MODULE,0,64);memcpy(p+MODULE,"libwow64fex.dll",15);
+    memset(p+0x1300,0,64);memcpy(p+0x1300,"MadeiraFEXSyscallWriteContract",30);
+    memset(p+0x1400,0,64);memcpy(p+0x1400,"MadeiraFEXSyscallDeclined",25);
+    w64(p,CONTRACT+4*64,MADEIRA_FEX_SYSCALL_TAG);
+    w32(p,CONTRACT+4*64+8,4);w32(p,CONTRACT+4*64+12,4);
     return p;
 }
 static void check_layout(unsigned char*p,uintptr_t use_rx){
     struct ios_native_fex_diagnostics_layout layout;
     assert(ios_native_fex_diagnostics_layout_read(p,SIZE,source,use_rx,delta,&layout));
+    assert(layout.spans==DIAGNOSTICS);
     for(unsigned i=0;i<DIAGNOSTICS;i++){
         assert(layout.slots[i]==slot(i));assert(layout.payloads[i]==payloads[i]);
         assert(layout.values[i]==use_rx+payloads[i]+delta);
@@ -92,6 +104,9 @@ static void accepted(void){
     w32(p,0x1920,0x2001);w32(p,0x1924,0x1000);
     check_layout(p,rx);assert(ios_native_fex_diagnostics_bind(p,SIZE,source,rx,delta,1));
     free(p);checks++;
+    p=wow_fixture();check_layout(p,rx);
+    assert(ios_native_fex_diagnostics_bind(p,SIZE,source,rx,delta,1)==DIAGNOSTICS);
+    assert(pointer(p,slot(4))==rx+payloads[4]+delta);free(p);checks++;
 }
 static void rejected(unsigned char*p,const char*why){
     unsigned char*before=malloc(SIZE);assert(before);memcpy(before,p,SIZE);
@@ -113,7 +128,7 @@ static void negatives(void){
     BAD("pointer overflow",w64(p,CONTRACT+16,UINT64_MAX-7));
     BAD("unaligned payload",w64(p,CONTRACT+16,preferred+payloads[0]+1));
     BAD("payload outside DATA",w64(p,CONTRACT+16,preferred+0x3000));
-    BAD("payload crosses DATA end",w64(p,CONTRACT+16,preferred+0x7ff8));
+    BAD("payload crosses DATA end",w64(p,CONTRACT+16,preferred+0x17ff8));
     BAD("contract overlaps payload",w64(p,CONTRACT+16,preferred+CONTRACT));
     BAD("payload overlaps other payload",w64(p,CONTRACT+16,preferred+payloads[1]));
     BAD("payload overlaps other contract",w64(p,CONTRACT+16,preferred+CONTRACT+64));
@@ -121,7 +136,7 @@ static void negatives(void){
     BAD("duplicate contract export",w32(p,NAMES+4,0x1200));
     BAD("forwarded export",w32(p,FUNCTIONS,0x1200));
     BAD("missing contract export",p[0x1200]='X');
-    BAD("bad ordinal",w16(p,ORDINALS,DIAGNOSTICS));
+    BAD("bad ordinal",w16(p,ORDINALS,DIAGNOSTICS+1));
     BAD("truncated export table",w32(p,0x1000+28,SIZE-4));
     BAD("section overlap",w32(p,TABLE+2*40+12,0x2800));
     BAD("executable DATA",w32(p,TABLE+2*40+36,0xe0000040));
@@ -133,9 +148,20 @@ static void negatives(void){
     BAD("AMD64 guest image",w16(p,PE+4,0x8664));
     BAD("foreign module name",p[MODULE]='X');
     BAD("wrong image size",w32(p,OPT+56,SIZE-0x1000));
+    BAD("missing transition contract",p[0x1300]='X');
+    BAD("wrong transition tag",w64(p,CONTRACT+4*64,0));
+    BAD("wrong transition length",w32(p,CONTRACT+4*64+8,35960));
+    BAD("wrong transition alignment",w32(p,CONTRACT+4*64+12,8));
+    BAD("missing IosXpFex export",p[0x1400]='X');
+    BAD("transition is another DATA object",w64(p,CONTRACT+4*64+16,preferred+0x9000));
+    BAD("unaligned IosXpFex export",w32(p,FUNCTIONS+4*DIAGNOSTICS,payloads[4]+8));
     BAD("writer relocation",w32(p,OPT+152,0x1a00);w32(p,OPT+156,12);
         w32(p,0x1a00,CONTRACT);w32(p,0x1a04,12);w16(p,0x1a08,0xa018));
 #undef BAD
+    p=wow_fixture();w32(p,CONTRACT+4*64+8,8);rejected(p,"WOW counter width changed");
+    p=wow_fixture();w32(p,CONTRACT+4*64+12,8);rejected(p,"WOW counter alignment changed");
+    p=wow_fixture();w64(p,CONTRACT+4*64+16,preferred+0x8008);rejected(p,"WOW writer targets another object");
+    p=wow_fixture();p[0x1400]='X';rejected(p,"WOW counter export missing");
     p=fixture(0xaa64,preferred);
     assert(!ios_native_fex_diagnostics_bind(p,SIZE,source,rx,0,1));
     assert(!ios_native_fex_diagnostics_bind(p,SIZE,source,rx,1,1));
@@ -226,5 +252,5 @@ int main(void){
     (void)ios_native_srw_alias_bind;
     (void)ios_native_counter_alias_bind;
     accepted();negatives();synchronize();concurrent_refresh();
-    printf("PASS production FEX diagnostics alias: %u native contracts/copy boundaries; preferred/source/RX/RW proof, foreign/malformed spans refused, old production sync loses writers, new private writer publication stable in16000 concurrent refreshes\n",checks);
+    printf("PASS production FEX diagnostics alias: %u native contracts/copy boundaries; preferred/source/RX/RW proof, foreign/malformed spans refused, old production sync loses writers, new private writer publication stable in20000 concurrent refreshes\n",checks);
 }

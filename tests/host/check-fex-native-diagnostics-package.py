@@ -22,6 +22,7 @@ for backend in ('wow64', 'arm64ec'):
     found = checker.fex_diagnostics_contracts(original)
     assert found == meta['diagnostics']
     assert found[b'MadeiraFEXHistoryWriteContract'][2] == 192
+    assert len(found) == 5
     checker.fex_cpu(bytes(original), backend)
     raw, opt = meta['raw'], meta['opt']
 
@@ -41,12 +42,15 @@ for backend in ('wow64', 'arm64ec'):
         at = raw(contract)
         reject(lambda b: struct.pack_into('<Q', b, at, 0), 'differs from source ABI')
         reject(lambda b: struct.pack_into('<I', b, at + 8, length - 1), 'differs from source ABI')
-        reject(lambda b: struct.pack_into('<I', b, at + 12, 4), 'differs from source ABI')
+        reject(lambda b: struct.pack_into('<I', b, at + 12, 8 if name == b'MadeiraFEXSyscallWriteContract' else 4), 'differs from source ABI')
         reject(lambda b: struct.pack_into('<Q', b, at + 24, 0x348002300), 'NULL in package')
         reject(lambda b: struct.pack_into('<Q', b, at + 16, 0x1000), 'foreign native diagnostic payload')
         reject(lambda b: struct.pack_into('<Q', b, at + 16, 0x180003000), 'wholly private')
-        reject(lambda b: struct.pack_into('<Q', b, at + 16, 0x180002ffc), 'wholly private')
-        reject(lambda b: struct.pack_into('<Q', b, at + 16, 0x180000000 + contract), 'spans overlap')
+        reject(lambda b: struct.pack_into('<Q', b, at + 16, 0x180002ffc),
+               'exact exported' if name == b'MadeiraFEXSyscallWriteContract' else 'wholly private')
+        reject(lambda b: struct.pack_into('<Q', b, at + 16, 0x180000000 + contract),
+               'wholly private' if name == b'MadeiraFEXTransitionWriteContract' else
+               'exact exported' if name == b'MadeiraFEXSyscallWriteContract' else 'spans overlap')
         reject(lambda b: b.__setitem__(meta['strings'][name], ord('x')), 'missing private diagnostic contracts')
         def relocate_writer(b):
             # This fixture has free metadata space; an actual DIR64 over the
@@ -60,8 +64,36 @@ for backend in ('wow64', 'arm64ec'):
     bss = bytearray(original)
     struct.pack_into('<I', bss, meta['sections']['.data'] + 16, 0x200)
     for i, (name, (contract, _, length)) in enumerate(found.items()):
-        struct.pack_into('<Q', bss, raw(contract) + 16, 0x180002800 + i * 0x100)
+        if name == b'MadeiraFEXTransitionWriteContract':
+            # Transition payload identity is fixed by its public DATA export.
+            # Its complete span may nevertheless be legitimate zero fill.
+            struct.pack_into('<I', bss, meta['sections']['.xp'] + 16, 0)
+        elif name == b'MadeiraFEXSyscallWriteContract':
+            pass # This explicit DATA export also keeps its exact identity in BSS.
+        else:
+            struct.pack_into('<Q', bss, raw(contract) + 16, 0x180002800 + i * 0x100)
     checker.fex_diagnostics_contracts(bss)
+    if backend == 'arm64ec':
+        transition = found[b'MadeiraFEXTransitionWriteContract'][0]
+        reject(lambda b: struct.pack_into('<Q', b, raw(transition) + 16, 0x180010040), 'exact exported IosXpFex')
+        reject(lambda b: struct.pack_into('<I', b, meta['slots'][b'IosXpFex'], 0x10040), 'exact exported IosXpFex')
+        reject(lambda b: struct.pack_into('<I', b, meta['slots'][b'IosXpFex'], 0x10008), 'aligned private')
+        reject(lambda b: b.__setitem__(meta['strings'][b'IosXpFex'], ord('x')), 'missing writer payload DATA export')
+        reject(lambda b: struct.pack_into('<I', b, raw(0x3048), 0x91004210), 'writer offset 24')
+        reject(lambda b: struct.pack_into('<I', b, raw(0x304c), 0xf9400210), 'LDAR x16')
+        reject(lambda b: struct.pack_into('<I', b, raw(0x3050), 0xb5000050), 'NULL fallback')
+        reject(lambda b: struct.pack_into('<I', b, raw(0x3058), 0x91010210), 'exact IosXpFex payload')
+        reject(lambda b: struct.pack_into('<I', b, raw(0x3040), 0xd503201f), 'four native writer-load')
+        def duplicate_native_map(b):
+            struct.pack_into('<I', b, raw(0x1400) + 8, 4)
+            for i in range(4):
+                struct.pack_into('<II', b, raw(0x1420) + 8 * i, 0x3001, 0x1000)
+        reject(duplicate_native_map, 'native code partition')
+    else:
+        syscall = found[b'MadeiraFEXSyscallWriteContract'][0]
+        reject(lambda b: struct.pack_into('<Q', b, raw(syscall) + 16, 0x180002804), 'exact exported MadeiraFEXSyscallDeclined')
+        reject(lambda b: struct.pack_into('<I', b, meta['slots'][b'MadeiraFEXSyscallDeclined'], 0x2804), 'exact exported MadeiraFEXSyscallDeclined')
+        reject(lambda b: b.__setitem__(meta['strings'][b'MadeiraFEXSyscallDeclined'], ord('x')), 'missing writer payload DATA export')
     reject(lambda b: struct.pack_into('<I', b, meta['sections']['.data'] + 16, 0x110), 'file-backed')
     reject(lambda b: b.__setitem__(raw(0x17c0), ord('x')), 'foreign native diagnostics module')
     reject(lambda b: struct.pack_into('<I', b, meta['sections']['.data'] + 36, 0xe0000040), 'non-executable RW DATA')

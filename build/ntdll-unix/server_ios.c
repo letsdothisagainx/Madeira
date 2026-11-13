@@ -1331,7 +1331,7 @@ static void ios_guest_rip_profile( int gen )
         for (t = 0; t < ntg; t++) {
             arm_thread_state64_t st; mach_msg_type_number_t cnt = ARM_THREAD_STATE64_COUNT;
             uint64_t bb = 0, rip; const char *why = "";
-            thread_basic_info_data_t bi; mach_msg_type_number_t bic = THREAD_BASIC_INFO_COUNT; int running = 0;
+            thread_basic_info_data_t bi; mach_msg_type_number_t bic = THREAD_BASIC_INFO_COUNT; int running = 0, native_callee = 0;
             if (thread_info( tg[t], THREAD_BASIC_INFO, (thread_info_t)&bi, &bic ) == KERN_SUCCESS) running = (bi.run_state == TH_STATE_RUNNING);
             if (thread_suspend( tg[t] ) != KERN_SUCCESS) continue;
             /* ml981: read the guest RIP DIRECTLY out of the FEX frame, not via
@@ -1347,8 +1347,10 @@ static void ios_guest_rip_profile( int gen )
              * entire run), which is why the earlier data was so sparse.
              *
              * The SEGV handler does not infer: it reads the frame, whose layout
-             * it documents as "+0x18 rip, then gregs[0..15]". Do the same -- one
-             * 8-byte read at x28+0x18 is authoritative wherever the host pc is. */
+             * it documents as "+0x18 rip, then gregs[0..15]". This is the last
+             * synchronized guest RIP, not the current instruction inside a
+             * running JIT block. Attribute execution with the host-PC class
+             * and block metadata; do not call this saved caller a spin loop. */
             if (thread_get_state( tg[t], ARM_THREAD_STATE64, (thread_state_t)&st, &cnt ) == KERN_SUCCESS
                 && ios_ts_read( st.__x[28] + 0x18, &bb, 8 )
                 && (rip = bb) > 0x10000 && rip < 0x8000000000ull)
@@ -1367,6 +1369,7 @@ static void ios_guest_rip_profile( int gen )
                         c = ios_jit_pool_image_pc( st.__pc, &pe_at ) ? 1 : 0;
                     else if (ios_jit_low_contains( st.__pc )) c = 0;
                     else c = 2;
+                    native_callee = c != 0;
                     cls[c]++;
                     if (c == 0) {   /* ml1124 */
                         uint64_t key = st.__pc & ~0x3full; int q;
@@ -1388,7 +1391,10 @@ static void ios_guest_rip_profile( int gen )
                     rtotal++;
                     for (i = 0; i < nrb; i++) if (rb[i].base == k) { rb[i].n++; break; }
                     if (i == nrb && nrb < ML979_BUCKETS) { rb[nrb].base = k; rb[nrb].n = 1; nrb++; }
-                    if (rip < 0x140000000ull || rip >= 0x148000000ull) {   /* not in the game image: native callee */
+                    /* Relocated game DLLs may be anywhere in the guest map.
+                     * Use the owned host image/JIT mapping classification,
+                     * never a historical cs2.exe preferred-base window. */
+                    if (native_callee) {
                         htotal++;
                         for (i = 0; i < nhb; i++) if (hb[i].base == hp) { hb[i].n++; break; }
                         if (i == nhb && nhb < ML979_BUCKETS) { hb[nhb].base = hp; hb[nhb].n = 1; nhb++; }
@@ -1427,7 +1433,7 @@ static void ios_guest_rip_profile( int gen )
             if (m != i) { uint64_t tb = rb[i].base; unsigned tn = rb[i].n; rb[i] = rb[m]; rb[m].base = tb; rb[m].n = tn; } }
         for (i = 0; i < nhb; i++) { int j, m = i; for (j = i + 1; j < nhb; j++) if (hb[j].n > hb[m].n) m = j;
             if (m != i) { uint64_t tb = hb[i].base; unsigned tn = hb[i].n; hb[i] = hb[m]; hb[m].base = tb; hb[m].n = tn; } }
-        n = snprintf( line, sizeof(line), "[rip-profile] ml1111 RUNNING samples=%u (%u%% of all) guest top:", rtotal, total ? rtotal * 100 / total : 0 );
+        n = snprintf( line, sizeof(line), "[rip-profile] ml1111 RUNNING samples=%u (%u%% of all) saved guest top:", rtotal, total ? rtotal * 100 / total : 0 );
         for (i = 0; i < nrb && i < 10 && n < (int)sizeof(line) - 60; i++)
             n += snprintf( line + n, sizeof(line) - n, " %#llx=%u%%", (unsigned long long)rb[i].base, rtotal ? (rb[i].n * 100) / rtotal : 0 );
         wine_log_write( "%s", line );

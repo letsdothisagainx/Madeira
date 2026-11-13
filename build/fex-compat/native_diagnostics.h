@@ -23,12 +23,16 @@ constexpr uint64_t MadeiraFEXTelemetryTag = UINT64_C(0x31544d584546574d);
 constexpr uint64_t MadeiraFEXIRTopoTag = UINT64_C(0x315249584546574d);
 constexpr uint64_t MadeiraFEXCompileTag = UINT64_C(0x314243584546574d);
 constexpr uint64_t MadeiraFEXHistoryTag = UINT64_C(0x314852584546574d);
+constexpr uint64_t MadeiraFEXTransitionTag = UINT64_C(0x315058584546574d);
+constexpr uint64_t MadeiraFEXSyscallTag = UINT64_C(0x315359584546574d);
 
 extern "C" {
 extern MadeiraFEXNativeWriteContract MadeiraFEXTelemetryWriteContract;
 extern MadeiraFEXNativeWriteContract MadeiraFEXIRTopoWriteContract;
 extern MadeiraFEXNativeWriteContract MadeiraFEXCompileWriteContract;
 extern MadeiraFEXNativeWriteContract MadeiraFEXHistoryWriteContract;
+extern MadeiraFEXNativeWriteContract MadeiraFEXTransitionWriteContract;
+extern MadeiraFEXNativeWriteContract MadeiraFEXSyscallWriteContract;
 }
 
 template<typename T>

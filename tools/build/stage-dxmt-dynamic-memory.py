@@ -25,19 +25,38 @@ REGISTRY = r'''
  * D3D11 references may outlive their parent queue. D3D9 stays unregistered.
  * Registry -> try_lock(instance), unregister BEFORE delete, no strong registry
  * ownership. Credit accounting is protected by the registry mutex. */
-static dxmt::mutex g_dynamic_registry_mutex;
-static DynamicBuffer *g_dynamic_registry_head = nullptr;
-static uint64_t g_dynamic_warm_cache_credit = 0;
-static MemoryPressureController g_dynamic_pressure_controller;
-static auto g_dynamic_pressure_decision = g_dynamic_pressure_controller.evaluate(MemoryPressureSnapshot{});
+namespace {
+struct DynamicRegistryState {
+  dxmt::mutex mutex;
+  DynamicBuffer *head = nullptr;
+  uint64_t warm_cache_credit = 0;
+  MemoryPressureController pressure_controller;
+  MemoryPressureDecision pressure_decision = pressure_controller.evaluate(MemoryPressureSnapshot{});
+  std::atomic<uint64_t> reports{0};
+};
+
+// Copied native images are executable/read-only. Publish one heap owner during
+// the same module initialization as the former registry globals; only its
+// immutable pointer stays in image data. This preserves their destruction
+// order, including resources held by statics populated after initialization.
+// Publication/teardown may use existing image-write recovery once; recurring
+// state mutations target heap memory. The owner releases this fixed-size
+// metadata normally at module teardown; allocation failure follows C++ new.
+static const auto g_dynamic_registry = std::make_unique<DynamicRegistryState>();
+
+static DynamicRegistryState &
+dynamicRegistryState() {
+  return *g_dynamic_registry;
+}
+} // namespace
 
 // All calls hold the registry mutex. An unknown reading grants no new credit,
 // but must not erase another thread's last valid emergency decision.
 static auto
 pressureDecisionLocked(const MemoryPressureSnapshot &pressure, uint64_t upcoming = 0) {
-  const auto decision = g_dynamic_pressure_controller.evaluate(pressure, upcoming);
-  if (decision.valid) g_dynamic_pressure_decision = decision;
-  return g_dynamic_pressure_decision;
+  const auto decision = dynamicRegistryState().pressure_controller.evaluate(pressure, upcoming);
+  if (decision.valid) dynamicRegistryState().pressure_decision = decision;
+  return dynamicRegistryState().pressure_decision;
 }
 
 uint64_t
@@ -92,12 +111,12 @@ void
 DynamicBuffer::updateLeaseLocked(uint64_t coherent_seq_id, uint64_t budget, bool critical, bool allow_new) {
   const bool hot = hotAtLocked(coherent_seq_id);
   const uint64_t desired = !critical && hot ? desiredCacheBytesLocked() : 0;
-  const uint64_t others = g_dynamic_warm_cache_credit - cache_credit_bytes_;
+  const uint64_t others = dynamicRegistryState().warm_cache_credit - cache_credit_bytes_;
   const uint64_t capacity = budget > others ? budget - others : 0;
   const uint64_t cost = allocationCostLocked();
   const uint64_t candidate = std::min(desired, allow_new ? capacity : cache_credit_bytes_);
   const uint64_t grant = cost ? (candidate / cost) * cost : 0;
-  g_dynamic_warm_cache_credit = others + grant;
+  dynamicRegistryState().warm_cache_credit = others + grant;
   cache_credit_bytes_ = grant;
   lease_attempt_epoch_ = coherent_seq_id;
   lease_pending_.store(false, std::memory_order_release);
@@ -114,7 +133,7 @@ void
 DynamicBuffer::EnsureWorkingSetLease(DynamicBuffer *dynamic, uint64_t coherent_seq_id, const MemoryPressureSnapshot &pressure) {
   if (!dynamic->lease_pending_.load(std::memory_order_acquire))
     return;
-  std::lock_guard<dxmt::mutex> registry_lock(g_dynamic_registry_mutex);
+  std::lock_guard<dxmt::mutex> registry_lock(dynamicRegistryState().mutex);
   const auto decision = pressureDecisionLocked(pressure);
   std::unique_lock<dxmt::mutex> instance_lock(dynamic->mutex_, std::try_to_lock);
   if (instance_lock.owns_lock())
@@ -193,7 +212,7 @@ DynamicBuffer::TrimCompletedForQueue(uint64_t queue_domain, uint64_t coherent_se
   const uint64_t upcoming = pending_request && pending_request->buffer ? pending_request->buffer->length() : 0;
   uint64_t warm_budget = 0;
   {
-    std::lock_guard<dxmt::mutex> registry_lock(g_dynamic_registry_mutex);
+    std::lock_guard<dxmt::mutex> registry_lock(dynamicRegistryState().mutex);
     // A pending requester reaches this path only after an actual reuse miss.
     // Let the controller compare its latest valid sample, not a stale caller's
     // half-reserve boolean. Explicit critical remains available for forced drain.
@@ -210,13 +229,13 @@ DynamicBuffer::TrimCompletedForQueue(uint64_t queue_domain, uint64_t coherent_se
       std::array<Rc<BufferAllocation>, 64> retired;
       size_t count = 0;
       {
-        std::lock_guard<dxmt::mutex> registry_lock(g_dynamic_registry_mutex);
+        std::lock_guard<dxmt::mutex> registry_lock(dynamicRegistryState().mutex);
         // Another requester may have latched emergency while this sweep released
         // its previous batch. Never grant warm credit from an older normal pass.
         const auto decision = pressureDecisionLocked(pressure, upcoming);
         critical = force_critical || decision.critical;
         warm_budget = critical ? 0 : decision.warm_cache_budget;
-        for (auto *dynamic = g_dynamic_registry_head; dynamic && count < retired.size(); dynamic = dynamic->registry_next_) {
+        for (auto *dynamic = dynamicRegistryState().head; dynamic && count < retired.size(); dynamic = dynamic->registry_next_) {
           if (dynamic->queue_domain_ != queue_domain) continue;
           // Credit is registry-owned metadata, so this read needs no instance
           // lock. Empty-but-credited cold owners must return their lease; wholly
@@ -263,10 +282,9 @@ DynamicBuffer::TrimCompletedForQueue(uint64_t queue_domain, uint64_t coherent_se
   if (detached_count) {
     g_trim_total_n.fetch_add(detached_count, std::memory_order_relaxed);
     g_trim_total_bytes.fetch_add(detached_bytes, std::memory_order_relaxed);
-    static std::atomic<uint64_t> reports{0};
-    const uint64_t report = reports.fetch_add(1, std::memory_order_relaxed);
+    const uint64_t report = dynamicRegistryState().reports.fetch_add(1, std::memory_order_relaxed);
     if (report < 4 || (report & 63) == 0)
-      ERR("[dynamic-memory-pressure-v1] policy=bounded-hot-v2 cache-detached=", detached_bytes,
+      ERR("[dynamic-memory-pressure-v1] policy=bounded-hot-v2 storage=owner-heap-v1 cache-detached=", detached_bytes,
           " entries=", detached_count, " coherent=", coherent_seq_id,
           " warm-budget=", warm_budget, " physical-freed=unmeasured");
   }
@@ -310,7 +328,7 @@ def stage_file(path, source):
   void recordQueuePushLocked();
   void recordQueuePopLocked(uint64_t bytes, uint64_t will_free_at);''')
     elif path == FILES[1]:
-        source = replace_once(source, '#include <algorithm>', '#include <algorithm>\n#include <array>\n#include "memory_pressure.hpp"')
+        source = replace_once(source, '#include <algorithm>', '#include <algorithm>\n#include <array>\n#include <memory>\n#include "memory_pressure.hpp"')
         source = replace_once(source, '\nDynamicBuffer::DynamicBuffer(', '\n' + REGISTRY + '\nDynamicBuffer::DynamicBuffer(')
         source = replace_once(source,
             'DynamicBuffer::DynamicBuffer(Buffer *buffer, Flags<BufferAllocationFlag> flags) :',
@@ -322,10 +340,10 @@ def stage_file(path, source):
             '    g_dyn_stats[census_id_].length.store(buffer ? buffer->length() : 0, std::memory_order_relaxed);\n}',
             '''    g_dyn_stats[census_id_].length.store(buffer ? buffer->length() : 0, std::memory_order_relaxed);
   if (queue_domain_) {
-    std::lock_guard<dxmt::mutex> registry_lock(g_dynamic_registry_mutex);
-    registry_next_ = g_dynamic_registry_head;
+    std::lock_guard<dxmt::mutex> registry_lock(dynamicRegistryState().mutex);
+    registry_next_ = dynamicRegistryState().head;
     if (registry_next_) registry_next_->registry_prev_ = this;
-    g_dynamic_registry_head = this;
+    dynamicRegistryState().head = this;
   }
 }''')
         source = replace_once(source,
@@ -333,11 +351,11 @@ def stage_file(path, source):
             '''    std::atomic_thread_fence(std::memory_order_acquire);
     if (queue_domain_) {
       // Remove before destructor begins: the registry pins the object lifetime.
-      std::lock_guard<dxmt::mutex> registry_lock(g_dynamic_registry_mutex);
+      std::lock_guard<dxmt::mutex> registry_lock(dynamicRegistryState().mutex);
       if (registry_prev_) registry_prev_->registry_next_ = registry_next_;
-      else g_dynamic_registry_head = registry_next_;
+      else dynamicRegistryState().head = registry_next_;
       if (registry_next_) registry_next_->registry_prev_ = registry_prev_;
-      g_dynamic_warm_cache_credit -= cache_credit_bytes_;
+      dynamicRegistryState().warm_cache_credit -= cache_credit_bytes_;
       cache_credit_bytes_ = 0;
     }
     if (census_id_ < DYN_CENSUS_SLOTS) {

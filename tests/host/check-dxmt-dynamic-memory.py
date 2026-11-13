@@ -8,8 +8,12 @@ the iPhone. A popped Rc is never reported as physical memory recovered here.
 """
 import importlib.util
 import hashlib
+import ctypes
+import os
 from pathlib import Path
+import signal
 import subprocess
+import sys
 import tempfile
 
 
@@ -205,8 +209,8 @@ int main() {
     require(backing.bytes==768,"normal pressure discarded bounded hot rename reserve");
     probe_dynamic=dynamic.ptr();
     release_probe=+[] {
-      require(g_dynamic_registry_mutex.try_lock(),"native destruction held registry mutex");
-      g_dynamic_registry_mutex.unlock();
+      require(dynamicRegistryState().mutex.try_lock(),"native destruction held registry mutex");
+      dynamicRegistryState().mutex.unlock();
       require(probe_dynamic->mutex_.try_lock(),"native destruction held instance mutex");
       probe_dynamic->mutex_.unlock();
     };
@@ -303,9 +307,9 @@ int main() {
     first->data[0]=0x4a; second->data[0]=0x4b;
     require(dynamic->fifo.empty() && !dynamic->has_cached_names_.load(),"consumed FIFO left a cached-name hint");
     require(dynamic->cache_credit_bytes_==old_credit,"consuming backing prematurely returned its warm credit");
-    const uint64_t total_credit=g_dynamic_warm_cache_credit;
+    const uint64_t total_credit=dynamicRegistryState().warm_cache_credit;
     DynamicBuffer::TrimCompletedForQueue(q1,100,false);
-    require(dynamic->cache_credit_bytes_==0 && g_dynamic_warm_cache_credit==total_credit-old_credit,
+    require(dynamic->cache_credit_bytes_==0 && dynamicRegistryState().warm_cache_credit==total_credit-old_credit,
             "empty credited owner retained its expired lease");
     require(first->data[0]==0x4a && second->data[0]==0x4b,"lease expiry reclaimed caller-owned backing");
     Buffer fresh;
@@ -317,7 +321,7 @@ int main() {
     DynamicBuffer::TrimCompletedForQueue(q1,101,false);
     require(active->cache_credit_bytes_>0,"expired empty credit was unavailable to a new active resource");
   }
-  require(g_dynamic_warm_cache_credit==0,"destroyed resources left orphan cache credit");
+  require(dynamicRegistryState().warm_cache_credit==0,"destroyed resources left orphan cache credit");
   {
     // Real log has thousands of resources renamed only once. The old per-object
     // 64-entry cache cap cannot reclaim even one entry from this workload.
@@ -537,7 +541,7 @@ int main() {
   };
   for (unsigned i=0;i<100;++i) create(2,0);
   DynamicBuffer::TrimCompletedForQueue(domain,3,false);
-  require(g_dynamic_warm_cache_credit>0,"batch fixture never obtained hot cache credit");
+  require(dynamicRegistryState().warm_cache_credit>0,"batch fixture never obtained hot cache credit");
   for (unsigned i=0;i<70;++i) create(1,3);
   release_probe=+[] {
     const auto older_normal=g_pressure;
@@ -546,13 +550,13 @@ int main() {
     // A second caller latches a newer emergency while the outer sweep has
     // dropped both locks to release its first fixed-size native batch.
     DynamicBuffer::TrimCompletedForQueue(0x9999,4,false);
-    require(g_dynamic_pressure_decision.critical,"newer caller failed to latch emergency pressure");
+    require(dynamicRegistryState().pressure_decision.critical,"newer caller failed to latch emergency pressure");
     g_pressure=older_normal;
   };
   DynamicBuffer::TrimCompletedForQueue(domain,4,false);
   require(release_probe==nullptr,"outer trim did not reach native release batch");
-  require(g_dynamic_pressure_decision.critical,"older normal snapshot erased newer emergency");
-  require(g_dynamic_warm_cache_credit==0,"outer normal pass regranted warm credit after newer emergency");
+  require(dynamicRegistryState().pressure_decision.critical,"older normal snapshot erased newer emergency");
+  require(dynamicRegistryState().warm_cache_credit==0,"outer normal pass regranted warm credit after newer emergency");
   for (auto &dynamic:dynamics) {
     require(dynamic->fifo.empty(),"outer normal batch retained hot cache after newer emergency");
     require(dynamic->immediateName()->data[0]==0x67,"emergency batch corrupted current backing");
@@ -562,8 +566,8 @@ int main() {
   g_pressure.valid=false;
   create(2,5);
   DynamicBuffer::TrimCompletedForQueue(domain,6,false);
-  require(g_dynamic_pressure_decision.critical,"unknown snapshot erased last valid emergency");
-  require(g_dynamic_warm_cache_credit==0 && dynamics.back()->cache_credit_bytes_==0,
+  require(dynamicRegistryState().pressure_decision.critical,"unknown snapshot erased last valid emergency");
+  require(dynamicRegistryState().warm_cache_credit==0 && dynamics.back()->cache_credit_bytes_==0,
           "unknown pressure granted a new warm-cache lease");
   require(dynamics.back()->fifo.empty(),"unknown snapshot disabled the previously latched emergency drain");
   require(backing.bytes==dynamics.size()*256,"batch retirement released current or retained spare backing");
@@ -583,6 +587,19 @@ def function_body(source, signature):
     raise ValueError("unterminated production function: "+signature)
 
 
+def registry_storage_names(source):
+    """Adapt private storage identifiers after validating pinned historical code."""
+    for old, new in (
+        ("g_dynamic_registry_mutex", "dynamicRegistryState().mutex"),
+        ("g_dynamic_registry_head", "dynamicRegistryState().head"),
+        ("g_dynamic_warm_cache_credit", "dynamicRegistryState().warm_cache_credit"),
+        ("g_dynamic_pressure_controller", "dynamicRegistryState().pressure_controller"),
+        ("g_dynamic_pressure_decision", "dynamicRegistryState().pressure_decision"),
+    ):
+        source=source.replace(old,new)
+    return source
+
+
 def installed_pressure_trim(source):
     fixture=ROOT/"tests/host/fixtures/dynamic-buffer-installed-pressure-trim.cpp"
     contents=fixture.read_text()
@@ -591,6 +608,8 @@ def installed_pressure_trim(source):
     body=function_body(contents,signature)
     expected="63f6d9097fd534eb140819a30c2ea455a2430d97c17719255d9ca765014a1005"
     assert hashlib.sha256((body+"\n").encode()).hexdigest()==expected,"installed trim fixture changed"
+    # Validate the historical body before adapting only its private storage names.
+    body=registry_storage_names(body)
     current=function_body(source,signature)
     if "pending_request" in current[:current.index("{")]:
         body=body.replace("bool critical) {","bool critical, const DynamicBuffer *pending_request) {",1)
@@ -722,6 +741,252 @@ def compile_and_run(directory, name, header, implementation, main):
     return subprocess.run([str(exe)], text=True, capture_output=True, timeout=60)
 
 
+REGISTRY_IMAGE_PRELUDE = r'''
+#include <sys/mman.h>
+#include <sys/resource.h>
+#include <unistd.h>
+#define REGISTRY_IMAGE __attribute__((section("dynamic_registry_image"), aligned(65536), used))
+extern "C" char __start_dynamic_registry_image[], __stop_dynamic_registry_image[];
+static void protectRegistryImage(bool readonly) {
+  const long page=sysconf(_SC_PAGESIZE);
+  require(page>0 && 65536%page==0,"unsupported protection-page size");
+  const auto begin=reinterpret_cast<uintptr_t>(__start_dynamic_registry_image);
+  const auto end=reinterpret_cast<uintptr_t>(__stop_dynamic_registry_image);
+  require(begin%page==0 && end%page==0,"registry image section shares a protection page");
+  require(mprotect(reinterpret_cast<void *>(begin),end-begin,
+                   PROT_READ | (readonly?PROT_EXEC:PROT_WRITE))==0,
+          "could not change registry image protection");
+}
+'''
+
+
+REGISTRY_IMAGE_MAIN = r'''
+int main() {
+  using namespace dxmt;
+  const rlimit no_core{0,0};
+  require(setrlimit(RLIMIT_CORE,&no_core)==0,"could not disable fixture core files");
+  constexpr uint64_t domain=0x9890;
+  Buffer buffer;
+  Rc<DynamicBuffer> dynamic=new DynamicBuffer(&buffer,{},domain);
+  for (unsigned rename=0;rename<2;++rename) {
+    dynamic->updateImmediateName(1,dynamic->allocate(0),0,false);
+    auto old=buffer.rename(dynamic->immediateName()); old=nullptr;
+  }
+  DynamicBuffer::TrimCompletedForQueue(domain,3,false);
+  require(dynamic->cache_credit_bytes_>0,"protected-image fixture did not earn warm credit");
+#ifndef WRITABLE_IMAGE_GLOBALS
+  protectRegistryImage(true);
+#endif
+#if defined(BEFORE_IMAGE_GLOBALS) && !defined(WRITABLE_IMAGE_GLOBALS)
+  // The exact production trim now attempts its old warm-credit store in RX
+  // image storage. The parent requires the resulting real protection fault.
+  DynamicBuffer::TrimCompletedForQueue(domain,4,true);
+  require(false,"old mutable image credit unexpectedly accepted a store");
+#else
+#ifndef BEFORE_IMAGE_GLOBALS
+  const auto image_begin=reinterpret_cast<uintptr_t>(__start_dynamic_registry_image);
+  const auto image_end=reinterpret_cast<uintptr_t>(__stop_dynamic_registry_image);
+  const auto state=reinterpret_cast<uintptr_t>(&dynamicRegistryState());
+  require(state<image_begin || state>=image_end,"registry state remained in protected image storage");
+#endif
+  // Registration, warm-credit changes, controller samples, capped report
+  // counters, and unregister all execute while the real owner slot is RX.
+  for (uint64_t iteration=0;iteration<128;++iteration) {
+    ++g_pressure.sampled_ns;
+    Buffer next;
+    Rc<DynamicBuffer> active=new DynamicBuffer(&next,{},domain);
+    for (unsigned rename=0;rename<2;++rename) {
+      active->updateImmediateName(iteration*8+9,active->allocate(iteration*8+8),0,false);
+      auto old=next.rename(active->immediateName()); old=nullptr;
+    }
+    DynamicBuffer::TrimCompletedForQueue(domain,iteration*8+11,false);
+    require(active->cache_credit_bytes_>0,"RX owner prevented a warm-cache lease");
+    DynamicBuffer::TrimCompletedForQueue(domain,iteration*8+12,true);
+    require(active->cache_credit_bytes_==0,"RX owner prevented critical credit return");
+  }
+  require(dynamicRegistryState().warm_cache_credit==0,"protected-image stress retained orphan credit");
+  require(dynamicRegistryState().reports.load()>=128,"protected-image stress omitted mutable report counter");
+  protectRegistryImage(false); // Ordinary module teardown may clear its owner slot.
+  std::cout << "registry-policy credit=" << dynamicRegistryState().warm_cache_credit
+            << " backing=" << backing.bytes.load() << " trim-n=" << g_trim_total_n.load()
+            << " trim-bytes=" << g_trim_total_bytes.load() << " reports="
+            << dynamicRegistryState().reports.load() << '\n';
+  std::cout << "PASS actual DynamicBuffer: RX image owner, 128 heap-state registry/lease/trim cycles without protection fault\n";
+#endif
+}
+'''
+
+
+REGISTRY_LIFETIME_MAIN = r'''
+namespace dxmt {
+struct LatePopulatedRegistryResource {
+  std::unique_ptr<Buffer> buffer;
+  Rc<DynamicBuffer> dynamic;
+  ~LatePopulatedRegistryResource() {
+    require(registry_state_destructions==0,"registry died before a static resource holder");
+    dynamic=nullptr;
+    buffer=nullptr;
+  }
+} late_registry_resource;
+}
+int main() {
+  using namespace dxmt;
+  require(registry_state_allocations==1,"registry owner allocated more than once during module initialization");
+  require(registry_state_bytes==sizeof(DynamicRegistryState) && registry_state_bytes<=512,
+          "registry metadata allocation grew beyond its fixed-size bound");
+  auto *state=&dynamicRegistryState();
+  std::atomic<bool> failed{false};
+  std::vector<std::thread> threads;
+  for (unsigned worker=0;worker<8;++worker) threads.emplace_back([&,worker] {
+    if (&dynamicRegistryState()!=state) failed=true;
+    for (unsigned iteration=0;iteration<32;++iteration) {
+      Buffer buffer;
+      Rc<DynamicBuffer> dynamic=new DynamicBuffer(&buffer,{},0x9891+worker);
+      dynamic->updateImmediateName(1,dynamic->allocate(0),0,false);
+      auto old=buffer.rename(dynamic->immediateName()); old=nullptr;
+      DynamicBuffer::TrimCompletedForQueue(0x9891+worker,2,true);
+    }
+  });
+  for (auto &thread:threads) thread.join();
+  require(!failed && registry_state_allocations==1,"concurrent registry use created another owner");
+  require(dynamicRegistryState().head==nullptr,"concurrent registry users left a registered resource");
+  late_registry_resource.buffer=std::make_unique<Buffer>();
+  late_registry_resource.dynamic=new DynamicBuffer(late_registry_resource.buffer.get(),{},0x9899);
+  std::cout << "PASS actual DynamicBuffer: one fixed-size heap owner (" << sizeof(DynamicRegistryState)
+            << " bytes), concurrent use, late-populated static resource lifetime\n";
+}
+'''
+
+
+def registry_block(source):
+    start=source.index("namespace {\nstruct DynamicRegistryState {")
+    end=source.index("} // namespace",start)+len("} // namespace")
+    return source[start:end]
+
+
+def legacy_registry_storage_names(source):
+    for old,new in (
+        ("mutex","g_dynamic_registry_mutex"),
+        ("head","g_dynamic_registry_head"),
+        ("warm_cache_credit","g_dynamic_warm_cache_credit"),
+        ("pressure_controller","g_dynamic_pressure_controller"),
+        ("pressure_decision","g_dynamic_pressure_decision"),
+        ("reports","g_dynamic_reports"),
+    ):
+        source=source.replace("dynamicRegistryState()."+old,new)
+    return source
+
+
+def protected_registry_source(source, before):
+    owner="static const auto g_dynamic_registry = std::make_unique<DynamicRegistryState>();"
+    assert source.count(owner)==1,"registry owner initialization contract changed"
+    padding="\nstatic unsigned char g_registry_image_padding[65536] REGISTRY_IMAGE = {};\n"
+    if not before:
+        return source.replace(owner,owner.replace(" =", " REGISTRY_IMAGE =",1)+padding,1)
+    # Reconstruct only the pre-fix private storage. All methods, pressure policy,
+    # locks, counters and cache limits remain the production code under test.
+    globals_source=r'''
+static dxmt::mutex g_dynamic_registry_mutex;
+static DynamicBuffer *g_dynamic_registry_head = nullptr;
+static uint64_t g_dynamic_warm_cache_credit REGISTRY_IMAGE = 0;
+static MemoryPressureController g_dynamic_pressure_controller;
+static auto g_dynamic_pressure_decision = g_dynamic_pressure_controller.evaluate(MemoryPressureSnapshot{});
+static std::atomic<uint64_t> g_dynamic_reports{0};
+'''+padding
+    source=source.replace(registry_block(source),globals_source,1)
+    return legacy_registry_storage_names(source)
+
+
+def compile_protected_registry(directory, name, header, implementation, before, writable=False):
+    cpp=directory/(name+".cpp")
+    exe=directory/name
+    main=REGISTRY_IMAGE_MAIN
+    if before: main="#define BEFORE_IMAGE_GLOBALS\n"+legacy_registry_storage_names(main)
+    if writable: main="#define WRITABLE_IMAGE_GLOBALS\n"+main
+    cpp.write_text(prelude()+census_types()+COUNTERS+REGISTRY_IMAGE_PRELUDE
+                   +dynamic_header(header)+dynamic_methods(protected_registry_source(implementation,before))+main)
+    # ASan replaces SIGSEGV handling; use the OS's real RX-page fault here.
+    subprocess.run(["g++","-std=c++20","-O1","-g","-pthread","-fno-toplevel-reorder",
+                    "-I",str(ROOT/"dxmt/src/util"),str(cpp),"-o",str(exe)],check=True)
+    return subprocess.run([str(exe)],text=True,capture_output=True,timeout=30)
+
+
+def tracked_registry_source(source):
+    start="namespace {\nstruct DynamicRegistryState {"
+    assert source.count(start)==1
+    tracked=r'''
+namespace {
+static uint64_t registry_state_allocations=0,registry_state_destructions=0;
+static uint64_t registry_state_deallocations=0,registry_state_bytes=0;
+struct RegistryAllocationBalance {
+  ~RegistryAllocationBalance() {
+    require(registry_state_allocations==1 && registry_state_destructions==1 &&
+            registry_state_deallocations==1,"registry owner did not destroy and free its allocation normally");
+    std::cout << "PASS registry module teardown: state destructor and ordinary delete exactly once\n";
+  }
+} registry_allocation_balance;
+struct DynamicRegistryState {
+  static void *operator new(size_t bytes) {
+    ++registry_state_allocations; registry_state_bytes+=bytes;
+    return ::operator new(bytes);
+  }
+  static void operator delete(void *pointer) {
+    ++registry_state_deallocations; ::operator delete(pointer);
+  }
+  ~DynamicRegistryState() {
+    require(head==nullptr && warm_cache_credit==0,"registry owner died while resources or credit remained live");
+    ++registry_state_destructions;
+  }
+'''
+    return source.replace(start,tracked,1)
+
+
+def check_registry_image_isolation(directory, implementation):
+    block=registry_block(implementation)
+    exported=r'''
+extern "C" {
+__attribute__((visibility("default"))) uintptr_t registry_owner_address() {
+  return reinterpret_cast<uintptr_t>(&g_dynamic_registry);
+}
+__attribute__((visibility("default"))) uintptr_t registry_state_address() {
+  return reinterpret_cast<uintptr_t>(&dynamicRegistryState());
+}
+__attribute__((visibility("default"))) uint64_t registry_credit() {
+  return dynamicRegistryState().warm_cache_credit;
+}
+__attribute__((visibility("default"))) void registry_set_credit(uint64_t value) {
+  dynamicRegistryState().warm_cache_credit=value;
+}
+}
+'''
+    libraries=[]
+    for name in ("registry-first","registry-second"):
+        cpp=directory/(name+".cpp")
+        shared=directory/(name+(".dylib" if sys.platform=="darwin" else ".so"))
+        cpp.write_text(prelude()+"namespace dxmt { class DynamicBuffer;\n"+block+exported+"}\n")
+        shared_flag="-dynamiclib" if sys.platform=="darwin" else "-shared"
+        subprocess.run(["g++","-std=c++20","-O1",shared_flag,"-fPIC","-fvisibility=hidden",
+                        "-I",str(ROOT/"dxmt/src/util"),str(cpp),"-o",str(shared)],check=True)
+        library=ctypes.CDLL(str(shared),mode=os.RTLD_LOCAL|os.RTLD_NOW)
+        library.registry_owner_address.restype=ctypes.c_size_t
+        library.registry_state_address.restype=ctypes.c_size_t
+        library.registry_credit.restype=ctypes.c_uint64
+        library.registry_set_credit.argtypes=[ctypes.c_uint64]
+        libraries.append(library)
+    first,second=libraries
+    assert first.registry_owner_address()!=second.registry_owner_address(),"loaded images merged private owner slots"
+    assert first.registry_state_address()!=second.registry_state_address(),"loaded images shared mutable registry state"
+    first.registry_set_credit(73)
+    assert first.registry_credit()==73 and second.registry_credit()==0,"one loaded image changed another's warm credit"
+    second.registry_set_credit(29)
+    assert first.registry_credit()==73 and second.registry_credit()==29,"loaded-image heap owners are not isolated"
+    first.registry_set_credit(0)
+    second.registry_set_credit(0)
+    import _ctypes
+    for library in libraries: _ctypes.dlclose(library._handle)
+    print("PASS actual registry owner declaration: two RTLD_LOCAL images retain independent owner slots and heap state")
+
+
 def queue_domain_fixture():
     spec = importlib.util.spec_from_file_location("upload_stage", ROOT / "tools/build/stage-dxmt-upload-memory.py")
     stage = importlib.util.module_from_spec(spec)
@@ -747,6 +1012,29 @@ def main():
     new_buffer = stage.STAGES["src/dxmt/dxmt_buffer.cpp"](old_buffer)
     with tempfile.TemporaryDirectory(prefix="dxmt-dynamic-memory-") as directory:
         directory = Path(directory)
+        if sys.platform=="linux":
+            # Dedicated ELF sections isolate the real owner/credit storage from
+            # unrelated globals. Mach-O hosts still run every ownership/cache
+            # test below; this page-protection fixture needs ELF start/stop symbols.
+            image_before=compile_protected_registry(directory,"before-registry-image",new_h,new_c,True)
+            assert image_before.returncode==-signal.SIGSEGV, image_before.stdout+image_before.stderr
+            print("BEFORE reproduced: actual trim warm-credit write faults in RX image metadata")
+            image_after=compile_protected_registry(directory,"after-registry-image",new_h,new_c,False)
+            assert image_after.returncode==0,image_after.stdout+image_after.stderr
+            print(image_after.stdout.strip())
+            image_writable=compile_protected_registry(directory,"before-registry-writable",new_h,new_c,True,True)
+            assert image_writable.returncode==0,image_writable.stdout+image_writable.stderr
+            policy=lambda result: next(line for line in result.stdout.splitlines() if line.startswith("registry-policy "))
+            assert policy(image_writable)==policy(image_after),image_writable.stdout+image_after.stdout
+            print("PASS writable old globals and RX owner/heap state preserve identical credit, live backing, trim totals and report counts")
+        else:
+            print("SKIP protected registry image pages: ELF-only fixture; ownership/cache tests remain enabled")
+        lifecycle=compile_and_run(directory,"registry-owner-lifetime",new_h,
+                                  tracked_registry_source(new_c),REGISTRY_LIFETIME_MAIN)
+        assert lifecycle.returncode==0,lifecycle.stdout+lifecycle.stderr
+        assert "ordinary delete exactly once" in lifecycle.stdout,lifecycle.stdout+lifecycle.stderr
+        print(lifecycle.stdout.strip())
+        check_registry_image_isolation(directory,new_c)
         before = compile_and_run(directory,"before",old_h,old_c,OLD_MAIN)
         assert before.returncode != 0 and "one-shot retired backing retained" in before.stderr, before.stderr
         print(before.stderr.strip())
@@ -784,7 +1072,7 @@ def main():
     # Registry erase must happen before the lifetime ends at delete, and without
     # resurrecting an object whose intrusive reference count already reached zero.
     dec = new_c[new_c.index("DynamicBuffer::decRef()"):new_c.index("DynamicBuffer::allocate(")]
-    assert dec.index("g_dynamic_registry_mutex") < dec.index("delete this"), "unregister after object lifetime ended"
+    assert dec.index("dynamicRegistryState().mutex") < dec.index("delete this"), "unregister after object lifetime ended"
     assert dec.index("registry_prev_->registry_next_") < dec.index("delete this")
     trim = new_c[new_c.index("DynamicBuffer::TrimCompletedForQueue"):new_c.index("DynamicBuffer::incRef()")]
     assert "incRef" not in trim, "pressure scanner must not resurrect a zero-ref object"
