@@ -398,7 +398,7 @@ done
     result=run()
     assert result.returncode and 'FEX DATA capability value differs from source ABI' in result.stderr, result.stderr
     ec_cpu_path.write_bytes(ec_cpu)
-    print('PASS stale ARM64EC subfloor DATA capability fails actual final packaging; both CPUs require tracker heap storage')
+    print('PASS stale ARM64EC subfloor DATA capability fails actual final packaging; WoW64 retains the d73 tracker contract')
     result=run({'STALE_EC_CPU':'1'})
     assert result.returncode and 'Xcode packaged stale ARM64EC FEX' in result.stderr, result.stderr
     for marker in (b'[fex-ir-pool-v1]', b'[fex-owner-allocator-v1]'):

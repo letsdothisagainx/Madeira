@@ -314,9 +314,8 @@ def fex_cpu(data, backend):
         assert marker in data, f'stale {backend} FEX shared protection: {marker!r}'
     fex_arena_exports(data, require_hold_release=backend == 'wow64', code_exports=code_exports,
                       require_hybrid=backend == 'arm64ec',
-                      data_exports=({b'IosSubfloorProtocolV1': 0x4d53460100000001,
-                                     b'IosInvalidationHeapABIV1': 0x4d49480100000001} if backend == 'arm64ec' else
-                                    {b'IosInvalidationHeapABIV1': 0x4d49480100000001}))
+                      data_exports={b'IosSubfloorProtocolV1': 0x4d53460100000001,
+                                    b'IosInvalidationHeapABIV1': 0x4d49480100000001} if backend == 'arm64ec' else None)
     fex_diagnostics_contracts(data, backend)
 
 

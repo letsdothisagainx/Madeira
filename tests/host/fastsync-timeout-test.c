@@ -138,9 +138,52 @@ static NTSTATUS wait_for(int64_t ticks)
     LARGE_INTEGER timeout = {ticks};
     return NtWaitForSingleObject((HANDLE)4, FALSE, &timeout);
 }
+static void fallback_contract(void)
+{
+    const int64_t values[] = {-5, -10000, 0, 123456789};
+    const NTSTATUS results[] = {STATUS_SUCCESS, STATUS_TIMEOUT, STATUS_INVALID_HANDLE,
+                               STATUS_ACCESS_DENIED, STATUS_ABANDONED_WAIT_0, STATUS_USER_APC};
+    HANDLE handle = (HANDLE)4;
+
+    for (unsigned missing = 0; missing < 2; ++missing)
+    for (unsigned value = 0; value <= sizeof(values) / sizeof(values[0]); ++value)
+    {
+        LARGE_INTEGER timeout = {value < sizeof(values) / sizeof(values[0]) ? values[value] : 0};
+        const LARGE_INTEGER *input = value < sizeof(values) / sizeof(values[0]) ? &timeout : NULL;
+        int64_t saved = timeout.QuadPart;
+        const LARGE_INTEGER *fallback = NULL;
+        LARGE_INTEGER store = {0x11223344};
+
+        reset(); enabled = missing; have_cell = !missing; peek = 0;
+        enabled_cost = lookup_cost = 20000;
+        CHECK(madeira_fast_wait(handle, input, &fallback, &store) == STATUS_NOT_IMPLEMENTED &&
+              fallback == input && timeout.QuadPart == saved && store.QuadPart == 0x11223344 &&
+              !clock_calls && !park_calls,
+              "inactive fallback retains original pointer/value with zero clock calls");
+
+        for (unsigned result = 0; result < sizeof(results) / sizeof(results[0]); ++result)
+        for (unsigned multi = 0; multi < 2; ++multi)
+        {
+            reset(); enabled = missing; have_cell = !missing; peek = 0;
+            enabled_cost = lookup_cost = 20000; server_status = results[result];
+            NTSTATUS status = multi ? NtWaitForMultipleObjects(1, &handle, WaitAny, FALSE, input) :
+                                      NtWaitForSingleObject(handle, FALSE, input);
+            CHECK(status == results[result] && server_calls == 1 && server_timeout_pointer == input &&
+                  server_timeout == (input ? saved : INT64_MAX) && timeout.QuadPart == saved &&
+                  !clock_calls && !park_calls,
+                  "inactive public dispatch preserves original server timeout and status/APC route");
+        }
+    }
+}
 int main(int argc, char **argv)
 {
     int original = argc > 1 && !strcmp(argv[1], "original");
+    fallback_contract();
+    if (argc > 1 && !strcmp(argv[1], "fallback-contract"))
+    {
+        printf("%s: %u inactive fallback checks, %u failures\n", failures ? "FAIL" : "PASS", checks, failures);
+        return failures ? 1 : 0;
+    }
     reset();
     CHECK(wait_for(-5) == STATUS_TIMEOUT && !park_calls && now_ns == 1009600 && server_timeout == 0,
           "initial spin exceeded relative deadline");
@@ -150,12 +193,12 @@ int main(int argc, char **argv)
           "adaptive spin must not be followed by another full relative park");
 
     reset(); lookup_cost = 3000; enabled_cost = 2000; consume_server_time = 1;
-    CHECK(wait_for(-10000) == STATUS_TIMEOUT && park_ns == 937400 && now_ns == 2000000 && server_timeout == 0,
-          "lookup, initial spin, adaptive spin and park share one deadline");
+    CHECK(wait_for(-10000) == STATUS_TIMEOUT && park_ns == 942400 && now_ns == 2005000 && server_timeout == 0,
+          "active initial spin, adaptive spin and park share one deadline after cell admission");
 
     reset(); lookup_cost = 3000; enabled_cost = 2000; madeira_fast_cap_ns = 100000;
-    CHECK(wait_for(-10000) == STATUS_TIMEOUT && park_ns == 100000 && server_timeout == -8374 && now_ns == 1162600,
-          "fallback debits total elapsed, beyond the park cap");
+    CHECK(wait_for(-10000) == STATUS_TIMEOUT && park_ns == 100000 && server_timeout == -8424 && now_ns == 1162600,
+          "active fallback debits spin and park elapsed, beyond the park cap");
 
     reset(); madeira_fast_spin_ns = 0; barrier_cost = 0; park_extra = 2000000;
     CHECK(wait_for(-10000) == STATUS_TIMEOUT && server_timeout == 0 && server_calls == 1,
@@ -189,20 +232,20 @@ int main(int argc, char **argv)
     for (unsigned i = 0; i < sizeof(results) / sizeof(results[0]); ++i)
     {
         reset(); have_cell = 0; lookup_cost = 20000; server_status = results[i];
-        CHECK(wait_for(-100) == results[i] && server_calls == 1 && server_timeout == 0 && !park_calls,
-              "expired lookup miss preserves server error/abandoned/APC response");
+        CHECK(wait_for(-100) == results[i] && server_calls == 1 && server_timeout == -100 && !park_calls && !clock_calls,
+              "lookup miss preserves original timeout and server error/abandoned/APC response");
         reset(); server_status = results[i];
         CHECK(wait_for(-5) == results[i] && server_calls == 1 && server_timeout == 0 && !park_calls,
               "expired spin preserves server error/abandoned/APC response");
     }
 
     reset(); have_cell = 0; lookup_cost = 2000;
-    CHECK(wait_for(-100) == STATUS_TIMEOUT && server_timeout == -80 && !park_calls,
-          "lookup miss charges actual elapsed without inventing a local status");
+    CHECK(wait_for(-100) == STATUS_TIMEOUT && server_timeout == -100 && !park_calls && !clock_calls,
+          "lookup miss retains original timeout without a clock read");
 
     reset(); enabled = 0; enabled_cost = 2000;
-    CHECK(wait_for(-100) == STATUS_TIMEOUT && server_timeout == -80 && !lookup_calls,
-          "disabled fast path preserves server route and relative deadline");
+    CHECK(wait_for(-100) == STATUS_TIMEOUT && server_timeout == -100 && !lookup_calls && !clock_calls,
+          "disabled fast path retains original timeout without a clock read");
 
     reset();
     CHECK(wait_for(0) == STATUS_TIMEOUT && !clock_calls && !park_calls && !server_calls,

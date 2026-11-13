@@ -358,10 +358,9 @@ PYCODE
             # given for the thread's name; with the variable unset it passes through.
             python3 "$REPO_ROOT/tools/build/stage-native-thread-exit.py" "$OBJ_DIR/sync_ios.c"
             python3 "$REPO_ROOT/tools/build/stage-htmlipc-section-trace.py" "$OBJ_DIR/sync_ios.c"
-            if ! python3 "$REPO_ROOT/tools/build/stage-fastsync-timeout.py" "$OBJ_DIR/sync_ios.c"; then
-                echo "Fastsync timeout staging failed; refusing to compile stale sync" >&2
-                exit 1
-            fi
+            # Preserve the multiplayer-capable d73 wait implementation. The
+            # timeout experiment is deliberately excluded from production:
+            # b832 changed even unarmed server fallbacks during Steam startup.
             SYNC_FAILED_BEFORE=$FAILED
             compile_one "$OBJ_DIR/sync_ios.c" "sync" -Dpthread_set_qos_class_self_np=madeira_guest_qos_self
             if [ "$FAILED" -ne "$SYNC_FAILED_BEFORE" ]; then

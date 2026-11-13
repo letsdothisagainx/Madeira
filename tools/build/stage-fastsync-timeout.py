@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Charge native fastsync lookup, spinning and parking to relative waits.
+"""Charge active native fastsync spinning and parking to relative waits.
 
 Only the generated iOS unix sync translation unit is changed. Expired waits
 still reach server_wait with a zero timeout, retaining its object, APC and
-error checks. Absolute deadlines and explicit zero polls keep their routes.
+error checks. Disabled/missing-cell paths, absolute deadlines and explicit
+zero polls retain the original timeout pointer and clock-free routing.
 """
 from pathlib import Path
 import sys
 
 SIGNATURE = "static NTSTATUS madeira_fast_wait( HANDLE handle, const LARGE_INTEGER *timeout,"
-MARKER = "/* Madeira: relative waits include lookup and both spin phases. */"
+MARKER = "/* Madeira: relative fast waits include both spin phases and parking. */"
 
 
 def replace_once(source, old, new):
@@ -27,18 +28,17 @@ def stage(source):
     body = replace_once(body,
         "    unsigned long long t0, spent = 0, budget_ns;",
         "    unsigned long long t0, spent = 0, budget_ns, wait_t0 = 0, timeout_ticks = 0;")
-    body = replace_once(body, "    *fallback = timeout;", """    *fallback = timeout;
-    /* Madeira: relative waits include lookup and both spin phases. */
+    body = replace_once(body,
+        "\n    for (i = 0; i < MADEIRA_FAST_SPIN; i++)\n", """
+    /* Madeira: relative fast waits include both spin phases and parking. */
     if (timeout && timeout->QuadPart < 0)
     {
         timeout_ticks = 0ull - (unsigned long long)timeout->QuadPart;
         wait_t0 = madeira_now_ns();
-    }""")
-    # Misses still use the original server route; charge the time spent learning
-    # a handle too. Do not alter the explicit zero-poll peek's return value.
-    if body.count("        return STATUS_NOT_IMPLEMENTED;") != 2:
-        raise ValueError("fastsync timeout overlay: unexpected early fallback paths")
-    body = body.replace("        return STATUS_NOT_IMPLEMENTED;", "        goto fallback;")
+    }
+
+    for (i = 0; i < MADEIRA_FAST_SPIN; i++)
+""")
     body = replace_once(body,
         "            unsigned long long s0 = madeira_now_ns();\n            for (;;)",
         """            unsigned long long s0 = madeira_now_ns();

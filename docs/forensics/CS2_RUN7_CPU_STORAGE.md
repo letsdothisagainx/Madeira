@@ -1,5 +1,11 @@
 # CS2 run 7: native metadata writes and finite-wait accounting
 
+**Recovery status after b832:** the DXMT corrections below remain enabled.
+The finite-wait overlay is excluded from the production build, and WOW64
+tracker storage has returned to the multiplayer-capable d73 implementation.
+The descriptions of those two experiments below are historical, not the
+current production policy. See [startup recovery](CS2_B832_STARTUP_RECOVERY.md).
+
 Evidence: installed source `d73f2583a79f7c402edaec3646f2d0d1d89c0752`,
 Madeira-Run-Diagnostics(7).zip. The remote connection reached full sign-on and
 timed out at 23:14:45; the later 23:15:34 connection was local loopback.
