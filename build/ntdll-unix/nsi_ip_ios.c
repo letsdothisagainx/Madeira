@@ -22,8 +22,10 @@
 
 /* iOS-Madeira: Wine's IPv4 and IPv6 providers for the in-process NSI.
  *
- * This translation unit compiles wine/dlls/nsiproxy.sys/ip.c unchanged (its
- * own copyright notice is in that file) for the iOS ntdll unix library; see
+ * This translation unit compiles an immutable, owned staging copy of
+ * wine/dlls/nsiproxy.sys/ip.c (its
+ * own copyright notice is in that file), correcting BSD route-row ownership
+ * and host-route masks, for the iOS ntdll unix library; see
  * nsi_network_ios.c. The iPhoneOS SDK omits a few optional BSD headers that
  * the macOS config.h announces, so their HAVE_* macros are dropped here and
  * ip.c takes its portable paths (the statistics it cannot read stay
@@ -51,6 +53,12 @@
 #undef HAVE_STRUCT_IP_STATS_IPS_TOTAL
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <net/route.h>
+/* Public BSD host-route flag, absent from the minimal iPhoneOS shim. */
+#ifndef RTF_HOST
+#define RTF_HOST 0x4
+#endif
+#include <stddef.h>
 
 /* The address that leads each NET_RT_FLAGS/RTF_LLINFO (neighbour) message,
  * normally from <netinet/if_ether.h>, which the iPhoneOS SDK omits. The
@@ -69,7 +77,10 @@ struct sockaddr_inarp
 };
 _Static_assert(sizeof(struct sockaddr_inarp) == 16, "Darwin sockaddr_inarp is 16 bytes");
 
-#include "../../wine/dlls/nsiproxy.sys/ip.c"
+#ifndef MADEIRA_NSI_IP_PROVIDER_HEADER
+#error "The owned BSD route provider must be staged before building nsi_ip"
+#endif
+#include MADEIRA_NSI_IP_PROVIDER_HEADER
 
 struct ipv6_addr_scope *get_ipv6_addr_scope_table( unsigned int *size )
 {

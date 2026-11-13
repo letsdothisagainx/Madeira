@@ -156,6 +156,9 @@ done
 python3 "$ROOT/tools/check-io-abi-package.py" \
   --staged "$ROOT/app/Madeira/aarch64-windows/wow64.dll" --app "$APP" --ipa "$DIST/Madeira.ipa"
 
+python3 "$ROOT/tools/check-ios-network-package.py" \
+  --native "$APP/Madeira.debug.dylib" --ipa "$DIST/Madeira.ipa"
+
 python3 "$ROOT/tools/check-system-programs.py" \
   --root "$ROOT/app/Madeira" --source-root "$ROOT/wine" --app "$APP" --ipa "$DIST/Madeira.ipa"
 python3 "$ROOT/tools/check-dxmt-memory-package.py" \

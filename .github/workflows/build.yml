@@ -438,6 +438,7 @@ jobs:
           git submodule update --init --depth 1 wine dxmt
           unzip -oq scm-ipa/Madeira.ipa 'Payload/Madeira.app/*-windows/d3d11.dll' 'Payload/Madeira.app/*-windows/dxgi.dll' 'Payload/Madeira.app/*-windows/d3d10core.dll' 'Payload/Madeira.app/*-windows/winemetal.dll' 'Payload/Madeira.app/arm64ec-windows/madeira-dxmt-memory.json' 'Payload/Madeira.app/Madeira.debug.dylib' -d scm-ipa
           python3 tools/check-dxmt-memory-package.py --root scm-ipa/Payload/Madeira.app --repo-root "$GITHUB_WORKSPACE" --ipa scm-ipa/Madeira.ipa
+          python3 tools/check-ios-network-package.py --native scm-ipa/Payload/Madeira.app/Madeira.debug.dylib --ipa scm-ipa/Madeira.ipa
           unzip -oq scm-ipa/Madeira.ipa 'Payload/Madeira.app/*-windows/crypt32.dll' 'Payload/Madeira.app/*-windows/kernelbase.dll' 'Payload/Madeira.app/arm64ec-windows/madeira-security-compat.json' -d scm-ipa
           python3 tools/check-security-compat-package.py --root scm-ipa/Payload/Madeira.app --source-root wine --repo-root "$GITHUB_WORKSPACE" --ipa scm-ipa/Madeira.ipa
           unzip -oq scm-ipa/Madeira.ipa 'Payload/Madeira.app/*-windows/advapi32.dll' 'Payload/Madeira.app/arm64ec-windows/madeira-registry-security.json' -d scm-ipa

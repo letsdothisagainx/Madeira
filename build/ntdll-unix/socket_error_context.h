@@ -1,4 +1,4 @@
-/* Bounded, read-only context for a genuinely failed native datagram send.
+/* Bounded, read-only context for a genuinely failed native datagram operation.
  * Do not read SO_ERROR here: that query consumes a pending transport error.
  * Never print addresses or packet contents, and never change route/socket
  * options. The caller supplies the errno captured immediately after sendmsg. */
@@ -9,6 +9,7 @@
 #include <pthread.h>
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
 
 #define IOS_SOCKET_ERROR_OWNERS 64
 #define IOS_SOCKET_ERROR_PROCESS_LIMIT 32
@@ -84,8 +85,96 @@ static int ios_socket_invalid_datagram_destination( const struct sockaddr *addre
     return !memcmp(a,zero,16) || (!memcmp(a,zero,10) && a[10] == 0xff && a[11] == 0xff && !memcmp(a+12,zero,4));
 }
 
-static void ios_socket_send_context( int fd, const struct msghdr *message, int flags,
-                                     int native_error, unsigned int status, int validation )
+/* First public, non-DNS native datagram boundary per owner and direction.
+ * This samples a kernel result, not a packet count, a paired request/reply or
+ * a Valve/authentication verdict. Explicit sockaddr metadata only: no route
+ * changes, peer queries, packet reads, endpoints or payload in the report. */
+static void ios_socket_datagram_progress( int fd, const struct msghdr *message, int flags,
+                                           long long bytes, unsigned int status, int send )
+{
+    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+    static struct { const void *owner; unsigned int pid, done; } owners[64];
+    static _Thread_local struct { const void *owner; unsigned int pid, done; } cached;
+    const unsigned int bit = send ? 1 : 2;
+    const struct sockaddr *address;
+    const void *owner;
+    unsigned int pid, tid, i, slot = 64;
+    const char *address_class;
+    unsigned short port;
+    int saved_errno, protocol = -1, emit = 0;
+#ifdef SO_PROTOCOL
+    socklen_t protocol_size = sizeof(protocol);
+#endif
+    struct timespec observed;
+    unsigned long long ns = 0;
+    unsigned int valid_time = 0;
+    char protocol_text[24];
+    TEB *teb = NtCurrentTeb();
+
+    if (!teb || !(owner = teb->Peb) || !(pid = (unsigned int)(ULONG_PTR)teb->ClientId.UniqueProcess)) return;
+    if (cached.owner != owner || cached.pid != pid)
+    {
+        cached.owner = owner;
+        cached.pid = pid;
+        cached.done = 0;
+    }
+    if (cached.done & bit) return; /* No classification, lock or syscall on the hot path. */
+    if (bytes <= 0 || !(address = message->msg_name)) return;
+    address_class = ios_socket_address_class(address,message->msg_namelen);
+    if (strcmp(address_class,"public") && strcmp(address_class,"mapped-public")) return;
+    if (address->sa_family == AF_INET) port = ((const struct sockaddr_in *)address)->sin_port;
+    else if (address->sa_family == AF_INET6) port = ((const struct sockaddr_in6 *)address)->sin6_port;
+    else return;
+    if (port == htons(53)) return;
+
+    saved_errno = errno;
+    pthread_mutex_lock(&lock);
+    for (i = 0; i < 64; i++)
+    {
+        if (owners[i].owner == owner && owners[i].pid == pid) { slot = i; break; }
+        if (!owners[i].owner && slot == 64) slot = i;
+    }
+    if (slot == 64) { cached.done = 3; goto out; } /* Fixed lifetime budget. */
+    if (owners[slot].owner && (owners[slot].done & bit))
+    {
+        cached.done |= bit;
+        goto out;
+    }
+    if (ios_socket_error_option(fd,SOL_SOCKET,SO_TYPE) != SOCK_DGRAM) goto out;
+#ifdef SO_PROTOCOL
+    if (getsockopt(fd,SOL_SOCKET,SO_PROTOCOL,&protocol,&protocol_size) || protocol_size != sizeof(protocol))
+        protocol = -1;
+    if (protocol != -1 && protocol != IPPROTO_UDP) goto out;
+#endif
+    owners[slot].owner = owner;
+    owners[slot].pid = pid;
+    owners[slot].done |= bit;
+    cached.done |= bit;
+    emit = 1;
+out:
+    pthread_mutex_unlock(&lock);
+    if (!emit) { errno = saved_errno; return; }
+    /* Reserve the once-only record under the lock; timestamp/format/output
+     * outside it so a slow diagnostic sink cannot serialize other owners. */
+    if (!clock_gettime(CLOCK_MONOTONIC,&observed) && observed.tv_sec >= 0 && observed.tv_nsec >= 0 &&
+        observed.tv_nsec < 1000000000 && (unsigned long long)observed.tv_sec <= UINT64_MAX / 1000000000ull - 1)
+    {
+        ns = (unsigned long long)observed.tv_sec * 1000000000ull + observed.tv_nsec;
+        valid_time = 1;
+    }
+    if (protocol == -1) strcpy(protocol_text,"unmeasured");
+    else snprintf(protocol_text,sizeof(protocol_text),"%d",protocol);
+    tid = (unsigned int)(ULONG_PTR)teb->ClientId.UniqueThread;
+    dprintf(2,"[udp-native-progress-v1] pid=%04x tid=%04x direction=%s first-owner-direction=1 paired=0 "
+              "fd=%d family-native=%u socktype=dgram protocol=%s native-bytes=%lld afd-status=%08x flags=%#x "
+              "clock=monotonic time-valid=%u observed-ns=%llu endpoints=omitted payload=omitted\n",
+            pid,tid,send ? "send" : "recv",fd,(unsigned int)address->sa_family,protocol_text,bytes,status,flags,
+            valid_time,ns);
+    errno = saved_errno;
+}
+
+static void ios_socket_io_context( int fd, const struct msghdr *message, int flags,
+                                   int native_error, unsigned int status, int validation, int receive )
 {
     static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
     static struct {
@@ -155,11 +244,14 @@ static void ios_socket_send_context( int fd, const struct msghdr *message, int f
 #endif
     if (validation) strcpy(error_text,"not-called");
     else snprintf(error_text,sizeof(error_text),"%d",native_error);
-    dprintf(2,"[udp-send-failure-v1] pid=%04x tid=%04x op=%s api=AFD_SENDMSG fd=%d "
+    dprintf(2,"%s pid=%04x tid=%04x op=%s api=%s fd=%d "
               "family=%u socket-type=%d flags=%#x destination-class=%s bind-class=%s "
               "address-length=%u scope=%u ip-bound-if=%d ipv6-bound-if=%d dont-route=%d "
               "errno=%s ntstatus=%08x anticipated-wsa=%s so-error=unread-destructive\n",
-            pid,tid,validation ? "validation" : "sendmsg",fd,destination ? (unsigned)destination->sa_family : 0,type,flags,
+            receive ? "[udp-recv-failure-v1]" : "[udp-send-failure-v1]",
+            pid,tid,validation ? "validation" : receive ? "recvmsg" : "sendmsg",
+            receive ? "AFD_RECVMSG" : "AFD_SENDMSG",fd,
+            destination ? (unsigned)destination->sa_family : 0,type,flags,
             ios_socket_address_class(destination,destination_size),
             ios_socket_address_class((struct sockaddr *)&local,local_size),
             (unsigned)destination_size,scope,ipv4_bound,ipv6_bound,dont_route,error_text,status,
@@ -173,14 +265,25 @@ out:
 static void ios_socket_send_failure( int fd, const struct msghdr *message, int flags,
                                      int native_error, unsigned int status )
 {
-    ios_socket_send_context(fd,message,flags,native_error,status,0);
+    ios_socket_io_context(fd,message,flags,native_error,status,0,0);
 }
 
 static void ios_socket_send_invalid_destination( int fd, const struct msghdr *message, int flags )
 {
-    ios_socket_send_context(fd,message,flags,0,STATUS_INVALID_ADDRESS,1);
+    ios_socket_io_context(fd,message,flags,0,STATUS_INVALID_ADDRESS,1,0);
+}
+
+static void ios_socket_recv_failure( int fd, int flags, int native_error, unsigned int status )
+{
+    /* A failed recvmsg has not initialized msg_name. Inspect only the actual
+     * connected peer, when there is one, and the local bind. Never consume a
+     * packet or read/clear SO_ERROR merely to describe the failure. */
+    const struct msghdr message = {0};
+    ios_socket_io_context(fd,&message,flags,native_error,status,0,1);
 }
 #else
 #define ios_socket_send_failure(fd,message,flags,error,status) do { } while (0)
+#define ios_socket_recv_failure(fd,flags,error,status) do { } while (0)
+#define ios_socket_datagram_progress(fd,message,flags,bytes,status,send) do { } while (0)
 #endif
 #endif

@@ -7,6 +7,14 @@ on:
       - build/ntdll-unix/build.sh
       - build/ntdll-unix/socket_error_context.h
       - tools/build/stage-ios-socket-errors.py
+      - tools/build/stage-ios-socket-control.py
+      - tools/build/stage-ios-route-table.py
+      - build/ntdll-unix/nsi_ip_ios.c
+      - build/ntdll-unix/shims/net/route.h
+      - tests/host/check-native-udp-recv.py
+      - tests/host/check-native-udp-progress.py
+      - tests/host/check-ios-socket-control.py
+      - tests/host/check-ios-route-table.py
       - tests/host/check-native-udp-send.py
       - .github/workflows/udp-send-compat.yml
   pull_request:
@@ -14,6 +22,14 @@ on:
       - build/ntdll-unix/build.sh
       - build/ntdll-unix/socket_error_context.h
       - tools/build/stage-ios-socket-errors.py
+      - tools/build/stage-ios-socket-control.py
+      - tools/build/stage-ios-route-table.py
+      - build/ntdll-unix/nsi_ip_ios.c
+      - build/ntdll-unix/shims/net/route.h
+      - tests/host/check-native-udp-recv.py
+      - tests/host/check-native-udp-progress.py
+      - tests/host/check-ios-socket-control.py
+      - tests/host/check-ios-route-table.py
       - tests/host/check-native-udp-send.py
       - .github/workflows/udp-send-compat.yml
 permissions:
@@ -34,4 +50,9 @@ jobs:
       - name: Exercise production send path, original errors and real packet exchanges
         env:
           CC: clang
-        run: python3 tests/host/check-native-udp-send.py
+        run: |
+          python3 tests/host/check-native-udp-send.py
+          python3 tests/host/check-native-udp-recv.py
+          python3 tests/host/check-native-udp-progress.py
+          python3 tests/host/check-ios-socket-control.py
+          python3 tests/host/check-ios-route-table.py

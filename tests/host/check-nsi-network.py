@@ -69,13 +69,13 @@ require(route_h.startswith('/* SPDX-License-Identifier: GPL-3.0-or-later\n * Cop
 require(not re.search(r'APPLE_LICENSE|Apple Public Source|APSL|Copyright \(c\) [0-9-]+ Apple', route_h),
         'shims/net/route.h has no Apple licence text')
 require(sorted(re.findall(r'^#define (RT[AFM]_[A-Z]+)', route_h, re.M)) ==
-        sorted(['RTM_GET', 'RTM_IFINFO', 'RTF_GATEWAY', 'RTF_LLINFO', 'RTF_MULTICAST',
+        sorted(['RTM_GET', 'RTM_IFINFO', 'RTF_HOST', 'RTF_GATEWAY', 'RTF_LLINFO', 'RTF_MULTICAST',
                 'RTA_DST', 'RTA_GATEWAY', 'RTA_NETMASK', 'RTA_IFP']),
         'shims/net/route.h declares only the constants ndis.c and ip.c use')
 require(ndis_c.startswith('/* SPDX-License-Identifier: GPL-3.0-or-later\n * Copyright 2026 125hz\n'),
         "nsi_ndis_ios.c (an include wrapper) carries Madeira's own notice")
 require(ndis_c.rstrip().endswith('#include "../../wine/dlls/nsiproxy.sys/ndis.c"'), 'nsi_ndis_ios.c compiles ndis.c unchanged')
-require('#include "../../wine/dlls/nsiproxy.sys/ip.c"' in ip_c, 'nsi_ip_ios.c compiles ip.c unchanged')
+require('#include MADEIRA_NSI_IP_PROVIDER_HEADER' in ip_c and 'stage-ios-route-table.py' in build_sh and 'MADEIRA_NSI_IP_PROVIDER_HEADER' in build_sh, 'nsi_ip_ios.c compiles the required owned BSD route provider')
 
 wine = root / 'wine/dlls/nsiproxy.sys'
 for text, name, source in [(network, 'nsi_network_ios.c', 'nsi.c'), (ip_c, 'nsi_ip_ios.c', 'tcp.c')]:

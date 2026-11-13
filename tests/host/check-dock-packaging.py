@@ -59,6 +59,7 @@ with tempfile.TemporaryDirectory() as temp:
     import json
     (bridge_dir/'madeira-htmlipc-bridge.manifest.json').write_text(json.dumps(bridge_manifest))
     (t/'tools').mkdir(exist_ok=True)
+    (t/'tools/check-ios-network-package.py').write_bytes((root/'tools/check-ios-network-package.py').read_bytes())
     (t/'tools/check-htmlipc-image.py').write_text((root/'tools/check-htmlipc-image.py').read_text())
     (t/'tools/check-dxmt-pixel-probe.py').write_text((root/'tools/check-dxmt-pixel-probe.py').read_text())
     # Structural, deliberately non-executable PE fixture for the packaging
@@ -252,7 +253,7 @@ if [ "${STALE_REGISTRY_SECURITY:-}" = 1 ]; then printf 'stale registry security'
 if [ "${STALE_NATIVE_NTDLL:-}" = 1 ]; then printf 'old ntdll' > "$TEST_APP/arm64ec-windows/ntdll.dll"; fi
 if [ "${STALE_SCM:-}" = 1 ]; then printf 'old SCM' > "$TEST_APP/aarch64-windows/services.exe"; fi
 printf '[native-group-retire-v1][wow-placement-v1][wow-native-export-v1][fex-callback-v2][child-native-dll-v1][process-wow64-v1][child-native-ntdll-v1][guest-trap-context-v1][surface-expose-v1][steam-client-update-v1][alias-prot-compat][image-alias-retire-v1][swp-context-v1][alias-prot-v2][fex-exit-v1][native-thread-cancel-v1][io-abi] v2 native-owned IOSB scopes active[wow-write][guest32-symbols][guest32-cxx-first-v1][cef-atexit-v1][steam-handoff-v1]_madeira_child_server_exited[fex-owner-v1] pre-crt[fex-owner-v1] retired[fex-owner-census-v2][hold-release-v2][deliver-hold-v2][native-window-retire-v1]_winios_native_window_create_winios_native_window_retire[guest32-fault-v1][steam-progress-v1]_winios_ui_progress_snapshot[srv-poll-drop-v1]poll-slots-highwater=' > "$TEST_APP/Madeira.debug.dylib"
-printf '[cef-image-owner-v1][guest-breakpoint64-v1]' >> "$TEST_APP/Madeira.debug.dylib"
+printf '[cef-image-owner-v1][guest-breakpoint64-v1][udp-send-failure-v1][udp-recv-failure-v1][udp-native-progress-v1]MadeiraSocketControl:traffic-class-bounds-v1[nsi-ipv4-route-v1]' >> "$TEST_APP/Madeira.debug.dylib"
 printf '[dynamic-memory-pressure-v1] policy=bounded-hot-v2 storage=owner-heap-v1 counter-storage=census-perf-heap-v1 scan=registered-cursor-v1 pe-command-state=dedup-hud-v1 [upload-memory-v1][madeira-memory-pressure-v1][metal-resource-batch-v1] release-probe=opt-in' >> "$TEST_APP/Madeira.debug.dylib"
 if [ "${STALE_DXMT_NATIVE:-}" = 1 ]; then
   sed 's/\\[madeira-memory-pressure-v1\\]//g' "$TEST_APP/Madeira.debug.dylib" > "$TEST_APP/native.stale"

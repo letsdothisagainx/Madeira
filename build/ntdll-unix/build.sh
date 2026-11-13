@@ -64,7 +64,7 @@ compile_one() {
         FAILED=$((FAILED + 1))
         FAILED_FILES="$FAILED_FILES $name"
         case "$name" in
-            io_status_abi|file|socket|loader|server|thread|process|virtual|signal_arm64)
+            io_status_abi|file|socket|loader|server|thread|process|virtual|signal_arm64|nsi_ip)
                 python3 - "$OBJ_DIR/$name.err" <<'PYCODE'
 import sys
 from pathlib import Path
@@ -217,7 +217,10 @@ compile_one "$BUILD_DIR/nsi_unixlib_ios.c" "nsi_unixlib_ios"
 # iPhoneOS SDK does not ship.
 compile_one "$BUILD_DIR/nsi_network_ios.c" "nsi_network_ios"
 compile_one "$BUILD_DIR/nsi_ndis_ios.c" "nsi_ndis"
-compile_one "$BUILD_DIR/nsi_ip_ios.c" "nsi_ip"
+python3 "$REPO_ROOT/tools/build/stage-ios-route-table.py" \
+    --source "$WINE_SRC/dlls/nsiproxy.sys/ip.c" --output "$OBJ_DIR/nsi_ip_provider.c"
+compile_one "$BUILD_DIR/nsi_ip_ios.c" "nsi_ip" \
+    "-DMADEIRA_NSI_IP_PROVIDER_HEADER=\"$OBJ_DIR/nsi_ip_provider.c\"" -I"$WINE_SRC/dlls/nsiproxy.sys"
 # dnsapi had no unix side (the generic stub table: every call STATUS_NOT_SUPPORTED,
 # including the DNS server list GetAdaptersAddresses asks for). dnsapi_unixlib_ios.c
 # is upstream dlls/dnsapi/libresolv.c with res_init/res_query/_res/h_errno rebound to
@@ -333,6 +336,9 @@ PYCODE
                 python3 "$REPO_ROOT/tools/build/stage-htmlipc-log-file.py" "$OBJ_DIR/${name}_ios.c"
             else
                 python3 "$REPO_ROOT/tools/build/stage-ios-socket-errors.py" "$OBJ_DIR/${name}_ios.c"
+                python3 "$REPO_ROOT/tools/build/stage-ios-socket-control.py" \
+                    --source "$OBJ_DIR/${name}_ios.c" --output "$OBJ_DIR/socket_control_ios.c"
+                mv "$OBJ_DIR/socket_control_ios.c" "$OBJ_DIR/${name}_ios.c"
             fi
             IO_FAILED_BEFORE=$FAILED
             compile_one "$OBJ_DIR/${name}_ios.c" "$name"

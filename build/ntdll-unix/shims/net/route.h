@@ -63,6 +63,7 @@ struct rt_msghdr
 #define RTM_IFINFO      0xe    /* an interface in a NET_RT_IFLIST reply */
 
 /* Route flags (rtm_flags, and the NET_RT_FLAGS filter). */
+#define RTF_HOST        0x4
 #define RTF_GATEWAY     0x2
 #define RTF_LLINFO      0x400
 #define RTF_MULTICAST   0x800000
