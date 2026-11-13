@@ -53,9 +53,13 @@ static BYTE *ios_audio_alloc_scratch(UINT32 n, UINT32 f, int *g) { abort(); }
 static void ios_audio_free_scratch(BYTE *p, int g) { abort(); }
 """ + mix + r"""
 static int interleave, loads, source_timer_calls, source_log_calls;
+static uint64_t direct_queue_load(const _Atomic uint64_t *p, memory_order order)
+{
+    return atomic_load_explicit(p, order);
+}
 static uint64_t queue_load(const _Atomic uint64_t *p, memory_order order)
 {
-    uint64_t result = atomic_load_explicit(p, order);
+    uint64_t result = direct_queue_load(p, order);
     if (interleave && (p == &s.play_pos || p == &s.write_pos) && loads++ == 0) {
         /* Another producer submitted 100 frames after the first snapshot
          * load; the real callback consumed them before the second load. */
@@ -71,7 +75,9 @@ static uint64_t queue_load(const _Atomic uint64_t *p, memory_order order)
 #define atomic_load(p) queue_load(p, memory_order_seq_cst)
 """ + get_buffer + get_padding + r"""
 #undef atomic_load_explicit
-#define atomic_load_explicit(p, order) __atomic_load_n((p), (order))
+#undef atomic_load
+#define atomic_load_explicit(p, order) direct_queue_load(p, order)
+#define atomic_load(p) direct_queue_load(p, memory_order_seq_cst)
 static time_t submission_time(time_t *t) { source_timer_calls++; return 20; }
 static int submission_log(FILE *f, const char *format, ...) { source_log_calls++; return 0; }
 #define time submission_time
