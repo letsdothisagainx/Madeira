@@ -85,7 +85,8 @@ compatibility defect but is not proof that all relay replies were discarded.
 
 `tools/build/stage-ios-route-table.py` stages only the BSD IPv4 provider in an
 immutable copy of Wine's `nsiproxy.sys/ip.c`. The owned `nsi_ip_ios.c` wrapper
-requires that provider; the build fails if staging or compilation fails.
+requires that provider, with nsiproxy's quoted private-header namespace ahead
+of ntdll's same-named header. The build fails if staging or compilation fails.
 
 The previous parser reused an uninitialized row. Host routes without a netmask
 could inherit the previous prefix length and missing gateways, while the
@@ -115,7 +116,7 @@ authenticate a relay, prove server acceptance, or count all packets.
 
 There are no added packets, endpoint queries, payload reads, destination logs,
 credential collection, route changes or destructive `SO_ERROR` queries. The
-shared table is about 1 KiB, with 24 bytes of native thread-local cache per
+shared table is about 1 KiB, with a small native thread-local cache per
 participating thread. The helper performs no explicit or per-packet allocation
 and creates no timer; Darwin may initialize its normal TLV backing on first
 access. The thread/owner cache removes subsequent locks and introspection after

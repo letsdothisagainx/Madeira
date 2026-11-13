@@ -56,6 +56,22 @@ def first_comment(text):
     return text[:text.index('*/') + 2]
 
 
+# The generated provider lives outside Wine's source directory. Check the
+# actual quoted private header with the same competing include namespace.
+with tempfile.TemporaryDirectory(prefix='madeira-nsi-include-') as directory:
+    probe = Path(directory) / 'provider.c'
+    probe.write_text('#include "unix_private.h"\n')
+    competing = root / 'wine/dlls/ntdll/unix'
+    provider = root / 'wine/dlls/nsiproxy.sys'
+    wrong = subprocess.run([CC, '-E', '-I' + str(competing), '-I' + str(provider), str(probe)],
+                           capture_output=True, text=True)
+    right = subprocess.run([CC, '-E', '-I' + str(competing), '-iquote', str(provider), str(probe)],
+                           capture_output=True, text=True)
+    require(right.returncode == 0 and str(provider / 'unix_private.h') in right.stdout,
+            'actual staged provider resolves nsiproxy private declarations before ntdll')
+    require(wrong.returncode != 0 or str(competing / 'unix_private.h') in wrong.stdout,
+            'original ordinary include order reproduces the conflicting ntdll header')
+
 # ------------------------------------------------------------------ static
 for src, obj in [('nsi_network_ios.c', 'nsi_network_ios'), ('nsi_ndis_ios.c', 'nsi_ndis'), ('nsi_ip_ios.c', 'nsi_ip')]:
     require(f'compile_one "$BUILD_DIR/{src}" "{obj}"' in build_sh, f'build.sh compiles {src}')
@@ -76,6 +92,7 @@ require(ndis_c.startswith('/* SPDX-License-Identifier: GPL-3.0-or-later\n * Copy
         "nsi_ndis_ios.c (an include wrapper) carries Madeira's own notice")
 require(ndis_c.rstrip().endswith('#include "../../wine/dlls/nsiproxy.sys/ndis.c"'), 'nsi_ndis_ios.c compiles ndis.c unchanged')
 require('#include MADEIRA_NSI_IP_PROVIDER_HEADER' in ip_c and 'stage-ios-route-table.py' in build_sh and 'MADEIRA_NSI_IP_PROVIDER_HEADER' in build_sh, 'nsi_ip_ios.c compiles the required owned BSD route provider')
+require('-iquote \"$WINE_SRC/dlls/nsiproxy.sys\"' in build_sh, 'staged provider quoted headers resolve before ntdll private include directories')
 
 wine = root / 'wine/dlls/nsiproxy.sys'
 for text, name, source in [(network, 'nsi_network_ios.c', 'nsi.c'), (ip_c, 'nsi_ip_ios.c', 'tcp.c')]:

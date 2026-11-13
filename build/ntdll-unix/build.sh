@@ -220,7 +220,7 @@ compile_one "$BUILD_DIR/nsi_ndis_ios.c" "nsi_ndis"
 python3 "$REPO_ROOT/tools/build/stage-ios-route-table.py" \
     --source "$WINE_SRC/dlls/nsiproxy.sys/ip.c" --output "$OBJ_DIR/nsi_ip_provider.c"
 compile_one "$BUILD_DIR/nsi_ip_ios.c" "nsi_ip" \
-    "-DMADEIRA_NSI_IP_PROVIDER_HEADER=\"$OBJ_DIR/nsi_ip_provider.c\"" -I"$WINE_SRC/dlls/nsiproxy.sys"
+    "-DMADEIRA_NSI_IP_PROVIDER_HEADER=\"$OBJ_DIR/nsi_ip_provider.c\"" -iquote "$WINE_SRC/dlls/nsiproxy.sys"
 # dnsapi had no unix side (the generic stub table: every call STATUS_NOT_SUPPORTED,
 # including the DNS server list GetAdaptersAddresses asks for). dnsapi_unixlib_ios.c
 # is upstream dlls/dnsapi/libresolv.c with res_init/res_query/_res/h_errno rebound to
