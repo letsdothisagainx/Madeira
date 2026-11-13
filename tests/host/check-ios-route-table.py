@@ -72,8 +72,16 @@ struct sockaddr_in { unsigned char sin_len,sin_family; uint16_t sin_port; struct
 #ifndef RTF_HOST
 #define RTF_HOST 0x4
 #endif
-static uint32_t htonl(uint32_t x) { return __BYTE_ORDER__==__ORDER_LITTLE_ENDIAN__?__builtin_bswap32(x):x; }
-static uint32_t ntohl(uint32_t x) { return htonl(x); }
+/* Darwin's generic headers may already define htonl/ntohl as macros.
+ * Keep fixture definitions distinct; REAL_BSD retains the system functions. */
+static uint32_t fixture_htonl(uint32_t x) {
+ const uint32_t one=1;return *(const unsigned char *)&one?__builtin_bswap32(x):x;
+}
+static uint32_t fixture_ntohl(uint32_t x) { return fixture_htonl(x); }
+#undef htonl
+#undef ntohl
+#define htonl fixture_htonl
+#define ntohl fixture_ntohl
 static int sysctl(const int*,unsigned,void*,size_t*,const void*,size_t);
 #endif
 #undef __linux__
