@@ -32,6 +32,37 @@ static uint64_t ios_js_generation;
 static unsigned int ios_js_open_lines, ios_js_read_lines;
 static int ios_js_track_any;
 static pthread_mutex_t ios_js_track_lock = PTHREAD_MUTEX_INITIALIZER;
+/* All guest processes share this native observer. Once Steam has opened one
+ * steamui file, unrelated CS2 asset reads must not take its diagnostic mutex.
+ * The filter only gains bits: collisions fall through to the existing exact
+ * owner/handle check, while retirement/slot reuse cannot create a stale miss. */
+static uint64_t ios_js_owner_filter[4];
+
+static uint64_t ios_js_owner_hash( uintptr_t owner )
+{
+    uint64_t value = owner;
+    value ^= value >> 33; value *= UINT64_C(0xff51afd7ed558ccd);
+    value ^= value >> 33; value *= UINT64_C(0xc4ceb9fe1a85ec53);
+    return value ^ (value >> 33);
+}
+
+static void ios_js_owner_publish( uintptr_t owner )
+{
+    uint64_t hash = ios_js_owner_hash( owner );
+    unsigned int a = hash & 255, b = (hash >> 32) & 255;
+    __atomic_fetch_or( &ios_js_owner_filter[a >> 6], UINT64_C(1) << (a & 63), __ATOMIC_RELEASE );
+    __atomic_fetch_or( &ios_js_owner_filter[b >> 6], UINT64_C(1) << (b & 63), __ATOMIC_RELEASE );
+}
+
+static int ios_js_owner_possible( uintptr_t owner )
+{
+    uint64_t hash = ios_js_owner_hash( owner );
+    unsigned int a = hash & 255, b = (hash >> 32) & 255;
+    return (__atomic_load_n( &ios_js_owner_filter[a >> 6], __ATOMIC_ACQUIRE ) &
+            (UINT64_C(1) << (a & 63))) &&
+           (__atomic_load_n( &ios_js_owner_filter[b >> 6], __ATOMIC_ACQUIRE ) &
+            (UINT64_C(1) << (b & 63)));
+}
 
 static uintptr_t ios_js_owner(void)
 {
@@ -91,7 +122,8 @@ static void ios_js_track_add( HANDLE handle, const char *unix_name )
     entry->handle = handle; entry->owner = owner; entry->dev = st.st_dev; entry->ino = st.st_ino;
     entry->size = st.st_size; entry->generation = ++ios_js_generation;
     snprintf( entry->name, sizeof(entry->name), "%s", base );
-    __atomic_store_n( &ios_js_track_any, 1, __ATOMIC_RELAXED );
+    ios_js_owner_publish( owner );
+    __atomic_store_n( &ios_js_track_any, 1, __ATOMIC_RELEASE );
     if (ios_js_open_lines++ < 128)
         dprintf( 2, "[js-open-v2] %s owner=%p handle=%p generation=%llu ino=%llu size=%llu\n", entry->name,
                  (void *)owner, handle, (unsigned long long)entry->generation,
@@ -108,7 +140,8 @@ static void ios_js_read_note( HANDLE handle, int unix_fd, const void *buffer, UL
     unsigned int i, hashed, sum = 2166136261u;
     int saved_errno = errno, explicit_offset, reused, complete;
     char position[48];
-    if (!got || !__atomic_load_n( &ios_js_track_any, __ATOMIC_RELAXED )) return;
+    if (!got || !__atomic_load_n( &ios_js_track_any, __ATOMIC_ACQUIRE ) ||
+        !ios_js_owner_possible( owner )) return;
     pthread_mutex_lock( &ios_js_track_lock );
     for (i = 0; i < IOS_JSTRACK_MAX; i++)
         if (ios_js_track[i].generation && ios_js_track[i].owner == owner && ios_js_track[i].handle == handle)
