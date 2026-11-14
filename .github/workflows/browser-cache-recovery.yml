@@ -1,0 +1,36 @@
+name: Verify browser cache recovery without network downloads
+
+on:
+  push:
+    paths:
+      - app/Madeira/SteamBrowserRuntime.swift
+      - app/Madeira/SteamNativeBrowserLaunch.swift
+      - tests/host/check-steam-browser-cache.py
+      - .github/workflows/browser-cache-recovery.yml
+  pull_request:
+    paths:
+      - app/Madeira/SteamBrowserRuntime.swift
+      - app/Madeira/SteamNativeBrowserLaunch.swift
+      - tests/host/check-steam-browser-cache.py
+      - .github/workflows/browser-cache-recovery.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  production-swift:
+    runs-on: xcode-27
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Exercise strict cache recovery and core attribution
+        run: python3 tests/host/check-steam-browser-cache.py --require-swift
+      - name: Exercise production browser preparation and bridge transactions
+        run: python3 tests/host/check-steam-browser-bridge.py --require-swift
+      - name: Load pinned Wine file syscall declarations
+        run: git submodule update --init --depth 1 wine
+      - name: Preserve strict cache reuse and mutable log routing
+        run: python3 tests/host/check-steam-browser-logs.py --require-swift

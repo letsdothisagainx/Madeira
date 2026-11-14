@@ -40,6 +40,9 @@ assert 'moveItem(at: stage, to: final)' in cache
 commit_start = cache.index('static func commit(stage:')
 commit_source = cache[commit_start:cache.index('\n#if canImport(CryptoKit)', commit_start)]
 assert commit_source.index('try validate(stage,') < commit_source.index('moveItem(at: stage, to: final)')
+prepare_source = cache[cache.index('static func prepare(cacheBase:'):]
+assert prepare_source.index('try Files.core(chromeHTML,') < prepare_source.index('try Files.recover(')
+assert prepare_source.index('try Files.recover(') < prepare_source.index('phase = "stage"')
 contract = (ROOT / 'build/htmlipc/runtime/cache-contract.txt').read_bytes()
 assert len(contract) == 363
 assert hashlib.sha256(contract).hexdigest() == 'fff4a23d727dd4f33ec070d29cb0012d7a22bf7f6f4e84e2cffc6709224e1781'
@@ -241,6 +244,58 @@ for selected in [oldCoreSHA, updatedCoreSHA] {
 }
 fails("unknown official core remains rejected") {
     try F.core(core, steamRoot: steam, recipe: F.official, digest: { _ in String(repeating: "0", count: 64) })
+}
+do {
+    let bytes = try fixture("core.dll"), unknown = String(repeating: "0", count: 64)
+    do {
+        _ = try F.compatibleCoreSHA256(core, steamRoot: steam, recipe: F.official, digest: { _ in unknown })
+        fatalError("unsupported core unexpectedly admitted")
+    } catch let issue as F.CoreIssue {
+        assert(issue.reason == .unsupportedProfile && issue.sha256 == unknown)
+        assert(issue.bytes == bytes.count && issue.machine == nil)
+        let report = issue.diagnostic(phase: "core", recipe: F.official)
+        assert(report.contains("component=bin/chromehtml.dll reason=unsupported-profile"))
+        assert(report.contains("sha256=" + unknown) && report.contains("bytes=\(bytes.count) machine=unknown"))
+        assert(report.contains("supported-profiles=2 cache-enumeration=not-started"))
+        assert(!report.contains(steam.path) && !report.contains(temp.path) && !report.contains("\n"))
+        assert(issue.errorDescription!.contains("bin/chromehtml.dll") && issue.errorDescription!.contains(String(unknown.prefix(16))))
+    }
+    // These PE bytes are an ordinary architecture fixture, not an authentic
+    // or trusted Valve component. The real production reader supplies the
+    // header identity and file length while still rejecting its full hash.
+    try fixture("amd64.exe").write(to: core)
+    do {
+        _ = try F.compatibleCoreSHA256(core, steamRoot: steam, recipe: F.official, digest: digestFile)
+        fatalError("unsupported PE fixture unexpectedly admitted")
+    } catch let issue as F.CoreIssue {
+        assert(issue.reason == .unsupportedProfile && issue.bytes == 512 && issue.machine == 0x8664)
+        assert(issue.sha256 == digest(try! fixture("amd64.exe")))
+        assert(issue.diagnostic(phase: "pre-commit", recipe: F.official).contains("machine=8664 supported-profiles=2 cache-enumeration=separate"))
+    }
+    try bytes.write(to: core)
+    var digestCalled = false
+    do {
+        _ = try F.compatibleCoreSHA256(core, steamRoot: base, recipe: F.official, digest: { _ in
+            digestCalled = true; return updatedCoreSHA
+        })
+        fatalError("outside core path unexpectedly admitted")
+    } catch let issue as F.CoreIssue {
+        assert(issue.reason == .location && !digestCalled && issue.sha256.isEmpty && issue.bytes == -1 && issue.machine == nil)
+        assert(issue.diagnostic(phase: "core", recipe: F.official).contains("reason=location sha256=unavailable"))
+    }
+    for malformed in ["/private/token-cookie-password", String(repeating: "A", count: 64), "not-a-sha256"] {
+        do {
+            _ = try F.compatibleCoreSHA256(core, steamRoot: steam, recipe: F.official, digest: { _ in malformed })
+            fatalError("malformed hash provider unexpectedly admitted")
+        } catch let issue as F.CoreIssue {
+            assert(issue.reason == .unsupportedProfile && issue.sha256.isEmpty)
+            let report = issue.diagnostic(phase: "core", recipe: F.official)
+            assert(report.contains("sha256=unavailable") && !report.contains(malformed))
+            assert(!issue.errorDescription!.contains(malformed))
+        }
+    }
+    assert(try! Data(contentsOf: core) == bytes)
+    print("PASS actual core admission diagnostics: known profiles retained, unknown full hash/size/PE machine attributed, outside location rejected before digest, malformed provider values redacted; no cache enumeration or trust claim")
 }
 // Matching the public cache identifier is insufficient to obtain the second
 // core profile. Every altered recipe field retains its original exact pin.
@@ -530,6 +585,198 @@ try fm.removeItem(at: linkedRuntime)
 _ = try F.validate(final, recipe: recipe, digest: digestFile)
 assert(try! Data(contentsOf: interrupted.appendingPathComponent("partial")) == Data("keep".utf8))
 print("PASS production cache recovery/reuse: runtime extras, altered DLL, missing member/marker, malformed/changed/missing completion; old tree retained byte-for-byte only after verified replacement, failed/active/linked recovery refused and Steam/CS2/auth fixtures unchanged")
+
+// A process can stop after validating a stage, or after retaining the old
+// final name. Exercise restart recovery using full copies of the actual
+// validated fixture cache. This helper cannot fetch or fabricate a component.
+func recoveryRoot(_ label: String) throws -> (URL, URL) {
+    let rootBase = base.appendingPathComponent("completed-recovery-" + label, isDirectory: true)
+    try fm.createDirectory(at: rootBase, withIntermediateDirectories: false)
+    let root = try F.ownerRoot(cacheBase: rootBase, steamRoot: steam, idle: { true })
+    return (root, root.appendingPathComponent(recipe.id, isDirectory: true))
+}
+func completedCandidate(_ name: String, under root: URL) throws -> URL {
+    let candidate = root.appendingPathComponent(name, isDirectory: true)
+    try fm.copyItem(at: final, to: candidate)
+    _ = try F.validate(candidate, recipe: recipe, digest: digestFile)
+    return candidate
+}
+func checkRecovered(_ result: F.Prepared?, at target: URL, snapshot: [String: Data]) throws {
+    assert(result != nil)
+    assert(result!.helper.path == target.appendingPathComponent(recipe.prefix + "steamwebhelper.exe").path)
+    assert(try! treeSnapshot(target) == snapshot)
+    _ = try F.validate(target, recipe: recipe, digest: digestFile)
+}
+let validCacheSnapshot = try treeSnapshot(final)
+do {
+    let (root, target) = try recoveryRoot("empty")
+    let original = try treeSnapshot(root)
+    let recovered = try F.recover(target, recipe: recipe, digest: digestFile, idle: { true }, recheckCore: {
+        fatalError("empty recovery cannot need a core recheck")
+    })
+    assert(recovered == nil && !fm.fileExists(atPath: target.path))
+    assert(try! treeSnapshot(root) == original)
+}
+do {
+    let (root, target) = try recoveryRoot("existing-valid-final")
+    try fm.copyItem(at: final, to: target)
+    let candidate = try completedCandidate(".stage-should-not-replace-existing", under: root)
+    let before = try treeSnapshot(root)
+    let recovered = try F.recover(target, recipe: recipe, digest: digestFile, idle: { true }, recheckCore: {
+        fatalError("existing final is handled by ordinary reuse, not interrupted-stage adoption")
+    })
+    assert(recovered == nil && fm.fileExists(atPath: candidate.path))
+    assert(try! treeSnapshot(root) == before)
+}
+do {
+    let (root, target) = try recoveryRoot("completed-stage")
+    let candidate = try completedCandidate(".stage-completed", under: root)
+    let partial = root.appendingPathComponent(".stage-partial", isDirectory: true)
+    try fm.createDirectory(at: partial, withIntermediateDirectories: false)
+    try Data("keep interrupted partial bytes".utf8).write(to: partial.appendingPathComponent("partial"))
+    var checks = 0, reports: [String] = []
+    let recovered = try F.recover(target, recipe: recipe, digest: digestFile, idle: { true }, report: {
+        reports.append($0)
+    }, recheckCore: {
+        checks += 1
+        try F.core(core, steamRoot: steam, recipe: recipe, digest: digestFile)
+    })
+    try checkRecovered(recovered, at: target, snapshot: validCacheSnapshot)
+    assert(checks > 0 && !fm.fileExists(atPath: candidate.path))
+    assert(try! Data(contentsOf: partial.appendingPathComponent("partial")) == Data("keep interrupted partial bytes".utf8))
+    assert(reports.contains { $0.contains("phase=recovery") })
+    assert(reports.allSatisfy { !$0.contains(root.path) && !$0.contains(steam.path) && !$0.contains("\n") })
+}
+do {
+    let (root, target) = try recoveryRoot("retained-final")
+    let candidate = try completedCandidate(".retained-last-working", under: root)
+    let recovered = try F.recover(target, recipe: recipe, digest: digestFile, idle: { true }, recheckCore: {
+        try F.core(core, steamRoot: steam, recipe: recipe, digest: digestFile)
+    })
+    try checkRecovered(recovered, at: target, snapshot: validCacheSnapshot)
+    assert(!fm.fileExists(atPath: candidate.path))
+}
+do {
+    let (root, target) = try recoveryRoot("stage-priority")
+    let retained = try completedCandidate(".retained-a", under: root)
+    let stage = try completedCandidate(".stage-z", under: root)
+    let recovered = try F.recover(target, recipe: recipe, digest: digestFile, idle: { true }, recheckCore: {})
+    try checkRecovered(recovered, at: target, snapshot: validCacheSnapshot)
+    assert(!fm.fileExists(atPath: stage.path) && fm.fileExists(atPath: retained.path))
+    assert(try! treeSnapshot(retained) == validCacheSnapshot)
+}
+do {
+    let (root, target) = try recoveryRoot("lexical-stage-order")
+    let later = try completedCandidate(".stage-z", under: root)
+    let first = try completedCandidate(".stage-a", under: root)
+    let recovered = try F.recover(target, recipe: recipe, digest: digestFile, idle: { true }, recheckCore: {})
+    try checkRecovered(recovered, at: target, snapshot: validCacheSnapshot)
+    assert(!fm.fileExists(atPath: first.path) && fm.fileExists(atPath: later.path))
+    assert(try! treeSnapshot(later) == validCacheSnapshot)
+}
+do {
+    let (root, target) = try recoveryRoot("invalid-candidates-kept")
+    let partial = root.appendingPathComponent(".stage-partial", isDirectory: true)
+    try fm.createDirectory(at: partial, withIntermediateDirectories: false)
+    try Data("keep partial".utf8).write(to: partial.appendingPathComponent("partial"))
+    let foreign = try completedCandidate(".stage-foreign-completion", under: root)
+    let original = try JSONDecoder().decode(F.Manifest.self, from: Data(contentsOf: foreign.appendingPathComponent(F.completion)))
+    let altered = F.Manifest(format: original.format, recipe: "unsupported-cache-recipe", coreSHA256: original.coreSHA256,
+                             packages: original.packages, files: original.files)
+    try JSONEncoder().encode(altered).write(to: foreign.appendingPathComponent(F.completion))
+    let before = try treeSnapshot(root)
+    let recovered = try F.recover(target, recipe: recipe, digest: digestFile, idle: { true }, recheckCore: {
+        fatalError("incomplete or foreign candidates cannot reach publication")
+    })
+    assert(recovered == nil && !fm.fileExists(atPath: target.path))
+    assert(try! treeSnapshot(root) == before)
+}
+do {
+    let (root, target) = try recoveryRoot("failed-core-recheck")
+    let candidate = try completedCandidate(".stage-completed", under: root)
+    let retained = try completedCandidate(".retained-previous-working", under: root)
+    let before = try treeSnapshot(root)
+    fails("unsupported current core cannot publish a previously completed cache") {
+        _ = try F.recover(target, recipe: recipe, digest: digestFile, idle: { true }, recheckCore: {
+            throw F.Failure.changedCore
+        })
+    }
+    assert(!fm.fileExists(atPath: target.path) && fm.fileExists(atPath: candidate.path) && fm.fileExists(atPath: retained.path))
+    assert(try! treeSnapshot(root) == before)
+}
+do {
+    let (root, target) = try recoveryRoot("active-session")
+    _ = try completedCandidate(".stage-completed", under: root)
+    let before = try treeSnapshot(root)
+    fails("active session cannot publish recovered cache") {
+        _ = try F.recover(target, recipe: recipe, digest: digestFile, idle: { false }, recheckCore: {})
+    }
+    assert(try! treeSnapshot(root) == before)
+}
+do {
+    let (root, target) = try recoveryRoot("linked-candidate")
+    let linked = root.appendingPathComponent(".stage-linked", isDirectory: true)
+    try fm.createSymbolicLink(at: linked, withDestinationURL: final)
+    fails("linked stage is never adopted or followed") {
+        _ = try F.recover(target, recipe: recipe, digest: digestFile, idle: { true }, recheckCore: {})
+    }
+    assert((try! linked.resourceValues(forKeys: [.isSymbolicLinkKey])).isSymbolicLink == true)
+    assert(!fm.fileExists(atPath: target.path) && (try! treeSnapshot(final)) == validCacheSnapshot)
+}
+do {
+    let (root, target) = try recoveryRoot("wrong-owner")
+    _ = try completedCandidate(".stage-completed", under: root)
+    try Data("not the cache owner".utf8).write(to: root.appendingPathComponent(F.ownerName))
+    let before = try treeSnapshot(root)
+    fails("completed stage does not override a mismatched owner marker") {
+        _ = try F.recover(target, recipe: recipe, digest: digestFile, idle: { true }, recheckCore: {})
+    }
+    assert(try! treeSnapshot(root) == before)
+}
+do {
+    let (root, _) = try recoveryRoot("linked-owner")
+    _ = try completedCandidate(".stage-completed", under: root)
+    let alias = base.appendingPathComponent("linked-recovery-owner", isDirectory: true)
+    try fm.createSymbolicLink(at: alias, withDestinationURL: root)
+    let before = try treeSnapshot(root)
+    fails("linked owner root cannot publish a completed candidate") {
+        _ = try F.recover(alias.appendingPathComponent(recipe.id), recipe: recipe,
+                         digest: digestFile, idle: { true }, recheckCore: {})
+    }
+    assert(try! treeSnapshot(root) == before)
+    assert((try! alias.resourceValues(forKeys: [.isSymbolicLinkKey])).isSymbolicLink == true)
+}
+do {
+    let (root, _) = try recoveryRoot("wrong-destination")
+    _ = try completedCandidate(".stage-completed", under: root)
+    let before = try treeSnapshot(root)
+    fails("recovered cache cannot publish under a foreign final recipe name") {
+        _ = try F.recover(root.appendingPathComponent("foreign-final"), recipe: recipe,
+                         digest: digestFile, idle: { true }, recheckCore: {})
+    }
+    assert(try! treeSnapshot(root) == before)
+}
+for candidateBound in [false, true] {
+    let (root, target) = try recoveryRoot(candidateBound ? "candidate-bound" : "entry-bound")
+    for index in 0..<(candidateBound ? 33 : 128) {
+        if candidateBound {
+            try fm.createDirectory(at: root.appendingPathComponent(".stage-partial-\(index)", isDirectory: true), withIntermediateDirectories: false)
+        } else {
+            try Data("preserve unrelated owned-root item".utf8).write(to: root.appendingPathComponent("unknown-\(index)"))
+        }
+    }
+    let before = try treeSnapshot(root)
+    let namesBefore = Set(try fm.contentsOfDirectory(atPath: root.path))
+    var reports: [String] = []
+    let recovered = try F.recover(target, recipe: recipe, digest: digestFile, idle: { true }, report: { reports.append($0) }, recheckCore: {})
+    assert(recovered == nil)
+    assert(!fm.fileExists(atPath: target.path) && (try! treeSnapshot(root)) == before)
+    assert(Set(try! fm.contentsOfDirectory(atPath: root.path)) == namesBefore)
+    assert(reports.contains { $0.contains("phase=recovery") && $0.contains("reason=candidate-limit") })
+}
+assert(try! treeSnapshot(final) == validCacheSnapshot)
+for name in privateNames { assert(try! Data(contentsOf: steam.appendingPathComponent(name)) == Data(name.utf8)) }
+print("PASS production completed-cache restart recovery: validated stage/retained trees promote without transport; existing final untouched; incomplete/foreign candidates kept; failed core/idle/owner/path/link checks preserve working bytes; bounded scans decline adoption without deleting candidates")
 var incomplete = records; incomplete.removeLast()
 fails("incomplete manifest") { _ = try F.manifest(recipe: recipe, records: incomplete) }
 let partialStage = try newStage("partial-tree")

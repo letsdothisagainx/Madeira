@@ -600,6 +600,7 @@ enum SteamNativeBrowserLaunchFiles {
             if let failure = error as? Files.Failure { throw failure }
             if let failure = error as? SteamBrowserRuntimeFiles.Failure { throw failure }
             if let failure = error as? SteamBrowserRuntimeFiles.ValidationIssue { throw failure }
+            if let failure = error as? SteamBrowserRuntimeFiles.CoreIssue { throw failure }
             if error is CancellationError { throw CancellationError() }
             throw Files.Failure.invalidBridge
         }

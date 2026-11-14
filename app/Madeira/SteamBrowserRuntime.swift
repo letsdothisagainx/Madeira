@@ -104,6 +104,34 @@ enum SteamBrowserRuntimeFiles {
         case responseLength = "response-length", responseEncoding = "response-encoding", bodyLength = "body-length"
         case ownership, active, changedCore = "changed-core", cancelled
     }
+    // Core admission precedes cache enumeration. Keep its public file identity
+    // separate from cache-record failures; an unrecognized hash does not prove
+    // either a genuine Steam update or corruption, and never authorizes either.
+    struct CoreIssue: LocalizedError, Equatable, Sendable {
+        enum Reason: String, Sendable { case location, unsupportedProfile = "unsupported-profile" }
+        let reason: Reason, sha256: String
+        let bytes: Int, machine: UInt16?
+        init(_ reason: Reason, sha256: String = "", bytes: Int = -1, machine: UInt16? = nil) {
+            self.reason = reason
+            self.sha256 = sha256.count == 64 && sha256.utf8.allSatisfy({
+                (48...57).contains($0) || (97...102).contains($0)
+            }) ? sha256 : ""
+            self.bytes = bytes; self.machine = machine
+        }
+        var errorDescription: String? {
+            if reason == .location {
+                return "Steam's bin/chromehtml.dll is outside the selected Steam installation. The installed files and browser cache were kept."
+            }
+            let identity = sha256.isEmpty ? "unavailable" : String(sha256.prefix(16))
+            return "Steam's bin/chromehtml.dll does not match a supported verified browser profile (SHA-256 \(identity), \(bytes) bytes). The installed file and previous browser cache were kept."
+        }
+        func diagnostic(phase: String, recipe: Recipe) -> String {
+            let architecture = machine.map { String(format: "%04x", $0) } ?? "unknown"
+            let hash = sha256.isEmpty ? "unavailable" : sha256
+            let count = recipe == SteamBrowserRuntimeFiles.official ? SteamBrowserRuntimeFiles.officialCompatibleCoreSHA256.count : 1
+            return "[steam-browser-core-v1] phase=\(phase) component=bin/chromehtml.dll reason=\(reason.rawValue) sha256=\(hash) bytes=\(bytes) machine=\(architecture) supported-profiles=\(count) cache-enumeration=\(phase == "core" ? "not-started" : "separate")"
+        }
+    }
     struct ValidationIssue: LocalizedError, Equatable, Sendable {
         let reason: Reason, name: String
         let expected: Int, observed: Int, records: Int
@@ -214,14 +242,25 @@ enum SteamBrowserRuntimeFiles {
     }
     static func compatibleCoreSHA256(_ file: URL, steamRoot: URL, recipe: Recipe, digest: DigestFile) throws -> String {
         guard file.standardizedFileURL != steamRoot.standardizedFileURL, inside(file, steamRoot) else {
-            throw Failure.changedCore
+            throw CoreIssue(.location)
         }
         try plain(steamRoot, directory: true); try plain(file, directory: false)
         let actual = try digest(file)
         // Compare the entire recipe, not its public identifier or one field.
         // Unrelated/test recipes retain their original exact-core contract.
         let permitted = recipe == official ? officialCompatibleCoreSHA256 : [recipe.coreSHA256]
-        guard permitted.contains(actual) else { throw Failure.changedCore }
+        guard permitted.contains(actual) else {
+            let size = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? -1
+            var architecture: UInt16?
+            // Inspect only a bounded PE header after rejection. No additional
+            // full-file copy, foreign path, version string or arbitrary error
+            // text enters the public diagnostic.
+            if let handle = try? FileHandle(forReadingFrom: file) {
+                defer { try? handle.close() }
+                if let header = try? handle.read(upToCount: 4096) { architecture = machine(header) }
+            }
+            throw CoreIssue(.unsupportedProfile, sha256: actual, bytes: size, machine: architecture)
+        }
         return actual
     }
     static func core(_ file: URL, steamRoot: URL, recipe: Recipe, digest: DigestFile) throws {
@@ -466,6 +505,89 @@ enum SteamBrowserRuntimeFiles {
         }
     }
 
+    // A crash between commit's two renames can leave a completed stage (or a
+    // retained completed tree) with no final name. Recover only inside the
+    // existing dedicated owner root and only after the ordinary full validator
+    // accepts every file. Names, completion stamps and local hashes alone are
+    // never a shortcut around that validator or the current core check.
+    static func recover(_ final: URL, recipe: Recipe, digest: DigestFile, idle: () -> Bool,
+                        report: (String) -> Void = { _ in },
+                        recheckCore: () throws -> Void) throws -> Prepared? {
+        let fm = FileManager.default
+        guard idle() else { throw Failure.active }
+        let owner = final.deletingLastPathComponent()
+        try plain(owner, directory: true)
+        let marker = try destination(ownerName, under: owner)
+        try plain(marker, directory: false)
+        guard (try marker.resourceValues(forKeys: [.fileSizeKey])).fileSize == ownerBytes.count,
+              try Data(contentsOf: marker) == ownerBytes,
+              final.lastPathComponent == recipe.id,
+              try destination(recipe.id, under: owner).standardizedFileURL.path == final.standardizedFileURL.path else {
+            throw Failure.ownership
+        }
+        // Recovery never replaces or adopts a current final tree. Its normal
+        // reuse/rebuild path owns that decision, including invalid trees.
+        guard !fm.fileExists(atPath: final.path) else { return nil }
+
+        let entryLimit = 128, candidateLimit = 32
+        var failedEnumeration = false
+        guard let enumerator = fm.enumerator(at: owner,
+                                            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+                                            options: [.skipsSubdirectoryDescendants],
+                                            errorHandler: { _, _ in failedEnumeration = true; return false }) else {
+            throw ValidationIssue(.enumeration)
+        }
+        var entries = 0, candidates: [URL] = []
+        for case let candidate as URL in enumerator {
+            try Task.checkCancellation()
+            entries += 1
+            guard entries <= entryLimit else {
+                report("[steam-browser-cache-v4] phase=recovery reason=candidate-limit kind=entries expected=\(entryLimit) observed=\(entries) action=prepare-new previous-caches=retained")
+                return nil
+            }
+            let name = candidate.lastPathComponent
+            guard name.hasPrefix(".stage-") || name.hasPrefix(".retained-") else { continue }
+            // Refuse a linked/non-directory candidate; never follow, delete or
+            // rename it even when another candidate would otherwise validate.
+            try plain(candidate, directory: true)
+            candidates.append(candidate)
+            guard candidates.count <= candidateLimit else {
+                report("[steam-browser-cache-v4] phase=recovery reason=candidate-limit kind=candidates expected=\(candidateLimit) observed=\(candidates.count) action=prepare-new previous-caches=retained")
+                return nil
+            }
+        }
+        guard !failedEnumeration else { throw ValidationIssue(.enumeration) }
+        // Prefer a completed replacement over an older retained cache. UUID
+        // spelling breaks ties deterministically; timestamps are not trusted.
+        candidates.sort {
+            let leftStage = $0.lastPathComponent.hasPrefix(".stage-")
+            let rightStage = $1.lastPathComponent.hasPrefix(".stage-")
+            return leftStage == rightStage ? $0.lastPathComponent < $1.lastPathComponent : leftStage
+        }
+        for candidate in candidates {
+            try Task.checkCancellation()
+            guard idle() else { throw Failure.active }
+            let completionFile = try destination(completion, under: candidate)
+            guard fm.fileExists(atPath: completionFile.path) else { continue }
+            do { _ = try validate(candidate, recipe: recipe, digest: digest) }
+            catch let issue as ValidationIssue {
+                report(issue.diagnostic(phase: "recovery", recipe: recipe) + " action=retained")
+                continue
+            }
+            // This closure must read the current installed core, just like
+            // commit's final gate; a previously verified stamp is insufficient.
+            try recheckCore()
+            guard idle() else { throw Failure.active }
+            _ = try destination(recipe.id, under: owner)
+            guard !fm.fileExists(atPath: final.path) else { return nil }
+            try fm.moveItem(at: candidate, to: final)
+            let prepared = try validate(final, recipe: recipe, digest: digest)
+            report("[steam-browser-cache-v4] phase=recovery source=\(candidate.lastPathComponent.hasPrefix(".stage-") ? "stage" : "retained") action=verified records=\(recipe.expectedFiles + 1)")
+            return prepared
+        }
+        return nil
+    }
+
     static func commit(stage: URL, destination final: URL, recipe: Recipe, records: [FileRecord],
                        digest: DigestFile, idle: () -> Bool, report: (String) -> Void = { _ in },
                        recheckCore: () throws -> Void) throws -> Prepared {
@@ -566,6 +688,13 @@ enum SteamBrowserRuntimeFiles {
                 progress("[steam-browser-cache-v4] phase=reuse recipe=\(recipe.id) action=verified records=\(recipe.expectedFiles + 1)")
                 return prepared
             }
+            phase = "recovery"
+            if let prepared = try Files.recover(final, recipe: recipe, digest: hash, idle: idle, report: progress, recheckCore: {
+                try Files.core(chromeHTML, steamRoot: steamRoot, recipe: recipe, digest: hash)
+            }) {
+                guard idle() else { throw Files.Failure.active }
+                return prepared
+            }
             phase = "stage"
             let stage = root.appendingPathComponent(".stage-" + UUID().uuidString)
             try fm.createDirectory(at: stage, withIntermediateDirectories: false)
@@ -632,6 +761,10 @@ enum SteamBrowserRuntimeFiles {
             progress("[steam-browser-cache-v4] phase=commit recipe=\(recipe.id) action=verified records=\(recipe.expectedFiles + 1)")
             return prepared
         } catch {
+            if let issue = error as? Files.CoreIssue {
+                progress(issue.diagnostic(phase: phase, recipe: recipe) + " action=failed previous-cache=retained")
+                throw issue
+            }
             let issue: Files.ValidationIssue
             if let value = error as? Files.ValidationIssue { issue = value }
             else if error is CancellationError { issue = Files.ValidationIssue(.cancelled) }
