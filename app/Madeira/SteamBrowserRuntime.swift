@@ -250,14 +250,18 @@ enum SteamBrowserRuntimeFiles {
         // Unrelated/test recipes retain their original exact-core contract.
         let permitted = recipe == official ? officialCompatibleCoreSHA256 : [recipe.coreSHA256]
         guard permitted.contains(actual) else {
-            let size = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? -1
+            var size = -1
             var architecture: UInt16?
             // Inspect only a bounded PE header after rejection. No additional
             // full-file copy, foreign path, version string or arbitrary error
             // text enters the public diagnostic.
             if let handle = try? FileHandle(forReadingFrom: file) {
                 defer { try? handle.close() }
-                if let header = try? handle.read(upToCount: 4096) { architecture = machine(header) }
+                // URL resource values can retain a previous file's size after
+                // Steam replaces it at the same path. Query this descriptor.
+                if let end = try? handle.seekToEnd(), end <= UInt64(Int.max) { size = Int(end) }
+                if (try? handle.seek(toOffset: 0)) != nil,
+                   let header = try? handle.read(upToCount: 4096) { architecture = machine(header) }
             }
             throw CoreIssue(.unsupportedProfile, sha256: actual, bytes: size, machine: architecture)
         }

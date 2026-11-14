@@ -268,7 +268,8 @@ do {
         _ = try F.compatibleCoreSHA256(core, steamRoot: steam, recipe: F.official, digest: digestFile)
         fatalError("unsupported PE fixture unexpectedly admitted")
     } catch let issue as F.CoreIssue {
-        assert(issue.reason == .unsupportedProfile && issue.bytes == 512 && issue.machine == 0x8664)
+        assert(issue.reason == .unsupportedProfile && issue.bytes == 512 && issue.machine == 0x8664,
+               issue.diagnostic(phase: "fixture-pe-identity", recipe: F.official))
         assert(issue.sha256 == digest(try! fixture("amd64.exe")))
         assert(issue.diagnostic(phase: "pre-commit", recipe: F.official).contains("machine=8664 supported-profiles=2 cache-enumeration=separate"))
     }
