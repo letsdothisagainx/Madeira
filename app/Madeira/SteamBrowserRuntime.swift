@@ -538,15 +538,19 @@ enum SteamBrowserRuntimeFiles {
             throw ValidationIssue(.enumeration)
         }
         var entries = 0, candidates: [URL] = []
-        for case let candidate as URL in enumerator {
+        for case let enumerated as URL in enumerator {
             try Task.checkCancellation()
             entries += 1
             guard entries <= entryLimit else {
                 report("[steam-browser-cache-v4] phase=recovery reason=candidate-limit kind=entries expected=\(entryLimit) observed=\(entries) action=prepare-new previous-caches=retained")
                 return nil
             }
-            let name = candidate.lastPathComponent
+            let name = enumerated.lastPathComponent
             guard name.hasPrefix(".stage-") || name.hasPrefix(".retained-") else { continue }
+            // Darwin may enumerate /var while the trusted root uses /private/var.
+            // Rebuild this direct child's URL beneath that verified root; do
+            // not adopt an enumerator's alias or resolve a real child symlink.
+            let candidate = try destination(name, under: owner)
             // Refuse a linked/non-directory candidate; never follow, delete or
             // rename it even when another candidate would otherwise validate.
             try plain(candidate, directory: true)
