@@ -324,6 +324,14 @@ Production.run()
 # compiled from production; no duplicate Swift policy constants substitute for
 # the768/384 arena split. No allocation or device result is faked.
 content = (root / 'app/Madeira/ContentView.swift').read_text()
+library = (root / 'app/Madeira/Library.swift').read_text()
+# The actual startup selection also derives the CS2 texture profile's measured
+# budget. Include that production helper rather than replacing the call with a
+# fixture stub or removing it from the extracted launch block.
+texture_profile_start = '// BEGIN CS2 TEXTURE MEMORY PROFILE\n'
+texture_profile_end = '// END CS2 TEXTURE MEMORY PROFILE'
+assert library.count(texture_profile_start) == library.count(texture_profile_end) == 1
+texture_profile = library.split(texture_profile_start, 1)[1].split(texture_profile_end, 1)[0]
 reset_start = content.index('            unsetenv("WINE_IOS_JIT_HEAD_RESERVE_MB")', content.index('// Private startup policy belongs to this launch only.'))
 private_reset = content[reset_start:content.index('            // A library entry\'s launch profile', reset_start)]
 locks_start = content.index('            let cs2PartitionNames = ')
@@ -337,10 +345,11 @@ policy_header = '#include <stdbool.h>\n#include <stdint.h>\n' + '\n'.join(body.s
 policy_c = '#include "policy.h"\n' + ''.join(policy_bodies)
 selection_start = content.index('            var poolSizeMB = DockPerformancePolicy.sessionPoolMB(')
 selection = content[selection_start:content.index('            // ml694:', selection_start)]
+assert 'CS2TextureMemoryProfile.measuredBudget(' in selection
 assert 'JIT pool overridden' not in selection
 assert selection.count('[jit-pool-selection-v1]') == 1
 assert selection.index('JIT pool requested') < selection.index('jit_cs2_pool_plan(') < selection.index('[jit-pool-selection-v1]')
-swift_fixture = 'import Foundation\nimport CS2StartupPolicy\n#if canImport(Darwin)\nimport Darwin\n#else\nimport Glibc\n#endif\n' + swift_fixture + r'''
+swift_fixture = 'import Foundation\nimport CS2StartupPolicy\n#if canImport(Darwin)\nimport Darwin\n#else\nimport Glibc\n#endif\n' + texture_profile + swift_fixture + r'''
 enum Level { case info, error }
 final class SelectionLog {
     var lines: [String] = []

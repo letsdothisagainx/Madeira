@@ -745,13 +745,24 @@ orphan_start = wrapper.index('if (caller && session && caller != session)')
 assert orphan_start < root_start and 'pthread_exit( NULL );' in wrapper[orphan_start:root_start]
 assert 'ios_finish_process_memory' not in root_hook
 assert 'ios_jit_reclaim_process' not in root_hook and 'ios_wow_window_release' not in root_hook
+# This FEX/UI fixture does not link the optional native Metal backend. Model
+# its absent weak callback with a typed NULL host binding, including on Mach-O
+# where an undefined ELF-style weak declaration is not sufficient to link.
+# The production quiescence/availability guard and call are still required;
+# actual receipt retirement is exercised by check-dxmt-resource-budget.py.
+budget_callback = 'madeira_resource_growth_retire'
+budget_declaration = '            extern void madeira_resource_growth_retire(void *, unsigned long long) __attribute__((weak));\n'
+assert root_hook.count(budget_declaration) == 1
+assert 'if (lease && madeira_resource_growth_retire) madeira_resource_growth_retire(caller_peb, lease);' in root_hook
+host_root_hook = root_hook.replace(budget_declaration, '', 1).replace(budget_callback, 'fixture_optional_growth_retire')
 root_code = vad_code[:vad_code.index('int main(void) {')]
 root_code += r'''
 typedef uint16_t WCHAR;
 typedef struct { unsigned short Length, MaximumLength; WCHAR *Buffer; } UNICODE_STRING;
+static void (*fixture_optional_growth_retire)(void *, unsigned long long) = NULL;
 '''
 root_code += f'#include "{root / "build/ntdll-unix/steam_handoff.h"}"\n'
-root_code += 'static void root_session_hook(void *caller_peb, int status, int memory_ready) {\n' + root_hook + '\n}\n'
+root_code += 'static void root_session_hook(void *caller_peb, int status, int memory_ready) {\n' + host_root_hook + '\n}\n'
 root_code += r'''
 static int root_report, native_running = 1, server_running = 1, ui_attached = 1, jit_alive = 1;
 void wine_launched_process_did_exit(int status) { root_report = status; }
@@ -773,6 +784,7 @@ static int handoff_tick(unsigned usec) {
 root_code += body(bridge, 'static int madeira_wait_steam_handoff(int initial_status)') + '\n#undef usleep\n'
 root_code += r'''
 int main(void) {
+    assert(fixture_optional_growth_retire == NULL);
     root_owner = (void *)(uintptr_t)0x400310000;
     replacement_owner = (void *)(uintptr_t)0x500310000;
     wine_rb_init(&views_tree, compare_view);
