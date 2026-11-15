@@ -479,7 +479,7 @@ def factory(text):
 def main():
     common = PREFIX + types + '\nstatic bool expect_candidate=false;\n' + BUDGET + memory_header
     common += '\n#define ORIGINAL_FORMAT(format) (format & ~WMTPixelFormatCustomSwizzle)\nnamespace dxmt {\n' + accounting + '\n}\n'
-    common += mip_policy + BACKEND
+    common += mip_policy + '\nstatic_assert(dxmt::mip_clamp::kHeadroomUnknown == -1);\n' + BACKEND
     is_bc = declaration(original, 'static inline bool IsBCFormatForClamp(')
     with tempfile.TemporaryDirectory(prefix='madeira-texture-admission-') as temp:
         temp = Path(temp)
