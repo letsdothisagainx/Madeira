@@ -69,6 +69,7 @@ cases = {
     'dxmt-perf-heap': ('tools/build/stage-dxmt-perf-heap.py', {'dxmt', 'ipa'}),
     'dxmt-command-state': ('tools/build/stage-dxmt-command-state.py', {'dxmt', 'ipa'}),
     'dxmt-native-batch': ('tools/build/stage-dxmt-native-batch.py', {'dxmt', 'ipa'}),
+    'dxmt-task-wake': ('tools/build/stage-dxmt-task-wake.py', {'dxmt', 'ipa'}),
     'dxmt-memory-build': ('tools/build/build-dxmt-memory-compat.sh', {'dxmt', 'ipa'}),
     'dxmt-memory-package': ('tools/check-dxmt-memory-package.py', {'dxmt', 'ipa'}),
     # Native win32u is rebuilt in every app job; no component cache owns it.

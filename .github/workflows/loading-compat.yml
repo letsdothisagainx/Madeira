@@ -8,6 +8,10 @@ on:
       - tests/host/check-swap-coverage.py
       - tests/host/check-swap-decommit-remap.py
       - tests/host/check-js-read-owner-fastpath.py
+      - tests/host/check-private-write-preflight.py
+      - tests/host/check-dxmt-task-wake.py
+      - tools/build/stage-dxmt-task-wake.py
+      - tools/build/stage-dxmt-memory-compat.py
       - .github/workflows/loading-compat.yml
   pull_request:
     paths:
@@ -16,6 +20,10 @@ on:
       - tests/host/check-swap-coverage.py
       - tests/host/check-swap-decommit-remap.py
       - tests/host/check-js-read-owner-fastpath.py
+      - tests/host/check-private-write-preflight.py
+      - tests/host/check-dxmt-task-wake.py
+      - tools/build/stage-dxmt-task-wake.py
+      - tools/build/stage-dxmt-memory-compat.py
       - .github/workflows/loading-compat.yml
   workflow_dispatch:
 
@@ -32,6 +40,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - name: Fetch the pinned DXMT scheduler source
+        run: git submodule update --init --depth 1 dxmt
       - name: Actual sparse-file decommit and file-observer checks
         env:
           CC: ${{ runner.os == 'Linux' && 'gcc' || 'clang' }}
@@ -40,3 +50,5 @@ jobs:
           python3 tests/host/check-swap-coverage.py
           python3 tests/host/check-swap-decommit-remap.py
           python3 tests/host/check-js-read-owner-fastpath.py
+          python3 tests/host/check-private-write-preflight.py
+          python3 tests/host/check-dxmt-task-wake.py

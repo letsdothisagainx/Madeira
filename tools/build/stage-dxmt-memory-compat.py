@@ -24,6 +24,7 @@ CENSUS = ('src/dxmt/dxmt_mem_census.hpp', 'src/dxmt/dxmt_mem_census.cpp',
 PERF = ('src/dxmt/dxmt_command_queue.hpp', 'src/dxmt/dxmt_command_queue.cpp',
         'src/d3d11/d3d11_context_impl.cpp', 'src/d3d11/d3d11_context_imm.cpp')
 COMMAND_STATE = ('src/d3d11/d3d11_context_impl.cpp', 'src/d3d11/d3d11_swapchain.cpp')
+SCHEDULER = ('src/dxmt/dxmt_tasks.hpp',)
 HEADER = 'src/dxmt/memory_pressure.hpp'
 
 
@@ -74,6 +75,7 @@ def prepare(root, state):
         ('census', 'stage-dxmt-census-heap.py', CENSUS),
         ('perf', 'stage-dxmt-perf-heap.py', PERF),
         ('command-state', 'stage-dxmt-command-state.py', COMMAND_STATE),
+        ('task-wake', 'stage-dxmt-task-wake.py', SCHEDULER),
     ):
         destination = generated / kind
         subprocess.run([sys.executable, str(root / 'tools/build' / recipe),
@@ -91,7 +93,7 @@ def prepare(root, state):
     text = read(path).decode()
     marker = 'storage=owner-heap-v1 cache-detached='
     assert text.count(marker) == 1, 'DXMT counter storage capability anchor changed'
-    path.write_text(text.replace(marker, 'storage=owner-heap-v1 counter-storage=census-perf-heap-v1 pe-command-state=dedup-hud-v1 cache-detached=', 1))
+    path.write_text(text.replace(marker, 'storage=owner-heap-v1 counter-storage=census-perf-heap-v1 pe-command-state=dedup-hud-v1 scheduler=ready-work-v1 cache-detached=', 1))
     outputs[HEADER] = root / 'build/dxmt-ios/memory_pressure.hpp'
     records = {}
     for name, staged in outputs.items():
