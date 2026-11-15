@@ -47,7 +47,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - run: git submodule update --init --depth 1 dxmt
+      # The lifecycle fixture compiles Wine's real PE types in addition to DXMT.
+      - run: git submodule update --init --depth 1 wine dxmt
       - name: Exercise production methods with controlled resource and GPU completion edges
         env:
           CC: clang
