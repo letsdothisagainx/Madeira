@@ -168,6 +168,15 @@ NATIVE = r'''
 static int task_failure, sysctl_failure, short_count, short_size;
 static uint64_t measured_footprint, measured_available, installed;
 static unsigned available_queries;
+/* This op40-only native fixture has no Wine owner registry. Explicitly
+ * unavailable owner hooks keep the shared header linkable on Mach-O without
+ * fabricating a process generation or quiescence proof. Growth admissions
+ * are exercised separately with the actual registry predicates. */
+void *ios_jit_current_peb(void) { return NULL; }
+unsigned long long ios_thread_process_snapshot(void *owner, unsigned *threads, int *exiting, int *reclaimed) {
+  (void)owner; *threads = 0; *exiting = 0; *reclaimed = 0; return 0;
+}
+unsigned long long ios_thread_process_quiescent_lease(void *owner) { (void)owner; return 0; }
 int mach_task_self(void) { return 1; }
 int task_info(int task, int flavor, task_info_t data, mach_msg_type_number_t *count) {
   assert(task == 1 && flavor == TASK_VM_INFO);

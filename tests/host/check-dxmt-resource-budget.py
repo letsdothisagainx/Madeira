@@ -76,18 +76,19 @@ static void owner_state(unsigned row,unsigned threads,int exiting,int reclaimed,
  assert(!pthread_mutex_unlock(&ios_thread_group_mutex));
 }
 static std::vector<int> cleanup;
-static void ios_startup_process_quiesced(void*){cleanup.push_back(1);}
-static void ios_fd_cache_release(void*){assert(md_resource_growth_held==32*MiB);cleanup.push_back(2);}
-static void ios_subfloor_release_owner(void*){cleanup.push_back(3);}
-static void ios_jit_reclaim_process(void*){cleanup.push_back(4);}
-static void ios_fex_reclaim_process_views(void*){cleanup.push_back(5);}
-static void ios_cef_reclaim_process_images(void*){cleanup.push_back(6);}
-static void ios_wow_window_release(void*){cleanup.push_back(7);}
-static void ios_exe_win_mark_ready(void*){cleanup.push_back(8);}
-static int ios_wow_base_for_peb(void*){return 0;}
-static int ios_thread_process_finalize_native(void*,unsigned long long lease){assert(lease==1);cleanup.push_back(9);return 1;}
-static void wine_log_write(const char*,...){ }
-'''+retire+r'''
+void ios_startup_process_quiesced(void*){cleanup.push_back(1);}
+void ios_fd_cache_release(void*){assert(md_resource_growth_held==32*MiB);cleanup.push_back(2);}
+void ios_subfloor_release_owner(void*){cleanup.push_back(3);}
+void ios_jit_reclaim_process(void*){cleanup.push_back(4);}
+void ios_fex_reclaim_process_views(void*){cleanup.push_back(5);}
+void ios_cef_reclaim_process_images(void*){cleanup.push_back(6);}
+void ios_wow_window_release(void*){cleanup.push_back(7);}
+void ios_exe_win_mark_ready(void*){cleanup.push_back(8);}
+int ios_wow_base_for_peb(void*){return 0;}
+int ios_thread_process_finalize_native(void*,unsigned long long lease){assert(lease==1);cleanup.push_back(9);return 1;}
+void wine_log_write(const char*,...){ }
+extern "C" void fixture_finish_process_memory(void*);
+'''+r'''
 int main(){
  caller=(void*)0x10000;sample(1244*MiB);
  // All eight streamers see the same real measurement but cannot collectively
@@ -143,7 +144,7 @@ int main(){
  owner_state(0,1,1,0,1);madeira_resource_growth_retire(caller,1);assert(md_resource_growth_held==96*MiB);
  assert(acquire(1).ret==4);owner_state(0,0,1,0,1);
  madeira_resource_growth_retire(caller,1);assert(md_resource_growth_held==96*MiB);
- owner_state(0,0,1,1,1);ios_finish_process_memory(caller);
+ owner_state(0,0,1,1,1);fixture_finish_process_memory(caller);
  assert((cleanup==std::vector<int>{1,2,3,4,5,6,7,8,9}));assert(md_resource_growth_held==32*MiB);
  owner_state(0,1,0,0,3);auto c=acquire(16*MiB);assert(c.ptr);assert(!release(a.ptr));
  madeira_resource_growth_retire(caller,1);assert(md_resource_growth_held==48*MiB);
@@ -173,8 +174,27 @@ int mach_task_self(void);int task_info(int,int,task_info_t,mach_msg_type_number_
 ''')
  (p/'os').mkdir();(p/'os/proc.h').write_text('#pragma once\n#include <stddef.h>\nextern "C" size_t os_proc_available_memory(void);\n')
  (p/'sys').mkdir();(p/'sys/sysctl.h').write_text('#pragma once\n#include <stddef.h>\nextern "C" int sysctlbyname(const char*,void*,size_t*,void*,size_t);\n')
- src=p/'test.cpp';binary=p/'test';src.write_text(code)
+ # The native producer and ntdll server are separate production translation
+ # units. Preserve that boundary: server's optional weak callback cannot be
+ # redeclared after its definition in one synthetic TU (strict Clang rejects
+ # that and correctly knows the just-defined function is always non-null).
+ server_code='''
+extern "C" unsigned long long ios_thread_process_quiescent_lease(void*);
+extern "C" void madeira_resource_growth_retire(void*,unsigned long long) __attribute__((weak));
+void ios_startup_process_quiesced(void*);
+void ios_fd_cache_release(void*);
+void ios_subfloor_release_owner(void*);
+void ios_jit_reclaim_process(void*);
+void ios_fex_reclaim_process_views(void*);
+void ios_cef_reclaim_process_images(void*);
+void ios_wow_window_release(void*);
+void ios_exe_win_mark_ready(void*);
+int ios_wow_base_for_peb(void*);
+int ios_thread_process_finalize_native(void*,unsigned long long);
+void wine_log_write(const char*,...);
+'''+retire+'\nextern "C" void fixture_finish_process_memory(void* owner) { ios_finish_process_memory(owner); }\n'
+ src=p/'test.cpp';server_src=p/'server.cpp';binary=p/'test';src.write_text(code);server_src.write_text(server_code)
  subprocess.run([os.environ.get('CXX','c++'),'-std=c++17','-O1','-Wall','-Wextra','-Werror','-pthread',
   '-fsanitize=address,undefined','-fno-omit-frame-pointer','-fno-sanitize-recover=all',
-  '-I',str(p),'-I',str(ROOT/'build/dxmt-ios'),str(src),'-o',str(binary)],check=True)
+  '-I',str(p),'-I',str(ROOT/'build/dxmt-ios'),str(src),str(server_src),'-o',str(binary)],check=True)
  subprocess.run([str(binary)],check=True,timeout=40)
