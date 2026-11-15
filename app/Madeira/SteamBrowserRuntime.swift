@@ -70,7 +70,10 @@ enum SteamBrowserRuntimeFiles {
     // this is compatibility selection, never a new cache trust shortcut.
     static let officialCompatibleCoreSHA256 = [
         "37f5ddbe874362d729b7cd33504943a9d649d845525afae4bcc2af36ab971f4b",
-        "7afabbd8fae70a1b9831546d4c126ebd74c18796457e3a12fa259f529f7f2266"
+        "7afabbd8fae70a1b9831546d4c126ebd74c18796457e3a12fa259f529f7f2266",
+        // Supplied signed November 13 core: independently checked signature,
+        // complete stream/controller ABI and unchanged executable section.
+        "872c1373defbe853260b5eed5e8b25ab85a680a05b1801cb12e01df7aabb1736"
     ]
     static let ownerName = ".madeira-browser-owner-v1"
     static let ownerBytes = Data("org.madeira.SteamBrowserRuntime/v1\n".utf8)

@@ -1,0 +1,207 @@
+{
+  "format": 1,
+  "scope": "Read-only static compatibility evidence for the user-provided installed Steam chromehtml.dll; no Valve code execution, binary modification or iPhone runtime claim.",
+  "uploaded": {
+    "sha256": "872c1373defbe853260b5eed5e8b25ab85a680a05b1801cb12e01df7aabb1736",
+    "bytes": 1667224,
+    "machine": "8664",
+    "timestamp": "0x6af66f64",
+    "preferred_base": "0x180000000",
+    "size_of_image": "0x19d000",
+    "certificate_file_offset": "0x194400",
+    "certificate_bytes": 11416
+  },
+  "baseline": {
+    "sha256": "7afabbd8fae70a1b9831546d4c126ebd74c18796457e3a12fa259f529f7f2266",
+    "bytes": 1667224,
+    "timestamp": "0x6af24bcb",
+    "source": "Existing completed official-package inspection, not a new Valve download",
+    "run": "https://github.com/letsdothisagainx/Madeira/actions/runs/43122517738",
+    "job_id": 130866268003,
+    "inspector": "tools/inspect-steam-browser-update.py"
+  },
+  "section_comparison": [
+    {
+      "name": ".text",
+      "rva": "0x1000",
+      "raw_bytes": 1174528,
+      "virtual_bytes": 1174260,
+      "geometry_and_flags_identical": true,
+      "baseline_raw_sha256": "91b51ffe07d81df5c8ee29fbcedc31a82ce34804d6ad10537b377bf43514a7dd",
+      "uploaded_raw_sha256": "91b51ffe07d81df5c8ee29fbcedc31a82ce34804d6ad10537b377bf43514a7dd",
+      "raw_bytes_identical": true
+    },
+    {
+      "name": ".rdata",
+      "rva": "0x120000",
+      "raw_bytes": 355840,
+      "virtual_bytes": 355830,
+      "geometry_and_flags_identical": true,
+      "baseline_raw_sha256": "1b42b1850e981bfd6bf7cebb289489ddfa0afe308b844924b89930a83d374f49",
+      "uploaded_raw_sha256": "75346e34ed2344edd01890740bde3f7f04a775d7185380a150ca2eec1735ee56",
+      "raw_bytes_identical": false
+    },
+    {
+      "name": ".data",
+      "rva": "0x177000",
+      "raw_bytes": 38400,
+      "virtual_bytes": 57376,
+      "geometry_and_flags_identical": true,
+      "baseline_raw_sha256": "d2fd1c89190284da7c869512bd8b76f73e91822b8bc4154ff11b24fead0bc711",
+      "uploaded_raw_sha256": "d2fd1c89190284da7c869512bd8b76f73e91822b8bc4154ff11b24fead0bc711",
+      "raw_bytes_identical": true
+    },
+    {
+      "name": ".pdata",
+      "rva": "0x186000",
+      "raw_bytes": 70656,
+      "virtual_bytes": 70368,
+      "geometry_and_flags_identical": true,
+      "baseline_raw_sha256": "c37f6c9b13cba6be71f6e1e61c19168a735517b16e5bad9ae6bf8d7e491cb4e0",
+      "uploaded_raw_sha256": "c37f6c9b13cba6be71f6e1e61c19168a735517b16e5bad9ae6bf8d7e491cb4e0",
+      "raw_bytes_identical": true
+    },
+    {
+      "name": ".fptable",
+      "rva": "0x198000",
+      "raw_bytes": 512,
+      "virtual_bytes": 256,
+      "geometry_and_flags_identical": true,
+      "baseline_raw_sha256": "076a27c79e5ace2a3d47f9dd2e83e4ff6ea8872b3c2218f66c92b89b55f36560",
+      "uploaded_raw_sha256": "076a27c79e5ace2a3d47f9dd2e83e4ff6ea8872b3c2218f66c92b89b55f36560",
+      "raw_bytes_identical": true
+    },
+    {
+      "name": ".reloc",
+      "rva": "0x199000",
+      "raw_bytes": 14848,
+      "virtual_bytes": 14684,
+      "geometry_and_flags_identical": true,
+      "baseline_raw_sha256": "f7ab4fe2663018d57dacb52beaccc1d65337f1c90231a916896a916552b1f5ba",
+      "uploaded_raw_sha256": "f7ab4fe2663018d57dacb52beaccc1d65337f1c90231a916896a916552b1f5ba",
+      "raw_bytes_identical": true
+    }
+  ],
+  "native_profile_comparison": {
+    "entire_inspector_profile_object_identical": true,
+    "comparison_includes": [
+      "seven complete stream-method control-flow graphs, instruction bytes, resolved references and code/shape hashes",
+      "four direct stream callees",
+      "42-entry controller table, initialization graph and three direct callees",
+      "CreateInterface graph and static registry initializer/callback",
+      "RTTI identities and examined related type names"
+    ],
+    "stream_methods": [
+      {
+        "rva": "0x58d10",
+        "code_sha256": "b045bff27f18d1aed9f29226852903676cc48e7973001881ad7e2142b8315270",
+        "relative_encoding_shape_sha256": "d95b65a471355e1b305edc19df08118ce7fb6cbd1471ebed8b9fb6af51ff8f78",
+        "control_flow_statically_closed": true
+      },
+      {
+        "rva": "0x59220",
+        "code_sha256": "6f3f788bad89641f1a9ab31d91f9a2b70f6b278aebb8876e31fefaf3b0a6c86e",
+        "relative_encoding_shape_sha256": "acb2a4fa2dbc7668bc679e16b41ab9d28b9303690a6aa9a30a0b99ea0b46e0a4",
+        "control_flow_statically_closed": true
+      },
+      {
+        "rva": "0x59200",
+        "code_sha256": "bf2515d2b84aa33a3f50c248c50920424237253fbd322fc951889e74528a2ace",
+        "relative_encoding_shape_sha256": "f63a8009c65e64d1d512f45def88c16c1a63f45cfe091c9f6324d6dc2c2e6e16",
+        "control_flow_statically_closed": true
+      },
+      {
+        "rva": "0x59510",
+        "code_sha256": "1f1c7db506fe127059f5c971ccf5f8fe85c73dffb4e48b72ace61e6d72ee2544",
+        "relative_encoding_shape_sha256": "acf07a241a710d14cd0ffa67de65cf00c5031b66b04d1c5eb7a31a2802fb2614",
+        "control_flow_statically_closed": true
+      },
+      {
+        "rva": "0x590c0",
+        "code_sha256": "869337a70c426c987089ca8d3b359b52f0c2b0c43e7a12b5666f15693c4fcf02",
+        "relative_encoding_shape_sha256": "5b6fce11bc7d7c77602ec5a3ac45abef8717ea1d71f92bd8575e7b87519480be",
+        "control_flow_statically_closed": true
+      },
+      {
+        "rva": "0x58f80",
+        "code_sha256": "df9a9619f342d062e4a4711fec5dbcfe73d9ffe1f97228f399f0f38d8e73894a",
+        "relative_encoding_shape_sha256": "28933025b889159ef34da645e62d4e043e828671679c853defb73a126164468a",
+        "control_flow_statically_closed": true
+      },
+      {
+        "rva": "0x58ee0",
+        "code_sha256": "c6c64606a3ea02a6799b7eacc5a45972eebb9217da74444aeaf384874f3db889",
+        "relative_encoding_shape_sha256": "e157932c3879390b13473d5d41a384724fe01fd7f723b3f75fb96444d08af402",
+        "control_flow_statically_closed": true
+      }
+    ],
+    "direct_stream_callee_count": 4,
+    "controller_init_direct_callee_count": 3
+  },
+  "reviewed_layout": {
+    "stream_methods": [
+      "0x58d10",
+      "0x59220",
+      "0x59200",
+      "0x59510",
+      "0x590c0",
+      "0x58f80",
+      "0x58ee0"
+    ],
+    "stream_vtable_rva": "0x1323a0",
+    "stream_locator_pointer_rva": "0x132398",
+    "stream_complete_object_locator_rva": "0x15c550",
+    "stream_type_name_rva": "0x17f428",
+    "interface_type_name_rva": "0x17f400",
+    "helper_path_rva": "0x121d50",
+    "helper_path_pointer_rva": "0x121d48",
+    "helper_path": "bin/cef/cef.win64/steamwebhelper.exe",
+    "controller_object_rva": "0x1806c0",
+    "controller_vtable_rva": "0x123710",
+    "controller_slots": 42,
+    "factory_rva": "0xf9420",
+    "controller_stream_pair_member_offset": "0x170"
+  },
+  "wire_comparison": {
+    "actual_receiver_evidence_identical_except_input_file_hash": true,
+    "receiver_binding_count": 56,
+    "sender_evidence_identical": true,
+    "core_sender_binding_count": 0,
+    "normalization": "JSON map keys normalized to strings; only top-level input-file SHA256 omitted. Code/data references, receiver switches, wrappers and binding witnesses compared.",
+    "prior_combined_core_helper_coverage": {
+      "maintained": 152,
+      "proven": 145,
+      "unresolved_ids": [
+        33,
+        35,
+        36,
+        117,
+        132,
+        139,
+        141
+      ],
+      "scope": "Prior reviewed combined evidence. Supplied file independently repeats 56 core receiver bindings; it does not newly prove helper behavior or resolve these seven IDs."
+    }
+  },
+  "serialized_descriptors": {
+    "htmlmessages.proto": {
+      "rva": "0x125ba0",
+      "bytes": 15423,
+      "sha256": "bb01b68b484d7965f73a65f69c28db832ca5a9fdd49de07c8c55a988ad70b910",
+      "baseline_identical": true
+    },
+    "google/protobuf/descriptor.proto": {
+      "rva": "0x13a940",
+      "bytes": 6077,
+      "sha256": "b210f4f0629403b6de451abfbe65929b6b5ebaab6da41eed5329efeb1753b5cc",
+      "baseline_identical": true
+    }
+  },
+  "limits": [
+    "This is not a timestamp/signature-only global comparison: COFF timestamp and .rdata bytes differ.",
+    "Whole .text, .data, .pdata, .fptable and .reloc bytes match the reviewed updated baseline.",
+    "Schema equality alone is not used as command-ID proof; actual receiver witnesses are compared.",
+    "Authenticode verification is separate; this static comparison is not a trust verdict.",
+    "No Steam UI, CS2 launch, online gameplay or VAC acceptance is established."
+  ]
+}

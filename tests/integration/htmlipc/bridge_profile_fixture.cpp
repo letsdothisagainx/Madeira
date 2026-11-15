@@ -97,7 +97,7 @@ static si::Config config(std::vector<U8> &bytes,Context &c){
     cfg.generation=1;cfg.wire_contract_ready=true;cfg.redirect_helper_win32=false;return cfg;
 }
 static si::Api api(Context &c){return {&c,query,protect,last_error};}
-#ifndef MADEIRA_BASELINE_PROFILE
+#if !defined(MADEIRA_BASELINE_PROFILE) && !defined(MADEIRA_REJECT_PROVIDED_PROFILE)
 struct Image:Owned {
     const si::Profile *profile;U32 sections,count,headers;std::vector<U8> text_before;
     Image(const std::vector<U8> &file,const si::Profile *selected):Owned(selected->image_size),profile(selected){
@@ -199,14 +199,25 @@ static void exercise(std::vector<U8> bytes,const char *label){
 }
 #endif
 int main(int argc,char **argv){
-    CHECK(argc==3&&sysconf(_SC_PAGESIZE)==4096);auto old=read_file(argv[1]),updated=read_file(argv[2]);
-#ifdef MADEIRA_BASELINE_PROFILE
+    CHECK(sysconf(_SC_PAGESIZE)==4096);
+#ifdef MADEIRA_REJECT_PROVIDED_PROFILE
+    CHECK(argc==2);auto provided=read_file(argv[1]);Context c;si::Installer attempt{};
+    CHECK(si::profile_for_size(provided.size()));
+    CHECK(si::arm(&attempt,config(provided,c),api(c)).error==si::Error::PinMismatch);
+    CHECK(!c.protects);
+    std::puts("PASS baseline production installer: supplied same-size core reproduces PinMismatch before mapped-image protection changes");
+#elif defined(MADEIRA_BASELINE_PROFILE)
+    CHECK(argc==3);auto old=read_file(argv[1]),updated=read_file(argv[2]);
     Context c;si::Installer old_s{},updated_s{};
     CHECK(si::arm(&old_s,config(old,c),api(c)).error==si::Error::None);
     CHECK(si::arm(&updated_s,config(updated,c),api(c)).error==si::Error::PinMismatch);
     std::puts("PASS baseline production installer: original official core arms; updated official core reproduces genuine PinMismatch");
 #else
-    exercise(old,"legacy");exercise(updated,"updated");
+    CHECK(argc>=2);
+    for(int i=1;i<argc;i++){
+        const char *label=argc==2?"provided":argc==3?(i==1?"legacy":"updated"):"verified-profile";
+        exercise(read_file(argv[i]),label);
+    }
     std::puts("NOTE: mapped-file installer proof only; controller BSS seeded without Valve DllMain. No real helper, Steam IPC, iOS session or CS2 launch claimed.");
 #endif
 }

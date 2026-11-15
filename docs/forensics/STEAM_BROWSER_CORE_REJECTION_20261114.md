@@ -1,5 +1,11 @@
 # Pre-Wine browser core rejection and interrupted-cache recovery
 
+Follow-up: the supplied installed DLL is now independently authenticated and
+has a reviewed native profile. See
+[the compatibility correction](STEAM_BROWSER_CORE_20261113_COMPAT.md).
+The investigation and access limitations below describe the earlier evidence
+boundary, before that DLL was supplied.
+
 Tested source: `df52539b6b43eb676907484c7d1f0f862a39a485`.
 Evidence: the supplied `madeira-log(1).txt`, reporting that exact source.
 

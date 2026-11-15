@@ -20,7 +20,8 @@ FILENAME = 'madeira-htmlipc-bridge.dll'
 # an assertion that every accepted current Steam core has that whole-file hash.
 CORE_SHA256 = '37f5ddbe874362d729b7cd33504943a9d649d845525afae4bcc2af36ab971f4b'
 NEW_CORE_SHA256 = '7afabbd8fae70a1b9831546d4c126ebd74c18796457e3a12fa259f529f7f2266'
-COMPATIBLE_CORE_SHA256 = (CORE_SHA256, NEW_CORE_SHA256)
+REVIEWED_CORE_SHA256 = '872c1373defbe853260b5eed5e8b25ab85a680a05b1801cb12e01df7aabb1736'
+COMPATIBLE_CORE_SHA256 = (CORE_SHA256, NEW_CORE_SHA256, REVIEWED_CORE_SHA256)
 READY_MAGIC = 0x314452504948444d
 READY_SIZE = 80
 READY_VERSION = 1
@@ -236,7 +237,7 @@ def validate_compiled_profiles(data):
 
     A manifest alone must not claim that an old single-profile DLL supports a
     freshly updated core. Source-closure and actual installer regressions prove
-    the selection code; this gate additionally checks both exact linked pins.
+    the selection code; this gate additionally checks every exact linked pin.
     """
     for expected in COMPATIBLE_CORE_SHA256:
         require(bytes.fromhex(expected) in data, 'compiled DLL omits required core profile: ' + expected)

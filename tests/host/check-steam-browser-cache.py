@@ -220,7 +220,8 @@ fails("core outside Steam") { try F.core(core, steamRoot: base, recipe: recipe, 
 // integration independently verifies the actual binaries and all 80 records.
 let oldCoreSHA = "37f5ddbe874362d729b7cd33504943a9d649d845525afae4bcc2af36ab971f4b"
 let updatedCoreSHA = "7afabbd8fae70a1b9831546d4c126ebd74c18796457e3a12fa259f529f7f2266"
-assert(F.officialCompatibleCoreSHA256 == [oldCoreSHA, updatedCoreSHA])
+let reviewedCoreSHA = "872c1373defbe853260b5eed5e8b25ab85a680a05b1801cb12e01df7aabb1736"
+assert(F.officialCompatibleCoreSHA256 == [oldCoreSHA, updatedCoreSHA, reviewedCoreSHA])
 assert(F.official.coreSHA256 == oldCoreSHA && F.official.expectedFiles + 1 == 80)
 // Metadata-only 80-record shape; no placeholder records are materialized into
 // an official cache or accepted as files. The archive integration uses real
@@ -234,7 +235,7 @@ for index in officialRecords.count..<F.official.expectedFiles {
 }
 officialRecords.append(F.generatedRecord(recipe: F.official))
 let officialBefore = try JSONEncoder().encode(F.manifest(recipe: F.official, records: officialRecords))
-for selected in [oldCoreSHA, updatedCoreSHA] {
+for selected in [oldCoreSHA, updatedCoreSHA, reviewedCoreSHA] {
     let result = try F.compatibleCoreSHA256(core, steamRoot: steam, recipe: F.official, digest: { _ in selected })
     assert(result == selected)
     try F.core(core, steamRoot: steam, recipe: F.official, digest: { _ in selected })
@@ -256,7 +257,7 @@ do {
         let report = issue.diagnostic(phase: "core", recipe: F.official)
         assert(report.contains("component=bin/chromehtml.dll reason=unsupported-profile"))
         assert(report.contains("sha256=" + unknown) && report.contains("bytes=\(bytes.count) machine=unknown"))
-        assert(report.contains("supported-profiles=2 cache-enumeration=not-started"))
+        assert(report.contains("supported-profiles=3 cache-enumeration=not-started"))
         assert(!report.contains(steam.path) && !report.contains(temp.path) && !report.contains("\n"))
         assert(issue.errorDescription!.contains("bin/chromehtml.dll") && issue.errorDescription!.contains(String(unknown.prefix(16))))
     }
@@ -271,7 +272,7 @@ do {
         assert(issue.reason == .unsupportedProfile && issue.bytes == 512 && issue.machine == 0x8664,
                issue.diagnostic(phase: "fixture-pe-identity", recipe: F.official))
         assert(issue.sha256 == digest(try! fixture("amd64.exe")))
-        assert(issue.diagnostic(phase: "pre-commit", recipe: F.official).contains("machine=8664 supported-profiles=2 cache-enumeration=separate"))
+        assert(issue.diagnostic(phase: "pre-commit", recipe: F.official).contains("machine=8664 supported-profiles=3 cache-enumeration=separate"))
     }
     try bytes.write(to: core)
     var digestCalled = false
@@ -313,8 +314,10 @@ let spoofedRecipes = [
         expectedFiles: F.official.expectedFiles, packages: F.official.packages, keys: F.official.keys, marker: generated)
 ]
 for spoof in spoofedRecipes {
-    fails("altered official recipe cannot inherit second core profile") {
-        try F.core(core, steamRoot: steam, recipe: spoof, digest: { _ in updatedCoreSHA })
+    for selected in [updatedCoreSHA, reviewedCoreSHA] {
+        fails("altered official recipe cannot inherit an additional reviewed core profile") {
+            try F.core(core, steamRoot: steam, recipe: spoof, digest: { _ in selected })
+        }
     }
     try F.core(core, steamRoot: steam, recipe: spoof, digest: { _ in oldCoreSHA })
 }
@@ -336,7 +339,7 @@ let beforeManifest = try JSONDecoder().decode(F.Manifest.self, from: officialBef
 let afterManifest = try JSONDecoder().decode(F.Manifest.self, from: officialAfter)
 assert(beforeManifest == afterManifest)
 assert(afterManifest.files.count == 80)
-print("PASS production core compatibility selection: exact two official profile hashes, full-recipe isolation, unknown/hash/path/symlink rejection, unchanged 80-record cache identity; injected hash-provider fixture, not Valve trust authentication")
+print("PASS production core compatibility selection: exact three reviewed profile hashes, full-recipe isolation, unknown/hash/path/symlink rejection, unchanged 80-record cache identity; injected hash-provider fixture, not Valve trust authentication")
 fails("active owner acquisition") { _ = try F.ownerRoot(cacheBase: base, steamRoot: steam, idle: { false }) }
 let alien = base.appendingPathComponent("SteamBrowserRuntime")
 try fm.createDirectory(at: alien, withIntermediateDirectories: false)

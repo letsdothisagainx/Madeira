@@ -1,0 +1,173 @@
+{
+  "analysisTools": {
+    "openssl": "OpenSSL 3.5.7 9 Jun 2026",
+    "pythonCryptography": "50.0.0",
+    "temporaryCounterVerifierSHA256": "ac76ca299365607f1be53e154df11715a2e4b1de4402ff38feffafb6ca5ad2ec"
+  },
+  "authenticodeFileBinding": {
+    "algorithm": "SHA-256",
+    "computed": "df138c9f1b463d1bba797a29530a6ef9351ef42fda86956b6890010f62decda2",
+    "hashRanges": [
+      [
+        0,
+        384
+      ],
+      [
+        388,
+        464
+      ],
+      [
+        472,
+        1655808
+      ]
+    ],
+    "rangeConvention": "Half-open file byte ranges; checksum/security-directory fields and bounded EOF certificate table excluded. Section raw extents are contiguous and fill the image file before the certificate table.",
+    "result": "match",
+    "signedSpcIndirectDataDigest": "df138c9f1b463d1bba797a29530a6ef9351ef42fda86956b6890010f62decda2"
+  },
+  "certificateTable": {
+    "atEOF": true,
+    "bytes": 11416,
+    "derSHA256": "fddb4947e3ee4ad20005a58c4ee91c8dcc220254ed0954789702027c0f292519",
+    "fileOffset": 1655808,
+    "winCertificateRevision": "0200",
+    "winCertificateType": "0002"
+  },
+  "counterSignature": {
+    "authenticatedAttributeSignature": "valid",
+    "chain": [
+      {
+        "issuer": "CN=DigiCert Trusted G4 TimeStamping RSA4096 SHA256 2025 CA1,O=DigiCert\\, Inc.,C=US",
+        "notAfter": "2037-11-04T23:59:59+00:00",
+        "notBefore": "2026-08-05T00:00:00+00:00",
+        "publicKeyBits": 4096,
+        "serial": "84fdc334f7e454edbc30f8ff9921835",
+        "sha256": "2da09da7f4131f9fe72db6c5e6e9c9656755af043f1ea742cc0d2120e141ebfc",
+        "subject": "CN=DigiCert SHA256 RSA4096 Timestamp Responder 2026 1,O=DigiCert\\, Inc.,C=US"
+      },
+      {
+        "issuer": "CN=DigiCert Trusted Root G4,OU=www.digicert.com,O=DigiCert Inc,C=US",
+        "notAfter": "2038-01-14T23:59:59+00:00",
+        "notBefore": "2025-05-07T00:00:00+00:00",
+        "publicKeyBits": 4096,
+        "serial": "dc7ac5705ff21992e4043220c3a4986",
+        "sha256": "ca0b1554ecd901ea19dcad8749e9f2648c8d6dfcea1add9d2c2109415bb82ccd",
+        "subject": "CN=DigiCert Trusted G4 TimeStamping RSA4096 SHA256 2025 CA1,O=DigiCert\\, Inc.,C=US"
+      },
+      {
+        "issuer": "CN=DigiCert Trusted Root G4,OU=www.digicert.com,O=DigiCert Inc,C=US",
+        "notAfter": "2038-01-15T12:00:00+00:00",
+        "notBefore": "2013-08-01T12:00:00+00:00",
+        "publicKeyBits": 4096,
+        "serial": "59b1b579e8e2132e23907bda777755c",
+        "sha256": "552f7bdcf1a7af9e6ce672017f4f12abf77240c78e761ac203d1d9d20ac89988",
+        "subject": "CN=DigiCert Trusted Root G4,OU=www.digicert.com,O=DigiCert Inc,C=US"
+      }
+    ],
+    "digestAlgorithm": "SHA-256",
+    "digitalSignatureKeyUsage": true,
+    "extendedKeyUsage": [
+      "1.3.6.1.5.5.7.3.8"
+    ],
+    "extendedKeyUsageCritical": true,
+    "imprintMatch": true,
+    "independentSystemTrustAtSignedTime": "pass",
+    "parentSignatureImprint": "a68001b9da8a7bfa87e903ba8f0794641b6daeec0023874a7fdd634022329382",
+    "signatureAlgorithm": "RSA PKCS#1 v1.5",
+    "signedEpoch": 1794535281,
+    "signedTimeUTC": "2026-11-13T02:01:21+00:00",
+    "signer": {
+      "issuer": "CN=DigiCert Trusted G4 TimeStamping RSA4096 SHA256 2025 CA1,O=DigiCert\\, Inc.,C=US",
+      "notAfter": "2037-11-04T23:59:59+00:00",
+      "notBefore": "2026-08-05T00:00:00+00:00",
+      "publicKeyBits": 4096,
+      "serial": "84fdc334f7e454edbc30f8ff9921835",
+      "sha256": "2da09da7f4131f9fe72db6c5e6e9c9656755af043f1ea742cc0d2120e141ebfc",
+      "subject": "CN=DigiCert SHA256 RSA4096 Timestamp Responder 2026 1,O=DigiCert\\, Inc.,C=US"
+    },
+    "type": "PKCS#9 countersignature 1.2.840.113549.1.9.6",
+    "verificationMethod": "Select countersigner by issuer/serial; require messageDigest equal SHA256 of the publisher signature OCTET STRING; replace implicit authenticated-attribute tag A0 with DER SET31 and verify its RSA/SHA256 signature."
+  },
+  "format": 1,
+  "input": {
+    "bytes": 1667224,
+    "fileVersionResource": "No VS_FIXEDFILEINFO signature observed; no Steam client version inferred",
+    "imageSize": "0x19d000",
+    "machine": "8664",
+    "peTimestamp": "0x6af66f64",
+    "peTimestampUTC": "2026-11-13T02:01:08+00:00",
+    "sha256": "872c1373defbe853260b5eed5e8b25ab85a680a05b1801cb12e01df7aabb1736",
+    "source": "User-supplied installed Steam bin/chromehtml.dll"
+  },
+  "offlineLimits": {
+    "revocation": "not checked; no CRL/OCSP retrieval",
+    "runtimeHTMLIPCCompatibility": "requires separate profile/static/runtime tests",
+    "vacOrSecureMatchmaking": "unmeasured",
+    "valveDepotOrManifestAuthentication": "not measured by this report",
+    "windowsWinVerifyTrust": "not executed"
+  },
+  "publisherSignature": {
+    "chain": [
+      {
+        "issuer": "CN=DigiCert Trusted G4 Code Signing RSA4096 SHA384 2021 CA1,O=DigiCert\\, Inc.,C=US",
+        "notAfter": "2027-10-08T23:59:59+00:00",
+        "notBefore": "2024-10-12T00:00:00+00:00",
+        "publicKeyBits": 3072,
+        "serial": "6fb83d0ba7c64b957849b76a8c1de72",
+        "sha256": "5deda6f94aca5d9c8222251451631d54fb5f4892f6850e750b427f3aad0bbef8",
+        "subject": "CN=Valve Corp.,O=Valve Corp.,L=Bellevue,ST=Washington,C=US"
+      },
+      {
+        "issuer": "CN=DigiCert Trusted Root G4,OU=www.digicert.com,O=DigiCert Inc,C=US",
+        "notAfter": "2036-04-28T23:59:59+00:00",
+        "notBefore": "2021-04-29T00:00:00+00:00",
+        "publicKeyBits": 4096,
+        "serial": "8ad40b260d29c4c9f5ecda9bd93aed9",
+        "sha256": "46011ede1c147eb2bc731a539b7c047b7ee93e48b9d3c3ba710ce132bbdfac6b",
+        "subject": "CN=DigiCert Trusted G4 Code Signing RSA4096 SHA384 2021 CA1,O=DigiCert\\, Inc.,C=US"
+      },
+      {
+        "issuer": "CN=DigiCert Trusted Root G4,OU=www.digicert.com,O=DigiCert Inc,C=US",
+        "notAfter": "2038-01-15T12:00:00+00:00",
+        "notBefore": "2013-08-01T12:00:00+00:00",
+        "publicKeyBits": 4096,
+        "serial": "59b1b579e8e2132e23907bda777755c",
+        "sha256": "552f7bdcf1a7af9e6ce672017f4f12abf77240c78e761ac203d1d9d20ac89988",
+        "subject": "CN=DigiCert Trusted Root G4,OU=www.digicert.com,O=DigiCert Inc,C=US"
+      }
+    ],
+    "embeddedRootTrustedByImport": false,
+    "independentTrustSource": "/etc/ssl/certs/ca-certificates.crt",
+    "reasonForPurposeAny": "The OpenSSL S/MIME default purpose is email signing. Code-signing EKU and digitalSignature key usage were separately required; certificate signature/path/time verification remains enabled.",
+    "result": "valid",
+    "signer": {
+      "digitalSignatureKeyUsage": true,
+      "extendedKeyUsage": [
+        "1.3.6.1.5.5.7.3.3"
+      ],
+      "issuer": "CN=DigiCert Trusted G4 Code Signing RSA4096 SHA384 2021 CA1,O=DigiCert\\, Inc.,C=US",
+      "notAfter": "2027-10-08T23:59:59+00:00",
+      "notBefore": "2024-10-12T00:00:00+00:00",
+      "publicKeyBits": 3072,
+      "serial": "6fb83d0ba7c64b957849b76a8c1de72",
+      "sha256": "5deda6f94aca5d9c8222251451631d54fb5f4892f6850e750b427f3aad0bbef8",
+      "subject": "CN=Valve Corp.,O=Valve Corp.,L=Bellevue,ST=Washington,C=US"
+    },
+    "tool": "OpenSSL smime -verify -binary -purpose any",
+    "trustAnchorPresentInSystemBundle": true,
+    "verificationAtCurrentClock": "pass",
+    "verificationAtSignedTimestamp": "pass"
+  },
+  "reproduce": [
+    "Parse the PE security directory and extract its WIN_CERTIFICATE bytes after the 8-byte header without changing the DLL.",
+    "openssl pkcs7 -inform DER -in cert-0.der -print_certs -out certificates.pem",
+    "openssl smime -verify -binary -inform DER -in cert-0.der -purpose any -CAfile /etc/ssl/certs/ca-certificates.crt -out content.der",
+    "openssl asn1parse -inform DER -in content.der -i",
+    "Recompute SHA256 over the half-open hashRanges above and compare it to the signed SpcIndirectData digest (not merely to a local cached file hash).",
+    "Extract publisher and timestamp leaf certificates by their issuer/serial to signer.pem and timestamp.pem.",
+    "openssl verify -show_chain -purpose any -attime 1794535281 -CAfile /etc/ssl/certs/ca-certificates.crt -untrusted certificates.pem signer.pem",
+    "openssl verify -show_chain -purpose timestampsign -attime 1794535281 -CAfile /etc/ssl/certs/ca-certificates.crt -untrusted certificates.pem timestamp.pem",
+    "Independently require publisher codeSigning EKU/digitalSignature usage and verify the PKCS9 countersignature as described above; do not add embedded certificates to the trusted CA store."
+  ],
+  "scope": "Offline Authenticode file binding, signature math, publisher certificate chain, and timestamp verification. Not a Steam manifest/depot check, Windows policy verdict, runtime ABI proof, revocation check, or VAC approval."
+}

@@ -72,6 +72,7 @@ struct Profile {
 };
 extern const Profile legacy_profile;
 extern const Profile updated_profile;
+extern const Profile reviewed_profile;
 const Profile *profile_for_size(Size);
 /* Full hash plus PE metadata validation, not merely a header/size lookup. */
 const Profile *profile_for_file(const U8 *,Size);

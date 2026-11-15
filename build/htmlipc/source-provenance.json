@@ -26,12 +26,23 @@
     "native loader: loader-entry diagnostic; native owner/Ready detach preserved",
     "Bounded status lines always reach OutputDebugStringA, including after Steam redirects stderr to NUL; Installed is announced directly after successful data installation.",
     "Cache v2 includes exact official I386 SDL3 required before helper MasterServer initialization; original AMD64 Steam SDL3 stays untouched.",
-    "Per-core immutable profile selection retains whole-file SHA pins, exact mapped-image comparison and runtime owner checks; generated packages declare both reviewed file identities and must embed both linked pins."
+    "Per-core immutable profile selection retains whole-file SHA pins, exact mapped-image comparison and runtime owner checks; generated packages declare every reviewed file identity and must embed all linked pins.",
+    "The supplied November 13 core is independently Authenticode-verified offline and has a separately reviewed exact profile. Its executable section and examined HTMLIPC contract match the preceding updated core; changed read-only bytes are not normalized away."
   ],
   "commonInstallerPolicy": "copy latest root-reviewed common source on every generation; no source pin/protection relaxation",
   "compatibleCoreSHA256": [
     "37f5ddbe874362d729b7cd33504943a9d649d845525afae4bcc2af36ab971f4b",
-    "7afabbd8fae70a1b9831546d4c126ebd74c18796457e3a12fa259f529f7f2266"
+    "7afabbd8fae70a1b9831546d4c126ebd74c18796457e3a12fa259f529f7f2266",
+    "872c1373defbe853260b5eed5e8b25ab85a680a05b1801cb12e01df7aabb1736"
   ],
-  "coreSHA256Meaning": "legacy I386 browser/cache contract baseline, not the exclusive supported current-core hash or a security trust verdict"
+  "coreSHA256Meaning": "legacy I386 browser/cache contract baseline, not the exclusive supported current-core hash or a security trust verdict",
+  "reviewedCoreEvidence": {
+    "872c1373defbe853260b5eed5e8b25ab85a680a05b1801cb12e01df7aabb1736": {
+      "bytes": 1667224,
+      "timestamp": "0x6af66f64",
+      "authenticode": "docs/forensics/STEAM_CORE_20261113_AUTHENTICODE.json",
+      "abi": "docs/forensics/STEAM_CORE_20261113_ABI.json",
+      "scope": "exact supplied file, offline signature and examined native compatibility; iPhone startup unclaimed"
+    }
+  }
 }
