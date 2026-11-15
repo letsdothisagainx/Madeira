@@ -3094,6 +3094,7 @@ struct ContentView: View {
             var selectedImageReserveMB: UInt64 = 0
             var selectedCodeTailLimitMB: UInt64 = 0
             var selectedImageArenaMB: UInt64 = 0
+            var cs2TextureMemoryBudget: UInt64?
             if profile?.steamAppID == 730 {
                 var available: UInt64 = 0, footprint: UInt64 = 0
                 var mapMin: UInt64 = 0, mapMax: UInt64 = 0
@@ -3105,6 +3106,8 @@ struct ContentView: View {
                     physical, mapMin, mapMax, &selectedMB, &imageReserveMB)
                 let budget = available <= physical && footprint <= physical - available
                     ? min(available + footprint, UInt64(6144) << 20) : 0
+                cs2TextureMemoryBudget = CS2TextureMemoryProfile.measuredBudget(
+                    available: available, footprint: footprint, installed: physical, valid: measured)
                 logStore.log(String(format: "[cs2-pool] startup measured=%d available=%lluMB footprint=%lluMB budget=%lluMB cap=6144MB map=[0x%llx,0x%llx)",
                     measured ? 1 : 0, available >> 20, footprint >> 20, budget >> 20, mapMin, mapMax))
                 if safe {
@@ -3189,9 +3192,9 @@ struct ContentView: View {
             // ml744: DXMT options passthrough. Documents/madeira-dxmt.txt is copied
             // verbatim into DXMT_CONFIG, which the renderer's config parser reads as
             // inline "key=value" lines, so options can be tried without a rebuild.
-            // d3d11.mipClampBC=N is the one that matters for memory: this GPU cannot
-            // sample BC, so those textures are expanded to uncompressed and cost 2-8x
-            // their shipped size.
+            // Explicit mip options retain their precedence. Native BC support
+            // varies by device; the CS2 profile below uses the existing bounded,
+            // large-texture automatic mip policy rather than forcing all mips.
             // DXMT splits DXMT_CONFIG on ";" only and a newline is not whitespace to
             // its line parser, so the options are joined with ";" (ml1095: "a=b;c=d"
             // on one line). A library game's own dxmt options come after madeira.cfg's.
@@ -3244,6 +3247,19 @@ struct ContentView: View {
                     dxmtOptions.append(option)
                 }
                 if !extra.isEmpty { logStore.log("DXMT config: \(extra.joined(separator: ";")) via the game's settings") }
+            }
+            // The genuine Steam launch keeps the original game's profile in
+            // `preferences`; only CS2 receives this visible memory/quality mode.
+            // Merge last so custom global/game/BCD mip settings remain unchanged.
+            let customMipAuto = MadeiraConfig.gameValue("env.MADEIRA_MIP_CLAMP_AUTO")
+                ?? MadeiraConfig.get("env.MADEIRA_MIP_CLAMP_AUTO")
+                ?? getenv("MADEIRA_MIP_CLAMP_AUTO").map { String(cString: $0) }
+            let textureMemory = CS2TextureMemoryProfile.apply(options: dxmtOptions,
+                appID: profile?.steamAppID, saved: profile?.cs2TextureMemoryProfile,
+                budget: cs2TextureMemoryBudget, environmentAuto: customMipAuto, standalone: standaloneProbe)
+            dxmtOptions = textureMemory.options
+            if textureMemory.applicable {
+                logStore.log("[cs2-texture-memory-v1] selected=\(textureMemory.selected.rawValue) source=\(textureMemory.source) applied=\(textureMemory.applied ? 1 : 0) budget-mb=\(cs2TextureMemoryBudget.map { String($0 >> 20) } ?? "unknown")")
             }
             // Unset otherwise, so a previous session's options in this app process do not apply.
             if !dxmtOptions.isEmpty { setenv("DXMT_CONFIG", dxmtOptions.joined(separator: ";"), 1) } else { unsetenv("DXMT_CONFIG") }

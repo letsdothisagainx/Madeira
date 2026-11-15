@@ -34,7 +34,7 @@ assert loader.index('ios_startup_timeline_begin();', loader.index('DECLSPEC_EXPO
 assert loader.index('ios_startup_process_bind(') > loader.index('startup_info_size = server_init_process_child(')
 assert loader.index('ios_startup_process_pe_entry(') < loader.index('server_init_process_done();', loader.index('ios_startup_process_pe_entry('))
 finish = server[server.index('static void ios_finish_process_memory('):server.index('\nvoid process_exit_wrapper(')]
-assert finish.index('ios_thread_process_quiescent_lease(dead_peb)') < finish.index('if (lease) ios_startup_process_quiesced(dead_peb);') < finish.index('ios_fd_cache_release(dead_peb);')
+assert finish.index('ios_thread_process_quiescent_lease(dead_peb)') < finish.index('ios_startup_process_quiesced(dead_peb);') < finish.index('madeira_resource_growth_retire(dead_peb, lease)') < finish.index('ios_fd_cache_release(dead_peb);')
 assert 'ios_startup_process_quiesced' not in thread
 for name, expected in (('abort_process', ', 1 );'), ('exit_process', ', 0 );')):
     begin = thread.index('\nvoid ' + name + '( int status )')

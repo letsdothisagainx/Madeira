@@ -10,8 +10,8 @@ import shutil
 
 def stage_pressure_only(source):
     include = '#include "memory_pressure_native.h"'
-    if include in source or 'case 40:' in source:
-        raise ValueError('native memory-pressure input is already staged or op 40 is occupied')
+    if include in source or any('case ' + str(op) + ':' in source for op in (40, 41, 42)):
+        raise ValueError('native memory-pressure input is already staged or an owned control op is occupied')
     start = source.index('static NTSTATUS _madeira_ctl(void *args) {')
     end = source.index('\n/* ml2000: the other ops', start)
     body = source[start:end]
@@ -23,13 +23,23 @@ def stage_pressure_only(source):
     md_memory_pressure_query(a);
     break;
   }
+  case 41: { /* texture-growth-budget-v1: CPU creation admission, shared receipts. */
+    if (wmtr_enabled()) break;
+    md_resource_growth_acquire(a);
+    break;
+  }
+  case 42: { /* release only the matching creation receipt, never live resource ownership. */
+    if (wmtr_enabled()) break;
+    md_resource_growth_release(a);
+    break;
+  }
 '''
     body = body.replace(anchor, addition + anchor)
     staged = source[:start] + include + '\n' + body + source[end:]
     wow64 = '  if (a && a->op == 7) return _madeira_ctl(args);'
     if staged.count(wow64) != 1:
         raise ValueError('DXMT pointer-free WoW64 forwarding contract changed')
-    return staged.replace(wow64, '  if (a && (a->op == 7 || a->op == 40)) return _madeira_ctl(args);')
+    return staged.replace(wow64, '  if (a && (a->op == 7 || a->op == 40 || a->op == 41 || a->op == 42)) return _madeira_ctl(args);')
 
 
 def stage(source):
@@ -58,6 +68,7 @@ def main():
     shutil.copyfile(args.headers / 'memory_pressure_native.h', args.output.parent / 'memory_pressure_native.h')
     print(json.dumps({'stage': 'memory-pressure-v1', 'source_sha256': hashlib.sha256(original).hexdigest(),
                       'output_sha256': hashlib.sha256(output).hexdigest(), 'native_control_op': 40,
+                      'growth_control_ops': [41, 42], 'growth_scope': 'whole-cpu-texture-creation',
                       'old_op_7': 'unchanged', 'measurement': 'task-footprint+os-proc-available-memory'}))
 
 

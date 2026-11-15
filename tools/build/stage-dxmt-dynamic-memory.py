@@ -239,11 +239,14 @@ DynamicBuffer::recordQueuePushLocked() {
 
 uint64_t
 DynamicBuffer::TrimCompletedForQueue(uint64_t queue_domain, uint64_t coherent_seq_id, bool critical,
-                                     const DynamicBuffer *pending_request) {
+                                     const DynamicBuffer *pending_request, uint64_t upcoming_bytes) {
   if (!queue_domain) return 0;
   const auto pressure = memoryPressureSnapshot();
   const bool force_critical = critical;
-  const uint64_t upcoming = pending_request && pending_request->buffer ? pending_request->buffer->length() : 0;
+  const uint64_t request_bytes = pending_request && pending_request->buffer ? pending_request->buffer->length() : 0;
+  // External texture admission can request a normal cold-cache sweep before
+  // growing destination backing. Zero preserves every existing caller.
+  const uint64_t upcoming = std::max(upcoming_bytes, request_bytes);
   uint64_t warm_budget = 0;
   {
     std::lock_guard<dxmt::mutex> registry_lock(dynamicRegistryState().mutex);
@@ -366,7 +369,7 @@ def stage_file(path, source):
 
   // Drops only this queue's GPU-complete cached names. Returned bytes are
   // detached cache capacity; other allocation owners can still retain backing.
-  static uint64_t TrimCompletedForQueue(uint64_t queue_domain, uint64_t coherent_seq_id, bool critical = false, const DynamicBuffer *pending_request = nullptr);''')
+  static uint64_t TrimCompletedForQueue(uint64_t queue_domain, uint64_t coherent_seq_id, bool critical = false, const DynamicBuffer *pending_request = nullptr, uint64_t upcoming_bytes = 0);''')
         source = replace_once(source,
             '  bool trimmed_last_ = false;      /* ml685: trim-regret latch */',
             '''  bool trimmed_last_ = false;      /* ml685: trim-regret latch */

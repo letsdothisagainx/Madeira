@@ -9,6 +9,11 @@ on:
       - 'tools/build/*dxmt*'
       - 'tools/check-dxmt-memory-package.py'
       - 'tests/host/check-dxmt-*'
+      - 'tests/host/check-cs2-texture-memory-profile.py'
+      - 'tests/host/check-metal-descriptor-lifetime.py'
+      - 'app/Madeira/Library.swift'
+      - 'app/Madeira/ContentView.swift'
+      - 'build/ntdll-unix/server_ios.c'
       - '.github/workflows/dxmt-memory-retirement.yml'
   pull_request:
     paths:
@@ -16,6 +21,11 @@ on:
       - 'tools/build/*dxmt*'
       - 'tools/check-dxmt-memory-package.py'
       - 'tests/host/check-dxmt-*'
+      - 'tests/host/check-cs2-texture-memory-profile.py'
+      - 'tests/host/check-metal-descriptor-lifetime.py'
+      - 'app/Madeira/Library.swift'
+      - 'app/Madeira/ContentView.swift'
+      - 'build/ntdll-unix/server_ios.c'
       - '.github/workflows/dxmt-memory-retirement.yml'
 
 permissions:
@@ -44,6 +54,16 @@ jobs:
           CXX: clang++
         run: |
           python3 tests/host/check-dxmt-memory-pressure.py
+          python3 tests/host/check-dxmt-resource-budget.py
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            python3 tests/host/check-cs2-texture-memory-profile.py --require-swift
+          else
+            python3 tests/host/check-cs2-texture-memory-profile.py
+          fi
+          python3 tests/host/check-dxmt-texture-accounting.py
+          python3 tests/host/check-dxmt-texture-admission.py
+          python3 tests/host/check-dxmt-mip-profile.py
+          python3 tests/host/check-metal-descriptor-lifetime.py
           python3 tests/host/check-dxmt-dynamic-memory.py
           python3 tests/host/check-dxmt-upload-memory.py
           python3 tests/host/check-dxmt-memory-build.py

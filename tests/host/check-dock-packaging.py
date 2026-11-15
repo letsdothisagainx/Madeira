@@ -177,7 +177,7 @@ with tempfile.TemporaryDirectory() as temp:
     compat_spec=importlib.util.spec_from_file_location('dock_dxmt_memory_stage',root/'tools/build/stage-dxmt-memory-compat.py')
     compat=importlib.util.module_from_spec(compat_spec);compat_spec.loader.exec_module(compat)
     source_names=['src/dxmt/'+name for name in compat.UPLOAD]+list(compat.DYNAMIC)
-    source_names+=list(compat.CENSUS)+list(compat.PERF)+list(compat.COMMAND_STATE)+list(compat.SCHEDULER)
+    source_names+=list(compat.CENSUS)+list(compat.PERF)+list(compat.COMMAND_STATE)+list(compat.SCHEDULER)+list(compat.TEXTURE_ACCOUNTING)+list(compat.TEXTURE_ADMISSION)
     source_names+=['src/winemetal/unix/winemetal_unix.c']
     for relative in source_names:
         target=t/'dxmt'/relative;target.parent.mkdir(parents=True,exist_ok=True)
@@ -206,7 +206,7 @@ with tempfile.TemporaryDirectory() as temp:
                 struct.pack_into('<H',data,0x660,0)
                 name=export.encode()+b'\0';data[0x670:0x670+len(name)]=name
             if module=='d3d11.dll':
-                data.extend(b'\0'.join(memory.PE_MARKERS))
+                data.extend(b'\0'.join((*memory.PE_MARKERS, *memory.FACTORY_MARKERS)))
             (t/'app/Madeira'/farm/module).write_bytes(data)
     (t/'app/Madeira/libdxmt_combined.a').write_bytes(b'!<arch>\nstructural fixture\0'+b'\0'.join(memory.NATIVE_MARKERS))
     memory_state=t/'memory-transaction'
@@ -254,7 +254,7 @@ if [ "${STALE_NATIVE_NTDLL:-}" = 1 ]; then printf 'old ntdll' > "$TEST_APP/arm64
 if [ "${STALE_SCM:-}" = 1 ]; then printf 'old SCM' > "$TEST_APP/aarch64-windows/services.exe"; fi
 printf '[native-group-retire-v1][wow-placement-v1][wow-native-export-v1][fex-callback-v2][child-native-dll-v1][process-wow64-v1][child-native-ntdll-v1][guest-trap-context-v1][surface-expose-v1][steam-client-update-v1][alias-prot-compat][image-alias-retire-v1][swp-context-v1][alias-prot-v2][fex-exit-v1][native-thread-cancel-v1][io-abi] v2 native-owned IOSB scopes active[wow-write][guest32-symbols][guest32-cxx-first-v1][cef-atexit-v1][steam-handoff-v1]_madeira_child_server_exited[fex-owner-v1] pre-crt[fex-owner-v1] retired[fex-owner-census-v2][hold-release-v2][deliver-hold-v2][native-window-retire-v1]_winios_native_window_create_winios_native_window_retire[guest32-fault-v1][steam-progress-v1]_winios_ui_progress_snapshot[srv-poll-drop-v1]poll-slots-highwater=' > "$TEST_APP/Madeira.debug.dylib"
 printf '[cef-image-owner-v1][guest-breakpoint64-v1][udp-send-failure-v1][udp-recv-failure-v1][udp-native-progress-v1]MadeiraSocketControl:traffic-class-bounds-v1[nsi-ipv4-route-v1]' >> "$TEST_APP/Madeira.debug.dylib"
-printf '[dynamic-memory-pressure-v1] policy=bounded-hot-v2 storage=owner-heap-v1 counter-storage=census-perf-heap-v1 scan=registered-cursor-v1 pe-command-state=dedup-hud-v1 scheduler=ready-work-v1 [upload-memory-v1][madeira-memory-pressure-v1][metal-resource-batch-v1] release-probe=opt-in' >> "$TEST_APP/Madeira.debug.dylib"
+printf '[dynamic-memory-pressure-v1] policy=bounded-hot-v2 storage=owner-heap-v1 counter-storage=census-perf-heap-v1 scan=registered-cursor-v1 pe-command-state=dedup-hud-v1 scheduler=ready-work-v1 texture-admission=physical-v1 texture-accounting=bc-blocks-v1 [texture-growth-budget-v1][texture-growth-retire-v1][metal-vertex-descriptor-owner-v1][upload-memory-v1][madeira-memory-pressure-v1][metal-resource-batch-v1] release-probe=opt-in' >> "$TEST_APP/Madeira.debug.dylib"
 if [ "${STALE_DXMT_NATIVE:-}" = 1 ]; then
   sed 's/\\[madeira-memory-pressure-v1\\]//g' "$TEST_APP/Madeira.debug.dylib" > "$TEST_APP/native.stale"
   mv "$TEST_APP/native.stale" "$TEST_APP/Madeira.debug.dylib"

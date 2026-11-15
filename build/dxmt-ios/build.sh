@@ -203,8 +203,11 @@ python3 "$REPO_ROOT/tools/build/stage-dxmt-lifecycle.py" \
     --source "$BUILD_DIR/staged/winemetal_diagnostics.c" \
     --output "$BUILD_DIR/staged/winemetal_unix.c" \
     --headers "$BUILD_DIR"
-python3 "$REPO_ROOT/tools/build/stage-dxmt-memory-pressure.py" \
+python3 "$REPO_ROOT/tools/build/stage-dxmt-descriptor-lifetime.py" \
     --source "$BUILD_DIR/staged/winemetal_unix.c" \
+    --output "$BUILD_DIR/staged/winemetal_descriptor.c"
+python3 "$REPO_ROOT/tools/build/stage-dxmt-memory-pressure.py" \
+    --source "$BUILD_DIR/staged/winemetal_descriptor.c" \
     --output "$BUILD_DIR/staged/winemetal_memory.c" \
     --headers "$BUILD_DIR"
 compile_objc "$BUILD_DIR/staged/winemetal_memory.c" winemetal_unix

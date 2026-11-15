@@ -5253,7 +5253,17 @@ static void ios_finish_process_memory(void *dead_peb)
      * native child has no such later teardown and needs its own final boundary. */
     unsigned long long lease = ios_thread_process_quiescent_lease(dead_peb);
     int native_owner = !ios_wow_base_for_peb(dead_peb);
-    if (lease) ios_startup_process_quiesced(dead_peb);
+    if (lease)
+    {
+        extern void madeira_resource_growth_retire(void *, unsigned long long) __attribute__((weak));
+        static const volatile char contract[] = "[texture-growth-retire-v1]";
+        (void)contract[0];
+        ios_startup_process_quiesced(dead_peb);
+        /* A canceled native texture creator may never unwind its C++ permit.
+         * Retire only metadata for this proven-dead generation, before its
+         * registry/window can be recycled. The Metal callback verifies again. */
+        if (madeira_resource_growth_retire) madeira_resource_growth_retire(dead_peb, lease);
+    }
     ios_fd_cache_release(dead_peb);
     ios_subfloor_release_owner(dead_peb);
     ios_jit_reclaim_process(dead_peb);
@@ -5335,6 +5345,10 @@ void process_exit_wrapper( int status )
         if (memory_ready)
         {
             extern void ios_fex_reclaim_process_views(void *owner);
+            extern unsigned long long ios_thread_process_quiescent_lease(void *owner);
+            extern void madeira_resource_growth_retire(void *, unsigned long long) __attribute__((weak));
+            unsigned long long lease = ios_thread_process_quiescent_lease(caller_peb);
+            if (lease && madeira_resource_growth_retire) madeira_resource_growth_retire(caller_peb, lease);
             ios_fex_reclaim_process_views(caller_peb);
         }
         close( fd_socket );

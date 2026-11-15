@@ -27,8 +27,10 @@ def module(name):
 producer = module('memory-pressure')
 staged = producer.stage(original.decode())
 assert staged.count('case 40:') == 1
+assert staged.count('case 41:') == 1 and staged.count('case 42:') == 1
 assert 'md_memory_pressure_query(a);' in staged
-assert '(a->op == 7 || a->op == 40)' in staged
+assert 'md_resource_growth_acquire(a);' in staged and 'md_resource_growth_release(a);' in staged
+assert '(a->op == 7 || a->op == 40 || a->op == 41 || a->op == 42)' in staged
 old_op7 = original.decode().split('  case 7: {')[1].split('  case 8: {')[0]
 assert staged.split('  case 7: {')[1].split('  case 8: {')[0] == old_op7
 assert 'if (wmtr_enabled()) break;\n    md_memory_pressure_query(a);' in staged

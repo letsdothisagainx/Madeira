@@ -446,6 +446,36 @@ int main() {
 '''
 
 
+EXTERNAL_GROWTH_MAIN = r'''
+int main() {
+  using namespace dxmt;
+  constexpr uint64_t domain=0x9889;
+  g_pressure.available=g_pressure.reserve*2;
+  g_pressure.sampled_ns=10;
+  Buffer cold_buffer, hot_buffer;
+  Rc<DynamicBuffer> cold=new DynamicBuffer(&cold_buffer,{},domain);
+  Rc<DynamicBuffer> hot=new DynamicBuffer(&hot_buffer,{},domain);
+  cold->updateImmediateName(1,cold->allocate(0),0,false);
+  auto old_cold=cold_buffer.rename(cold->immediateName());old_cold=nullptr;
+  for(unsigned name=0;name<2;++name) {
+    hot->updateImmediateName(1,hot->allocate(0),0,false);
+    auto old_hot=hot_buffer.rename(hot->immediateName());old_hot=nullptr;
+  }
+  const auto hot_names=hot->fifo.size();
+  require(hot_names>0&&!cold->fifo.empty(),"external growth fixture has no reusable backing");
+  DynamicBuffer::TrimCompletedForQueue(domain,3,false);
+  require(!cold->fifo.empty(),"unchanged healthy caller unexpectedly reclaimed backing");
+  const uint64_t projected=g_pressure.available-g_pressure.reserve+1;
+  DynamicBuffer::TrimCompletedForQueue(domain,3,false,nullptr,projected);
+  require(cold->fifo.empty(),"texture growth did not reclaim completed cold backing");
+  require(hot->fifo.size()==hot_names,"external growth destroyed bounded hot-buffer reuse");
+  hot->immediateName()->data[0]=0x6c;
+  cold->immediateName()->data[0]=0x9a;
+  std::cout << "PASS actual DynamicBuffer: external texture growth reclaims only completed cold names; bounded hot leases/current bytes survive\n";
+}
+'''
+
+
 BOUNDED_CACHE_MAIN = r'''
 int main() {
   using namespace dxmt;
@@ -756,6 +786,13 @@ def head_restart_trim(source):
     old=function_body(contents,signature)
     assert hashlib.sha256((old+'\n').encode()).hexdigest()=='11bbbe4be5b4e4912539981540dd005f30f43c3299027574cbdf6f1a3721304e',\
         'captured 87feb2 trim function changed'
+    # Adapt only the call ABI after checking the captured bytes. Historical
+    # callers pass zero external growth; the negative-control algorithm stays
+    # unchanged and deliberately has no texture-admission lookahead.
+    current=function_body(source,signature)
+    if 'upcoming_bytes' in current[:current.index('{')]:
+        old=old.replace('const DynamicBuffer *pending_request) {',
+                        'const DynamicBuffer *pending_request, uint64_t) {',1)
     return source.replace(function_body(source,signature),old,1)
 
 
@@ -785,6 +822,9 @@ def installed_pressure_trim(source):
     current=function_body(source,signature)
     if "pending_request" in current[:current.index("{")]:
         body=body.replace("bool critical) {","bool critical, const DynamicBuffer *pending_request) {",1)
+    if 'upcoming_bytes' in current[:current.index('{')]:
+        body=body.replace('const DynamicBuffer *pending_request) {',
+                          'const DynamicBuffer *pending_request, uint64_t) {',1)
     return source.replace(current,body,1)
 
 
@@ -1233,6 +1273,9 @@ def main():
         hot_after=compile_and_run(directory,"after-hot",new_h,new_c,HOT_WORKING_SET_MAIN)
         assert hot_after.returncode == 0, hot_after.stdout+hot_after.stderr
         print(hot_after.stdout.strip())
+        external=compile_and_run(directory,"after-external-growth",new_h,new_c,EXTERNAL_GROWTH_MAIN)
+        assert external.returncode==0,external.stdout+external.stderr
+        print(external.stdout.strip())
         bounded=compile_and_run(directory,"after-bounded",new_h,new_c,BOUNDED_CACHE_MAIN)
         assert bounded.returncode==0,bounded.stdout+bounded.stderr
         print(bounded.stdout.strip())

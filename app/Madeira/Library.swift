@@ -163,6 +163,68 @@ enum FrontendChoice {
     }
 }
 
+// BEGIN CS2 TEXTURE MEMORY PROFILE
+/// A launch-scoped, visible quality choice. The renderer's existing automatic
+/// mip policy only reduces large eligible BC textures under actual pressure.
+/// This does not edit Valve's files, increase memory limits, or change other
+/// library games. Keep explicit DXMT/environment choices authoritative.
+enum CS2TextureMemoryProfile {
+    enum Mode: String, CaseIterable {
+        case automatic, balanced, full
+        var label: String {
+            switch self {
+            case .automatic: return "Automatic (recommended)"
+            case .balanced: return "Balanced"
+            case .full: return "Full quality"
+            }
+        }
+        static func saved(_ value: String?) -> Mode { Mode(rawValue: value ?? "") ?? .automatic }
+    }
+    struct Decision {
+        let options: [String]
+        let selected: Mode
+        let source: String
+        let applicable: Bool
+        let applied: Bool
+    }
+    static let automaticBudgetLimit = UInt64(8) << 30
+    static let explanation = "Balanced reduces one top mip from large BC textures only when memory runs short; small textures are unchanged. Automatic selects Balanced for constrained launches. Full quality keeps all requested mip levels and needs more memory. Explicit custom DXMT mip settings take precedence. Applies at the next launch."
+
+    static func measuredBudget(available: UInt64, footprint: UInt64, installed: UInt64, valid: Bool) -> UInt64? {
+        guard valid, footprint > 0, installed > 0, available <= installed,
+              footprint <= installed - available else { return nil }
+        return available + footprint
+    }
+
+    static func apply(options: [String], appID: Int?, saved: String?, budget: UInt64?,
+                      environmentAuto: String?, standalone: Bool = false) -> Decision {
+        let requested = Mode.saved(saved)
+        let selected: Mode = requested == .automatic
+            ? ((budget.map { $0 <= automaticBudgetLimit } ?? true) ? .balanced : .full)
+            : requested
+        guard appID == 730, !standalone else {
+            return Decision(options: options, selected: selected, source: "unrelated-launch", applicable: false, applied: false)
+        }
+        let customKeys: Set<String> = ["d3d11.mipClampBC", "d3d11.mipClampAuto", "d3d11.mipClampAutoMB"]
+        let custom = options.contains { option in
+            let key = option.split(separator: "=", maxSplits: 1).first.map(String.init) ?? option
+            return customKeys.contains(key.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        if custom || !(environmentAuto ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return Decision(options: options, selected: selected, source: "custom-mip-settings", applicable: true, applied: false)
+        }
+        let updated = options + ["d3d11.mipClampAuto=\(selected == .balanced ? 1 : 0)"]
+        // DXMT reads at most 259 UTF-16 units. Never make an otherwise valid
+        // custom configuration disappear by overflowing its fixed input buffer.
+        guard updated.joined(separator: ";").utf16.count <= 259 else {
+            return Decision(options: options, selected: selected, source: "config-length-limit", applicable: true, applied: false)
+        }
+        return Decision(options: updated, selected: selected,
+                        source: requested == .automatic ? "automatic-budget" : "game-setting", applicable: true, applied: true)
+    }
+}
+// END CS2 TEXTURE MEMORY PROFILE
+
 /// One game in the library and its launch profile, stored in
 /// Documents/madeira-library.json (version 1). New fields must be optional so
 /// older files keep decoding; unknown keys are ignored.
@@ -255,6 +317,9 @@ struct LibraryEntry: Codable, Identifiable {
     /// D3D9 anisotropic filtering limit (DXMT_D9_ANISO_LIMIT: 1, 2, 4 or 8);
     /// nil = the application's own choice.
     var anisotropyLimit: Int?
+    /// CS2 texture memory: nil is automatic; balanced/full are visible game
+    /// settings. Optional so existing library files preserve all other fields.
+    var cs2TextureMemoryProfile: String?
     /// "Report an NVIDIA GPU": DXGI names NVIDIA as the vendor (GeForce RTX
     /// 3060, 10DE:2544), DXMT's NVAPI answers, and win32u registers the same
     /// display adapter, for games that refuse a GPU without a known vendor's
@@ -3730,6 +3795,17 @@ struct LibraryDetail: View {
             Picker("D3D9 anisotropic filtering", selection: Binding(get: { entry.anisotropyLimit ?? 0 }, set: { entry.anisotropyLimit = $0 == 0 ? nil : $0 })) {
                 Text("Application default").tag(0)
                 ForEach([1, 2, 4, 8], id: \.self) { Text("Up to \($0)×").tag($0) }
+            }
+            if entry.steamAppID == 730 {
+                Picker("Texture memory", selection: Binding(
+                    get: { CS2TextureMemoryProfile.Mode.saved(entry.cs2TextureMemoryProfile).rawValue },
+                    set: { entry.cs2TextureMemoryProfile = $0 == "automatic" ? nil : $0 }
+                )) {
+                    ForEach(CS2TextureMemoryProfile.Mode.allCases, id: \.rawValue) { mode in
+                        Text(mode.label).tag(mode.rawValue)
+                    }
+                }
+                Text(CS2TextureMemoryProfile.explanation).font(.caption).foregroundStyle(.secondary)
             }
             Toggle(isOn: Binding(get: { bcd.nvidia }, set: { on in bcd.nvidia = on; LibraryPrefs.setNvidia(on, for: entry.windowsPath) })) {
                 compatLabel("Report an NVIDIA GPU", "For \"no graphics card\" errors")

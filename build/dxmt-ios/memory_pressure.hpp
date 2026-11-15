@@ -132,4 +132,67 @@ inline MemoryPressureSnapshot memoryPressureSnapshot(bool refresh = false) {
   return cache.snapshot;
 }
 
+// A real shared-native receipt for an entire resource-creation operation.
+// Hold through initial upload encoding; this limits CPU-concurrent bursts.
+// It does not claim to reserve late GPU residency or arbitrary guest memory.
+class ResourceGrowthPermit {
+  uint64_t token_ = 0;
+  uint64_t available_ = 0;
+  uint64_t native_status_ = 0;
+  bool known_ = false;
+  bool denied_ = false;
+  bool reclaim_ = false;
+
+  void release() noexcept {
+    if (!token_) return;
+    struct madeira_ctl_args args = {};
+    args.op = 42;
+    args.ptr = token_;
+    MadeiraCtl(&args);
+    token_ = 0;
+  }
+
+public:
+  explicit ResourceGrowthPermit(uint64_t bytes) {
+    if (!bytes) return; // An unavailable size estimate is not invented credit.
+    struct madeira_ctl_args args = {};
+    args.op = 41;
+    args.ptr = bytes;
+    MadeiraCtl(&args);
+    native_status_ = args.ret;
+    if (!args.ret) return; // Remote/old backend: retain honest allocator behavior.
+    available_ = args.len;
+    known_ = args.ret <= 4;
+    reclaim_ = args.ret >= 2;
+    if ((args.ret == 1 || args.ret == 2) && args.ptr &&
+        args.len != std::numeric_limits<uint64_t>::max())
+      token_ = args.ptr;
+    else
+      denied_ = true;
+  }
+
+  ResourceGrowthPermit(const ResourceGrowthPermit &) = delete;
+  ResourceGrowthPermit &operator=(const ResourceGrowthPermit &) = delete;
+  ResourceGrowthPermit(ResourceGrowthPermit &&other) noexcept {
+    *this = static_cast<ResourceGrowthPermit &&>(other);
+  }
+  ResourceGrowthPermit &operator=(ResourceGrowthPermit &&other) noexcept {
+    if (this != &other) {
+      release();
+      token_ = other.token_; other.token_ = 0;
+      available_ = other.available_;
+      native_status_ = other.native_status_;
+      known_ = other.known_; denied_ = other.denied_; reclaim_ = other.reclaim_;
+    }
+    return *this;
+  }
+  ~ResourceGrowthPermit() { release(); }
+
+  bool known() const { return known_; }
+  bool denied() const { return denied_; }
+  bool needsReclaim() const { return reclaim_; }
+  uint64_t available() const { return available_; }
+  uint64_t nativeStatus() const { return native_status_; }
+};
+
 } // namespace dxmt

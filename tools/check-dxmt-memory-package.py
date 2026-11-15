@@ -20,15 +20,21 @@ MODULES = {'d3d11.dll': 'D3D11CreateDevice', 'dxgi.dll': 'CreateDXGIFactory1',
 MANIFEST = 'arm64ec-windows/madeira-dxmt-memory.json'
 PE_MARKERS = (b'[dynamic-memory-pressure-v1]', b'policy=bounded-hot-v2', b'storage=owner-heap-v1',
               b'counter-storage=census-perf-heap-v1', b'scan=registered-cursor-v1',
-              b'pe-command-state=dedup-hud-v1', b'scheduler=ready-work-v1', b'[upload-memory-v1]')
+              b'pe-command-state=dedup-hud-v1', b'scheduler=ready-work-v1', b'[upload-memory-v1]',
+              b'texture-admission=physical-v1', b'texture-accounting=bc-blocks-v1')
 NATIVE_MARKERS = (*PE_MARKERS, b'[madeira-memory-pressure-v1]',
-                  b'[metal-resource-batch-v1]', b'release-probe=opt-in')
+                  b'[metal-resource-batch-v1]', b'release-probe=opt-in',
+                  b'[texture-growth-budget-v1]', b'[metal-vertex-descriptor-owner-v1]')
+APP_NATIVE_MARKERS = (b'[texture-growth-retire-v1]',)
+FACTORY_MARKERS = (b'[texture-admission-v1]',)
 RECIPES = (
     'tools/build/stage-dxmt-memory-compat.py', 'tools/build/stage-dxmt-upload-memory.py',
     'tools/build/stage-dxmt-dynamic-memory.py', 'tools/build/stage-dxmt-memory-pressure.py',
     'tools/build/stage-dxmt-census-heap.py', 'tools/build/stage-dxmt-perf-heap.py',
     'tools/build/stage-dxmt-command-state.py', 'tools/build/stage-dxmt-native-batch.py',
     'tools/build/stage-dxmt-task-wake.py',
+    'tools/build/stage-dxmt-texture-accounting.py', 'tools/build/stage-dxmt-texture-admission.py',
+    'tools/build/stage-dxmt-descriptor-lifetime.py',
     'tools/build/build-dxmt-memory-compat.sh', 'tools/build/build-dxmt-ios.sh',
     'tools/build/build-shader-headers.sh',
     'tools/check-dxmt-memory-package.py', 'tools/check-system-programs.py',
@@ -134,14 +140,14 @@ def check(root, repo, write=False, transaction=None, app=None, ipa=None):
             data = pe.read(image)
             binaries[name] = pe.inspect(data, farm, required_export=export)
             if module == 'd3d11.dll':
-                for marker in PE_MARKERS:
+                for marker in (*PE_MARKERS, *FACTORY_MARKERS):
                     assert marker in data, 'stale real D3D11 implementation: ' + name + ': ' + marker.decode()
     recipe = recipe_inputs(repo)
     shader = compiled_shader_inputs(repo, writing=write)
     staged_sources = sources(repo, transaction if write else None)
     metadata = {'recipe': 1, 'pins': {name: pin(repo, name) for name in ('wine', 'dxmt')},
                 'inputs': recipe, 'shader': shader, 'sources': staged_sources, 'binaries': binaries,
-                'scope': 'completed-only upload and dynamic backing retirement; measured native process budget',
+                'scope': 'completed-only retirement; measured physical texture admission and ownership-safe creation credits',
                 'device_acceptance': 'unmeasured'}
     native = root / 'libdxmt_combined.a'
     if write:
@@ -167,7 +173,7 @@ def check(root, repo, write=False, transaction=None, app=None, ipa=None):
     if app:
         for name in paths:
             assert pe.read(app / name) == pe.read(root / name), 'stale app DXMT memory binary: ' + name
-        markers(app / 'Madeira.debug.dylib', NATIVE_MARKERS)
+        markers(app / 'Madeira.debug.dylib', (*NATIVE_MARKERS, *APP_NATIVE_MARKERS))
     if ipa:
         with zipfile.ZipFile(ipa) as archive:
             for name in paths:
@@ -180,7 +186,7 @@ def check(root, repo, write=False, transaction=None, app=None, ipa=None):
                     assert stream.read(len(expected) + 1) == expected, 'stale IPA DXMT resource: ' + name
             # Scan the linked native image in bounded chunks; do not duplicate a
             # large IPA or LLVM-bearing native library in Python's heap.
-            matches = {marker: False for marker in NATIVE_MARKERS}
+            matches = {marker: False for marker in (*NATIVE_MARKERS, *APP_NATIVE_MARKERS)}
             with archive.open('Payload/Madeira.app/Madeira.debug.dylib') as stream:
                 previous = b''
                 for block in iter(lambda: stream.read(1 << 20), b''):
