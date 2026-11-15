@@ -132,6 +132,9 @@ typedef size_t SIZE_T;
 #define H 0x4000u
 #define G 0x1000u
 #define BYTES (16u<<20)
+/* mach/mach.h also declares host_page_size(). Match Wine's private
+ * identifier isolation after importing the genuine Darwin API declarations. */
+#define host_page_size fixture_host_page_size
 static const size_t host_page_size=H, host_page_mask=H-1, page_size=G;
 struct file_view { void *base; size_t size; unsigned protect, ios_flags; void *ios_fex_owner, *ios_cef_owner; };
 static struct file_view view;
