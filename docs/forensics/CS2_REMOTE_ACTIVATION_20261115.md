@@ -64,32 +64,7 @@ these counters neither measure logical bytes read nor prove which asset,
 descriptor, offset, destination backing or individual syscall caused the cost.
 Main-heap contention is therefore not established as this interval's blocker.
 
-## Production corrections and their mechanical connection
-
-### Validate ordinary writable buffers without dirtying them first
-
-`virtual_check_buffer_for_write()` previously read-modified-wrote a byte on
-every host page and at the end of every requested destination before
-`NtReadFile()` called `virtual_locked_pread()`. For a large read, that paged in
-and dirtied the entire request even if the actual file returned a short read
-or EOF. File-backed guest memory can incur additional backing-file activity
-from this unnecessary first write.
-
-The new narrow metadata path accepts only sufficiently large, ordinary private
-allocations whose complete covered host-page span is committed, readable and
-writable in both Wine guest-page metadata and actual Mach protections. It
-rejects executable aliases, FEX/CEF-owned storage, guards, write watches,
-sections, mixed guest protections, gaps and arithmetic overflow. Rejected or
-uncertain ranges retain the original faulting validation. It does not return
-fabricated read completion, change file bytes, precommit memory or remove the
-caller's ordinary concurrent-free/protection race.
-
-This removes a demonstrated redundant operation on the real read path and
-avoids dirtying untouched destination tails. The profile did not capture this
-probe as the sole native-read cost; it does not establish that this change
-alone removes the 117-second delay.
-
-### Wake shader/task workers in proportion to runnable work
+## Production correction: work-proportional shader/task scheduling
 
 Pinned `dxmt_tasks.hpp` broadcasts after every completed task, including when
 the completed task has no dependent continuations. Its workers run at
@@ -99,7 +74,8 @@ contains high wake-all rates, but does not attribute every wake to DXMT.
 
 The staged build copy now publishes the ready continuation batch under the
 existing mutex, then issues at most one wake per new ready task, bounded by
-the existing worker limit. A zero-length batch issues no wake. Submission,
+the existing worker limit. A zero-length batch takes no ready-queue lock and
+issues no wake. Submission,
 task execution, dependency ownership, priorities, queue contents and completion
 semantics remain intact. No required shader or rendering work is discarded.
 
@@ -134,15 +110,56 @@ The saved Overlay `+0xb8458` RIP is stale and does not attribute this crash to
 Steam Overlay. Available evidence does not identify the pointer's origin or a
 correct compatibility repair. It must not be described as the timeout's cause.
 
+## Native read path: evaluated optimization excluded after measurement
+
+The existing `virtual_check_buffer_for_write()` touches destination pages before
+`NtReadFile()` performs its read. An evaluated metadata/Mach-validation path
+avoided this dirtying for cold destinations, short reads and EOF. Its protection,
+write-watch and alias checks passed, but real Darwin warm-buffer measurements
+showed additional CPU cost:
+
+| Request | Original probe | Evaluated Mach path |
+| --- | ---: | ---: |
+| 64 KiB | 0.36 us | 13.28 us |
+| 256 KiB | 0.37 us | 15.91 us |
+| 1 MiB | 0.77 us | 20.58 us |
+| 16 MiB | 11.03 us | 26.86 us |
+
+These are host microbenchmarks from focused CI run `43703210106`, not iPhone
+measurements. The candidate is excluded from the delivered source and IPA.
+`virtual_ios.c`, its existing read validation, decommit correction and JIT
+implementation remain byte-identical to `cbeffbf4`. No slower path or new buffer
+cache is introduced. The actual main-thread `pread` work remains an unresolved
+part of loading; its descriptor, request size and asset identity are unavailable
+in this export. A synchronous read sample alone does not prove a broken syscall
+or justify replacing ordinary file I/O with an unvalidated asynchronous layer.
+
 ## Validation boundary
 
-Focused tests must verify the actual production validation path and staged
-task scheduler, including rejected/protected buffers, short-read/EOF behavior,
-dependency completion, bounded wakes and shutdown races. Host or CI results
-are not iPhone performance measurements. The next device run must establish
-connection-to-activation duration, continuous frame delivery, responsive team
-selection, sustained remote networking and peak physical footprint. Under
-30 seconds and 35–60 FPS remain targets, not measured results of this change.
+The native production-scheduler regressions establish operation counts:
+
+- 512 independent completions: completion queue locks and broadcasts each
+  decrease from 512 to zero.
+- A 40-dependent fanout: completion queue locks decrease from 41 to one;
+  41 broadcasts become eight bounded single-worker notifications in the
+  eight-worker host fixture, and every task completes exactly once.
+- The idle-pool workload decreases native wait/re-wait entries from 768 to 96.
+- Sixty dependency-publication races pass. The original shutdown can lose its
+  notification at the checked-predicate/park boundary; the corrected scheduler
+  completes without the negative control's external rescue.
+
+ASan/UBSan and the 17-file transactional build/package tests pass. Host elapsed
+and CPU timings vary, so no CS2 loading-time or frame-rate improvement is
+inferred from these tests.
+
+Focused tests run the complete pinned/staged task scheduler with real host
+threads, dependency completion, bounded wakes and deterministic shutdown races.
+The production checks also verify composed source staging, immutable originals,
+all three PE ABIs, compiled capability markers and exact packaged bytes. Host or
+CI results are not iPhone performance measurements. The next device run must
+establish connection-to-activation duration, continuous frame delivery,
+responsive team selection, sustained remote networking and peak physical
+footprint. Under 30 seconds and 35–60 FPS remain targets, not measured results.
 
 There is no prefix or data migration. Install over the existing app with the
 same signing identity and bundle ID; installing the prior IPA the same way

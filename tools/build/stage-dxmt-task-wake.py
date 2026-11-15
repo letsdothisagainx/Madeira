@@ -31,9 +31,22 @@ def stage_file(name, source):
     destroyed.store(true);
   }
   worker_cond_.notify_all();''')
+    source = replace_once(source, '''        {
+          std::unique_lock<dxmt::mutex> lock(worker_mutex_);
+          for (auto &task : continutation_buffer) {
+            task_continuation_queue_.push(task);
+          }
+        }''', '''        // Empty local batches publish no ready work. Avoid entering the
+        // shared worker queue mutex for the common no-dependent completion.
+        if (!continutation_buffer.empty()) {
+          std::unique_lock<dxmt::mutex> lock(worker_mutex_);
+          for (auto &task : continutation_buffer) {
+            task_continuation_queue_.push(task);
+          }
+        }''')
     return replace_once(source, '''        worker_cond_.notify_all();
-        continutation_buffer.clear();''', '''        // Only newly ready continuations require wakeups. Most completed
-        // shader/cache tasks have no dependents: broadcasting then wakes every
+        continutation_buffer.clear();''', '''        // Only newly ready continuations require wakeups. Completing a task
+        // without dependents must not broadcast and wake every
         // idle TIME_CRITICAL compiler worker just to lock, observe no work and
         // park again. Publish the whole ready batch above before notifying.
         // Workers already running observe queued work on their next iteration.

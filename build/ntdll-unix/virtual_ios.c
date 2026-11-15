@@ -29969,53 +29969,10 @@ BOOL virtual_check_buffer_for_read( const void *ptr, SIZE_T size )
  *
  * Check if a memory buffer can be written to, triggering page faults if needed for write watches.
  */
-/* Large ordinary I/O destinations need validation, not a first write to every
- * page. The old probe paged in and dirtied the complete request before pread,
- * even when the file supplied only a short read or EOF. On the file-backed
- * guest tier this also produced otherwise unnecessary swap-file writeback.
- *
- * This is deliberately narrower than check_write_access: mixed 4 KB guest
- * protections on a 16 KB host page, write watches, guards, sections, executable
- * aliases, native FEX/CEF storage and unregistered host memory still use the
- * original faulting probe. Never infer safety from get_host_page_vprot's union.
- * Wine metadata and the actual host protections must both admit the complete
- * host-page span. No data is read, written, committed or unprotected here.
- * Like the old completed probe, this does not pin the caller's buffer against
- * an application racing VirtualFree/VirtualProtect after validation returns. */
-static BOOL ios_private_write_range_ready( const void *ptr, SIZE_T size )
-{
-    const BYTE writable = VPROT_READ | VPROT_WRITE | VPROT_COMMITTED;
-    uintptr_t first = (uintptr_t)ptr, last, lo, hi, page;
-    struct file_view *view;
-    sigset_t sigset;
-    BOOL ready = FALSE;
-
-    if (size < 4 * host_page_size || size - 1 > UINTPTR_MAX - first) return FALSE;
-    last = first + size - 1;
-    lo = first & ~(uintptr_t)host_page_mask;
-    if (last > UINTPTR_MAX - host_page_mask) return FALSE;
-    hi = (last + host_page_size) & ~(uintptr_t)host_page_mask;
-    if (hi <= lo || ios_swap_is_fexjit( lo, hi - lo ) || ios_kw_has_rw_alias( lo, hi )) return FALSE;
-
-    server_enter_uninterrupted_section( &virtual_mutex, &sigset );
-    view = find_view( (const void *)lo, hi - lo );
-    if (!view || !is_view_valloc( view ) || (view->protect & ~writable) ||
-        view->ios_flags || view->ios_fex_owner || view->ios_cef_owner) goto done;
-    for (page = lo; page < hi; page += page_size)
-        if (get_page_vprot( (const void *)page ) != writable) goto done;
-    ready = ios_native_jit_span_has_protection( lo, hi - lo,
-                                               VM_PROT_READ | VM_PROT_WRITE,
-                                               VM_PROT_EXECUTE, 0, 0 );
-done:
-    server_leave_uninterrupted_section( &virtual_mutex, &sigset );
-    return ready;
-}
-
 BOOL virtual_check_buffer_for_write( void *ptr, SIZE_T size )
 {
     if (!size) return TRUE;
     if (!ptr) return FALSE;
-    if (ios_private_write_range_ready( ptr, size )) return TRUE;
 
     __TRY
     {

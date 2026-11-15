@@ -43,10 +43,22 @@ using namespace std::chrono_literals;
 static constexpr int THREAD_PRIORITY_TIME_CRITICAL=15;
 static int GetCurrentThread(){return 0;}
 static int SetThreadPriority(int,int){return 1;}
-static std::atomic<unsigned> one_wakes{0}, all_wakes{0}, waits{0};
+static std::atomic<unsigned> one_wakes{0}, all_wakes{0}, waits{0}, completion_queue_locks{0};
+// Observational host adapter: task SetIsDone begins completion accounting and
+// the unchanged production running.fetch_sub boundary ends it. Only the ready
+// queue lock can be acquired inside that interval; task dependency locking and
+// ordinary worker polling stay outside it.
+static thread_local bool host_in_completion=false;
+static void host_completion_end(){host_in_completion=false;}
 static std::atomic<bool> pause_wait{false}, claimed_wait{false}, entered_wait{false}, release_wait{false};
 namespace dxmt {
-using mutex=std::mutex;
+class mutex {
+  std::mutex native;
+public:
+  void lock(){if(host_in_completion)completion_queue_locks.fetch_add(1);native.lock();}
+  void unlock(){native.unlock();}
+  bool try_lock(){if(host_in_completion)completion_queue_locks.fetch_add(1);return native.try_lock();}
+};
 class condition_variable;
 static std::atomic<condition_variable*> paused_condition{nullptr};
 class condition_variable {
@@ -105,12 +117,12 @@ template<> struct task_trait<Job*> {
   return j;
  }
  bool get_done(Job*j){return j->done.load(std::memory_order_acquire);}
- void set_done(Job*j){j->done.store(true,std::memory_order_release);}
+ void set_done(Job*j){j->done.store(true,std::memory_order_release);host_in_completion=true;}
 };
 }
 
 static void independent(bool candidate){
- one_wakes=0;all_wakes=0;waits=0;
+ one_wakes=0;all_wakes=0;waits=0;completion_queue_locks=0;
  constexpr unsigned count=512;
  std::vector<std::unique_ptr<Job>> jobs;
  for(unsigned i=0;i<count;++i)jobs.emplace_back(std::make_unique<Job>());
@@ -127,15 +139,16 @@ static void independent(bool candidate){
   submitted_wakes=one_wakes.load();
   assert(submitted_wakes==count);
   assert(all_wakes==(candidate?0:count));
+  assert(completion_queue_locks==(candidate?0:count));
  }
  const auto us=std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-start).count();
  assert(all_wakes==(candidate?1:count+1)); // One genuine shutdown broadcast.
- std::printf("%s independent tasks=%u submit-one=%u completion-all=%u elapsed-us=%lld\n",
-  candidate?"candidate":"baseline",count,submitted_wakes,unsigned(all_wakes)-1,(long long)us);
+ std::printf("%s independent tasks=%u submit-one=%u completion-all=%u completion-queue-locks=%u elapsed-us=%lld\n",
+  candidate?"candidate":"baseline",count,submitted_wakes,unsigned(all_wakes)-1,unsigned(completion_queue_locks),(long long)us);
 }
 
 static void fanout(bool candidate){
- one_wakes=0;all_wakes=0;waits=0;
+ one_wakes=0;all_wakes=0;waits=0;completion_queue_locks=0;
  constexpr unsigned dependents=40;
  std::atomic<bool> gate{false};
  Job root;root.gate=&gate;
@@ -157,13 +170,14 @@ static void fanout(bool candidate){
   completion_alls=all_wakes.load();
   if(candidate){assert(completion_alls==0);assert(completion_ones>=1 && completion_ones<=8);}
   else assert(completion_alls==dependents+1);
+  assert(completion_queue_locks==(candidate?1:dependents+1));
  }
- std::printf("%s fanout=%u completion-one=%u completion-all=%u all-jobs-once=1\n",
-  candidate?"candidate":"baseline",dependents,completion_ones,completion_alls);
+ std::printf("%s fanout=%u completion-one=%u completion-all=%u completion-queue-locks=%u all-jobs-once=1\n",
+  candidate?"candidate":"baseline",dependents,completion_ones,completion_alls,unsigned(completion_queue_locks));
 }
 
 static void idle_workload(bool candidate){
- one_wakes=0;all_wakes=0;waits=0;
+ one_wakes=0;all_wakes=0;waits=0;completion_queue_locks=0;
  constexpr unsigned workers=8,count=96;
  std::atomic<bool> gate{false};
  std::vector<std::unique_ptr<Job>> warm, jobs;
@@ -181,7 +195,7 @@ static void idle_workload(bool candidate){
   for(auto&j:warm)eventually([&]{return j->done.load();},"warm worker done");
   eventually([&]{return scheduler.get_running_threads()==0;},"warm pool idle");
   std::this_thread::sleep_for(2ms);
-  one_wakes=0;all_wakes=0;waits=0;
+  one_wakes=0;all_wakes=0;waits=0;completion_queue_locks=0;
   const auto cpu_start=std::clock();
   const auto start=std::chrono::steady_clock::now();
   for(auto&j:jobs){
@@ -193,6 +207,7 @@ static void idle_workload(bool candidate){
   const auto us=std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-start).count();
   const auto cpu_us=(std::clock()-cpu_start)*1000000.0/CLOCKS_PER_SEC;
   assert(one_wakes==count && all_wakes==(candidate?0:count));
+  assert(completion_queue_locks==(candidate?0:count));
   // The scheduler's own queued tasks complete exactly once under both paths.
   for(auto&j:jobs)assert(j->completed==1);
   std::printf("%s idle-pool tasks=%u native-wait-entries=%u completion-all=%u process-cpu-us=%.0f wall-us=%lld\n",
@@ -255,6 +270,9 @@ int main(int argc,char**argv){
 
 
 def hosted(source):
+    boundary = '    running.fetch_sub(1, std::memory_order_relaxed);'
+    assert source.count(boundary) == 1, 'production completion accounting boundary changed'
+    source = source.replace(boundary, '    host_completion_end();\n' + boundary, 1)
     return '\n'.join(line for line in source.splitlines()
                      if not line.startswith('#include "') and line != '#pragma once')
 
@@ -286,7 +304,7 @@ def main():
                             '-fno-omit-frame-pointer', str(cpp), '-o', str(executable)], check=True)
             subprocess.run([str(executable), '1' if name == 'candidate' else '0'], check=True, timeout=40)
     assert hashlib.sha256(path.read_bytes()).digest() == hashlib.sha256(original).digest()
-    print('PASS production DXMT scheduler: work-proportional wakes, genuine fanout and completion races, '
+    print('PASS production DXMT scheduler: empty-completion queue lock elision, work-proportional wakes, genuine fanout and completion races, '
           'lost shutdown wake negative control and synchronized correction; host threads, not iPhone FPS')
 
 

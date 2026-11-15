@@ -24,7 +24,6 @@ commands = [
     ['python3', 'tests/host/check-ios-route-table.py'],
     ['python3', 'tests/host/check-swap-coverage.py'],
     ['python3', 'tests/host/check-swap-decommit-remap.py'],
-    ['python3', 'tests/host/check-private-write-preflight.py'],
     ['python3', 'tests/host/check-stale-runtime-links.py'],
     ['python3', 'tests/host/check-steam-integrity-launch.py', '--require-swift'],
     ['python3', 'tests/host/check-cs2-observation.py'],
