@@ -200,7 +200,7 @@ static std::atomic<unsigned> texture_born{0}, texture_alive{0}, backing_calls{0}
  emergency_trim_calls{0}, emergency_sweep_calls{0}, transient_trim_calls{0};
 static bool native_bc=true, fail_native=false, force_bias=false, throw_initialization=false;
 static bool fail_initialization=false;
-static uint64_t forecast_upload=0,forecast_zero=0;
+static uint64_t forecast_upload=0,forecast_zero=0,forecast_after_trim=0;
 static mach_port_t native_shared_port=0;
 static uint64_t waited_seq=0, waited_ms=0;
 static unsigned flush_with_credit=0, last_flush_initializations=0;
@@ -259,7 +259,7 @@ public:
  size_t forecastUploadGrowth(size_t,size_t=0){return size_t(forecast_upload);}
  size_t forecastZeroGrowth(size_t){return size_t(forecast_zero);}
  FakeUploadEvent upload_queue_event_; uint64_t submitted=0;
- uint64_t trimMemoryPressure(bool release_warm=false){++trim_calls;if(release_warm)++emergency_trim_calls;return 0;}
+ uint64_t trimMemoryPressure(bool release_warm=false){++trim_calls;if(release_warm)++emergency_trim_calls;if(forecast_after_trim)forecast_upload=forecast_after_trim;return 0;}
  uint64_t flushToWait(){
   ++flush_calls;last_flush_initializations=initialize_calls;
   std::lock_guard<std::mutex>lock(budget_mutex);
@@ -375,7 +375,7 @@ static void reset(dxmt::MTLD3D11Device&device){
  acquire_calls=release_calls=0;last_charge=0;reply_code=1;unknown_backend=false;
  deny_always=false;grant_after_wait=false;grant_completion_lane=false;single_slot=false;available_bytes=2ull<<30;
  gpu_protocol=false;fail_gpu_begin=false;gpu_begin_calls=gpu_end_calls=gpu_retired=0;
- fail_initialization=false;forecast_upload=forecast_zero=0;
+ fail_initialization=false;forecast_upload=forecast_zero=forecast_after_trim=0;
  native_bc=true;fail_native=false;force_bias=false;throw_initialization=false;native_shared_port=0;
  block_initialization=false;initialization_entered=false;unblock_initialization=false;
  device.queue().domain=next_domain++;device.queue().coherent=1;device.queue().initializer.submitted=0;
@@ -560,7 +560,12 @@ int main(int argc,char**argv){
  reset(device);forecast_zero=4096;out=nullptr;
  assert(create<Tag>(device,desc,nullptr,&out)==S_OK&&out);
  assert(last_charge==dxmt::mem_census_texture_bytes(out->owner->info,true)+forecast_zero);delete out;clean();
- std::puts("PASS actual new upload/zero growth is charged with backing; reusable storage is not charged as fresh capacity");
+ reset(device);reply_code=2;forecast_after_trim=32ull<<20;out=nullptr;
+ assert(create<Tag>(device,desc,initial,&out)==S_OK&&out);
+ assert(acquire_calls==2&&release_calls==2);
+ assert(last_charge==dxmt::mem_census_texture_bytes(out->owner->info,true)+forecast_after_trim);
+ assert((acquire_flags==std::vector<uint64_t>{0,0}));delete out;clean();
+ std::puts("PASS actual new upload/zero growth is charged with backing; reclamation reforecasts and replaces its prior receipt before acquisition");
  std::puts("PASS failure-only marker reports actual capacity/headroom and stops after eight total failures");
  std::puts("PASS actual production factory returns genuine failures and preserves all owned backend data; no GPU/RSS claim");
 }

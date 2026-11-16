@@ -292,7 +292,12 @@ static inline void md_resource_growth_acquire(struct madeira_ctl_args *args) {
     ++md_resource_growth_waiters;
     pthread_cleanup_push(md_resource_growth_wait_canceled, NULL);
     pthread_setcancelstate(cancel_state, NULL);
+    /* Darwin's relative_np condition wait is explicitly NOCANCEL. Test at
+     * both owned-mutex boundaries while cleanup is registered; a deferred
+     * cancellation then retires this waiter within one bounded sleep slice. */
+    pthread_testcancel();
     wait_status = md_resource_growth_condition_wait(deadline - now);
+    pthread_testcancel();
     pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
     --md_resource_growth_waiters;
     pthread_cleanup_pop(0);

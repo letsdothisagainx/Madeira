@@ -8,6 +8,7 @@ parallel admission, foreign release and interrupted-creator retirement.
 from pathlib import Path
 import os
 import subprocess
+import sys
 import tempfile
 
 ROOT=Path(__file__).resolve().parents[2]
@@ -37,7 +38,22 @@ code=r'''
 #include <vector>
 #include "winemetal.h"
 #include "memory_pressure.hpp"
+#include <pthread.h>
+// Darwin's relative_np wait deliberately is not a cancellation point. The
+// second Linux execution models that native contract, rather than letting
+// Linux's cancelable POSIX wait hide a missing explicit boundary check.
+#if defined(MODEL_DARWIN_NONCANCEL_WAIT) && !defined(__APPLE__)
+static int fixture_noncancel_wait(pthread_cond_t *condition,pthread_mutex_t *mutex,const struct timespec *deadline){
+ int previous;assert(!pthread_setcancelstate(PTHREAD_CANCEL_DISABLE,&previous));
+ const int status=pthread_cond_timedwait(condition,mutex,deadline);
+ assert(!pthread_setcancelstate(previous,nullptr));return status;
+}
+#define pthread_cond_timedwait fixture_noncancel_wait
+#endif
 #include "memory_pressure_native.h"
+#if defined(MODEL_DARWIN_NONCANCEL_WAIT) && !defined(__APPLE__)
+#undef pthread_cond_timedwait
+#endif
 static constexpr uint64_t MiB=uint64_t{1}<<20;
 static std::atomic<uint64_t> footprint{4096*MiB}, available{2048*MiB};
 static std::atomic<bool> fail_query{false};
@@ -335,7 +351,10 @@ int ios_thread_process_finalize_native(void*,unsigned long long);
 void wine_log_write(const char*,...);
 '''+retire+'\nextern "C" void fixture_finish_process_memory(void* owner) { ios_finish_process_memory(owner); }\n'
  src=p/'test.cpp';server_src=p/'server.cpp';binary=p/'test';src.write_text(code);server_src.write_text(server_code)
- subprocess.run([os.environ.get('CXX','c++'),'-std=c++17','-O1','-Wall','-Wextra','-Werror','-pthread',
-  '-fsanitize=address,undefined','-fno-omit-frame-pointer','-fno-sanitize-recover=all',
-  '-I',str(p),'-I',str(ROOT/'build/dxmt-ios'),str(src),str(server_src),'-o',str(binary)],check=True)
- subprocess.run([str(binary)],check=True,timeout=40)
+ for model in ([False] if sys.platform == 'darwin' else [False, True]):
+  flags = ['-DMODEL_DARWIN_NONCANCEL_WAIT'] if model else []
+  subprocess.run([os.environ.get('CXX','c++'),'-std=c++17','-O1','-Wall','-Wextra','-Werror','-pthread',
+   '-fsanitize=address,undefined','-fno-omit-frame-pointer','-fno-sanitize-recover=all',*flags,
+   '-I',str(p),'-I',str(ROOT/'build/dxmt-ios'),str(src),str(server_src),'-o',str(binary)],check=True)
+  subprocess.run([str(binary)],check=True,timeout=40)
+  if model: print('PASS Darwin NOCANCEL relative-wait model: deferred cancellation executes real native cleanup with no stranded waiter or mutex')

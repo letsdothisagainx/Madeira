@@ -60,8 +60,12 @@ the archive does not prove how often they occurred in this run.
   trusting arbitrary guest-supplied Objective-C pointers.
 - Normal admission never waits for an unpublished private batch. A denied
   producer flushes its real pending batch before a bounded retry; native
-  waits release the budget mutex and resample real memory. No successful
-  allocation or completion is fabricated.
+  waits release the budget mutex and resample real memory. Darwin's relative
+  condition wait is explicitly non-cancelable, so owned cleanup boundaries
+  explicitly test deferred cancellation before/after each bounded sleep;
+  cancellation cannot strand the waiter count or budget mutex. The first Mac
+  regression run exposed this difference from Linux's cancelable wait.
+  No successful allocation or completion is fabricated.
 - Retain one completed natural-size upload block under soft pressure, use
   high/low-water hysteresis at critical pressure, and still release completed
   warm storage for genuine emergency reclamation. In-flight buffers and live
