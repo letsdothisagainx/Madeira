@@ -16,6 +16,11 @@ assert 'scripts/' not in workflow and 'research/dxmt' not in workflow
 assert workflow.count('key: ${{ steps.key.outputs.key }}\n    steps:') == 2
 assert workflow.count('key: plan19-${{ steps.sdk.outputs.key }}-${{ steps.key.outputs.key }}') == 2
 assert workflow.count('key: plan19-${{ steps.sdk.outputs.key }}-${{ needs.') == 2
+# The optional selection constrains the actual plan fingerprint using the same
+# real matching/mismatching script exercised below; it cannot supply outputs.
+plan = workflow.split('  plan:\n', 1)[1].split('\n  reuse:', 1)[0]
+assert 'MADEIRA_PLANNED_SDK: ${{ inputs.planned_sdk_key }}' in plan
+assert re.search(r"planned_sdk_key:\n(?:        .*\n)*?        default: ''", workflow)
 script = (root / 'tools/build/ci-input-key.sh').read_text()
 assert workflow.count('run: bash tools/build/ci-input-key.sh') == 5
 assert workflow.count('MADEIRA_PLANNED_SDK: ${{ needs.plan.outputs.sdk }}') == 4

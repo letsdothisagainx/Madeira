@@ -6,6 +6,10 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      planned_sdk_key:
+        description: Require a known native toolchain fingerprint (optional; mismatched plan runners fail)
+        required: false
+        default: ''
       inspect_native_run_id:
         description: Inspect an existing IPA's native APC image instead of building (optional run ID)
         required: false
@@ -55,6 +59,10 @@ jobs:
           python3 tests/host/check-clean-bootstrap.py
           python3 tests/host/check-app-link-inputs.py
       - id: sdk
+        # Select an existing verified environment during a mixed-image rollout.
+        # The real fingerprint is still computed and checked; no key is forged.
+        env:
+          MADEIRA_PLANNED_SDK: ${{ inputs.planned_sdk_key }}
         run: bash tools/build/ci-input-key.sh
       - id: key
         run: echo "ipa=ipa-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.sdk.outputs.ipa }}-$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
