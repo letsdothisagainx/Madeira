@@ -167,13 +167,17 @@ for component, label, destination in [('llvm', 'LLVM', 'toolchains'),
         f'      - name: Retain {label} outputs for this run\n', 1)[1], maxsplit=1, flags=re.M)[0]
     consumer = app_workflow.split(f'      - name: Recover {label} outputs from this run\n', 1)[1].split('      - ', 1)[0]
     # Same-run artifacts avoid trusting outputs from unrelated PRs.
-    assert f'name: native-{component}-${{{{ steps.sdk.outputs.key }}}}' in producer
+    expected_sdk = 'needs.plan.outputs.sdk' if component == 'llvm' else 'steps.sdk.outputs.key'
+    assert f'name: native-{component}-${{{{ {expected_sdk} }}}}' in producer
     assert f'name: native-{component}-${{{{ needs.plan.outputs.sdk }}}}' in consumer
     assert 'actions/download-artifact@v4' in consumer and 'run-id:' not in consumer
     assert f'path: {destination}\n' in consumer
     assert 'continue-on-error: true' in producer and 'continue-on-error: true' in consumer
     assert 'retention-days: 1' in producer and 'overwrite: true' in producer
 assert 'include-hidden-files: true' in workflow.split('Retain LLVM outputs for this run', 1)[1].split('\n  fex:', 1)[0]
+llvm_job = workflow.split('  llvm:\n',1)[1].split('\n  fex:',1)[0]
+assert "- id: sdk\n        if: steps.cache.outputs.cache-hit != 'true'\n        run: bash tools/build/ci-input-key.sh" in llvm_job
+assert "name: Verify restored LLVM archives\n        if: steps.cache.outputs.cache-hit == 'true'\n        run: tools/build/build-llvm-ios.sh" in llvm_job
 for name in ['build-llvm-ios.sh', 'build-fex-ios.sh']:
     assert name in (root / 'tools/build-ipa.sh').read_text()
 with tempfile.TemporaryDirectory(prefix='madeira-cache-miss-') as tmp:

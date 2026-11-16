@@ -153,6 +153,7 @@ def keys(changed):
 
         text = hash_expression.sub(recipe_hash, text)
         values = {'runner.os': 'macOS', 'runner.arch': 'ARM64', 'steps.sdk.outputs.key': 'native',
+                  'needs.plan.outputs.sdk': 'native',
                   'steps.sdk.outputs.rust': 'rust', 'steps.sdk.outputs.graphics': 'graphics',
                   'steps.sdk.outputs.ipa': 'ipa-env', 'steps.pins.outputs.wine': versions['wine'],
                   'steps.pins.outputs.fex': versions['FEX'],
