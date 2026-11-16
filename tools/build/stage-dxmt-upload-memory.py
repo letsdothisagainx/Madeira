@@ -214,18 +214,27 @@ ResourceInitializer::forecastUploadGrowth(size_t total_payload_bytes, size_t fir
 
 void
 ResourceInitializer::prepareUploadLocked(size_t size) {
-  auto pressure = memoryPressureSnapshot();
-  if (!pressure.valid)
-    return; // An unavailable host measurement is not an invented limit.
-  cached_coherent_seq_id = std::max(cached_coherent_seq_id, upload_queue_event_.signaledValue());
-  const size_t growth = gpu_command_heap_allocator.allocation_growth(
+  // Most initial mip/slice uploads fit backing already owned by this ring.
+  // That reuse needs no fresh native pressure or event call: the cached
+  // completion frontier is conservative, and appending to the current tail
+  // cannot overwrite bytes referenced by an earlier GPU upload. Sampling a
+  // Metal shared event for every tiny mip otherwise crosses the PE/native
+  // boundary thousands of times even though no new storage can be allocated.
+  size_t growth = gpu_command_heap_allocator.allocation_growth(
       cached_coherent_seq_id, size, kResourceInitializerGpuUploadHeapAlignment);
-  if (!pressure.needsReclaim(growth))
-    return;
-  // Reusing/suballocating a real existing block needs no further wait. Still
-  // let completion/idle paths trim unrelated completed transient storage.
   if (!growth)
     return;
+  // Only a genuine capacity miss refreshes GPU completion. Recheck after
+  // observing the real event: a formerly pending FIFO block may now be
+  // reusable, without a wait, trim, new backing or physical-budget charge.
+  cached_coherent_seq_id = std::max(cached_coherent_seq_id, upload_queue_event_.signaledValue());
+  growth = gpu_command_heap_allocator.allocation_growth(
+      cached_coherent_seq_id, size, kResourceInitializerGpuUploadHeapAlignment);
+  if (!growth)
+    return;
+  const auto pressure = memoryPressureSnapshot();
+  if (!pressure.valid || !pressure.needsReclaim(growth))
+    return; // Unknown pressure is not an invented limit or GPU completion.
   if (!idle())
     flushInternal();
   const uint64_t submitted = current_seq_id_ - 1;

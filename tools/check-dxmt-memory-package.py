@@ -18,11 +18,11 @@ FARMS = ('aarch64-windows', 'arm64ec-windows', 'i386-windows')
 MODULES = {'d3d11.dll': 'D3D11CreateDevice', 'dxgi.dll': 'CreateDXGIFactory1',
            'd3d10core.dll': 'D3D10CoreCreateDevice', 'winemetal.dll': None}
 MANIFEST = 'arm64ec-windows/madeira-dxmt-memory.json'
-PE_MARKERS = (b'[dynamic-memory-pressure-v1]', b'policy=bounded-hot-v2', b'storage=owner-heap-v1',
-              b'counter-storage=census-perf-heap-v1', b'scan=registered-cursor-v1',
+PE_MARKERS = (b'[dynamic-memory-pressure-v1]', b'policy=bounded-hot-v3', b'storage=owner-heap-v1',
+              b'counter-storage=census-perf-heap-v1', b'scan=registered-cursor-v2',
               b'pe-command-state=dedup-hud-v1', b'scheduler=ready-work-v1', b'[upload-memory-v1]',
               b'texture-admission=physical-v1', b'texture-accounting=bc-blocks-v1', b'[initializer-failure-v1]')
-NATIVE_MARKERS = (*PE_MARKERS, b'[madeira-memory-pressure-v1]',
+NATIVE_MARKERS = (*PE_MARKERS, b'[madeira-memory-pressure-v1]', b'[native-heap-relief-v1]',
                   b'[metal-resource-batch-v1]', b'release-probe=opt-in',
                   b'[texture-growth-budget-v1]', b'[metal-vertex-descriptor-owner-v1]',
                   b'[texture-live-budget-v2]', b'[texture-gpu-events-v1]')
@@ -42,7 +42,7 @@ RECIPES = (
     'tools/check-dxmt-memory-package.py', 'tools/check-system-programs.py',
     'build/dxmt-ios/build.sh', 'build/dxmt-ios/memory_pressure.hpp',
     'build/dxmt-ios/memory_pressure_native.h', 'build/dxmt-ios/graphics_diagnostics.h',
-    'build/dxmt-ios/resource_growth_event_native.h',
+    'build/dxmt-ios/resource_growth_event_native.h', 'build/dxmt-ios/native_heap_relief.h',
     'build/dxmt-ios/metal_lifecycle.h', 'build/dxmt-ios/metal_submission_gate.h',
     'tools/build/stage-dxmt-diagnostics.py', 'tools/build/stage-dxmt-lifecycle.py',
 )

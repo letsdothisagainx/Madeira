@@ -496,10 +496,12 @@ check('madeira_cfg_bool( "swap-images", 0 )' in enabled_fn and 'if (ios_swap_fd 
 
 setprot = body_of(virt, 'static NTSTATUS set_protection( struct file_view *view, void *base, SIZE_T size, ULONG protect )')
 check('if ((vprot & VPROT_GUARD) || ((vprot & (VPROT_EXEC | VPROT_WRITECOPY)) && !(view->protect & VPROT_X64DATA)))\n'
-      '        ios_swap_release_range( base, size, 1 );' in setprot,
+      '    {\n        ios_swap_release_range( base, size, 1 );' in setprot,
       'set_protection: GUARD always leaves the tier, EXEC/WRITECOPY only outside pure-x64 image views')
 check(setprot.index('ios_swap_release_range( base, size, 1 )') < setprot.index('if (!set_vprot( view, base, size, vprot | VPROT_COMMITTED ))'),
       'set_protection: still before set_vprot (ml1257)')
+check(setprot.index('if (ios_swap_overlaps( base, size )) return STATUS_NO_MEMORY;') < setprot.index('if (!set_vprot('),
+      'set_protection: failed copy-back returns truthful failure before changing guest protections')
 cat = (root / 'app/Madeira/ConfigCatalog.generated.swift').read_text()
 check(re.search(r'key: "swap-images".*kind: \.bool, defaultValue: "0"', cat) is not None, 'catalog lists swap-images, off by default')
 

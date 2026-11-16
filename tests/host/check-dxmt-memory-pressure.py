@@ -169,6 +169,12 @@ NATIVE = r'''
 static int task_failure, sysctl_failure, short_count, short_size;
 static uint64_t measured_footprint, measured_available, installed;
 static unsigned available_queries;
+static unsigned relief_requests;
+void madeira_native_memory_relief_request(uint64_t footprint, uint64_t available) {
+  assert(footprint == measured_footprint && available == measured_available);
+  ++relief_requests;
+  errno = 44;
+}
 /* This op40-only native fixture has no Wine owner registry. Explicitly
  * unavailable owner hooks keep the shared header linkable on Mach-O without
  * fabricating a process generation or quiescence proof. Growth admissions
@@ -206,6 +212,8 @@ static struct madeira_ctl_args sample(void) {
   errno = 72;
   md_memory_pressure_query(&args);
   assert(errno == 72);
+  assert(relief_requests == (args.ret == 1 ? 1u : 0u));
+  relief_requests = 0;
   return args;
 }
 int main(void) {
@@ -275,6 +283,7 @@ int task_info(int, int, task_info_t, mach_msg_type_number_t *);
                     '--headers', str(ROOT / 'build/dxmt-ios')], check=True)
     assert output.read_text() == staged
     assert (output.parent / 'memory_pressure_native.h').read_bytes() == (ROOT / 'build/dxmt-ios/memory_pressure_native.h').read_bytes()
+    assert (output.parent / 'native_heap_relief.h').read_bytes() == (ROOT / 'build/dxmt-ios/native_heap_relief.h').read_bytes()
     assert (output.parent / 'resource_growth_event_native.h').read_bytes() == (ROOT / 'build/dxmt-ios/resource_growth_event_native.h').read_bytes()
     assert hashlib.sha256(native_source.read_bytes()).digest() == hashlib.sha256(original).digest()
 print('PASS actual pressure policy/native helper: measured 6144MiB, valid zero headroom, unknown/sentinels/overflow, errno, concurrent 100ms cache; native op40/WoW64 staged without altering op7/vendor input. iPhone allocations and map loading remain unverified.')

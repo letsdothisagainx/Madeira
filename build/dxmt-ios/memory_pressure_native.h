@@ -14,6 +14,14 @@
 // image without logging, file I/O, or changing the pointer-free control ABI.
 static const volatile char md_memory_pressure_contract[] = "[madeira-memory-pressure-v1]";
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+void madeira_native_memory_relief_request(uint64_t, uint64_t);
+#ifdef __cplusplus
+}
+#endif
+
 static inline void md_memory_pressure_query(struct madeira_ctl_args *args) {
   const int saved_errno = errno;
   task_vm_info_data_t info = {0};
@@ -42,6 +50,9 @@ static inline void md_memory_pressure_query(struct madeira_ctl_args *args) {
   args->ptr = footprint;
   args->len = available;
   args->ret = 1;
+  // Queue only a cheap hint here. The existing background VM monitor performs
+  // public native-heap relief after remeasurement and outside graphics locks.
+  madeira_native_memory_relief_request(footprint, available);
 done:
   errno = saved_errno;
 }

@@ -181,15 +181,17 @@ MemoryPressureSnapshot pressure=[] {
   snapshot.valid=true;
   return snapshot;
 }();
-MemoryPressureSnapshot memoryPressureSnapshot(bool = false) { return pressure; }
+unsigned pressure_queries=0;
+MemoryPressureSnapshot memoryPressureSnapshot(bool = false) { ++pressure_queries; return pressure; }
 }
 namespace WMT {
 int MakeAutoreleasePool() { return 0; }
 struct EventState {
   uint64_t value=0, submitted=0, waited=0, timeout=0;
   unsigned waits=0, commits=0;
+  std::atomic<unsigned> reads{0};
   bool complete_on_wait=false;
-  uint64_t signaledValue() { return value; }
+  uint64_t signaledValue() { ++reads; return value; }
   bool waitUntilSignaledValue(uint64_t target,uint64_t millis) {
     waited=target; timeout=millis; ++waits;
     if (complete_on_wait) value=target;
@@ -483,6 +485,47 @@ int main() {
 '''
 
 
+UPLOAD_REUSE_CALLS = r'''
+int main() {
+  using namespace dxmt;
+  constexpr size_t subresources=49066;
+  constexpr bool optimized=OPTIMIZED;
+  ResourceInitializer init;
+  pressure.available=0; // Reuse needs no new physical backing, even at emergency pressure.
+  pressure_queries=0;
+  auto [first, first_offset]=init.gpu_command_heap_allocator.allocate(1,0,16,16);
+  first.payload->data[first_offset]=0x73;
+  const auto allocated_before=counts.allocated.load();
+  uint64_t checksum=0;
+  for (size_t mip=0;mip<subresources;++mip) {
+    init.prepareUploadLocked(16);
+    auto [backing,offset]=init.gpu_command_heap_allocator.allocate(1,init.cached_coherent_seq_id,16,16);
+    for (size_t n=0;n<16;++n) backing.payload->data[offset+n]=uint8_t(mip+n);
+    for (size_t n=0;n<16;++n) checksum+=backing.payload->data[offset+n];
+  }
+  require(first.payload->data[first_offset]==0x73, "append overwrote an earlier pending upload");
+  require(init.upload_queue_event_.reads==(optimized?0:subresources) &&
+          pressure_queries==(optimized?0:subresources),
+          "upload reuse repeated unnecessary native completion/pressure queries");
+  require(counts.allocated==allocated_before && counts.bytes==(1u<<20) &&
+          init.upload_queue_event_.commits==0 && init.upload_queue_event_.waits==0 &&
+          init.cached_coherent_seq_id==0,
+          "owned upload reuse allocated, submitted, waited or invented GPU completion");
+  std::cout << "subresources=" << subresources << " event-reads=" << init.upload_queue_event_.reads
+            << " pressure-queries=" << pressure_queries << " backing-bytes=" << counts.bytes
+            << " checksum=" << checksum << '\n';
+  // A real capacity miss must still sample genuine completion and pressure.
+  pressure.available=10000000;
+  const unsigned event_reads=init.upload_queue_event_.reads, queries=pressure_queries;
+  init.prepareUploadLocked(1u<<20);
+  require(init.upload_queue_event_.reads==event_reads+1 && pressure_queries==queries+1,
+          "genuine upload growth bypassed native GPU completion or pressure measurement");
+  require(init.upload_queue_event_.commits==0 && init.upload_queue_event_.waits==0,
+          "healthy genuine growth unnecessarily submitted or waited");
+}
+'''
+
+
 UPLOAD_STRESS = r'''
 int main() {
   using namespace dxmt;
@@ -632,10 +675,12 @@ def initializer_backend():
     return INITIALIZER_BACKEND.replace("/* ACTUAL_MEMORY_PRESSURE_POLICY */", source[start:end])
 
 
-def compile_initializer(directory, name, ring, source, main):
+def compile_initializer(directory, name, ring, source, main, ring_block_size=256):
     cpp = directory / (name + ".cpp")
     exe = directory / name
-    cpp.write_text(PRELUDE + ring_code(ring) + ALLOCATOR + initializer_backend() +
+    backend = initializer_backend().replace('RingBumpState<CountingAllocator,256>',
+                                            f'RingBumpState<CountingAllocator,{ring_block_size}>')
+    cpp.write_text(PRELUDE + ring_code(ring) + ALLOCATOR + backend +
                    initializer_methods(source) + main)
     subprocess.run(["g++", "-std=c++20", "-O1", "-g", "-pthread", "-fsanitize=address,undefined",
                     str(cpp), "-o", str(exe)], check=True)
@@ -657,6 +702,31 @@ def main():
         print("AFTER:", after.stdout.strip())
         init_source = STAGE.stage_initializer((SOURCE / "dxmt_resource_initializer.cpp").read_text())
         print(compile_initializer(directory, "initializer", staged, init_source, INITIALIZER_MAIN))
+        # Compile the actual staged method and the previous unconditional
+        # native-query prologue against identical owned upload bytes. This is
+        # a host call-count regression, not an iPhone loading/FPS benchmark.
+        cached_start = """  // Most initial mip/slice uploads fit backing already owned by this ring."""
+        cached_end = """  if (!idle())
+    flushInternal();"""
+        start = init_source.index(cached_start)
+        end = init_source.index(cached_end, start)
+        legacy_prologue = """  auto pressure = memoryPressureSnapshot();
+  if (!pressure.valid)
+    return;
+  cached_coherent_seq_id = std::max(cached_coherent_seq_id, upload_queue_event_.signaledValue());
+  const size_t growth = gpu_command_heap_allocator.allocation_growth(
+      cached_coherent_seq_id, size, kResourceInitializerGpuUploadHeapAlignment);
+  if (!pressure.needsReclaim(growth) || !growth)
+    return;
+"""
+        legacy = init_source[:start] + legacy_prologue + init_source[end:]
+        baseline_calls = compile_initializer(directory, "old-reuse-calls", staged, legacy,
+            UPLOAD_REUSE_CALLS.replace("OPTIMIZED", "false"), 1 << 20)
+        candidate_calls = compile_initializer(directory, "new-reuse-calls", staged, init_source,
+            UPLOAD_REUSE_CALLS.replace("OPTIMIZED", "true"), 1 << 20)
+        assert re.search(r"checksum=(\d+)", baseline_calls)[1] == re.search(r"checksum=(\d+)", candidate_calls)[1]
+        print("BEFORE unconditional native upload probes:", baseline_calls)
+        print("AFTER owned-backing fast path:", candidate_calls)
         warm_policy = """    const auto decision = transient_pressure_controller_.evaluate(memoryPressureSnapshot());
     const bool keep_warm = !release_warm && decision.valid && !decision.critical;"""
         old_policy = """    const auto pressure = memoryPressureSnapshot();

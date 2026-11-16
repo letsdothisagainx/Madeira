@@ -31,11 +31,22 @@ struct DynamicRegistryState {
     DynamicBuffer *next = nullptr;
     SweepCursor *active_next = nullptr;
   };
+  struct SweepStamp {
+    uint64_t domain = 0, coherent = 0, retirement_epoch = 0, warm_budget = 0;
+    bool critical = false, valid = false;
+  };
   dxmt::mutex mutex;
   DynamicBuffer *head = nullptr;
   SweepCursor *sweeps = nullptr;
   uint64_t warm_cache_credit = 0;
+  std::array<SweepStamp, 4> completed_sweeps{};
+  uint64_t sweep_victim = 0;
+  // An already-completed name can be recycled after a sweep at the same GPU
+  // frontier. Such a push invalidates duplicate-sweep suppression. Normal
+  // future retirements only read the frontier and never write a shared counter.
+  std::atomic<uint64_t> completed_frontier{0}, retirement_epoch{0};
   MemoryPressureController pressure_controller;
+  MemoryPressureSnapshot latest_pressure;
   MemoryPressureDecision pressure_decision = pressure_controller.evaluate(MemoryPressureSnapshot{});
   std::atomic<uint64_t> reports{0};
 };
@@ -89,8 +100,30 @@ public:
 static auto
 pressureDecisionLocked(const MemoryPressureSnapshot &pressure, uint64_t upcoming = 0) {
   const auto decision = dynamicRegistryState().pressure_controller.evaluate(pressure, upcoming);
-  if (decision.valid) dynamicRegistryState().pressure_decision = decision;
-  return dynamicRegistryState().pressure_decision;
+  auto &registry = dynamicRegistryState();
+  if (decision.valid) {
+    registry.pressure_decision = decision;
+    if (!registry.latest_pressure.valid || !pressure.sampled_ns || !registry.latest_pressure.sampled_ns ||
+        pressure.sampled_ns > registry.latest_pressure.sampled_ns)
+      registry.latest_pressure = pressure;
+  }
+  return registry.pressure_decision;
+}
+
+// Critical pressure is not permission to grow backing. Preserve at most a tiny
+// fraction of *existing*, learned-hot completed names so the next frame need
+// not destroy/recreate the same storage. Unknown/zero capacity and explicit
+// admission-failure drains retain none. Other upload/cache policies are unchanged.
+static uint64_t
+dynamicWarmBudgetLocked(const MemoryPressureSnapshot &pressure, const MemoryPressureDecision &decision,
+                        bool force_drain = false) {
+  if (force_drain) return 0;
+  if (!decision.critical) return decision.warm_cache_budget;
+  if (!pressure.valid || !pressure.reserve) return 0;
+  const auto &latest = dynamicRegistryState().latest_pressure;
+  const uint64_t available = std::min(pressure.available, latest.available);
+  const uint64_t reserve = std::min(pressure.reserve, latest.reserve);
+  return std::min({available / 16, reserve / 256, uint64_t{4} << 20});
 }
 
 uint64_t
@@ -144,7 +177,10 @@ DynamicBuffer::desiredCacheBytesLocked() const {
 void
 DynamicBuffer::updateLeaseLocked(uint64_t coherent_seq_id, uint64_t budget, bool critical, bool allow_new) {
   const bool hot = hotAtLocked(coherent_seq_id);
-  const uint64_t desired = !critical && hot ? desiredCacheBytesLocked() : 0;
+  // Emergency allowance still describes only names already in this FIFO;
+  // no allocation or refill is authorized by a lease.
+  const uint64_t desired = hot && budget && (!critical || budget <= (uint64_t{4} << 20))
+      ? desiredCacheBytesLocked() : 0;
   const uint64_t others = dynamicRegistryState().warm_cache_credit - cache_credit_bytes_;
   const uint64_t capacity = budget > others ? budget - others : 0;
   const uint64_t cost = allocationCostLocked();
@@ -171,7 +207,8 @@ DynamicBuffer::EnsureWorkingSetLease(DynamicBuffer *dynamic, uint64_t coherent_s
   const auto decision = pressureDecisionLocked(pressure);
   std::unique_lock<dxmt::mutex> instance_lock(dynamic->mutex_, std::try_to_lock);
   if (instance_lock.owns_lock())
-    dynamic->updateLeaseLocked(coherent_seq_id, decision.warm_cache_budget, decision.critical, pressure.valid && pressure.reserve);
+    dynamic->updateLeaseLocked(coherent_seq_id, dynamicWarmBudgetLocked(pressure, decision),
+                               decision.critical, pressure.valid && pressure.reserve);
 }
 
 void
@@ -216,6 +253,9 @@ DynamicBuffer::recordQueuePopLocked(uint64_t bytes, uint64_t will_free_at) {
 void
 DynamicBuffer::recordQueuePushLocked() {
   if (fifo.size() == 1) has_cached_names_.store(true, std::memory_order_release);
+  auto &registry = dynamicRegistryState();
+  if (fifo.back().will_free_at <= registry.completed_frontier.load(std::memory_order_acquire))
+    registry.retirement_epoch.fetch_add(1, std::memory_order_release);
   g_mem_census.dyn_fifo_depth.store(fifo.size(), std::memory_order_relaxed);
   uint64_t d = fifo.size(), mx = g_mem_census.dyn_fifo_depth_max.load(std::memory_order_relaxed);
   while (d > mx && !g_mem_census.dyn_fifo_depth_max.compare_exchange_weak(mx, d, std::memory_order_relaxed)) {}
@@ -257,11 +297,27 @@ DynamicBuffer::TrimCompletedForQueue(uint64_t queue_domain, uint64_t coherent_se
     critical = force_critical || decision.critical;
     if (!decision.reclaim && !critical)
       return 0; // Healthy completion: no per-resource walk or mutex writes.
-    warm_budget = critical ? 0 : decision.warm_cache_budget;
+    warm_budget = dynamicWarmBudgetLocked(pressure, decision, force_critical);
+    auto &registry = dynamicRegistryState();
+    uint64_t frontier = registry.completed_frontier.load(std::memory_order_relaxed);
+    while (frontier < coherent_seq_id && !registry.completed_frontier.compare_exchange_weak(
+        frontier, coherent_seq_id, std::memory_order_release, std::memory_order_relaxed)) {}
+    const uint64_t epoch = registry.retirement_epoch.load(std::memory_order_acquire);
+    auto *stamp = &registry.completed_sweeps[registry.sweep_victim++ % registry.completed_sweeps.size()];
+    for (auto &candidate : registry.completed_sweeps)
+      if (candidate.valid && candidate.domain == queue_domain) { stamp = &candidate; break; }
+    // A completion/admission call always gets its sweep. Multiple allocation
+    // threads cannot repeat that same full registry walk after a genuine miss.
+    // New completed backing or stronger pressure invalidates the remembered pass.
+    if (pending_request && stamp->valid && stamp->domain == queue_domain &&
+        stamp->coherent >= coherent_seq_id && stamp->retirement_epoch == epoch &&
+        (stamp->critical || !critical) && stamp->warm_budget <= warm_budget)
+      return 0;
+    *stamp = {queue_domain, coherent_seq_id, epoch, warm_budget, critical, true};
   }
   uint64_t detached_bytes = 0, detached_count = 0;
   // Return cold/oversized leases before distributing the bounded hot credits.
-  for (unsigned phase = 0; phase < (critical ? 1u : 2u); ++phase) {
+  for (unsigned phase = 0; phase < (warm_budget ? 2u : 1u); ++phase) {
     DynamicSweep sweep;
     bool saw_busy = false, made_progress = false, retried_busy = false;
     for (;;) {
@@ -274,11 +330,12 @@ DynamicBuffer::TrimCompletedForQueue(uint64_t queue_domain, uint64_t coherent_se
         // its previous batch. Never grant warm credit from an older normal pass.
         const auto decision = pressureDecisionLocked(pressure, upcoming);
         const bool was_critical = critical;
+        const uint64_t previous_budget = warm_budget;
         critical = force_critical || decision.critical;
-        warm_budget = critical ? 0 : decision.warm_cache_budget;
+        warm_budget = dynamicWarmBudgetLocked(pressure, decision, force_critical);
         // An emergency must also visit hot nodes skipped earlier in this
         // normal phase. Hysteresis/sample ordering is still controller-owned.
-        if (critical && !was_critical) sweep.cursor.next = dynamicRegistryState().head;
+        if ((critical && !was_critical) || warm_budget < previous_budget) sweep.cursor.next = dynamicRegistryState().head;
         while (sweep.cursor.next && count < retired.size()) {
           auto *dynamic = sweep.cursor.next;
           sweep.cursor.next = dynamic->registry_next_;
@@ -291,7 +348,7 @@ DynamicBuffer::TrimCompletedForQueue(uint64_t queue_domain, uint64_t coherent_se
           std::unique_lock<dxmt::mutex> instance_lock(dynamic->mutex_, std::try_to_lock);
           if (!instance_lock.owns_lock()) { saw_busy = true; continue; }
           const bool hot = dynamic->hotAtLocked(coherent_seq_id) && dynamic->desiredCacheBytesLocked();
-          if (!critical && hot != (phase == 1)) continue;
+          if (warm_budget && hot != (phase == 1)) continue;
           dynamic->updateLeaseLocked(coherent_seq_id, warm_budget, critical, pressure.valid && pressure.reserve);
           // The requester is about to consume its own genuine reusable backing.
           // Never purge it immediately before allocate checks its FIFO.
@@ -349,7 +406,7 @@ DynamicBuffer::TrimCompletedForQueue(uint64_t queue_domain, uint64_t coherent_se
     g_trim_total_bytes.fetch_add(detached_bytes, std::memory_order_relaxed);
     const uint64_t report = dynamicRegistryState().reports.fetch_add(1, std::memory_order_relaxed);
     if (report < 4 || (report & 63) == 0)
-      ERR("[dynamic-memory-pressure-v1] policy=bounded-hot-v2 scan=registered-cursor-v1 storage=owner-heap-v1 cache-detached=", detached_bytes,
+      ERR("[dynamic-memory-pressure-v1] policy=bounded-hot-v3 scan=registered-cursor-v2 storage=owner-heap-v1 cache-detached=", detached_bytes,
           " entries=", detached_count, " coherent=", coherent_seq_id,
           " warm-budget=", warm_budget, " physical-freed=unmeasured");
   }
@@ -461,16 +518,9 @@ def stage_file(path, source):
         recordQueuePopLocked(bytes, seq);
       } else {
         lock.unlock();
-        // Upcoming can trigger emergency handling ONLY for a genuine miss.
-        const bool critical = pressure.valid &&
-            (pressure.available <= pressure.reserve / 4 || upcoming >= pressure.available);
-        struct SweepStamp { uint64_t domain = 0, coherent = 0; bool critical = false, valid = false; };
-        static thread_local SweepStamp last_sweep;
-        if (!last_sweep.valid || last_sweep.domain != queue_domain_ ||
-            last_sweep.coherent != coherent_seq_id || (critical && !last_sweep.critical)) {
-          last_sweep = {queue_domain_, coherent_seq_id, critical, true};
-          TrimCompletedForQueue(queue_domain_, coherent_seq_id, false, this);
-        }
+        // Queue-owned suppression observes all allocation threads and is
+        // invalidated by newly completed backing, unlike the former TLS stamp.
+        TrimCompletedForQueue(queue_domain_, coherent_seq_id, false, this);
       }
     }
   }

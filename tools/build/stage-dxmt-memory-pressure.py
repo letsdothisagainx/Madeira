@@ -40,7 +40,7 @@ def stage_pressure_only(source):
   }
 '''
     body = body.replace(anchor, addition + anchor)
-    staged = source[:start] + include + '\n' + body + source[end:]
+    staged = source[:start] + '#include "native_heap_relief.h"\n' + include + '\n' + body + source[end:]
     wow64 = '  if (a && a->op == 7) return _madeira_ctl(args);'
     if staged.count(wow64) != 1:
         raise ValueError('DXMT pointer-free WoW64 forwarding contract changed')
@@ -80,6 +80,7 @@ def main():
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(output)
     shutil.copyfile(args.headers / 'memory_pressure_native.h', args.output.parent / 'memory_pressure_native.h')
+    shutil.copyfile(args.headers / 'native_heap_relief.h', args.output.parent / 'native_heap_relief.h')
     shutil.copyfile(args.headers / 'resource_growth_event_native.h', args.output.parent / 'resource_growth_event_native.h')
     print(json.dumps({'stage': 'memory-pressure-v1', 'source_sha256': hashlib.sha256(original).hexdigest(),
                       'output_sha256': hashlib.sha256(output).hexdigest(), 'native_control_op': 40,

@@ -1132,6 +1132,19 @@ static unsigned ios_warmer_sweep_cycles( void )
     return v;
 }
 
+/* Existing footprint samples also request native free-heap relief while a
+ * guest CPU stall produces no D3D11 calls. Only queue/coalesce work here; the
+ * loop-top poll performs it outside every Wine/pool lock. */
+static void ios_native_memory_pressure_sample( uint64_t footprint )
+{
+    extern void madeira_native_memory_relief_request(uint64_t, uint64_t) __attribute__((weak));
+    extern size_t os_proc_available_memory(void);
+    int saved_errno = errno;
+    if (madeira_native_memory_relief_request && footprint)
+        madeira_native_memory_relief_request( footprint, (uint64_t)os_proc_available_memory() );
+    errno = saved_errno;
+}
+
 static void *ios_pool_warmer_thread( void *arg )
 {
     unsigned cycle = 0;
@@ -1139,6 +1152,13 @@ static void *ios_pool_warmer_thread( void *arg )
     ios_lean_mprotect_on = ios_lean_diag_virtual();   /* madeira-bcd lean-diag: mprotect_exec thins its ERR line from now on */
     for (;;)
     {
+        /* Coalesced native malloc relief runs on this existing low-priority
+         * host thread, before any pool/virtual lock or guest callback. The
+         * poll is a cheap no-op unless physical pressure requested work. */
+        {
+            extern void madeira_native_memory_relief_poll(void) __attribute__((weak));
+            if (madeira_native_memory_relief_poll) madeira_native_memory_relief_poll();
+        }
         /* ml1060: THE MONITOR WAS A TENTH OF THE MACHINE. Above 2400 MB this loop
          * drops to a 250 ms cadence (ml668, written for a 4 GB device, so that the
          * terminal footprint burst is captured) -- but everything below is gated on
@@ -1163,6 +1183,7 @@ static void *ios_pool_warmer_thread( void *arg )
                 {
                     static unsigned long long fast_peak;
                     unsigned long long mb = (unsigned long long)fvmi.phys_footprint >> 20;
+                    ios_native_memory_pressure_sample( (uint64_t)fvmi.phys_footprint );
                     ios_last_footprint_mb = mb;
                     if (mb > fast_peak + 16)      /* only say something when it actually climbs */
                     {
@@ -1356,6 +1377,7 @@ static void *ios_pool_warmer_thread( void *arg )
                 {
                     static unsigned long long peak_mb;
                     unsigned long long fp_mb = (unsigned long long)vmi.phys_footprint >> 20;
+                    ios_native_memory_pressure_sample( (uint64_t)vmi.phys_footprint );
                     if (fp_mb > peak_mb) peak_mb = fp_mb;
                     ios_last_footprint_mb = fp_mb;      /* ml668: drives the sampler cadence */
                     /* ml896: replay CoreAnimation's shmem request EXACTLY. ml894 used
@@ -14547,6 +14569,7 @@ static inline UINT64 maskbits( size_t idx )
  */
 static BOOL set_vprot( struct file_view *view, void *base, size_t size, BYTE vprot );  /* fwd-decl */
 static void ios_swap_release_range( void *base, size_t size, int copy_back );   /* ml1077 fwd-decls */
+static int ios_swap_overlaps( const void *base, size_t size );
 static void ios_swap_init( void );
 static int ios_swap_eligible( const void *base, size_t size, unsigned int vprot, struct file_view *view );
 static void ios_swap_back( void *base, size_t size, unsigned int vprot );
@@ -21628,7 +21651,14 @@ static NTSTATUS set_protection( struct file_view *view, void *base, SIZE_T size,
      * protections and the loader's VirtualProtect calls do not pull its sections
      * back into anonymous memory; a GUARD request still does. */
     if ((vprot & VPROT_GUARD) || ((vprot & (VPROT_EXEC | VPROT_WRITECOPY)) && !(view->protect & VPROT_X64DATA)))
+    {
         ios_swap_release_range( base, size, 1 );
+        /* The old void copy-back path silently proceeded after malloc/mmap
+         * failure. Do not grant EXEC/GUARD on backing that was not migrated.
+         * A successfully moved prefix retains its old guest protections, so
+         * failure here is retryable without losing data or ledger ownership. */
+        if (ios_swap_overlaps( base, size )) return STATUS_NO_MEMORY;
+    }
     if (!set_vprot( view, base, size, vprot | VPROT_COMMITTED ))
     {
         dprintf(2, "[vmem-denied] set_vprot failed: base=%p size=%p protect=0x%x\n",
@@ -23803,6 +23833,55 @@ static void ios_swap_back( void *base, size_t size, unsigned int vprot )
      * RIP 0x170, process terminated). The extent is committed by definition. */
     ios_swap_map( base, size, get_unix_prot( vprot | VPROT_COMMITTED ) );
 }
+/* Copy a backed range to anonymous storage with one bounded scratch block.
+ * A protection change used to malloc(len), first fault/copy the entire file
+ * range, then fault/copy the entire anonymous replacement. Large EXEC/GUARD
+ * requests temporarily retained a third full-size copy exactly when the guest
+ * was asking for more memory. Work on whole host pages, preserving the other
+ * guest pages and restoring their protections before moving on. Only the
+ * successfully migrated prefix is returned: the caller must keep its suffix
+ * file-backed in the extent ledger if allocation/mapping fails part-way. */
+#define IOS_SWAP_COPYBACK_CHUNK (1u << 20)
+static size_t ios_swap_copyback( char *base, size_t len )
+{
+    size_t capacity = len < IOS_SWAP_COPYBACK_CHUNK ? len : IOS_SWAP_COPYBACK_CHUNK;
+    size_t copied = 0;
+    int error = 0;
+    void *tmp = malloc( capacity );
+    if (!tmp) return 0;
+    while (copied < len)
+    {
+        char *current = base + copied, *page;
+        size_t chunk = len - copied < capacity ? len - copied : capacity;
+        int readable = 1;
+        for (page = current; page < current + chunk; page += host_page_mask + 1)
+            if (!(get_unix_prot( get_host_page_vprot( page ) ) & PROT_READ))
+            {
+                readable = !mprotect( current, chunk, PROT_READ );
+                break;
+            }
+        if (!readable)
+        {
+            error = errno;
+            mprotect_range( current, chunk, 0, 0 );
+            break;
+        }
+        memcpy( tmp, current, chunk );
+        if (anon_mmap_fixed( current, chunk, PROT_READ | PROT_WRITE, 0 ) == MAP_FAILED)
+        {
+            error = errno;
+            mprotect_range( current, chunk, 0, 0 );
+            break;
+        }
+        memcpy( current, tmp, chunk );
+        mprotect_range( current, chunk, 0, 0 );
+        copied += chunk;
+    }
+    free( tmp );
+    if (error) errno = error;
+    return copied;
+}
+
 /* Drop file backing for whatever part of [base, base+size) has it. copy_back:
  * preserve contents in fresh anonymous memory (for an EXEC request); else the
  * caller is about to replace the mapping anyway and the data is discarded.
@@ -23839,30 +23918,21 @@ static void ios_swap_release_range( void *base, size_t size, int copy_back )
             size_t olen = ob - oa;
             if (copy_back)
             {
-                void *tmp = malloc( olen );
-                char *pg;
-                if (!tmp)
+                size_t copied;
+                /* An interior start needs a ledger slot for its suffix if a
+                 * later chunk fails. Refuse before touching unrecordable backing. */
+                if (oa > a && ios_swap_n == 16384) { i++; continue; }
+                copied = ios_swap_copyback( oa, olen );
+                if (copied != olen)
                 {
                     static int said;
-                    if (said++ < 8) dprintf( 2, "[swap] copy-back of %p+0x%zx: no buffer, range stays file-backed\n", oa, olen );
-                    i++;
-                    continue;
+                    if (said++ < 8)
+                        dprintf( 2, "[swap] copy-back of %p+0x%zx: moved 0x%zx, suffix stays file-backed errno=%d\n",
+                                 oa, olen, copied, errno );
+                    if (!copied) { i++; continue; }
+                    olen = copied;
+                    ob = oa + copied;
                 }
-                for (pg = oa; pg < ob; pg += host_page_mask + 1)
-                    if (!(get_unix_prot( get_host_page_vprot( pg ) ) & PROT_READ)) { mprotect( oa, olen, PROT_READ ); break; }
-                memcpy( tmp, oa, olen );
-                if (anon_mmap_fixed( oa, olen, PROT_READ | PROT_WRITE, 0 ) == MAP_FAILED)
-                {
-                    static int said;
-                    if (said++ < 8) dprintf( 2, "[swap] copy-back of %p+0x%zx: anonymous map failed errno=%d, range stays file-backed\n", oa, olen, errno );
-                    free( tmp );
-                    mprotect_range( oa, olen, 0, 0 );
-                    i++;
-                    continue;
-                }
-                memcpy( oa, tmp, olen );
-                free( tmp );
-                mprotect_range( oa, olen, 0, 0 );
                 ios_swap_unbacks++;
             }
             /* ml1293: the range's contents are dead (decommit/release), but its dirty pages would

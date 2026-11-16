@@ -758,6 +758,127 @@ int main() {
 '''
 
 
+# Controlled repeated frames exercise the exact staged allocator/retirement
+# methods. Only the zero-budget negative control changes; this is not a trace
+# replay or a measurement of iOS physical reclamation.
+CRITICAL_FRAME_MAIN = r'''
+int main() {
+  using namespace dxmt;
+  constexpr uint64_t domain=0x98c0, bytes=4096;
+  constexpr unsigned resources=128, frames=96, demand=2;
+  g_pressure.reserve=uint64_t{768}<<20;
+  g_pressure.available=uint64_t{32}<<20;
+  g_pressure.enabled=true;
+  ++g_pressure.sampled_ns;
+  std::vector<std::unique_ptr<Buffer>> buffers;
+  std::vector<Rc<DynamicBuffer>> dynamics;
+  for (unsigned i=0;i<resources;++i) {
+    buffers.push_back(std::make_unique<Buffer>(bytes));
+    dynamics.emplace_back(new DynamicBuffer(buffers.back().get(),{},domain));
+  }
+  uint64_t hits=0,misses=0,peak=0;
+  const uint64_t initial_allocated=backing.allocated;
+  for (unsigned frame=0;frame<frames;++frame) {
+    const uint64_t coherent=frame*8;
+    for (unsigned i=0;i<resources;++i) for(unsigned draw=0;draw<demand;++draw) {
+      bool minted=true;
+      auto allocation=dynamics[i]->allocate(coherent,&minted);
+      allocation->data[0]=static_cast<uint8_t>(i);
+      dynamics[i]->updateImmediateName(coherent+1,std::move(allocation),0,false);
+      auto old=buffers[i]->rename(dynamics[i]->immediateName());old=nullptr;
+      require(dynamics[i]->immediateName()->data[0]==static_cast<uint8_t>(i),"critical reuse corrupted mapped bytes");
+      peak=std::max(peak,backing.bytes.load());
+      if(frame>=4) { hits+=!minted; misses+=minted; }
+    }
+    DynamicBuffer::TrimCompletedForQueue(domain,coherent+3,false);
+    require(dynamicRegistryState().pressure_decision.critical,"critical frame fixture escaped emergency pressure");
+    require(dynamicRegistryState().warm_cache_credit<=(uint64_t{2}<<20),"critical cache exceeded actual-headroom fraction");
+    peak=std::max(peak,backing.bytes.load());
+    require(peak<=resources*bytes*(demand+1),"critical reuse grew beyond current plus bounded existing names");
+  }
+  std::cout<<"critical repeated frames: hits="<<hits<<" misses="<<misses
+           <<" regret="<<g_trim_regret.load()<<" created="<<backing.allocated-initial_allocated
+           <<" peak-owned="<<peak<<" warm-credit="<<dynamicRegistryState().warm_cache_credit<<'\n';
+#ifdef ZERO_CRITICAL_CACHE
+  require(misses>23000 && g_trim_regret.load()>11000,"zero-budget negative control did not reproduce frame-by-frame churn");
+#else
+  require(hits==23552 && misses==0,"critical cache destroyed an immediately reused completed frame working set");
+  require(backing.allocated-initial_allocated==resources*demand,"critical repeated frames minted backing after warmup");
+  const auto allocated=backing.allocated.load();
+  // Unknown or genuinely exhausted headroom cannot authorize warm retention.
+  g_pressure.available=0;
+  ++g_pressure.sampled_ns;
+  DynamicBuffer::TrimCompletedForQueue(domain,frames*8+3,false);
+  require(dynamicRegistryState().warm_cache_credit==0 && backing.bytes==resources*bytes,
+          "zero headroom retained a microcache or destroyed live current buffers");
+  require(backing.allocated==allocated,"pressure reclamation itself allocated backing");
+  g_pressure.available=uint64_t{32}<<20;
+  ++g_pressure.sampled_ns;
+  for(unsigned i=0;i<resources;++i) {
+    dynamics[i]->updateImmediateName(frames*8+9,dynamics[i]->allocate(frames*8+8),0,false);
+    auto old=buffers[i]->rename(dynamics[i]->immediateName());old=nullptr;
+  }
+  DynamicBuffer::TrimCompletedForQueue(domain,frames*8+11,false);
+  require(dynamicRegistryState().warm_cache_credit>0,"critical cache failed to recover after actual headroom returned");
+  DynamicBuffer::TrimCompletedForQueue(domain,frames*8+12,true);
+  require(dynamicRegistryState().warm_cache_credit==0 && backing.bytes==resources*bytes,
+          "explicit admission failure did not fully drain completed cache");
+#endif
+  dynamics.clear();buffers.clear();
+  require(backing.bytes==0 && backing.allocated==backing.destroyed,"critical frame workload leaked ownership");
+#ifdef ZERO_CRITICAL_CACHE
+  std::cout<<"PASS negative control: former critical zero-cache decision reproduces repeated allocation churn\n";
+#else
+  std::cout<<"PASS actual DynamicBuffer: bounded critical hot reuse, zero-headroom drain, recovery, explicit drain; no iOS footprint claim\n";
+#endif
+}
+'''
+
+
+COALESCED_SWEEP_MAIN = r'''
+int main() {
+  using namespace dxmt;
+  constexpr uint64_t domain=0x98c1;
+  g_pressure.available=0;
+  g_pressure.enabled=true;
+  ++g_pressure.sampled_ns;
+  std::vector<std::unique_ptr<Buffer>> buffers;
+  std::vector<Rc<DynamicBuffer>> dynamics;
+  for(unsigned i=0;i<128;++i) {
+    buffers.push_back(std::make_unique<Buffer>());
+    dynamics.emplace_back(new DynamicBuffer(buffers.back().get(),{},domain));
+    dynamics.back()->updateImmediateName(10,dynamics.back()->allocate(0),0,false);
+    auto old=buffers.back()->rename(dynamics.back()->immediateName());old=nullptr;
+  }
+  DynamicBuffer::TrimCompletedForQueue(domain,10,false);
+  registry_node_visits=0;
+  for(unsigned i=0;i<128;++i) {
+    auto request=dynamics[i]->allocate(10);
+    require(request.ptr()!=nullptr,"coalesced miss did not create real requested backing");
+  }
+  require(registry_node_visits==0,"pending request repeated a completed queue/frontier pressure scan");
+  // A deferred command list legitimately returns completed backing after that
+  // pass. It must invalidate suppression even at exactly the same frontier.
+  auto returned=buffers[0]->allocate({},nullptr);
+  returned->data[0]=0x72;
+  Rc<BufferAllocation> gpu=returned;
+  dynamics[0]->recycle(10,std::move(returned));
+  auto next=dynamics[1]->allocate(10);
+  require(registry_node_visits>0 && dynamics[0]->fifo.empty(),"same-frontier completed retirement was skipped");
+  require(gpu->data[0]==0x72,"coalesced sweep released an outstanding real GPU owner");
+  next=nullptr;
+  const auto visits=registry_node_visits.load();
+  auto duplicate=dynamics[2]->allocate(10);
+  duplicate=nullptr;
+  require(registry_node_visits==visits,"consumed invalidation caused another duplicate pressure pass");
+  require(dynamicRegistryState().warm_cache_credit==0,"zero-headroom coalescing granted cache credit");
+  gpu=nullptr; dynamics.clear();buffers.clear();
+  require(backing.bytes==0,"coalesced pressure pass leaked backing");
+  std::cout<<"PASS actual DynamicBuffer: 128 same-frontier miss scans skipped; new eligible retirement invalidates suppression; GPU Rc remains valid\n";
+}
+'''
+
+
 def function_body(source, signature):
     start=source.index(signature)
     opening=source.index("{",start)
@@ -1276,6 +1397,21 @@ def main():
         external=compile_and_run(directory,"after-external-growth",new_h,new_c,EXTERNAL_GROWTH_MAIN)
         assert external.returncode==0,external.stdout+external.stderr
         print(external.stdout.strip())
+        budget_zero=new_c.replace(
+            'return std::min({available / 16, reserve / 256, uint64_t{4} << 20});',
+            'return 0; // Exact former critical-pressure zero-cache decision',1)
+        assert budget_zero!=new_c,"critical budget negative-control anchor changed"
+        critical_before=compile_and_run(directory,"critical-zero-budget",new_h,budget_zero,
+                                        "#define ZERO_CRITICAL_CACHE\n"+CRITICAL_FRAME_MAIN)
+        assert critical_before.returncode==0,critical_before.stdout+critical_before.stderr
+        print("BEFORE critical zero-budget policy: "+critical_before.stdout.strip())
+        critical_after=compile_and_run(directory,"critical-bounded-hot",new_h,new_c,CRITICAL_FRAME_MAIN)
+        assert critical_after.returncode==0,critical_after.stdout+critical_after.stderr
+        print(critical_after.stdout.strip())
+        coalesced=compile_and_run(directory,"coalesced-pressure-sweeps",new_h,
+                                 trim_visit_instrumentation(new_c),COALESCED_SWEEP_MAIN)
+        assert coalesced.returncode==0,coalesced.stdout+coalesced.stderr
+        print(coalesced.stdout.strip())
         bounded=compile_and_run(directory,"after-bounded",new_h,new_c,BOUNDED_CACHE_MAIN)
         assert bounded.returncode==0,bounded.stdout+bounded.stderr
         print(bounded.stdout.strip())

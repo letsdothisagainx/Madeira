@@ -7,6 +7,7 @@ on:
       - build/ntdll-unix/js_read_trace.h
       - tests/host/check-swap-coverage.py
       - tests/host/check-swap-decommit-remap.py
+      - tests/host/check-swap-copyback-budget.py
       - tests/host/check-js-read-owner-fastpath.py
       - tests/host/check-dxmt-task-wake.py
       - tools/build/stage-dxmt-task-wake.py
@@ -18,6 +19,7 @@ on:
       - build/ntdll-unix/js_read_trace.h
       - tests/host/check-swap-coverage.py
       - tests/host/check-swap-decommit-remap.py
+      - tests/host/check-swap-copyback-budget.py
       - tests/host/check-js-read-owner-fastpath.py
       - tests/host/check-dxmt-task-wake.py
       - tools/build/stage-dxmt-task-wake.py
@@ -47,5 +49,6 @@ jobs:
         run: |
           python3 tests/host/check-swap-coverage.py
           python3 tests/host/check-swap-decommit-remap.py
+          python3 tests/host/check-swap-copyback-budget.py
           python3 tests/host/check-js-read-owner-fastpath.py
           python3 tests/host/check-dxmt-task-wake.py

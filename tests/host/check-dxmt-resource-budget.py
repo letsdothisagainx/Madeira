@@ -58,6 +58,9 @@ static constexpr uint64_t MiB=uint64_t{1}<<20;
 static std::atomic<uint64_t> footprint{4096*MiB}, available{2048*MiB};
 static std::atomic<bool> fail_query{false};
 static std::atomic<unsigned> queries{0}, acquire_calls{0}, release_calls{0};
+// The public allocator-relief worker is exercised in its own actual-header
+// fixture. This receipt fixture never claims native free pages were reclaimed.
+extern "C" void madeira_native_memory_relief_request(uint64_t, uint64_t) {}
 static thread_local void* caller=(void*)0x10000;
 static pthread_mutex_t ios_thread_group_mutex=PTHREAD_MUTEX_INITIALIZER;
 struct Owner {void* owner;unsigned count;int exiting,reclaimed;unsigned long long lease;};
