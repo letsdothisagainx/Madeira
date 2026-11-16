@@ -136,7 +136,8 @@ static std::mutex budget_mutex;
 static std::map<uint64_t,uint64_t> receipts;
 static uint64_t next_token=1, credit_bytes=0, last_charge=0;
 static unsigned acquire_calls=0,release_calls=0, reply_code=1;
-static bool unknown_backend=false, deny_always=false, grant_after_wait=false;
+static std::vector<uint64_t> acquire_flags;
+static bool unknown_backend=false, deny_always=false, grant_after_wait=false, grant_completion_lane=false;
 static uint64_t available_bytes=2ull<<30;
 static bool single_slot=false;
 static void MadeiraCtl(madeira_ctl_args *args) {
@@ -146,10 +147,12 @@ static void MadeiraCtl(madeira_ctl_args *args) {
   args->ret=1; args->ptr=(6ull<<30)-available_bytes; args->len=available_bytes;return;
  }
  if(args->op==41) {
+  const auto flags=args->len;assert(flags<=1);acquire_flags.push_back(flags);
   ++acquire_calls;last_charge=args->ptr;
   if(unknown_backend){args->ret=0;return;}
   const auto bytes=args->ptr;args->len=available_bytes;
-  if(deny_always || (single_slot&&!receipts.empty()) || bytes==UINT64_MAX) {
+  if((deny_always && !(grant_completion_lane && flags==1)) ||
+     (single_slot&&!receipts.empty()) || bytes==UINT64_MAX) {
    args->ret=3;args->ptr=0;return;
   }
   const auto token=next_token++;receipts[token]=bytes;credit_bytes+=bytes;
@@ -166,7 +169,8 @@ static void MadeiraCtl(madeira_ctl_args *args) {
 BACKEND = r'''
 static std::atomic<unsigned> texture_born{0}, texture_alive{0}, backing_calls{0},
  allocation_alive{0}, initialize_calls{0}, invalid_initializations{0}, com_alive{0},
- trim_calls{0}, flush_calls{0}, wait_calls{0}, sweep_calls{0}, bc_queries{0};
+ trim_calls{0}, flush_calls{0}, wait_calls{0}, sweep_calls{0}, bc_queries{0},
+ emergency_trim_calls{0}, emergency_sweep_calls{0}, transient_trim_calls{0};
 static bool native_bc=true, fail_native=false, force_bias=false, throw_initialization=false;
 static mach_port_t native_shared_port=0;
 static uint64_t waited_seq=0, waited_ms=0;
@@ -219,7 +223,7 @@ public:
 class Initializer {
 public:
  FakeUploadEvent upload_queue_event_; uint64_t submitted=0;
- uint64_t trimMemoryPressure(){++trim_calls;return 0;}
+ uint64_t trimMemoryPressure(bool release_warm=false){++trim_calls;if(release_warm)++emergency_trim_calls;return 0;}
  uint64_t flushToWait(){
   ++flush_calls;last_flush_initializations=initialize_calls;
   std::lock_guard<std::mutex>lock(budget_mutex);
@@ -252,14 +256,17 @@ public:
 class CommandQueue {
 public:
  Initializer initializer; uint64_t domain=1, coherent=1;
+ std::atomic<bool> allocation_recovery_latched_{false};
+ RECOVERY_LATCH_METHOD
  uint64_t memoryDomain()const{return domain;}
  uint64_t CoherentSeqId()const{return coherent;}
+ uint64_t trimCompletedTransientMemory(){++transient_trim_calls;return 0;}
 };
 class DynamicBuffer {
 public:
  static uint64_t TrimCompletedForQueue(uint64_t domain,uint64_t coherent,bool critical,
                                       const DynamicBuffer *pending,uint64_t upcoming){
-  assert(domain&&coherent&&!critical&&!pending&&upcoming);++sweep_calls;return 0;
+  assert(domain&&coherent&&!pending&&upcoming);++sweep_calls;if(critical)++emergency_sweep_calls;return 0;
  }
 };
 class MTLD3D11Device {
@@ -324,11 +331,14 @@ static uint64_t next_domain=10;
 static void reset(dxmt::MTLD3D11Device&device){
  clean();texture_born=0;backing_calls=0;initialize_calls=0;invalid_initializations=0;
  trim_calls=0;flush_calls=0;wait_calls=0;sweep_calls=0;bc_queries=0;
+ emergency_trim_calls=0;emergency_sweep_calls=0;transient_trim_calls=0;
+ acquire_flags.clear();
  acquire_calls=release_calls=0;last_charge=0;reply_code=1;unknown_backend=false;
- deny_always=false;grant_after_wait=false;single_slot=false;available_bytes=2ull<<30;
+ deny_always=false;grant_after_wait=false;grant_completion_lane=false;single_slot=false;available_bytes=2ull<<30;
  native_bc=true;fail_native=false;force_bias=false;throw_initialization=false;native_shared_port=0;
  block_initialization=false;initialization_entered=false;unblock_initialization=false;
  device.queue().domain=next_domain++;device.queue().coherent=1;device.queue().initializer.submitted=0;
+ device.queue().allocationRecoveryDrain(1);
  waited_seq=waited_ms=0;flush_with_credit=last_flush_initializations=0;
 }
 template<class Tag>HRESULT create(dxmt::MTLD3D11Device&device,typename Tag::DESC1&desc,
@@ -358,6 +368,8 @@ int main(int argc,char**argv){
  hr=create<Tag>(device,desc,initial,&out);
  if(expect_candidate){
   assert(hr==E_OUTOFMEMORY&&!out&&texture_born==0&&backing_calls==0&&initialize_calls==0&&acquire_calls==2);
+  assert((acquire_flags==std::vector<uint64_t>{0,1}));
+  assert(emergency_trim_calls==2&&emergency_sweep_calls==2&&transient_trim_calls==2);
   assert(failure_logs.size()==2&&failure_logs[1].find("reason=physical-budget")!=std::string::npos);
   assert(failure_logs[1].find("available="+std::to_string(available_bytes))!=std::string::npos);
  }
@@ -383,6 +395,7 @@ int main(int argc,char**argv){
  // A soft grant trims completed resources but does not wait on every texture.
  reset(device);reply_code=2;out=nullptr;
  assert(create<Tag>(device,desc,initial,&out)==S_OK&&out&&wait_calls==0&&flush_calls==1);
+ assert((acquire_flags==std::vector<uint64_t>{0})&&emergency_trim_calls==0&&emergency_sweep_calls==0);
  assert(flush_with_credit==1&&last_flush_initializations==desc.MipLevels);delete out;clean();
  reset(device);reply_code=2;desc.Usage=D3D11_USAGE_DEFAULT;out=nullptr;
  assert(create<Tag>(device,desc,nullptr,&out)==S_OK&&out);
@@ -394,10 +407,33 @@ int main(int argc,char**argv){
  reset(device);deny_always=true;grant_after_wait=true;device.queue().initializer.submitted=7;
  out=nullptr;assert(create<Tag>(device,desc,initial,&out)==S_OK&&out);
  assert(wait_calls==1&&waited_seq==7&&waited_ms==50&&acquire_calls==2);delete out;clean();
+ assert((acquire_flags==std::vector<uint64_t>{0,1})&&emergency_sweep_calls==2&&transient_trim_calls==2);
  reset(device);deny_always=true;device.queue().initializer.submitted=9;
  out=reinterpret_cast<Tag::COM_IMPL*>(1);assert(create<Tag>(device,desc,initial,&out)==E_OUTOFMEMORY&&!out);
  assert(wait_calls==1&&waited_seq==9&&waited_ms==50&&backing_calls==0);clean();
  std::puts("PASS unknown-backend fallback, soft grants without waits, bounded GPU-event retry and truthful timeout/OOM");
+ // Recovery is a queue-wide pressure episode, not one emergency block churn
+ // per small texture. Run the actual queue latch and factory for every case.
+ reset(device);deny_always=true;grant_completion_lane=true;reply_code=2;
+ for(unsigned i=0;i<100;++i){
+  out=nullptr;assert(create<Tag>(device,desc,initial,&out)==S_OK&&out);
+  assert(out->owner->current()->data[0][0]==1);delete out;
+ }
+ assert(acquire_calls==200&&emergency_sweep_calls==2&&transient_trim_calls==2&&emergency_trim_calls==2);
+ deny_always=false;reply_code=1;
+ out=nullptr;assert(create<Tag>(device,desc,initial,&out)==S_OK&&out);delete out;
+ deny_always=true;reply_code=2;
+ out=nullptr;assert(create<Tag>(device,desc,initial,&out)==S_OK&&out);delete out;
+ assert(emergency_sweep_calls==4&&transient_trim_calls==4&&emergency_trim_calls==4);clean();
+ reset(device);std::atomic<unsigned> recovery_winners{0};std::vector<std::thread> recovery_workers;
+ for(unsigned i=0;i<8;++i)recovery_workers.emplace_back([&]{
+  if(device.queue().allocationRecoveryDrain(3))++recovery_winners;
+ });
+ for(auto&worker:recovery_workers){worker.join();}
+ assert(recovery_winners==1);
+ device.queue().allocationRecoveryDrain(2);assert(!device.queue().allocationRecoveryDrain(3));
+ device.queue().allocationRecoveryDrain(1);assert(device.queue().allocationRecoveryDrain(3));
+ std::puts("PASS one emergency drain per shared recovery episode; 100 small textures reuse warm uploads; healthy native grant alone rearms it");
  // Native failures are checked in the shared and renamable-depth branches too.
  reset(device);fail_native=true;desc.MiscFlags=D3D11_RESOURCE_MISC_SHARED;
  out=reinterpret_cast<Tag::COM_IMPL*>(1);assert(create<Tag>(device,desc,initial,&out)==E_OUTOFMEMORY&&!out&&initialize_calls==0);clean();
@@ -471,6 +507,8 @@ BACKEND = BACKEND.replace('texture_(texture),flags_(flags){ assert(false&&"raw o
 BACKEND = BACKEND.replace('Rc()=default; Rc(T *ptr):Base(ptr){}',
                           'Rc()=default; Rc(T *ptr):Base(ptr){} Rc(Base ptr):Base(std::move(ptr)){}')
 BACKEND = BACKEND.replace(' INIT_PRESSURE_WAIT', ' ' + declaration(staged_initializer, 'bool waitForMemoryPressure('))
+queue_header = UPLOAD.stage_queue_header((ROOT / 'dxmt/src/dxmt/dxmt_command_queue.hpp').read_text())
+BACKEND = BACKEND.replace(' RECOVERY_LATCH_METHOD', declaration(queue_header, 'bool allocationRecoveryDrain('))
 
 def factory(text):
     return declaration(text, 'template <typename tag>\nHRESULT CreateDeviceTextureInternal(')

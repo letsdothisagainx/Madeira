@@ -111,6 +111,7 @@ commands = [
     ['python3', 'tests/host/check-dxmt-memory-pressure.py'],
     ['python3', 'tests/host/check-dxmt-resource-budget.py'],
     ['python3', 'tests/host/check-cs2-texture-memory-profile.py', '--require-swift'],
+    ['python3', 'tests/host/check-cs2-video-profile.py', '--require-swift'],
     ['python3', 'tests/host/check-cs2-texture-child-environment.py'],
     ['python3', 'tests/host/check-dxmt-texture-accounting.py'],
     ['python3', 'tests/host/check-dxmt-texture-admission.py'],

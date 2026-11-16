@@ -31,6 +31,7 @@ code=r'''
 #include <cstring>
 #include <mutex>
 #include <thread>
+#include <utility>
 #include <vector>
 #include "winemetal.h"
 #include "memory_pressure.hpp"
@@ -64,8 +65,8 @@ void MadeiraCtl(madeira_ctl_args*args){
  else std::abort();
 }
 static void sample(uint64_t remaining){available=remaining;footprint=6144*MiB-remaining;}
-static madeira_ctl_args acquire(uint64_t n){
- madeira_ctl_args a={41,0,n,0,{0}};errno=72;MadeiraCtl(&a);assert(errno==72);return a;
+static madeira_ctl_args acquire(uint64_t n,uint64_t retry=0){
+ madeira_ctl_args a={41,0,n,retry,{0}};errno=72;MadeiraCtl(&a);assert(errno==72);return a;
 }
 static bool release(uint64_t token){
  madeira_ctl_args a={42,0,token,0,{0}};errno=72;MadeiraCtl(&a);assert(errno==72);return a.ret==1;
@@ -137,6 +138,82 @@ int main(){
  assert(acquire(1).ret==4);for(auto token:tokens)assert(release(token));
  assert(!md_resource_growth_held);assert(acquire(UINT64_MAX).ret==3);
  std::puts("PASS finite receipt table, overflow and duplicate/foreign-token refusal without underflow");
+ // Replay the actual failure: an ordinary request must reclaim first, then
+ // tiny real textures can finish without globally lowering the384MiB reserve.
+ assert(md_resource_completion_budget(768*MiB,384*MiB)==128*MiB);
+ assert(md_resource_completion_budget(256*MiB,128*MiB)==0);
+ assert(md_resource_completion_budget(1024*MiB,512*MiB)==128*MiB);
+ sample(2048*MiB);auto reset=acquire(1);assert(reset.ptr);assert(release(reset.ptr));
+ uint64_t expected_spent=0;
+ for(const auto &observed:std::vector<std::pair<uint64_t,uint64_t>>{{402671440,43688},{399918904,87376}}){
+  sample(observed.first);assert(acquire(observed.second).ret==3);
+  auto tiny=acquire(observed.second,1);assert(tiny.ret==2&&tiny.ptr&&tiny.len==observed.first);
+  expected_spent+=observed.second;assert(md_resource_completion_spent==expected_spent);
+  assert(md_resource_growth_held==observed.second);assert(release(tiny.ptr));
+  assert(md_resource_completion_spent==expected_spent&&!md_resource_growth_held);
+ }
+ const uint64_t before_unknown=md_resource_completion_spent;
+ assert(acquire(1,2).ret==4&&md_resource_completion_spent==before_unknown);
+ assert(acquire(MiB+1,1).ret==3&&md_resource_completion_spent==before_unknown);
+ sample(256*MiB);assert(acquire(1,1).ret==3); // Absolute floor is never spent.
+ sample(256*MiB+1);auto edge=acquire(1,1);assert(edge.ptr);assert(release(edge.ptr));
+ const auto before_raii=md_resource_completion_spent;
+ sample(380*MiB);
+ {
+  dxmt::ResourceGrowthPermit normal(MiB);assert(normal.denied()&&normal.nativeStatus()==3);
+  dxmt::ResourceGrowthPermit retry(MiB,true);assert(retry.known()&&!retry.denied()&&retry.needsReclaim());
+  assert(md_resource_growth_held==MiB&&md_resource_completion_spent==before_raii+MiB);
+  dxmt::ResourceGrowthPermit moved(static_cast<dxmt::ResourceGrowthPermit&&>(retry));
+  assert(md_resource_growth_held==MiB);
+ }
+ assert(!md_resource_growth_held&&md_resource_completion_spent==before_raii+MiB);
+ std::puts("PASS actual43688/87376-byte texture failures: normal request denies, explicit post-reclaim retry grants; large/unknown/floor-violating requests still deny");
+ // CPU receipts are short-lived; their release cannot repeatedly replenish
+ // the completion lane while real memory is still under pressure.
+ sample(2048*MiB);reset=acquire(1);assert(reset.ptr);assert(release(reset.ptr));
+ sample(380*MiB);
+ for(unsigned i=0;i<128;++i){auto small=acquire(MiB,1);assert(small.ptr&&small.ret==2);assert(release(small.ptr));}
+ assert(md_resource_completion_spent==128*MiB&&!md_resource_growth_held);
+ assert(acquire(1,1).ret==3);
+ sample(500*MiB);auto ordinary=acquire(MiB);assert(ordinary.ptr);assert(release(ordinary.ptr));
+ assert(md_resource_completion_spent==128*MiB);
+ sample(380*MiB);fail_query=true;auto unavailable=acquire(MiB,1);assert(!unavailable.ret&&!unavailable.ptr);
+ fail_query=false;assert(md_resource_completion_spent==128*MiB&&acquire(1,1).ret==3);
+ sample(1000*MiB);reset=acquire(1);assert(reset.ptr);assert(release(reset.ptr));
+ assert(!md_resource_completion_spent);
+ std::puts("PASS finite128MiB pressure-episode lane: sequential releases and unknown/partial recovery cannot refill it; fresh real recovery does");
+ // Pending creators consume the same physical headroom. At380MiB remaining,
+ // the256MiB absolute floor permits124 concurrent1MiB creators, not128/160.
+ sample(380*MiB);ready=0;granted=0;go=false;done=false;workers.clear();
+ for(unsigned i=0;i<8;++i)workers.emplace_back([&]{
+  caller=(void*)0x10000;std::vector<uint64_t> held;ready++;
+  while(!go.load())std::this_thread::yield();
+  for(unsigned j=0;j<20;++j){auto small=acquire(MiB,1);if(small.ptr){++granted;held.push_back(small.ptr);}else assert(small.ret==3);}
+  ready++;while(!done.load())std::this_thread::yield();
+  for(auto token:held)assert(release(token));
+ });
+ while(ready<8){std::this_thread::yield();}
+ go=true;
+ while(ready<16){std::this_thread::yield();}
+ assert(granted==124&&md_resource_growth_held==124*MiB&&md_resource_completion_spent==124*MiB);
+ done=true;for(auto&t:workers)t.join();assert(!md_resource_growth_held);
+ for(unsigned i=0;i<4;++i){auto small=acquire(MiB,1);assert(small.ptr);assert(release(small.ptr));}
+ assert(md_resource_completion_spent==128*MiB&&acquire(1,1).ret==3);
+ std::puts("PASS concurrent completion creators preserve256MiB measured hard floor and share the same finite episode allowance");
+ // A denied owner, unavailable receipt slot, or exhausted token generation
+ // must not spend completion allowance before a real receipt is published.
+ sample(2048*MiB);reset=acquire(1);assert(reset.ptr);assert(release(reset.ptr));tokens.clear();
+ for(unsigned i=0;i<MD_RESOURCE_GROWTH_RECEIPTS;++i){auto r=acquire(1);assert(r.ptr);tokens.push_back(r.ptr);}
+ sample(380*MiB);assert(acquire(MiB,1).ret==4&&!md_resource_completion_spent);
+ for(auto token:tokens)assert(release(token));
+ const auto saved_next=md_resource_growth_next;md_resource_growth_next=0;
+ assert(acquire(MiB,1).ret==4&&!md_resource_completion_spent);md_resource_growth_next=saved_next;
+ owner_state(0,1,1,0,1);assert(acquire(MiB,1).ret==4&&!md_resource_completion_spent);
+ owner_state(0,1,0,0,1);auto owned_lane=acquire(MiB,1);assert(owned_lane.ptr);
+ caller=(void*)0x20000;assert(!release(owned_lane.ptr));caller=(void*)0x10000;
+ assert(release(owned_lane.ptr)&&!release(owned_lane.ptr)&&md_resource_completion_spent==MiB);
+ sample(2048*MiB);reset=acquire(1);assert(reset.ptr);assert(release(reset.ptr));assert(!md_resource_completion_spent);
+ std::puts("PASS completion allowance rolls back before receipt publication; foreign/duplicate CPU release cannot replenish it");
  // An interrupted creator cannot unwind its C++ object. The actual native
  // reaper must retain its credit until Wine's existing complete CPU proof.
  a=acquire(64*MiB);caller=(void*)0x20000;b=acquire(32*MiB);assert(b.ptr);caller=(void*)0x10000;
@@ -150,6 +227,11 @@ int main(){
  madeira_resource_growth_retire(caller,1);assert(md_resource_growth_held==48*MiB);
  assert(release(c.ptr));caller=(void*)0x20000;assert(release(b.ptr));assert(!md_resource_growth_held);
  std::puts("PASS canceled creator credit reaped only by actual Wine quiescent generation; live/foreign/reused-owner credit preserved; no GPU/VM resource freed");
+ caller=(void*)0x10000;sample(380*MiB);auto canceled_lane=acquire(MiB,1);assert(canceled_lane.ptr);
+ owner_state(0,0,1,1,3);madeira_resource_growth_retire(caller,3);
+ assert(!md_resource_growth_held&&md_resource_completion_spent==MiB);
+ owner_state(0,1,0,0,4);assert(!release(canceled_lane.ptr));assert(md_resource_completion_spent==MiB);
+ std::puts("PASS quiescent cancellation retires only CPU credit; completed growth history survives owner death and reused generations");
  assert(queries>8&&acquire_calls>8&&release_calls>8);
  std::puts("PASS production physical growth admission/RAII/native retirement; host policy tests, not iPhone physical-memory or gameplay results");
 }

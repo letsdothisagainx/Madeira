@@ -97,6 +97,16 @@ with tempfile.TemporaryDirectory(prefix='madeira-dxmt-transaction-') as director
     native = Path(directory) / 'native.a'
     native.write_bytes(b'archive fixture' + b'\0'.join(package.NATIVE_MARKERS))
     package.markers(native, package.NATIVE_MARKERS)
+    lane = b'[texture-completion-lane-v1]'
+    assert lane in package.NATIVE_MARKERS
+    native.write_bytes(b'archive fixture' + b'\0'.join(marker for marker in package.NATIVE_MARKERS if marker != lane))
+    try:
+        package.markers(native, package.NATIVE_MARKERS)
+    except AssertionError as error:
+        assert lane.decode() in str(error), error
+    else:
+        raise AssertionError('old native budget without completion lane passed compiled marker gate')
+    print('PASS native budget with every previous capability but no compiled completion lane is rejected')
     native.write_bytes(b'old native archive without the process-budget producer')
     try:
         package.markers(native, package.NATIVE_MARKERS)

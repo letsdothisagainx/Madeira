@@ -24,7 +24,8 @@ PE_MARKERS = (b'[dynamic-memory-pressure-v1]', b'policy=bounded-hot-v2', b'stora
               b'texture-admission=physical-v1', b'texture-accounting=bc-blocks-v1')
 NATIVE_MARKERS = (*PE_MARKERS, b'[madeira-memory-pressure-v1]',
                   b'[metal-resource-batch-v1]', b'release-probe=opt-in',
-                  b'[texture-growth-budget-v1]', b'[metal-vertex-descriptor-owner-v1]')
+                  b'[texture-growth-budget-v1]', b'[metal-vertex-descriptor-owner-v1]',
+                  b'[texture-completion-lane-v1]')
 APP_NATIVE_MARKERS = (b'[texture-growth-retire-v1]',)
 FACTORY_MARKERS = (b'[texture-admission-v1]',)
 RECIPES = (
@@ -194,7 +195,8 @@ def check(root, repo, write=False, transaction=None, app=None, ipa=None):
                     for marker in matches:
                         matches[marker] |= marker in data
                     previous = data[-128:]
-            assert all(matches.values()), 'stale linked IPA DXMT memory implementation'
+            missing = [marker.decode() for marker, present in matches.items() if not present]
+            assert not missing, 'stale linked IPA DXMT memory implementation: ' + ', '.join(missing)
     print('PASS rebuilt DXMT memory recipe: real D3D11 PE exports and ARM64EC/A64/I386 ABIs, source/staged/native hashes and exact package copies; iPhone map loading remains unmeasured')
     return stored
 

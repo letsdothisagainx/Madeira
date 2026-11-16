@@ -64,15 +64,15 @@ RingBumpState<Allocator, BlockSize, mutex>::trim_completed(uint64_t coherent_id,
 
 
 def stage_initializer_header(source):
-    if "uint64_t trimMemoryPressure();" in source:
+    if "uint64_t trimMemoryPressure(" in source:
         raise ValueError("DXMT upload initializer header is already staged")
     source = replace_once(source, "  uint64_t flushToWait();", """  uint64_t flushToWait();
 
   // Only completed transient upload storage is reclaimable. Texture/SRV
   // ownership, pending CPU commands and live GPU uploads are unchanged.
-  uint64_t trimMemoryPressure();""")
+  uint64_t trimMemoryPressure(bool release_warm = false);""")
     source = replace_once(source, "  uint64_t flushInternal();", """  uint64_t flushInternal();
-  uint64_t refreshCompletedLocked(bool trim);
+  uint64_t refreshCompletedLocked(bool trim, bool release_warm = false);
   void prepareUploadLocked(size_t size);""")
     return source
 
@@ -109,12 +109,12 @@ def stage_initializer(source):
   }"""
     source = replace_once(source, old, new)
     source = replace_once(source, "void\nResourceInitializer::reset() {", """uint64_t
-ResourceInitializer::refreshCompletedLocked(bool trim) {
+ResourceInitializer::refreshCompletedLocked(bool trim, bool release_warm) {
   cached_coherent_seq_id = std::max(cached_coherent_seq_id, upload_queue_event_.signaledValue());
   uint64_t released = 0;
   if (trim) {
     const auto pressure = memoryPressureSnapshot();
-    const bool keep_warm = pressure.valid && pressure.available >= pressure.reserve / 2;
+    const bool keep_warm = !release_warm && pressure.valid && pressure.available >= pressure.reserve / 2;
     released = gpu_command_heap_allocator.trim_completed(cached_coherent_seq_id, keep_warm);
   } else
     gpu_command_heap_allocator.free_blocks(cached_coherent_seq_id);
@@ -131,11 +131,11 @@ ResourceInitializer::refreshCompletedLocked(bool trim) {
 }
 
 uint64_t
-ResourceInitializer::trimMemoryPressure() {
-  if (!memoryPressureSnapshot().needsReclaim())
+ResourceInitializer::trimMemoryPressure(bool release_warm) {
+  if (!release_warm && !memoryPressureSnapshot().needsReclaim())
     return 0;
   std::lock_guard<dxmt::mutex> lock(mutex_);
-  return refreshCompletedLocked(true);
+  return refreshCompletedLocked(true, release_warm);
 }
 
 void
@@ -212,10 +212,36 @@ private:
     static std::atomic<uint64_t> next{1};
     return next.fetch_add(1, std::memory_order_relaxed);
   }
-  const uint64_t memory_domain_ = NextMemoryDomain();""")
+  const uint64_t memory_domain_ = NextMemoryDomain();
+  std::atomic<bool> allocation_recovery_latched_{false};""")
     source = replace_once(source, "  CommandQueue(WMT::Device device);", """  CommandQueue(WMT::Device device);
 
   uint64_t memoryDomain() const { return memory_domain_; }""")
+    source = replace_once(source, '  uint64_t memoryDomain() const { return memory_domain_; }', '''  uint64_t memoryDomain() const { return memory_domain_; }
+
+  // Final allocation-failure recovery drops only this queue's GPU-completed
+  // transient blocks. The ring mutexes serialize their producers; the CPU
+  // command heap is deliberately excluded. No live texture is evicted.
+  uint64_t trimCompletedTransientMemory() {
+    const uint64_t completed = CoherentSeqId();
+    return staging_allocator.trim_completed(completed, false) +
+           copy_temp_allocator.trim_completed(completed, false) +
+           argbuf_allocator.trim_completed(completed, false);
+  }
+
+  // Share denial recovery across resource workers. Once an episode has drained
+  // its warm blocks, subsequent tiny creations may reuse them. Otherwise each
+  // retry would allocate and discard a 32 MiB upload block. Only a native
+  // healthy grant (already accounting for outstanding creators) rearms it.
+  bool allocationRecoveryDrain(uint64_t native_status) {
+    if (native_status == 1) {
+      allocation_recovery_latched_.store(false, std::memory_order_release);
+      return false;
+    }
+    if (native_status != 3 && native_status != 4)
+      return false;
+    return !allocation_recovery_latched_.exchange(true, std::memory_order_acq_rel);
+  }''')
     return source
 
 

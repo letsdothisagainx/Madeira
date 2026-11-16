@@ -40,6 +40,9 @@ assert 'MadeiraConfig.gameValue("env.MADEIRA_MIP_CLAMP_AUTO")' in worker
 assert 'MadeiraConfig.get("env.MADEIRA_MIP_CLAMP_AUTO")' in worker
 assert 'getenv("MADEIRA_MIP_CLAMP_AUTO")' in worker
 assert 'CS2TextureMemoryProfile.measuredBudget(' in worker
+assert 'CS2TextureMemoryProfile.configureVideo(textureMemory' in worker
+assert 'if nativeSteamClient && textureMemory.applicable && !standaloneProbe {' in worker
+assert worker.index('CS2TextureMemoryProfile.configureVideo(') < worker.index('CS2TextureMemoryProfile.transport(') < worker.index('setenv("DXMT_CONFIG"')
 assert 'selected=\\(textureMemory.selected.rawValue)' in worker
 assert 'let textureBaseline = dxmtOptions' in worker
 assert 'nativeSteam: nativeSteamClient' in worker
@@ -73,18 +76,18 @@ let budgets: [UInt64?] = [nil, 0, 6 * GiB, 8 * GiB]
 for budget in budgets {
     let d = decision(budget: budget, options: baseline)
     assert(d.applicable && d.applied && d.selected == .balanced)
-    assert(d.options == baseline + ["d3d11.mipClampAuto=1"])
+    assert(d.options == baseline + ["d3d11.mipClampAuto=0"])
 }
 let balancedTransport = CS2TextureMemoryProfile.transport(baseline: baseline,
     decision: decision("balanced", options: baseline), nativeSteam: true)
 assert(balancedTransport.options == baseline)
-assert(balancedTransport.childConfig == "d3d11.mipClampAuto=1")
+assert(balancedTransport.childConfig == "d3d11.mipClampAuto=0")
 let fullTransport = CS2TextureMemoryProfile.transport(baseline: baseline,
     decision: decision("full", options: baseline), nativeSteam: true)
 assert(fullTransport.options == baseline && fullTransport.childConfig == "d3d11.mipClampAuto=0")
 let directTransport = CS2TextureMemoryProfile.transport(baseline: baseline,
     decision: decision("balanced", options: baseline), nativeSteam: false)
-assert(directTransport.options == baseline + ["d3d11.mipClampAuto=1"] && directTransport.childConfig == nil)
+assert(directTransport.options == baseline + ["d3d11.mipClampAuto=0"] && directTransport.childConfig == nil)
 for d in [decision(options: baseline, app: nil), decision(options: baseline, app: 356400),
           decision(options: baseline, standalone: true), decision(options: baseline, env: "0"),
           decision(options: baseline + ["d3d11.mipClampBC=0"])] {
@@ -95,7 +98,7 @@ for d in [decision(options: baseline, app: nil), decision(options: baseline, app
 let forged = CS2TextureMemoryProfile.Decision(options: baseline + ["unrelated.option=1"],
     selected: .balanced, source: "test", applicable: true, applied: true)
 assert(CS2TextureMemoryProfile.transport(baseline: baseline, decision: forged, nativeSteam: true).childConfig == nil)
-let changedBase = CS2TextureMemoryProfile.Decision(options: ["changed=1", "d3d11.mipClampAuto=1"],
+let changedBase = CS2TextureMemoryProfile.Decision(options: ["changed=1", "d3d11.mipClampAuto=0"],
     selected: .balanced, source: "test", applicable: true, applied: true)
 assert(CS2TextureMemoryProfile.transport(baseline: baseline, decision: changedBase, nativeSteam: true).options == baseline)
 assert(CS2TextureMemoryProfile.childConfigKey == "MADEIRA_CS2_TEXTURE_DXMT_CONFIG")
@@ -103,7 +106,7 @@ print("PASS native Steam/CEF options remain byte-for-byte baseline; only one pro
 let roomy = decision(budget: 12 * GiB)
 assert(roomy.selected == .full && roomy.options.last == "d3d11.mipClampAuto=0")
 assert(decision("full").selected == .full && decision("full").options.last == "d3d11.mipClampAuto=0")
-assert(decision("balanced", budget: 12 * GiB).options.last == "d3d11.mipClampAuto=1")
+assert(decision("balanced", budget: 12 * GiB).options.last == "d3d11.mipClampAuto=0")
 assert(decision("unknown-future-value").source == "automatic-budget")
 let unrelatedApps: [Int?] = [nil, 570, 356400]
 for app in unrelatedApps {
@@ -113,7 +116,7 @@ for app in unrelatedApps {
 let probe = decision("balanced", options: [], standalone: true)
 assert(!probe.applicable && probe.options.isEmpty)
 assert(decision(options: [], app: 356400).options.isEmpty)
-print("PASS production automatic/explicit profile selection, actual budget boundary and unrelated/probe launch isolation")
+print("PASS profile decisions disable physical mip omission; automatic/explicit game settings, budget boundary and unrelated/probe isolation")
 
 for option in ["d3d11.mipClampBC=0", "d3d11.mipClampBC=2", " d3d11.mipClampAuto = 0 ",
                "d3d11.mipClampAuto=1", "d3d11.mipClampAutoMB=1536"] {
@@ -130,7 +133,7 @@ for env in ["0", "1", "off", " 0 "] {
 assert(decision(env: "  ").applied)
 print("PASS existing explicit BC/automatic mip options and environment remain byte-for-byte authoritative; unrelated DXMT options/order preserved")
 
-let suffix = "d3d11.mipClampAuto=1"
+let suffix = "d3d11.mipClampAuto=0"
 let allowedBase = "x=" + String(repeating: "a", count: 259 - suffix.utf16.count - 1 - 2)
 let atLimit = decision(options: [allowedBase])
 assert(atLimit.applied && atLimit.options.joined(separator: ";").utf16.count == 259)

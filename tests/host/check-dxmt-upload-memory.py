@@ -216,8 +216,8 @@ public:
   static constexpr size_t kResourceInitializerGpuUploadHeapAlignment=16;
   uint64_t flushInternal();
   uint64_t flushToWait();
-  uint64_t refreshCompletedLocked(bool trim);
-  uint64_t trimMemoryPressure();
+  uint64_t refreshCompletedLocked(bool trim, bool release_warm = false);
+  uint64_t trimMemoryPressure(bool release_warm = false);
   void prepareUploadLocked(size_t size);
   uint64_t current_seq_id_=1, cached_coherent_seq_id=0;
   size_t upload_bytes_since_flush_=0;
@@ -267,8 +267,38 @@ int main() {
     require(counts.bytes==256, "soft pressure did not preserve bounded warm upload backing");
     const size_t before=counts.allocated;
     init.prepareUploadLocked(16);
-    init.gpu_command_heap_allocator.allocate(3,2,16,16);
+    auto [backing, offset]=init.gpu_command_heap_allocator.allocate(3,2,16,16);
+    backing.payload->data[offset]=0x73;
     require(counts.allocated==before, "soft pressure caused unnecessary upload allocation churn");
+    init.pending=true;
+    require(init.trimMemoryPressure(true)==0 && counts.bytes==256,
+            "allocation-denial trim released a pending upload");
+    require(backing.payload->data[offset]==0x73, "allocation-denial trim corrupted pending upload bytes");
+    init.pending=false;
+    init.current_seq_id_=4;
+    require(init.trimMemoryPressure(true)==0 && counts.bytes==256,
+            "allocation-denial trim released an in-flight upload");
+    require(backing.payload->data[offset]==0x73, "allocation-denial trim corrupted in-flight upload bytes");
+    init.upload_queue_event_.value=3;
+    require(init.trimMemoryPressure()==0 && counts.bytes==256,
+            "ordinary soft-pressure trim discarded completed warm upload backing");
+    require(init.trimMemoryPressure(true)==256 && counts.bytes==0,
+            "allocation-denial trim retained completed warm upload backing at soft pressure");
+    require(init.trimMemoryPressure(true)==0, "repeated allocation-denial trim released storage twice");
+    require(init.upload_queue_event_.waits==0 && init.upload_queue_event_.commits==0,
+            "completed-only allocation-denial trim submitted or waited for pending GPU work");
+    pressure.available=0;
+  }
+  {
+    ResourceInitializer init;
+    pressure.available=1000000;
+    init.gpu_command_heap_allocator.allocate(1,0,256,16);
+    init.current_seq_id_=2;
+    init.upload_queue_event_.value=1;
+    require(init.trimMemoryPressure()==0 && counts.bytes==256,
+            "healthy ordinary trim discarded warm upload backing");
+    require(init.trimMemoryPressure(true)==256 && counts.bytes==0,
+            "allocation-denial trim ignored real completed backing without measured pressure");
     pressure.available=0;
   }
   {
@@ -319,7 +349,7 @@ int main() {
     require(counts.bytes==(completes?256u:512u), "actual owned backing count is incorrect");
   }
   require(counts.bytes==0, "initializer pressure path leaked backing");
-  std::cout << "PASS real initializer methods: fresh idle completion, safe zero-cache retirement, bounded wait, honest backing\n";
+  std::cout << "PASS real initializer methods: fresh idle completion, bounded warm-cache reuse, allocation-denial release only after GPU completion, safe zero-cache retirement, bounded wait, honest backing\n";
 }
 '''
 

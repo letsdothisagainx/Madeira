@@ -42,9 +42,11 @@ jobs:
           python3 tests/host/check-cs2-texture-child-environment.py
           if [[ "$RUNNER_OS" == macOS ]]; then
             python3 tests/host/check-cs2-texture-memory-profile.py --require-swift
+            python3 tests/host/check-cs2-video-profile.py --require-swift
             python3 tests/host/check-pool-startup-budget.py --require-swift
           else
             python3 tests/host/check-cs2-texture-memory-profile.py
+            python3 tests/host/check-cs2-video-profile.py
             python3 tests/host/check-pool-startup-budget.py
           fi
           python3 tests/host/check-wait-address-package.py

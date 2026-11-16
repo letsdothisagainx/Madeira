@@ -164,17 +164,17 @@ enum FrontendChoice {
 }
 
 // BEGIN CS2 TEXTURE MEMORY PROFILE
-/// A launch-scoped, visible quality choice. The renderer's existing automatic
-/// mip policy only reduces large eligible BC textures under actual pressure.
-/// This does not edit Valve's files, increase memory limits, or change other
-/// library games. Keep explicit DXMT/environment choices authoritative.
+/// A launch-scoped, visible quality choice using the game's own texture-detail
+/// setting. DXMT must preserve the resource/mip identity requested by the game.
+/// This does not modify protected binaries/assets, increase memory limits, or
+/// change other library games. Keep explicit DXMT choices authoritative.
 enum CS2TextureMemoryProfile {
     enum Mode: String, CaseIterable {
         case automatic, balanced, full
         var label: String {
             switch self {
             case .automatic: return "Automatic (recommended)"
-            case .balanced: return "Balanced"
+            case .balanced: return "Balanced (CS2 Low textures)"
             case .full: return "Full quality"
             }
         }
@@ -193,7 +193,7 @@ enum CS2TextureMemoryProfile {
     }
     static let childConfigKey = "MADEIRA_CS2_TEXTURE_DXMT_CONFIG"
     static let automaticBudgetLimit = UInt64(8) << 30
-    static let explanation = "Balanced reduces one top mip from large BC textures only when memory runs short; small textures are unchanged. Automatic selects Balanced for constrained launches. Full quality keeps all requested mip levels and needs more memory. Explicit custom DXMT mip settings take precedence. Applies at the next launch."
+    static let explanation = "Balanced uses CS2’s own Low texture detail on the next launch. Automatic selects Balanced for constrained launches. Full quality restores the previous texture detail only when Madeira still owns that change. DXMT keeps the game’s requested mip levels and texture identity. Explicit custom DXMT mip settings take precedence. An existing, unambiguous CS2 video configuration is required."
 
     /// Native Steam and CEF keep the exact pre-profile renderer options. Only
     /// the one option this profile adds is published as app-owned child policy;
@@ -233,7 +233,7 @@ enum CS2TextureMemoryProfile {
         if custom || !(environmentAuto ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return Decision(options: options, selected: selected, source: "custom-mip-settings", applicable: true, applied: false)
         }
-        let updated = options + ["d3d11.mipClampAuto=\(selected == .balanced ? 1 : 0)"]
+        let updated = options + ["d3d11.mipClampAuto=0"]
         // DXMT reads at most 259 UTF-16 units. Never make an otherwise valid
         // custom configuration disappear by overflowing its fixed input buffer.
         guard updated.joined(separator: ";").utf16.count <= 259 else {
@@ -242,6 +242,301 @@ enum CS2TextureMemoryProfile {
         return Decision(options: updated, selected: selected,
                         source: requested == .automatic ? "automatic-budget" : "game-setting", applicable: true, applied: true)
     }
+    // Valve's video settings expose texture detail as 0=Low, 1=Medium, 2=High.
+    // Use that existing game-owned scalar instead of changing D3D11's physical
+    // mip identity behind the game's back. Never create a missing game config.
+    static let videoKey = "setting.videocfg_texture_detail"
+    static let videoLimit = 1024 * 1024
+    private static let videoOwner = Data("madeira-cs2-video-profile-v1\n".utf8)
+    struct VideoScalar {
+        let range: Range<Int>
+        let raw: Data
+        let value: Int
+    }
+    private struct VideoToken {
+        let range: Range<Int>
+        let text: String
+        let brace: UInt8?
+        let escaped: Bool
+    }
+    private enum VideoFailure: Error { case skip(String) }
+    private struct VideoParser {
+        let bytes: [UInt8]
+        var at = 0
+        var tokens = 0
+        var detail: VideoScalar?
+        var version = false
+
+        mutating func token() throws -> VideoToken? {
+            while at < bytes.count {
+                if [UInt8(9), 10, 13, 32].contains(bytes[at]) { at += 1; continue }
+                if at + 1 < bytes.count && bytes[at] == 47 && bytes[at+1] == 47 {
+                    at += 2
+                    while at < bytes.count && bytes[at] != 10 { at += 1 }
+                    continue
+                }
+                if at + 1 < bytes.count && bytes[at] == 47 && bytes[at+1] == 42 {
+                    at += 2
+                    while at + 1 < bytes.count && !(bytes[at] == 42 && bytes[at+1] == 47) { at += 1 }
+                    guard at + 1 < bytes.count else { throw VideoFailure.skip("malformed-config") }
+                    at += 2; continue
+                }
+                break
+            }
+            guard at < bytes.count else { return nil }
+            tokens += 1
+            guard tokens <= 65536 else { throw VideoFailure.skip("malformed-config") }
+            let start = at
+            if bytes[at] == 123 || bytes[at] == 125 {
+                let brace = bytes[at]; at += 1
+                return VideoToken(range: start..<at, text: "", brace: brace, escaped: false)
+            }
+            var text: [UInt8] = [], escaped = false
+            if bytes[at] == 34 {
+                at += 1
+                while at < bytes.count && bytes[at] != 34 {
+                    guard bytes[at] >= 32 || bytes[at] == 9 else { throw VideoFailure.skip("malformed-config") }
+                    if bytes[at] == 92 {
+                        escaped = true; at += 1
+                        guard at < bytes.count else { throw VideoFailure.skip("malformed-config") }
+                        // Unrelated strings remain byte-for-byte untouched.
+                        text.append(bytes[at]); at += 1
+                    } else { text.append(bytes[at]); at += 1 }
+                }
+                guard at < bytes.count else { throw VideoFailure.skip("malformed-config") }
+                at += 1
+            } else {
+                while at < bytes.count && ![UInt8(9), 10, 13, 32, 123, 125, 34].contains(bytes[at]) {
+                    guard bytes[at] >= 32 else { throw VideoFailure.skip("malformed-config") }
+                    if at + 1 < bytes.count && bytes[at] == 47 && (bytes[at+1] == 47 || bytes[at+1] == 42) { break }
+                    text.append(bytes[at]); at += 1
+                }
+                guard at > start else { throw VideoFailure.skip("malformed-config") }
+            }
+            guard let string = String(bytes: text, encoding: .utf8) else { throw VideoFailure.skip("malformed-config") }
+            return VideoToken(range: start..<at, text: string, brace: nil, escaped: escaped)
+        }
+
+        mutating func object(depth: Int) throws {
+            guard depth <= 32 else { throw VideoFailure.skip("malformed-config") }
+            while let key = try token() {
+                if key.brace == 125 { return }
+                guard key.brace == nil, let value = try token(), value.brace != 125 else {
+                    throw VideoFailure.skip("malformed-config")
+                }
+                if !key.escaped && key.text.lowercased() == CS2TextureMemoryProfile.videoKey {
+                    guard depth == 1, detail == nil, value.brace == nil, !value.escaped,
+                          let number = Int(value.text), (0...2).contains(number),
+                          ["0", "1", "2"].contains(value.text) else { throw VideoFailure.skip("ambiguous-texture-detail") }
+                    detail = VideoScalar(range: value.range, raw: Data(bytes[value.range]), value: number)
+                }
+                if !key.escaped && key.text.lowercased() == "version" && depth == 1 {
+                    guard !version, value.brace == nil, !value.escaped,
+                          let number = UInt32(value.text), number > 0 else { throw VideoFailure.skip("unsupported-config") }
+                    version = true
+                }
+                if value.brace == 123 { try object(depth: depth + 1) }
+            }
+            throw VideoFailure.skip("malformed-config")
+        }
+    }
+
+    static func videoScalar(_ data: Data) throws -> VideoScalar {
+        guard !data.isEmpty, data.count <= videoLimit, !data.contains(0), String(data: data, encoding: .utf8) != nil else {
+            throw VideoFailure.skip("invalid-config-size-or-encoding")
+        }
+        var parser = VideoParser(bytes: Array(data))
+        if data.starts(with: [0xef, 0xbb, 0xbf]) { parser.at = 3 }
+        guard let root = try parser.token(), root.brace == nil, !root.escaped,
+              root.text.lowercased() == "video.cfg", try parser.token()?.brace == 123 else {
+            throw VideoFailure.skip("unsupported-config")
+        }
+        try parser.object(depth: 1)
+        guard try parser.token() == nil, parser.version, let scalar = parser.detail else {
+            throw VideoFailure.skip("missing-texture-detail")
+        }
+        return scalar
+    }
+
+    static func replacingVideoScalar(_ data: Data, scalar: VideoScalar, with raw: Data) -> Data {
+        var updated = data
+        updated.replaceSubrange(scalar.range, with: raw)
+        return updated
+    }
+
+    private struct VideoReceipt: Codable {
+        let version: Int
+        let relativePath: String
+        let originalToken: Data
+        let managedToken: Data
+    }
+
+    private static func videoExists(_ url: URL) throws -> Bool {
+        do { _ = try FileManager.default.attributesOfItem(atPath: url.path); return true }
+        catch {
+            let value = error as NSError
+            if (value.domain == NSCocoaErrorDomain && [4, 260].contains(value.code)) ||
+               (value.domain == NSPOSIXErrorDomain && value.code == 2) { return false }
+            throw error
+        }
+    }
+
+    private static func existingVideoPath(_ parts: [String], under root: URL) throws -> URL? {
+        try plainVideoPath(root, directory: true)
+        var result = root
+        for part in parts {
+            guard !part.isEmpty, part != ".", part != "..", !part.contains("/"), !part.contains("\\") else {
+                throw VideoFailure.skip("unsafe-path")
+            }
+            result.appendPathComponent(part)
+            if try !videoExists(result) { return nil }
+            try plainVideoPath(result, directory: true)
+        }
+        return result
+    }
+
+    private static func plainVideoPath(_ url: URL, directory: Bool) throws {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        guard attributes[.type] as? FileAttributeType == (directory ? .typeDirectory : .typeRegular),
+              url.standardizedFileURL.path == url.resolvingSymlinksInPath().standardizedFileURL.path else {
+            throw VideoFailure.skip("unsafe-path")
+        }
+        if !directory, (attributes[.referenceCount] as? NSNumber)?.intValue != 1 { throw VideoFailure.skip("unsafe-file-links") }
+    }
+
+    private static func videoPath(_ parts: [String], under root: URL, directory: Bool) throws -> URL {
+        try plainVideoPath(root, directory: true)
+        var result = root
+        for (index, part) in parts.enumerated() {
+            guard !part.isEmpty, part != ".", part != "..", !part.contains("/"), !part.contains("\\") else {
+                throw VideoFailure.skip("unsafe-path")
+            }
+            result.appendPathComponent(part)
+            try plainVideoPath(result, directory: index < parts.count - 1 || directory)
+        }
+        return result
+    }
+
+    private static func readVideoFile(_ url: URL, maximum: Int) throws -> Data {
+        try plainVideoPath(url, directory: false)
+        let before = try FileManager.default.attributesOfItem(atPath: url.path)
+        guard let size = (before[.size] as? NSNumber)?.intValue, size >= 0, size <= maximum else {
+            throw VideoFailure.skip("oversized-file")
+        }
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let data = try handle.read(upToCount: maximum + 1) ?? Data()
+        try plainVideoPath(url, directory: false)
+        let after = try FileManager.default.attributesOfItem(atPath: url.path)
+        guard data.count == size, data.count <= maximum,
+              before[.systemFileNumber] as? NSNumber == after[.systemFileNumber] as? NSNumber,
+              before[.modificationDate] as? Date == after[.modificationDate] as? Date else {
+            throw VideoFailure.skip("changed-file")
+        }
+        return data
+    }
+
+    private static func videoStorage(_ root: URL) throws -> URL {
+        let fm = FileManager.default, parent = root.deletingLastPathComponent()
+        try plainVideoPath(parent, directory: true)
+        guard root.lastPathComponent == "Madeira-CS2-Video-Profile-v1" else { throw VideoFailure.skip("unsafe-storage") }
+        if try !videoExists(root) {
+            let stage = parent.appendingPathComponent(".cs2-video-" + UUID().uuidString, isDirectory: true)
+            try fm.createDirectory(at: stage, withIntermediateDirectories: false)
+            defer { try? fm.removeItem(at: stage) }
+            try videoOwner.write(to: stage.appendingPathComponent("owner"), options: .withoutOverwriting)
+            try fm.moveItem(at: stage, to: root)
+        }
+        try plainVideoPath(root, directory: true)
+        guard try readVideoFile(root.appendingPathComponent("owner"), maximum: 128) == videoOwner else {
+            throw VideoFailure.skip("unowned-storage")
+        }
+        return root
+    }
+
+    /// Launch-time only, before Wine/Steam begins. A missing/ambiguous account,
+    /// unsupported file or filesystem failure never becomes a launch failure.
+    /// Receipts and original files stay in app-private Application Support.
+    static func configureVideo(_ decision: Decision, documents: URL, steamRoot: URL, storage: URL) -> String {
+        guard decision.applicable else { return "unrelated-launch" }
+        guard decision.source != "custom-mip-settings" else { return "custom-override-preserved" }
+        let fm = FileManager.default
+        do {
+            let drive = try videoPath(["wine", "drive_c"], under: documents, directory: true)
+            let steamPath = steamRoot.standardizedFileURL.path, drivePath = drive.standardizedFileURL.path
+            guard steamPath.hasPrefix(drivePath + "/") else { throw VideoFailure.skip("steam-outside-prefix") }
+            let steamParts = String(steamPath.dropFirst(drivePath.count + 1)).split(separator: "/").map(String.init)
+            let steam = try videoPath(steamParts, under: drive, directory: true)
+            guard let userdata = try existingVideoPath(["userdata"], under: steam) else {
+                throw VideoFailure.skip("no-userdata")
+            }
+            let entries = try fm.contentsOfDirectory(at: userdata, includingPropertiesForKeys: nil)
+            guard entries.count <= 256 else { throw VideoFailure.skip("too-many-accounts") }
+            var candidates: [(String, URL)] = []
+            for entry in entries {
+                let account = entry.lastPathComponent
+                guard !account.isEmpty, account.utf8.allSatisfy({ (48...57).contains($0) }),
+                      let accountID = UInt32(account), accountID > 0, String(accountID) == account else { continue }
+                try plainVideoPath(entry, directory: true)
+                if let cfg = try existingVideoPath(["730", "local", "cfg"], under: entry) {
+                    candidates.append((account, cfg))
+                }
+            }
+            guard candidates.count == 1 else { throw VideoFailure.skip(candidates.isEmpty ? "no-existing-account-config" : "ambiguous-accounts") }
+            let account = candidates[0].0
+            guard try videoExists(candidates[0].1.appendingPathComponent("cs2_video.txt")) else {
+                throw VideoFailure.skip("missing-video-config")
+            }
+            let file = try videoPath(["cs2_video.txt"], under: candidates[0].1, directory: false)
+            let original = try readVideoFile(file, maximum: videoLimit), scalar = try videoScalar(original)
+            let relative = steamParts.joined(separator: "/") + "/userdata/" + account + "/730/local/cfg/cs2_video.txt"
+            if decision.selected == .balanced && scalar.value == 0 { return "already-low" }
+            if decision.selected == .full {
+                if try !videoExists(storage) { return "full-no-owned-change" }
+            }
+            let owned = try videoStorage(storage)
+            let receiptFile = owned.appendingPathComponent(account + ".json"), backup = owned.appendingPathComponent(account + ".original")
+            var previous: VideoReceipt?
+            if try videoExists(receiptFile) {
+                let receiptData = try readVideoFile(receiptFile, maximum: 4096)
+                do { previous = try JSONDecoder().decode(VideoReceipt.self, from: receiptData) }
+                catch { throw VideoFailure.skip("invalid-receipt") }
+                guard let old = previous, old.version == 1, old.relativePath == relative,
+                      [Data("0".utf8), Data("\"0\"".utf8)].contains(old.managedToken) else { throw VideoFailure.skip("invalid-receipt") }
+                let saved = try videoScalar(readVideoFile(backup, maximum: videoLimit))
+                guard saved.raw == old.originalToken, (1...2).contains(saved.value) else { throw VideoFailure.skip("invalid-backup") }
+            }
+            if decision.selected == .full {
+                guard let previous else { return "full-no-owned-change" }
+                guard scalar.raw == previous.managedToken else {
+                    try fm.removeItem(at: receiptFile); try fm.removeItem(at: backup)
+                    return "full-external-change-preserved"
+                }
+                let restored = replacingVideoScalar(original, scalar: scalar, with: previous.originalToken)
+                guard try readVideoFile(file, maximum: videoLimit) == original else { throw VideoFailure.skip("changed-file") }
+                try restored.write(to: file, options: .atomic)
+                guard try readVideoFile(file, maximum: videoLimit) == restored else { throw VideoFailure.skip("write-verification") }
+                try? fm.removeItem(at: receiptFile); try? fm.removeItem(at: backup)
+                return "restored-owned-detail"
+            }
+            let managed = scalar.raw.first == 34 ? Data("\"0\"".utf8) : Data("0".utf8)
+            if try videoExists(backup) && previous == nil {
+                // An interrupted backup-before-receipt transaction is resumable
+                // only while the untouched game config still matches it exactly.
+                guard try readVideoFile(backup, maximum: videoLimit) == original else { throw VideoFailure.skip("orphan-backup-conflict") }
+            }
+            let receipt = VideoReceipt(version: 1, relativePath: relative, originalToken: scalar.raw, managedToken: managed)
+            try original.write(to: backup, options: .atomic)
+            try JSONEncoder().encode(receipt).write(to: receiptFile, options: .atomic)
+            let updated = replacingVideoScalar(original, scalar: scalar, with: managed)
+            guard try readVideoFile(file, maximum: videoLimit) == original else { throw VideoFailure.skip("changed-file") }
+            try updated.write(to: file, options: .atomic)
+            guard try readVideoFile(file, maximum: videoLimit) == updated else { throw VideoFailure.skip("write-verification") }
+            return "applied-game-low"
+        } catch VideoFailure.skip(let reason) { return "skipped-" + reason }
+        catch { return "skipped-filesystem" }
+    }
+
 }
 // END CS2 TEXTURE MEMORY PROFILE
 

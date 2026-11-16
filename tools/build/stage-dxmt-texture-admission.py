@@ -35,28 +35,30 @@ ReportTextureFailure(const char *reason, uint64_t bytes, uint64_t available) {
 // every mip/resource while the same completion frontier is unchanged. This
 // stamp suppresses only redundant reclamation, never native admission checks.
 static void
-ReclaimTextureGrowth(CommandQueue &queue, uint64_t bytes) {
+ReclaimTextureGrowth(CommandQueue &queue, uint64_t bytes, bool allocation_denied = false) {
   const auto pressure = memoryPressureSnapshot(true);
   const uint64_t coherent = queue.CoherentSeqId();
-  const bool emergency = pressure.valid &&
-      (pressure.available <= pressure.reserve / 4 || bytes >= pressure.available);
+  const bool emergency = allocation_denied || (pressure.valid &&
+      (pressure.available <= pressure.reserve / 4 || bytes >= pressure.available));
   struct SweepStamp {
     uint64_t domain = 0, coherent = 0, largest = 0;
     bool valid = false, emergency = false;
   };
   thread_local SweepStamp previous;
-  if (!previous.valid || previous.domain != queue.memoryDomain() ||
+  if (allocation_denied || !previous.valid || previous.domain != queue.memoryDomain() ||
       previous.coherent != coherent || bytes > previous.largest ||
       (emergency && !previous.emergency)) {
     previous = {queue.memoryDomain(), coherent, bytes, pressure.valid, emergency};
     // Only this queue's proven GPU-complete cache entries are eligible.
     // Existing hot leases and high/low-water hysteresis retain control.
-    DynamicBuffer::TrimCompletedForQueue(queue.memoryDomain(), coherent, false, nullptr, bytes);
+    DynamicBuffer::TrimCompletedForQueue(queue.memoryDomain(), coherent, allocation_denied, nullptr, bytes);
+    if (allocation_denied)
+      queue.trimCompletedTransientMemory();
   }
   // Uploads have a private GPU event and can finish without a main-queue
   // present. Keep sampling that event rather than inferring its completion
   // from the main queue's unchanged coherence counter.
-  queue.initializer.trimMemoryPressure();
+  queue.initializer.trimMemoryPressure(allocation_denied);
 }
 
 // A creation credit covers destination backing and the complete initial-data
@@ -64,10 +66,11 @@ ReclaimTextureGrowth(CommandQueue &queue, uint64_t bytes) {
 // physical-headroom readings with other outstanding creation credits.
 static bool
 PrepareTextureGrowth(MTLD3D11Device *device, ResourceGrowthPermit &permit, uint64_t bytes) {
+  auto &queue = device->GetDXMTDevice().queue();
+  const bool release_warm = queue.allocationRecoveryDrain(permit.nativeStatus());
   if (!permit.denied() && !permit.needsReclaim())
     return true;
-  auto &queue = device->GetDXMTDevice().queue();
-  ReclaimTextureGrowth(queue, bytes);
+  ReclaimTextureGrowth(queue, bytes, release_warm);
   if (!permit.denied())
     return true;
 
@@ -76,8 +79,8 @@ PrepareTextureGrowth(MTLD3D11Device *device, ResourceGrowthPermit &permit, uint6
   const uint64_t submitted = queue.initializer.flushToWait();
   if (submitted)
     queue.initializer.waitForMemoryPressure(submitted, 50);
-  ReclaimTextureGrowth(queue, bytes);
-  permit = ResourceGrowthPermit(bytes);
+  ReclaimTextureGrowth(queue, bytes, release_warm);
+  permit = ResourceGrowthPermit(bytes, true);
   return !permit.denied();
 }
 
@@ -165,7 +168,7 @@ def stage_file(name, source):
     if name == FILES[0]:
         return stage_factory(source)
     if name == FILES[1]:
-        return replace_once(source, '  uint64_t trimMemoryPressure();', '''  uint64_t trimMemoryPressure();
+        return replace_once(source, '  uint64_t trimMemoryPressure(bool release_warm = false);', '''  uint64_t trimMemoryPressure(bool release_warm = false);
 
   // Independent load threads must not race a read of cached_coherent_seq_id.
   // This pressure-only wait uses the genuine upload event directly, with its

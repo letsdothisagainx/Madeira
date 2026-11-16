@@ -153,11 +153,14 @@ class ResourceGrowthPermit {
   }
 
 public:
-  explicit ResourceGrowthPermit(uint64_t bytes) {
+  explicit ResourceGrowthPermit(uint64_t bytes, bool after_emergency_reclaim = false) {
     if (!bytes) return; // An unavailable size estimate is not invented credit.
     struct madeira_ctl_args args = {};
     args.op = 41;
     args.ptr = bytes;
+    // The finite small-resource completion lane is available only after the
+    // caller has drained completion-proven spares and retried real uploads.
+    args.len = after_emergency_reclaim ? 1 : 0;
     MadeiraCtl(&args);
     native_status_ = args.ret;
     if (!args.ret) return; // Remote/old backend: retain honest allocator behavior.

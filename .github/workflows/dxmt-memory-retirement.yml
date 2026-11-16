@@ -10,6 +10,7 @@ on:
       - 'tools/check-dxmt-memory-package.py'
       - 'tests/host/check-dxmt-*'
       - 'tests/host/check-cs2-texture-memory-profile.py'
+      - 'tests/host/check-cs2-video-profile.py'
       - 'tests/host/check-metal-descriptor-lifetime.py'
       - 'app/Madeira/Library.swift'
       - 'app/Madeira/ContentView.swift'
@@ -22,6 +23,7 @@ on:
       - 'tools/check-dxmt-memory-package.py'
       - 'tests/host/check-dxmt-*'
       - 'tests/host/check-cs2-texture-memory-profile.py'
+      - 'tests/host/check-cs2-video-profile.py'
       - 'tests/host/check-metal-descriptor-lifetime.py'
       - 'app/Madeira/Library.swift'
       - 'app/Madeira/ContentView.swift'
@@ -58,9 +60,11 @@ jobs:
           python3 tests/host/check-dxmt-resource-budget.py
           if [[ "$RUNNER_OS" == macOS ]]; then
             python3 tests/host/check-cs2-texture-memory-profile.py --require-swift
+            python3 tests/host/check-cs2-video-profile.py --require-swift
             python3 tests/host/check-pool-startup-budget.py --require-swift
           else
             python3 tests/host/check-cs2-texture-memory-profile.py
+            python3 tests/host/check-cs2-video-profile.py
             python3 tests/host/check-pool-startup-budget.py
           fi
           python3 tests/host/check-fex-view-lifecycle.py

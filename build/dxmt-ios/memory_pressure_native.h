@@ -61,9 +61,14 @@ void madeira_resource_growth_retire(void *, unsigned long long) __attribute__((v
 }
 #endif
 static const volatile char md_resource_growth_contract[] = "[texture-growth-budget-v1]";
+static const volatile char md_resource_completion_contract[] = "[texture-completion-lane-v1]";
 static pthread_mutex_t md_resource_growth_mutex = PTHREAD_MUTEX_INITIALIZER;
 static struct { uint64_t token, bytes, lease; void *owner; } md_resource_growth_receipts[MD_RESOURCE_GROWTH_RECEIPTS];
 static uint64_t md_resource_growth_held, md_resource_growth_next = 1;
+/* A small required texture may finish only after an explicit completed-cache
+ * drain. Charge its entire request, not merely its overlap with the ordinary
+ * reserve. Releasing a CPU receipt does not undo that physical-growth history. */
+static uint64_t md_resource_completion_spent;
 static int md_resource_growth_pressure;
 
 /* A passive generation snapshot must not create or relink a Wine thread.
@@ -92,7 +97,17 @@ static inline uint64_t md_resource_growth_floor(uint64_t reserve) {
   return floor < minimum ? minimum : floor > maximum ? maximum : floor;
 }
 
-/* op41 input ptr=prospective bytes. Output ret0 means measurement unavailable,
+static inline uint64_t md_resource_completion_budget(uint64_t reserve, uint64_t ordinary_floor) {
+  const uint64_t minimum_floor = UINT64_C(128) << 20, maximum_lane = UINT64_C(128) << 20;
+  uint64_t budget = reserve / 6;
+  if (budget > maximum_lane) budget = maximum_lane;
+  if (ordinary_floor <= minimum_floor) return 0;
+  return budget > ordinary_floor - minimum_floor ? ordinary_floor - minimum_floor : budget;
+}
+
+/* op41 input ptr=prospective bytes, len=0 normally or1 only after the PE
+ * caller's explicit completed-cache drain/retry. Other input flags are invalid.
+ * Output ret0 means measurement unavailable,
  * ret1 granted, ret2 granted/reclaim recommended, ret3 denied measured pressure,
  * ret4 denied finite receipt capacity/overflow or invalid/retiring owner.
  * A grant returns ptr=token and
@@ -100,15 +115,17 @@ static inline uint64_t md_resource_growth_floor(uint64_t reserve) {
  */
 static inline void md_resource_growth_acquire(struct madeira_ctl_args *args) {
   const int saved_errno = errno;
-  const uint64_t bytes = args->ptr;
+  const uint64_t bytes = args->ptr, completion_retry = args->len;
   struct madeira_ctl_args measurement = {0, 0, 0, 0, {0}};
-  uint64_t available, reserve, floor, effective, recovery;
+  uint64_t available, reserve, floor, effective, recovery, lane_budget, hard_floor;
   uint64_t lease = 0, current_lease = 0;
   void *owner = NULL, *current_owner = NULL;
-  int identity;
+  int identity, use_completion = 0;
   unsigned slot;
   (void)md_resource_growth_contract[0];
+  (void)md_resource_completion_contract[0];
   args->ret = 0; args->ptr = 0; args->len = 0;
+  if (completion_retry > 1) { args->ret = 4; goto done; }
   if (!bytes) goto done;
   identity = md_resource_growth_identity(&owner, &lease, 0);
   if (identity < 0) goto done;
@@ -123,23 +140,35 @@ static inline void md_resource_growth_acquire(struct madeira_ctl_args *args) {
   available = measurement.len;
   reserve = md_resource_growth_reserve(measurement.ptr + available);
   floor = md_resource_growth_floor(reserve);
+  lane_budget = md_resource_completion_budget(reserve, floor);
+  hard_floor = floor - lane_budget;
   effective = available > md_resource_growth_held ? available - md_resource_growth_held : 0;
   recovery = reserve + reserve / 4;
-  if (md_resource_growth_pressure) {
-    if (effective >= recovery) md_resource_growth_pressure = 0;
+  if (effective >= recovery) {
+    /* Only a fresh real measurement above the recovery watermark replenishes
+     * this finite episode budget, never CPU release or owner cancellation. */
+    md_resource_growth_pressure = 0;
+    md_resource_completion_spent = 0;
   }
   if (!md_resource_growth_pressure &&
       (effective <= reserve || bytes >= effective - reserve)) {
     md_resource_growth_pressure = 1;
   }
   args->len = available;
-  /* The reserve is the early reclaim watermark, not an unconditional denial
-   * of useful work. The separate floor preserves a practical physical margin
-   * while allowing modest allocations in the reclaim/recovery band. */
+  /* Ordinary growth keeps its original burst reserve. After a proven attempt
+   * to drain completed storage, a bounded number of small required textures
+   * may finish in the completion band. Pending creators remain fully charged,
+   * and neither larger textures nor sequential CPU releases can open an
+   * unlimited path through the physical safety floor. */
   if (effective <= floor || bytes > effective - floor) {
     md_resource_growth_pressure = 1;
-    args->ret = 3;
-    goto unlock;
+    if (!completion_retry || bytes > (UINT64_C(1) << 20) ||
+        md_resource_completion_spent > lane_budget || bytes > lane_budget - md_resource_completion_spent ||
+        effective <= hard_floor || bytes > effective - hard_floor) {
+      args->ret = 3;
+      goto unlock;
+    }
+    use_completion = 1;
   }
   for (slot = 0; slot < MD_RESOURCE_GROWTH_RECEIPTS; ++slot)
     if (!md_resource_growth_receipts[slot].token) break;
@@ -154,6 +183,7 @@ static inline void md_resource_growth_acquire(struct madeira_ctl_args *args) {
   md_resource_growth_receipts[slot].owner = owner;
   md_resource_growth_receipts[slot].lease = lease;
   md_resource_growth_held += bytes;
+  if (use_completion) md_resource_completion_spent += bytes;
   args->ret = md_resource_growth_pressure ? 2 : 1;
 unlock:
   pthread_mutex_unlock(&md_resource_growth_mutex);

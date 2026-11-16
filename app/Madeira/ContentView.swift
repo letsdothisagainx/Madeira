@@ -3202,8 +3202,8 @@ struct ContentView: View {
             // verbatim into DXMT_CONFIG, which the renderer's config parser reads as
             // inline "key=value" lines, so options can be tried without a rebuild.
             // Explicit mip options retain their precedence. Native BC support
-            // varies by device; the CS2 profile below uses the existing bounded,
-            // large-texture automatic mip policy rather than forcing all mips.
+            // varies by device. The CS2 profile below uses the game's own Low
+            // texture-detail setting; DXMT never silently omits requested mips.
             // DXMT splits DXMT_CONFIG on ";" only and a newline is not whitespace to
             // its line parser, so the options are joined with ";" (ml1095: "a=b;c=d"
             // on one line). A library game's own dxmt options come after madeira.cfg's.
@@ -3267,6 +3267,21 @@ struct ContentView: View {
             let textureMemory = CS2TextureMemoryProfile.apply(options: dxmtOptions,
                 appID: profile?.steamAppID, saved: profile?.cs2TextureMemoryProfile,
                 budget: cs2TextureMemoryBudget, environmentAuto: customMipAuto, standalone: standaloneProbe)
+            if nativeSteamClient && textureMemory.applicable && !standaloneProbe {
+                var outcome = "skipped-filesystem"
+                do {
+                    let fm = FileManager.default
+                    let documents = fm.urls(for: .documentDirectory, in: .userDomainMask)[0].resolvingSymlinksInPath()
+                    let drive = documents.appendingPathComponent("wine/drive_c", isDirectory: true)
+                    let steam = try SteamClientUpdateFiles.launcher(drive: drive).deletingLastPathComponent()
+                    let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                    try fm.createDirectory(at: support, withIntermediateDirectories: true)
+                    outcome = CS2TextureMemoryProfile.configureVideo(textureMemory, documents: documents,
+                        steamRoot: steam, storage: support.resolvingSymlinksInPath()
+                            .appendingPathComponent("Madeira-CS2-Video-Profile-v1", isDirectory: true))
+                } catch { /* Optional quality setting never prevents genuine Steam launch. */ }
+                logStore.log("[cs2-video-profile-v1] result=\(outcome) mechanism=game-owned-texture-detail")
+            }
             let textureTransport = CS2TextureMemoryProfile.transport(
                 baseline: textureBaseline, decision: textureMemory, nativeSteam: nativeSteamClient)
             dxmtOptions = textureTransport.options
