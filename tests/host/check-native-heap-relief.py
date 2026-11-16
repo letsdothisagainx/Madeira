@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 HEADER = ROOT / 'build/dxmt-ios/native_heap_relief.h'
 
 FIXTURE = r'''
+#define _DARWIN_C_SOURCE 1
 #define _POSIX_C_SOURCE 200809L
 #include <assert.h>
 #include <errno.h>
@@ -176,13 +177,22 @@ int main(void) {
 '''
 
 DARWIN = r'''
+#define _DARWIN_C_SOURCE 1
 #define _POSIX_C_SOURCE 200809L
 #include <assert.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+/* os_proc_available_memory is an iOS API explicitly unavailable on macOS.
+ * Parse its real SDK declaration before adapting only this unavailable call;
+ * Mach task_info and malloc_zone_pressure_relief below remain real OS APIs.
+ * The 16MiB pressure input is SYNTHETIC, not observed macOS/iPhone headroom. */
+#include <os/proc.h>
+static size_t macos_fixture_ios_available_memory(void) { return (size_t)16 << 20; }
+#define os_proc_available_memory macos_fixture_ios_available_memory
 #include "native_heap_relief.h"
+#undef os_proc_available_memory
 int main(void) {
   const size_t length = (size_t)32 << 20;
   unsigned char *live = malloc(length), *temporary = malloc(length);
@@ -194,20 +204,20 @@ int main(void) {
   assert(sum);
   free(temporary);
   struct md_native_heap_reading before = md_native_heap_relief_measure();
-  assert(before.footprint); /* macOS may have no finite per-process headroom. */
+  assert(before.footprint && before.valid);
   const size_t allocator_returned = malloc_zone_pressure_relief(NULL, (size_t)64 << 20);
   struct md_native_heap_reading after = md_native_heap_relief_measure();
-  assert(after.footprint);
+  assert(after.footprint && after.valid);
   for (size_t n = 0; n < length; ++n) assert(live[n] == 0x6d);
   errno = 77;
   madeira_native_memory_relief_request(before.footprint, before.available);
   madeira_native_memory_relief_poll();
   assert(errno == 77);
   printf("DARWIN public malloc relief: allocator-returned=%zu actual-footprint-before=%llu after=%llu "
-         "available-before=%llu after=%llu headroom-valid-before=%d after=%d; "
+         "ios-availability-adapter=SYNTHETIC-16MiB available-before=%llu after=%llu; "
          "live32MiB contents intact. No required positive physical saving assumed.\n",
          allocator_returned, (unsigned long long)before.footprint, (unsigned long long)after.footprint,
-         (unsigned long long)before.available, (unsigned long long)after.available, before.valid, after.valid);
+         (unsigned long long)before.available, (unsigned long long)after.available);
   free(live);
 }
 '''

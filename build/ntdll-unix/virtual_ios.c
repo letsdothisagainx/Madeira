@@ -1135,9 +1135,14 @@ static unsigned ios_warmer_sweep_cycles( void )
 /* Existing footprint samples also request native free-heap relief while a
  * guest CPU stall produces no D3D11 calls. Only queue/coalesce work here; the
  * loop-top poll performs it outside every Wine/pool lock. */
+#ifdef __APPLE__
+#define IOS_NATIVE_MEMORY_OPTIONAL __attribute__((weak_import))
+#else
+#define IOS_NATIVE_MEMORY_OPTIONAL __attribute__((weak))
+#endif
 static void ios_native_memory_pressure_sample( uint64_t footprint )
 {
-    extern void madeira_native_memory_relief_request(uint64_t, uint64_t) __attribute__((weak));
+    extern void madeira_native_memory_relief_request(uint64_t, uint64_t) IOS_NATIVE_MEMORY_OPTIONAL;
     extern size_t os_proc_available_memory(void);
     int saved_errno = errno;
     if (madeira_native_memory_relief_request && footprint)
@@ -1156,7 +1161,7 @@ static void *ios_pool_warmer_thread( void *arg )
          * host thread, before any pool/virtual lock or guest callback. The
          * poll is a cheap no-op unless physical pressure requested work. */
         {
-            extern void madeira_native_memory_relief_poll(void) __attribute__((weak));
+            extern void madeira_native_memory_relief_poll(void) IOS_NATIVE_MEMORY_OPTIONAL;
             if (madeira_native_memory_relief_poll) madeira_native_memory_relief_poll();
         }
         /* ml1060: THE MONITOR WAS A TENTH OF THE MACHINE. Above 2400 MB this loop

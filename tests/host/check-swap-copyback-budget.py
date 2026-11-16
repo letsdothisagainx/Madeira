@@ -280,13 +280,20 @@ print('PASS: real bounded copy-back, constrained allocation, partial-map recover
 # It reuses an existing valid footprint sample, never walks VM regions, and
 # preserves errno even if the public availability query/backend changes it.
 monitor_sig = 'static void ios_native_memory_pressure_sample( uint64_t footprint )'
-monitor = monitor_sig + '\n' + ns['body_of'](ns['virt'], monitor_sig)
+optional_start = ns['virt'].index('#ifdef __APPLE__\n#define IOS_NATIVE_MEMORY_OPTIONAL')
+optional_end = ns['virt'].index('\nstatic void ios_native_memory_pressure_sample', optional_start)
+optional_linkage = ns['virt'][optional_start:optional_end]
+monitor = optional_linkage + '\n' + monitor_sig + '\n' + ns['body_of'](ns['virt'], monitor_sig)
+warmer = ns['body_of'](ns['virt'], 'static void *ios_pool_warmer_thread( void *arg )')
+poll_start = warmer.index('        {\n            extern void madeira_native_memory_relief_poll')
+poll_end = warmer.index('\n        }', poll_start) + len('\n        }')
+poll_bridge = 'static void poll_bridge(void)\n' + warmer[poll_start:poll_end] + '\n'
 bridge = r'''
 #include <assert.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <errno.h>
-static unsigned available_calls, request_calls;
+static unsigned available_calls, request_calls, poll_calls;
 static uint64_t last_footprint, last_available;
 size_t os_proc_available_memory(void)
 { available_calls++; errno = EIO; return 1234; }
@@ -295,6 +302,7 @@ bridge_main = r'''
 #if WITH_BACKEND
 void madeira_native_memory_relief_request(uint64_t footprint, uint64_t available)
 { request_calls++; last_footprint = footprint; last_available = available; errno = EBADF; }
+void madeira_native_memory_relief_poll(void) { poll_calls++; }
 #endif
 int main(void)
 {
@@ -302,21 +310,23 @@ int main(void)
     assert(errno == ENOMEM && !available_calls && !request_calls);
     ios_native_memory_pressure_sample(5678);
     assert(errno == ENOMEM);
+    poll_bridge();
 #if WITH_BACKEND
     assert(available_calls == 1 && request_calls == 1 && last_footprint == 5678 && last_available == 1234);
+    assert(poll_calls == 1);
 #else
     assert(!available_calls && !request_calls && !last_footprint && !last_available);
+    assert(!poll_calls);
 #endif
     return 0;
 }
 '''
 with tempfile.TemporaryDirectory() as tmp:
     source, binary = Path(tmp) / 'monitor.c', Path(tmp) / 'monitor'
-    source.write_text(bridge + monitor + bridge_main)
+    source.write_text(bridge + monitor + poll_bridge + bridge_main)
     for enabled in (0, 1):
         subprocess.run(['cc', '-O1', '-Wall', '-Werror', f'-DWITH_BACKEND={enabled}', '-o', str(binary), str(source)], check=True)
         subprocess.run([str(binary)], check=True)
-warmer = ns['body_of'](ns['virt'], 'static void *ios_pool_warmer_thread( void *arg )')
 assert warmer.count('ios_native_memory_pressure_sample(') == 2
 assert 'ios_native_memory_pressure_sample( (uint64_t)fvmi.phys_footprint );' in warmer
 assert 'ios_native_memory_pressure_sample( (uint64_t)vmi.phys_footprint );' in warmer
