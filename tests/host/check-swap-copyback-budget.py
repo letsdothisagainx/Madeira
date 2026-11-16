@@ -8,6 +8,7 @@ injected. Scratch bytes are measured, not iPhone footprint or CS2 performance.
 from pathlib import Path
 import hashlib
 import os
+import platform
 import subprocess
 import tempfile
 
@@ -325,7 +326,22 @@ with tempfile.TemporaryDirectory() as tmp:
     source, binary = Path(tmp) / 'monitor.c', Path(tmp) / 'monitor'
     source.write_text(bridge + monitor + poll_bridge + bridge_main)
     for enabled in (0, 1):
-        subprocess.run(['cc', '-O1', '-Wall', '-Werror', f'-DWITH_BACKEND={enabled}', '-o', str(binary), str(source)], check=True)
+        link = []
+        if platform.system() == 'Darwin' and not enabled:
+            # This deliberately backend-free executable has no originating
+            # dylib for either optional symbol. Apple's executable linker
+            # requires those two unresolved names to be allowed explicitly,
+            # even when their imports are weak. Limit this to the negative
+            # fixture; production still links/verifies its real backend.
+            link = ['-Wl,-U,_madeira_native_memory_relief_request',
+                    '-Wl,-U,_madeira_native_memory_relief_poll']
+        subprocess.run(['cc', '-O1', '-Wall', '-Werror', f'-DWITH_BACKEND={enabled}',
+                        '-o', str(binary), str(source)] + link, check=True)
+        if link:
+            symbols = subprocess.check_output(['nm', '-m', str(binary)], text=True)
+            for symbol in ('_madeira_native_memory_relief_request', '_madeira_native_memory_relief_poll'):
+                entry = [line for line in symbols.splitlines() if line.rstrip().endswith(symbol) or symbol + ' ' in line]
+                assert len(entry) == 1 and '(undefined)' in entry[0] and 'weak' in entry[0], entry
         subprocess.run([str(binary)], check=True)
 assert warmer.count('ios_native_memory_pressure_sample(') == 2
 assert 'ios_native_memory_pressure_sample( (uint64_t)fvmi.phys_footprint );' in warmer
