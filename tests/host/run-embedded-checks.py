@@ -109,6 +109,8 @@ commands = [
     ['python3', 'tests/host/check-metal-diagnostics.py'],
     ['python3', 'tests/host/check-metal-lifecycle.py'],
     ['python3', 'tests/host/check-dxmt-memory-pressure.py'],
+    ['python3', 'tests/host/check-dxmt-growth-events.py', '--require-darwin'],
+    ['python3', 'tests/host/check-dxmt-initializer-failure.py', '--sanitize'],
     ['python3', 'tests/host/check-dxmt-resource-budget.py'],
     ['python3', 'tests/host/check-cs2-texture-memory-profile.py', '--require-swift'],
     ['python3', 'tests/host/check-cs2-video-profile.py', '--require-swift'],

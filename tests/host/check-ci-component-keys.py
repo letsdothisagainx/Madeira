@@ -65,6 +65,8 @@ cases = {
     'metal-lifecycle-stage': ('tools/build/stage-dxmt-lifecycle.py', {'dxmt', 'ipa'}),
     'dxmt-pressure-budget': ('build/dxmt-ios/memory_pressure.hpp', {'dxmt', 'ipa'}),
     'dxmt-pressure-native': ('build/dxmt-ios/memory_pressure_native.h', {'dxmt', 'ipa'}),
+    'dxmt-growth-event-native': ('build/dxmt-ios/resource_growth_event_native.h', {'dxmt', 'ipa'}),
+    'dxmt-initializer-failure': ('tools/build/stage-dxmt-initializer-failure.py', {'dxmt', 'ipa'}),
     'dxmt-upload-retirement': ('tools/build/stage-dxmt-upload-memory.py', {'dxmt', 'ipa'}),
     'dxmt-dynamic-retirement': ('tools/build/stage-dxmt-dynamic-memory.py', {'dxmt', 'ipa'}),
     'dxmt-pressure-producer': ('tools/build/stage-dxmt-memory-pressure.py', {'dxmt', 'ipa'}),

@@ -27,10 +27,11 @@ def module(name):
 producer = module('memory-pressure')
 staged = producer.stage(original.decode())
 assert staged.count('case 40:') == 1
-assert staged.count('case 41:') == 1 and staged.count('case 42:') == 1
+assert staged.count('case 41:') == 1 and staged.count('case 42:') == 1 and staged.count('case 43:') == 1
 assert 'md_memory_pressure_query(a);' in staged
 assert 'md_resource_growth_acquire(a);' in staged and 'md_resource_growth_release(a);' in staged
-assert '(a->op == 7 || a->op == 40 || a->op == 41 || a->op == 42)' in staged
+assert '(a->op == 7 || a->op == 40 || a->op == 41 || a->op == 42 || a->op == 43)' in staged
+assert 'md_resource_growth_handoff(a);' in staged
 old_op7 = original.decode().split('  case 7: {')[1].split('  case 8: {')[0]
 assert staged.split('  case 7: {')[1].split('  case 8: {')[0] == old_op7
 assert 'if (wmtr_enabled()) break;\n    md_memory_pressure_query(a);' in staged
@@ -177,6 +178,13 @@ unsigned long long ios_thread_process_snapshot(void *owner, unsigned *threads, i
   (void)owner; *threads = 0; *exiting = 0; *reclaimed = 0; return 0;
 }
 unsigned long long ios_thread_process_quiescent_lease(void *owner) { (void)owner; return 0; }
+uint64_t madeira_growth_event_retain(uint64_t handle, void *owner, unsigned long long lease) {
+  (void)handle; (void)owner; (void)lease; return 0; /* no event backend in op40 fixture */
+}
+int madeira_growth_event_value(uint64_t cookie, uint64_t *value) {
+  (void)cookie; if (value) *value = 0; return 0; /* unavailable, never complete */
+}
+void madeira_growth_event_release(uint64_t cookie) { assert(!cookie); }
 int mach_task_self(void) { return 1; }
 int task_info(int task, int flavor, task_info_t data, mach_msg_type_number_t *count) {
   assert(task == 1 && flavor == TASK_VM_INFO);
@@ -267,5 +275,6 @@ int task_info(int, int, task_info_t, mach_msg_type_number_t *);
                     '--headers', str(ROOT / 'build/dxmt-ios')], check=True)
     assert output.read_text() == staged
     assert (output.parent / 'memory_pressure_native.h').read_bytes() == (ROOT / 'build/dxmt-ios/memory_pressure_native.h').read_bytes()
+    assert (output.parent / 'resource_growth_event_native.h').read_bytes() == (ROOT / 'build/dxmt-ios/resource_growth_event_native.h').read_bytes()
     assert hashlib.sha256(native_source.read_bytes()).digest() == hashlib.sha256(original).digest()
 print('PASS actual pressure policy/native helper: measured 6144MiB, valid zero headroom, unknown/sentinels/overflow, errno, concurrent 100ms cache; native op40/WoW64 staged without altering op7/vendor input. iPhone allocations and map loading remain unverified.')

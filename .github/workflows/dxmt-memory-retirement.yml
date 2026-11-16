@@ -57,12 +57,15 @@ jobs:
           CXX: clang++
         run: |
           python3 tests/host/check-dxmt-memory-pressure.py
+          python3 tests/host/check-dxmt-initializer-failure.py --sanitize
           python3 tests/host/check-dxmt-resource-budget.py
           if [[ "$RUNNER_OS" == macOS ]]; then
+            python3 tests/host/check-dxmt-growth-events.py --require-darwin
             python3 tests/host/check-cs2-texture-memory-profile.py --require-swift
             python3 tests/host/check-cs2-video-profile.py --require-swift
             python3 tests/host/check-pool-startup-budget.py --require-swift
           else
+            python3 tests/host/check-dxmt-growth-events.py
             python3 tests/host/check-cs2-texture-memory-profile.py
             python3 tests/host/check-cs2-video-profile.py
             python3 tests/host/check-pool-startup-budget.py

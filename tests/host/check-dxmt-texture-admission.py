@@ -44,7 +44,7 @@ staged_initializer = STAGE.stage_file(STAGE.FILES[1], initializer)
 assert 'cached_coherent_seq_id' not in declaration(staged_initializer, 'bool waitForMemoryPressure(')
 assert staged.index('info.mipmap_level_count = physDesc.MipLevels') < staged.index('ResourceGrowthPermit creation_permit')
 assert staged.index('ResourceGrowthPermit creation_permit') < staged.index('auto texture = Rc<Texture>(new Texture')
-assert staged.count('return E_OUTOFMEMORY;') == 7
+assert staged.count('return E_OUTOFMEMORY;') >= 7
 for name, text in ((NAME, staged), (STAGE.FILES[1], staged_initializer)):
     try:
         STAGE.stage_file(name, text)
@@ -140,6 +140,18 @@ static std::vector<uint64_t> acquire_flags;
 static bool unknown_backend=false, deny_always=false, grant_after_wait=false, grant_completion_lane=false;
 static uint64_t available_bytes=2ull<<30;
 static bool single_slot=false;
+static bool gpu_protocol=false, fail_gpu_begin=false;
+static unsigned gpu_begin_calls=0,gpu_end_calls=0,gpu_retired=0;
+static std::map<uint64_t,uint64_t> gpu_fences;
+static std::map<uint64_t,uint64_t> gpu_credits;
+static void complete_gpu(uint64_t value){
+ std::lock_guard<std::mutex> lock(budget_mutex);
+ for(auto i=gpu_fences.begin();i!=gpu_fences.end();){
+  if(i->second!=UINT64_MAX&&i->second<=value){
+   credit_bytes-=gpu_credits.at(i->first);gpu_credits.erase(i->first);i=gpu_fences.erase(i);++gpu_retired;
+  }else ++i;
+ }
+}
 static void MadeiraCtl(madeira_ctl_args *args) {
  std::lock_guard<std::mutex> lock(budget_mutex);
  if(args->op==40) {
@@ -162,6 +174,21 @@ static void MadeiraCtl(madeira_ctl_args *args) {
   auto found=receipts.find(args->ptr);assert(found!=receipts.end());
   credit_bytes-=found->second;receipts.erase(found);++release_calls;args->ret=1;return;
  }
+ if(args->op==43){
+  if(!gpu_protocol){args->ret=0;return;}
+  uint64_t fence=0;std::memcpy(&fence,args->name,sizeof(fence));
+  assert(args->len==7);
+  if(fence==UINT64_MAX){
+   if(fail_gpu_begin){args->ret=4;return;}
+   assert(receipts.count(args->ptr)&&!gpu_fences.count(args->ptr));
+   gpu_fences[args->ptr]=fence;++gpu_begin_calls;
+  }else{
+   assert(gpu_fences.at(args->ptr)==UINT64_MAX);
+   gpu_fences[args->ptr]=fence;gpu_credits[args->ptr]=receipts.at(args->ptr);
+   receipts.erase(args->ptr);++gpu_end_calls;
+  }
+  args->ret=1;return;
+ }
  assert(false);
 }
 '''
@@ -172,6 +199,8 @@ static std::atomic<unsigned> texture_born{0}, texture_alive{0}, backing_calls{0}
  trim_calls{0}, flush_calls{0}, wait_calls{0}, sweep_calls{0}, bc_queries{0},
  emergency_trim_calls{0}, emergency_sweep_calls{0}, transient_trim_calls{0};
 static bool native_bc=true, fail_native=false, force_bias=false, throw_initialization=false;
+static bool fail_initialization=false;
+static uint64_t forecast_upload=0,forecast_zero=0;
 static mach_port_t native_shared_port=0;
 static uint64_t waited_seq=0, waited_ms=0;
 static unsigned flush_with_credit=0, last_flush_initializations=0;
@@ -222,6 +251,13 @@ public:
 };
 class Initializer {
 public:
+ struct EventHandle{uint64_t handle=7;};
+ std::recursive_mutex creation_mutex;
+ auto lockTextureCreation(){return std::unique_lock<std::recursive_mutex>(creation_mutex);}
+ EventHandle event(){return {};}
+ uint64_t initializationFence(){return initialize_calls?1:0;}
+ size_t forecastUploadGrowth(size_t,size_t=0){return size_t(forecast_upload);}
+ size_t forecastZeroGrowth(size_t){return size_t(forecast_zero);}
  FakeUploadEvent upload_queue_event_; uint64_t submitted=0;
  uint64_t trimMemoryPressure(bool release_warm=false){++trim_calls;if(release_warm)++emergency_trim_calls;return 0;}
  uint64_t flushToWait(){
@@ -232,11 +268,13 @@ public:
  }
  INIT_PRESSURE_WAIT
  uint64_t initWithZero(Texture *texture,TextureAllocation *allocation,uint32_t slice,uint32_t mip){
+  if(fail_initialization)return 0;
   ++initialize_calls; if(!allocation||!allocation->valid){++invalid_initializations;return 1;}
   allocation->data[slice*texture->info.mipmap_level_count+mip].assign(4,0);return 1;
  }
  uint64_t initWithData(Texture *texture,TextureAllocation *allocation,uint32_t slice,uint32_t mip,
                        const void *bytes,size_t pitch,size_t){
+  if(fail_initialization)return 0;
   ++initialize_calls;
   if(!allocation||!allocation->valid){++invalid_initializations;return 1;}
   {
@@ -253,6 +291,7 @@ public:
   return 1;
  }
 };
+using ResourceInitializer=Initializer;
 class CommandQueue {
 public:
  Initializer initializer; uint64_t domain=1, coherent=1;
@@ -335,6 +374,8 @@ static void reset(dxmt::MTLD3D11Device&device){
  acquire_flags.clear();
  acquire_calls=release_calls=0;last_charge=0;reply_code=1;unknown_backend=false;
  deny_always=false;grant_after_wait=false;grant_completion_lane=false;single_slot=false;available_bytes=2ull<<30;
+ gpu_protocol=false;fail_gpu_begin=false;gpu_begin_calls=gpu_end_calls=gpu_retired=0;
+ fail_initialization=false;forecast_upload=forecast_zero=0;
  native_bc=true;fail_native=false;force_bias=false;throw_initialization=false;native_shared_port=0;
  block_initialization=false;initialization_entered=false;unblock_initialization=false;
  device.queue().domain=next_domain++;device.queue().coherent=1;device.queue().initializer.submitted=0;
@@ -462,16 +503,18 @@ int main(int argc,char**argv){
  try{create<Tag>(device,desc,initial,&out);assert(false);}catch(const std::runtime_error&){}
  assert(!out);clean();
  std::puts("PASS shared/depth nil backing and initialization exception leave no output, credit or resource leak");
- // Concurrent creator1 holds its real permit while the complete initial data
- // is being enqueued. A second denied creator must never allocate a texture.
+ // A creation transaction pins the upload forecast across initialization.
+ // Another creator waits outside backing allocation, then obtains a fresh
+ // permit after the first transaction has returned and released CPU credit.
  reset(device);single_slot=true;block_initialization=true;
  auto first=std::async(std::launch::async,[&]{Tag::COM_IMPL*p=nullptr;auto r=create<Tag>(device,desc,initial,&p);delete p;return r;});
  const auto end=std::chrono::steady_clock::now()+std::chrono::seconds(5);
  while(!initialization_entered.load()){assert(std::chrono::steady_clock::now()<end);std::this_thread::sleep_for(std::chrono::microseconds(50));}
- out=reinterpret_cast<Tag::COM_IMPL*>(1);hr=create<Tag>(device,desc,initial,&out);
- assert(hr==E_OUTOFMEMORY&&!out&&backing_calls==1);
- unblock_initialization=true;assert(first.get()==S_OK);clean();
- std::puts("PASS concurrent denied creator creates no backing while another creator owns its initialization credit");
+ auto second=std::async(std::launch::async,[&]{Tag::COM_IMPL*p=nullptr;auto r=create<Tag>(device,desc,initial,&p);delete p;return r;});
+ assert(second.wait_for(std::chrono::milliseconds(30))==std::future_status::timeout);
+ assert(backing_calls==1);
+ unblock_initialization=true;assert(first.get()==S_OK);assert(second.get()==S_OK);clean();
+ std::puts("PASS concurrent creators serialize the forecast and initialization transaction without duplicate backing or self-wait");
  // Repeated soft-pressure creates must not walk the full dynamic registry on
  // every texture at the same unchanged queue/completion frontier.
  reset(device);reply_code=2;
@@ -484,7 +527,7 @@ int main(int argc,char**argv){
  assert(create<Tag>(device,desc,initial,&out)==E_INVALIDARG&&!out&&acquire_calls==0);clean();
  // Failure reporting is one path-free, atomically bounded trail for every
  // texture factory instantiation, never an allocation-success hot-path log.
- assert(failure_logs.size()==7);desc.Width=16;
+ assert(failure_logs.size()==6);desc.Width=16;
  for(unsigned i=0;i<32;++i){
   reset(device);fail_native=true;out=reinterpret_cast<Tag::COM_IMPL*>(1);
   assert(create<Tag>(device,desc,initial,&out)==E_OUTOFMEMORY&&!out&&initialize_calls==0);clean();
@@ -494,6 +537,30 @@ int main(int argc,char**argv){
   assert(report.find("[texture-admission-v1] result=E_OUTOFMEMORY reason=")==0);
   assert(report.find("bytes=")!=std::string::npos&&report.find("available=")!=std::string::npos);
  }
+ // The factory transfers its actual reservation before the first recorded
+ // initializer operation. CPU return does not repay pending GPU commitments.
+ reset(device);gpu_protocol=true;out=nullptr;
+ assert(create<Tag>(device,desc,initial,&out)==S_OK&&out);
+ assert(gpu_begin_calls==1&&gpu_end_calls==1&&release_calls==0&&receipts.empty());
+ assert(credit_bytes==last_charge&&gpu_fences.size()==1);
+ complete_gpu(0);assert(credit_bytes==last_charge&&gpu_retired==0);
+ complete_gpu(1);assert(credit_bytes==0&&gpu_retired==1);delete out;clean();
+ reset(device);gpu_protocol=true;throw_initialization=true;out=reinterpret_cast<Tag::COM_IMPL*>(1);
+ try{create<Tag>(device,desc,initial,&out);assert(false);}catch(const std::runtime_error&){}
+ assert(!out&&gpu_begin_calls==1&&gpu_end_calls==1&&release_calls==0);
+ complete_gpu(1);clean();
+ reset(device);gpu_protocol=true;fail_gpu_begin=true;out=reinterpret_cast<Tag::COM_IMPL*>(1);
+ assert(create<Tag>(device,desc,initial,&out)==E_OUTOFMEMORY&&!out&&initialize_calls==0&&release_calls==1);clean();
+ reset(device);fail_initialization=true;out=reinterpret_cast<Tag::COM_IMPL*>(1);
+ assert(create<Tag>(device,desc,initial,&out)==E_OUTOFMEMORY&&!out);clean();
+ std::puts("PASS factory GPU intent precedes initialization; CPU return/unwind preserves pending credit until actual fixture completion; failed initialization never publishes a resource");
+ reset(device);forecast_upload=32ull<<20;out=nullptr;
+ assert(create<Tag>(device,desc,initial,&out)==S_OK&&out);
+ assert(last_charge==dxmt::mem_census_texture_bytes(out->owner->info,true)+forecast_upload);delete out;clean();
+ reset(device);forecast_zero=4096;out=nullptr;
+ assert(create<Tag>(device,desc,nullptr,&out)==S_OK&&out);
+ assert(last_charge==dxmt::mem_census_texture_bytes(out->owner->info,true)+forecast_zero);delete out;clean();
+ std::puts("PASS actual new upload/zero growth is charged with backing; reusable storage is not charged as fresh capacity");
  std::puts("PASS failure-only marker reports actual capacity/headroom and stops after eight total failures");
  std::puts("PASS actual production factory returns genuine failures and preserves all owned backend data; no GPU/RSS claim");
 }

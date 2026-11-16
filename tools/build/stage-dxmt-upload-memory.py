@@ -29,7 +29,8 @@ def stage_ring(source):
     std::lock_guard<mutex> lock(mutex_);
     if (!fifo.empty()) {
       const auto &latest = fifo.back();
-      if (align(latest.allocated_size, alignment) + size <= latest.total_size)
+      const size_t aligned = align(latest.allocated_size, alignment);
+      if (aligned <= latest.total_size && size <= latest.total_size - aligned)
         return 0;
       const auto &front = fifo.front();
       if (front.last_used_seq_id <= coherent_id && front.total_size >= std::max(size, ring_block_size()) &&
@@ -37,6 +38,37 @@ def stage_ring(source):
         return 0;
     }
     return std::max(size, ring_block_size());
+  }
+
+  // A texture's first (largest) subresource can fit the tail of a completed
+  // latest block and mark it pending before the remaining mip batch arrives.
+  // Do not promise whole-batch reuse merely because that same block could
+  // have been recycled had the batch been a single allocation.
+  size_t batch_growth(uint64_t coherent_id, size_t total, size_t first, size_t alignment) {
+    std::lock_guard<mutex> lock(mutex_);
+    if (!total)
+      return 0;
+    const size_t growth = std::max(total, ring_block_size());
+    if (!first) first = total;
+    if (first > total || !alignment || (alignment & (alignment - 1)))
+      return ~size_t{0};
+    if (fifo.empty())
+      return growth;
+    const auto &latest = fifo.back();
+    size_t latest_free = 0;
+    if (latest.allocated_size <= ~size_t{0} - (alignment - 1)) {
+      const size_t aligned = align(latest.allocated_size, alignment);
+      if (aligned <= latest.total_size)
+        latest_free = latest.total_size - aligned;
+    }
+    if (latest_free >= total)
+      return 0;
+    const auto &front = fifo.front();
+    if (front.last_used_seq_id <= coherent_id && front.total_size >= growth &&
+        (front.total_size == ring_block_size() || front.reusable_oversize) &&
+        (&front != &latest || latest_free < first))
+      return 0;
+    return growth;
   }""")
     marker = "template <typename Allocator, size_t BlockSize, class mutex>\nRingBumpState<Allocator, BlockSize, mutex>::Allocation &"
     source = replace_once(source, marker, """template <typename Allocator, size_t BlockSize, class mutex>
@@ -66,14 +98,30 @@ RingBumpState<Allocator, BlockSize, mutex>::trim_completed(uint64_t coherent_id,
 def stage_initializer_header(source):
     if "uint64_t trimMemoryPressure(" in source:
         raise ValueError("DXMT upload initializer header is already staged")
+    source = replace_once(source, '#include "dxmt_ring_bump_allocator.hpp"',
+                          '#include "dxmt_ring_bump_allocator.hpp"\n#include "memory_pressure.hpp"')
     source = replace_once(source, "  uint64_t flushToWait();", """  uint64_t flushToWait();
 
   // Only completed transient upload storage is reclaimable. Texture/SRV
   // ownership, pending CPU commands and live GPU uploads are unchanged.
-  uint64_t trimMemoryPressure(bool release_warm = false);""")
+  uint64_t trimMemoryPressure(bool release_warm = false);
+
+  // The initializer and its parent queue share one pressure history. Query
+  // before taking its mutex; never hold a transient-ring lock around this.
+  MemoryPressureDecision transientMemoryPressureDecision();
+
+  // Estimate genuine additional upload backing at the real GPU frontier.
+  // This is a synchronized forecast, not a reservation or completion signal.
+  size_t forecastUploadGrowth(size_t total_payload_bytes, size_t first_subresource_bytes = 0);
+
+  // Conservatively cover every initialization operation observed so far,
+  // including pending commands and other creators sharing this initializer.
+  uint64_t initializationFence();""")
     source = replace_once(source, "  uint64_t flushInternal();", """  uint64_t flushInternal();
   uint64_t refreshCompletedLocked(bool trim, bool release_warm = false);
   void prepareUploadLocked(size_t size);""")
+    source = replace_once(source, "  dxmt::mutex mutex_;", """  dxmt::mutex mutex_;
+  MemoryPressureController transient_pressure_controller_;""")
     return source
 
 
@@ -113,8 +161,8 @@ ResourceInitializer::refreshCompletedLocked(bool trim, bool release_warm) {
   cached_coherent_seq_id = std::max(cached_coherent_seq_id, upload_queue_event_.signaledValue());
   uint64_t released = 0;
   if (trim) {
-    const auto pressure = memoryPressureSnapshot();
-    const bool keep_warm = !release_warm && pressure.valid && pressure.available >= pressure.reserve / 2;
+    const auto decision = transient_pressure_controller_.evaluate(memoryPressureSnapshot());
+    const bool keep_warm = !release_warm && decision.valid && !decision.critical;
     released = gpu_command_heap_allocator.trim_completed(cached_coherent_seq_id, keep_warm);
   } else
     gpu_command_heap_allocator.free_blocks(cached_coherent_seq_id);
@@ -132,10 +180,36 @@ ResourceInitializer::refreshCompletedLocked(bool trim, bool release_warm) {
 
 uint64_t
 ResourceInitializer::trimMemoryPressure(bool release_warm) {
-  if (!release_warm && !memoryPressureSnapshot().needsReclaim())
+  const auto pressure = memoryPressureSnapshot();
+  std::lock_guard<dxmt::mutex> lock(mutex_);
+  const auto decision = transient_pressure_controller_.evaluate(pressure);
+  if (!release_warm && (!decision.valid || !decision.reclaim))
+    return 0;
+  return refreshCompletedLocked(true, release_warm);
+}
+
+MemoryPressureDecision
+ResourceInitializer::transientMemoryPressureDecision() {
+  const auto pressure = memoryPressureSnapshot();
+  std::lock_guard<dxmt::mutex> lock(mutex_);
+  return transient_pressure_controller_.evaluate(pressure);
+}
+
+uint64_t
+ResourceInitializer::initializationFence() {
+  std::lock_guard<dxmt::mutex> lock(mutex_);
+  return idle() ? current_seq_id_ - 1 : current_seq_id_;
+}
+
+size_t
+ResourceInitializer::forecastUploadGrowth(size_t total_payload_bytes, size_t first_subresource_bytes) {
+  if (!total_payload_bytes)
     return 0;
   std::lock_guard<dxmt::mutex> lock(mutex_);
-  return refreshCompletedLocked(true, release_warm);
+  const uint64_t completed = std::max(cached_coherent_seq_id, upload_queue_event_.signaledValue());
+  return gpu_command_heap_allocator.batch_growth(
+      completed, total_payload_bytes, first_subresource_bytes ? first_subresource_bytes : total_payload_bytes,
+      kResourceInitializerGpuUploadHeapAlignment);
 }
 
 void
@@ -176,13 +250,13 @@ def stage_queue(source):
                           '#include "dxmt_command_queue.hpp"\n#include "dxmt_dynamic.hpp"\n#include "memory_pressure.hpp"')
     source = replace_once(source, """    staging_allocator.free_blocks(internal_seq);
     copy_temp_allocator.free_blocks(internal_seq);
-    argbuf_allocator.free_blocks(internal_seq);""", """    auto pressure = memoryPressureSnapshot();
-    if (pressure.needsReclaim()) {
+    argbuf_allocator.free_blocks(internal_seq);""", """    const auto pressure = initializer.transientMemoryPressureDecision();
+    if (pressure.reclaim) {
       // The command buffer has finished, completion targets ran and the chunk
       // released its CPU references before this inclusive coherence frontier.
       // Real ring mutexes protect producers; null_mutex CPU/deferred command
       // heaps are deliberately NOT trimmed from this finishing thread.
-      const bool critical = pressure.available < pressure.reserve / 2;
+      const bool critical = !pressure.valid || pressure.critical;
       staging_allocator.trim_completed(internal_seq, !critical);
       copy_temp_allocator.trim_completed(internal_seq, !critical);
       argbuf_allocator.trim_completed(internal_seq, !critical);

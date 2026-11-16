@@ -30,6 +30,8 @@ code=r'''
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <map>
+#include <chrono>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -57,11 +59,40 @@ extern "C" size_t os_proc_available_memory(void){errno=42;return available.load(
 extern "C" int sysctlbyname(const char*key,void*out,size_t*size,void*in,size_t n){
  assert(!strcmp(key,"hw.memsize")&&!in&&!n);*(uint64_t*)out=7672*MiB;*size=sizeof(uint64_t);errno=43;return 0;
 }
+
+struct FakeEvent {
+ uint64_t handle;void* owner;uint64_t lease;std::atomic<uint64_t> value{0};
+ FakeEvent(uint64_t h,void*o,uint64_t l):handle(h),owner(o),lease(l){}
+};
+static FakeEvent events[]={{0x51,(void*)0x10000,1},{0x52,(void*)0x20000,2},{0x61,(void*)0x10000,3}};
+static std::mutex event_mutex;
+static std::map<uint64_t,FakeEvent*> event_loans;
+static uint64_t next_event_cookie=1;
+static std::atomic<unsigned> event_reads{0},event_releases{0};
+static std::atomic<bool> check_release_unlocked{false};
+extern "C" uint64_t madeira_growth_event_retain(uint64_t handle,void*owner,unsigned long long lease){
+ std::lock_guard<std::mutex> lock(event_mutex);
+ for(auto&e:events)if(e.handle==handle&&e.owner==owner&&e.lease==lease){
+  uint64_t cookie=next_event_cookie++;event_loans.emplace(cookie,&e);return cookie;
+ }
+ return 0;
+}
+extern "C" int madeira_growth_event_value(uint64_t cookie,uint64_t*out){
+ std::lock_guard<std::mutex> lock(event_mutex);++event_reads;
+ auto i=event_loans.find(cookie);if(i==event_loans.end())return 0;
+ *out=i->second->value.load();return 1;
+}
+extern "C" void madeira_growth_event_release(uint64_t cookie){
+ if(check_release_unlocked){assert(!pthread_mutex_trylock(&md_resource_growth_mutex));pthread_mutex_unlock(&md_resource_growth_mutex);}
+ std::lock_guard<std::mutex> lock(event_mutex);assert(event_loans.erase(cookie)==1);++event_releases;
+}
+
 void MadeiraCtl(madeira_ctl_args*args){
  assert(args->ret==0);
  if(args->op==40) md_memory_pressure_query(args);
  else if(args->op==41){++acquire_calls;md_resource_growth_acquire(args);}
  else if(args->op==42){++release_calls;md_resource_growth_release(args);}
+ else if(args->op==43)md_resource_growth_handoff(args);
  else std::abort();
 }
 static void sample(uint64_t remaining){available=remaining;footprint=6144*MiB-remaining;}
@@ -90,150 +121,178 @@ int ios_thread_process_finalize_native(void*,unsigned long long lease){assert(le
 void wine_log_write(const char*,...){ }
 extern "C" void fixture_finish_process_memory(void*);
 '''+r'''
+static uint64_t detail(const madeira_ctl_args&a,unsigned i){uint64_t v;assert(i<4);memcpy(&v,a.name+8*i,8);return v;}
+static madeira_ctl_args handoff(uint64_t token,uint64_t event,uint64_t target){
+ madeira_ctl_args a={43,0,token,event,{0}};memcpy(a.name,&target,8);errno=72;MadeiraCtl(&a);assert(errno==72);return a;
+}
+static void await_waiter(){
+ auto end=std::chrono::steady_clock::now()+std::chrono::seconds(2);
+ for(;;){
+  assert(!pthread_mutex_lock(&md_resource_growth_mutex));auto n=md_resource_growth_waiters;
+  assert(!pthread_mutex_unlock(&md_resource_growth_mutex));if(n)return;
+  assert(std::chrono::steady_clock::now()<end);std::this_thread::sleep_for(std::chrono::milliseconds(1));
+ }
+}
+struct WaitResult {madeira_ctl_args result{};};
+static void*wait_entry(void*pointer){caller=(void*)0x10000;((WaitResult*)pointer)->result=acquire(16*MiB,1);return pointer;}
 int main(){
- caller=(void*)0x10000;sample(1244*MiB);
- // All eight streamers see the same real measurement but cannot collectively
- // spend the reserve. No metadata-only read is treated as a byte allocation.
- std::atomic<unsigned> ready{0}, granted{0};std::atomic<bool> go{false}, done{false};
- std::vector<std::thread> workers;
- for(unsigned i=0;i<8;i++)workers.emplace_back([&]{
+ caller=(void*)0x10000;
+ assert(md_resource_growth_floor(768*MiB)==192*MiB);
+ assert(md_resource_growth_floor(128*MiB)==128*MiB);
+ assert(md_resource_growth_floor(1024*MiB)==256*MiB);
+ sample(1244*MiB);
+ std::atomic<unsigned> ready{0},granted{0};std::atomic<bool>go{false},done{false};
+ std::vector<std::thread>workers;
+ for(unsigned i=0;i<12;i++)workers.emplace_back([&]{
   caller=(void*)0x10000;ready++;while(!go.load())std::this_thread::yield();
-  auto a=acquire(128*MiB);if(a.ret==1||a.ret==2)++granted;
-  ready++;while(!done.load())std::this_thread::yield();
-  if(a.ptr)assert(release(a.ptr));
+  auto a=acquire(128*MiB);if(a.ptr)++granted;else assert(a.ret==3);
+  ready++;while(!done.load())std::this_thread::yield();if(a.ptr)assert(release(a.ptr));
  });
- while(ready<8) { std::this_thread::yield(); }
- go=true;
- while(ready<16) { std::this_thread::yield(); }
- assert(granted==6);assert(md_resource_growth_held==768*MiB);
+ while(ready<12){std::this_thread::yield();}go=true;
+ while(ready<24){std::this_thread::yield();}
+ assert(granted==8&&md_resource_growth_held==1024*MiB);
  done=true;for(auto&t:workers)t.join();assert(!md_resource_growth_held);
- std::puts("PASS 8 concurrent creators:6x128MiB admitted within1244MiB headroom/384MiB floor;2 honest denials;all receipts released");
- for(uint64_t mb:{5760,5875,6046,6135,6144}){
-  sample((6144-mb)*MiB);auto a=acquire(4*MiB);assert(a.ret==3&&!a.ptr);
+ std::puts("PASS real prospective-credit accounting:8/12 concurrent128MiB creators fit1244MiB headroom while preserving192MiB floor");
+ // Exact new device failures: neither a tiny texture nor an ordinary1024BC
+ // texture is rejected by a lifetime-spend counter or a1MiB size category.
+ for(const auto&observed:std::vector<std::pair<uint64_t,uint64_t>>{{260605704,8},{313657240,1398096},{384108536,1398096},{399918904,87376}}){
+  sample(observed.first);auto a=acquire(observed.second);assert(a.ptr&&a.ret==2&&a.len==observed.first);
+  assert(detail(a,0)==6144*MiB-observed.first&&detail(a,1)==0&&detail(a,2)==192*MiB&&!detail(a,3));
+  assert(md_resource_growth_held==observed.second&&release(a.ptr));
  }
- sample((6144-5376)*MiB);auto early=acquire(4*MiB);assert(early.ret==2);assert(release(early.ptr));
- sample((6144-5755)*MiB);early=acquire(4*MiB);assert(early.ret==2);assert(release(early.ptr));
+ // The cold path needs actual new upload backing as well as destination
+ // bytes. Replay the exact denied headroom with a genuine32MiB fresh block;
+ // a warm reused block is covered by the destination-only cases above.
+ for(const auto&observed:std::vector<std::pair<uint64_t,uint64_t>>{{260605704,8},{313657240,1398096}}){
+  const uint64_t cold_cost=observed.second+32*MiB;
+  sample(observed.first);auto a=acquire(cold_cost);assert(a.ptr&&a.ret==2&&a.len==observed.first);
+  assert(detail(a,1)==0&&detail(a,2)==192*MiB&&!detail(a,3));
+  assert(md_resource_growth_held==cold_cost&&a.len-md_resource_growth_held>=192*MiB);
+  assert(release(a.ptr)&&!md_resource_growth_held);
+ }
+ sample(300*MiB);unsigned resident=0;const uint64_t tex=1398096;
+ while(available.load()>=192*MiB+tex){
+  auto a=acquire(tex);assert(a.ptr);sample(available.load()-tex);assert(release(a.ptr));++resident;
+ }
+ assert(resident>64);auto no_room=acquire(tex,1);assert(no_room.ret==3&&detail(no_room,3)==1);
+ sample(available.load()+tex);auto real_free=acquire(tex);assert(real_free.ptr);assert(release(real_free.ptr));
+ assert(available<400*MiB); // Recovery is real freed capacity, not a960MiB watermark.
+ sample(192*MiB);auto at_floor=acquire(8,1);assert(at_floor.ret==3&&detail(at_floor,3)==1);
+ sample(192*MiB+8);auto exact=acquire(8);assert(exact.ptr);assert(release(exact.ptr));
+ assert(acquire(1,2).ret==4);
+ std::puts("PASS actual8/1398096-byte failures now use measured capacity; live resident bytes still constrain growth, and real frees recover below the old960MiB reset watermark");
+ // A normal caller must return to PE to flush any unsubmitted initializer
+ // work. Only its explicit retry can wait for another creator's credit.
+ sample(300*MiB);auto pending=acquire(100*MiB);assert(pending.ptr);
+ auto started=std::chrono::steady_clock::now();auto first=acquire(16*MiB);
+ assert(first.ret==3&&detail(first,3)==2&&std::chrono::steady_clock::now()-started<std::chrono::seconds(1));
+ std::thread cpu_release([&]{caller=(void*)0x10000;await_waiter();assert(release(pending.ptr));});
+ const unsigned before_query=queries.load();auto next=acquire(16*MiB,1);cpu_release.join();
+ assert(next.ptr&&queries>before_query&&release(next.ptr));assert(!md_resource_growth_waiters);
+ pending=acquire(100*MiB);assert(pending.ptr);started=std::chrono::steady_clock::now();
+ auto busy=acquire(16*MiB,1);auto elapsed=std::chrono::steady_clock::now()-started;
+ assert(busy.ret==3&&detail(busy,3)==2&&elapsed>=std::chrono::milliseconds(180)&&elapsed<std::chrono::seconds(2));
+ assert(release(pending.ptr));
+ std::puts("PASS first admission never blocks PE submission; explicit concurrency retry releases mutex, wakes on real CPU release and times out within its bounded deadline");
+ // Timed retry always revalidates physical memory and owner identity.
+ caller=(void*)0x20000;pending=acquire(100*MiB);assert(pending.ptr);caller=(void*)0x10000;
+ WaitResult changed;std::thread changed_wait([&]{wait_entry(&changed);});await_waiter();sample(198*MiB);changed_wait.join();
+ assert(changed.result.ret==3&&detail(changed.result,3)==1);
+ caller=(void*)0x20000;assert(release(pending.ptr));caller=(void*)0x10000;sample(300*MiB);
+ caller=(void*)0x20000;pending=acquire(100*MiB);assert(pending.ptr);caller=(void*)0x10000;
+ WaitResult owner_exit;std::thread owner_wait([&]{wait_entry(&owner_exit);});await_waiter();owner_state(0,1,1,0,1);owner_wait.join();
+ assert(owner_exit.result.ret==4);owner_state(0,1,0,0,1);
+ caller=(void*)0x20000;assert(release(pending.ptr));caller=(void*)0x10000;
+ // pthread cancellation must not strand the global budget mutex/waiter count.
+ caller=(void*)0x20000;pending=acquire(100*MiB);assert(pending.ptr);caller=(void*)0x10000;
+ pthread_t canceled;WaitResult canceled_result;assert(!pthread_create(&canceled,nullptr,wait_entry,&canceled_result));
+ await_waiter();assert(!pthread_cancel(canceled));void*cancel_result=nullptr;assert(!pthread_join(canceled,&cancel_result));
+ assert(cancel_result==PTHREAD_CANCELED&&!md_resource_growth_waiters);
+ caller=(void*)0x20000;assert(release(pending.ptr));caller=(void*)0x10000;
+ assert(!pthread_mutex_trylock(&md_resource_growth_mutex));pthread_mutex_unlock(&md_resource_growth_mutex);
+ std::puts("PASS retry refreshes real physical pressure and owner state; canceled waiter releases native mutex and preserves all other creators' credits");
+ // Exact receipt capacity is prospective too, not a permanent texture limit.
+ sample(2048*MiB);std::vector<uint64_t>tokens;
+ for(unsigned i=0;i<MD_RESOURCE_GROWTH_RECEIPTS;i++){auto a=acquire(1);assert(a.ptr);tokens.push_back(a.ptr);}
+ assert(acquire(1).ret==3);
+ std::thread slot_release([&]{caller=(void*)0x10000;await_waiter();assert(release(tokens.front()));});
+ auto new_slot=acquire(1,1);slot_release.join();assert(new_slot.ptr);
+ for(unsigned i=1;i<tokens.size();i++) { assert(release(tokens[i])); }
+ assert(release(new_slot.ptr));
+ const auto saved_next=md_resource_growth_next;md_resource_growth_next=0;assert(acquire(1).ret==4);md_resource_growth_next=saved_next;
+ assert(acquire(UINT64_MAX).ret==3);assert(!md_resource_growth_held);
+ fail_query=true;{dxmt::ResourceGrowthPermit p(16*MiB);assert(!p.known()&&!p.denied());}fail_query=false;
+ {dxmt::ResourceGrowthPermit p(32*MiB);assert(p.known()&&!p.denied());dxmt::ResourceGrowthPermit q(static_cast<dxmt::ResourceGrowthPermit&&>(p));
+  q=dxmt::ResourceGrowthPermit(64*MiB);assert(md_resource_growth_held==64*MiB);}
  assert(!md_resource_growth_held);
- std::puts("PASS observed near-limit footprint replay: fresh measured pressure denies growth rather than consuming the physical reserve");
- sample(800*MiB);md_resource_growth_pressure=0;
- auto a=acquire(16*MiB);assert(a.ret==1);auto b=acquire(512*MiB);assert(b.ret==3);assert(release(a.ptr));
- a=acquire(4*MiB);assert(a.ret==2);assert(release(a.ptr));sample(1000*MiB);
- a=acquire(4*MiB);assert(a.ret==1);assert(release(a.ptr));
- a=acquire(500*MiB);assert(a.ret==2);assert(release(a.ptr));
- sample(2048*MiB);fail_query=true;{dxmt::ResourceGrowthPermit p(16*MiB);assert(!p.known()&&!p.denied());}
- fail_query=false;
- std::puts("PASS separated pressure/recovery watermarks and explicit unavailable measurement without invented credit");
- {
-  dxmt::ResourceGrowthPermit p(32*MiB);assert(p.known()&&!p.denied());
-  assert(md_resource_growth_held==32*MiB);dxmt::ResourceGrowthPermit q(static_cast<dxmt::ResourceGrowthPermit&&>(p));
-  assert(md_resource_growth_held==32*MiB);
-  q=dxmt::ResourceGrowthPermit(64*MiB);assert(md_resource_growth_held==64*MiB);
- }
- assert(!md_resource_growth_held);
- std::puts("PASS actual C++ permit scope/move/assignment release; constructor failure paths do not retain credit");
- a=acquire(64*MiB);caller=(void*)0x20000;assert(!release(a.ptr));assert(md_resource_growth_held==64*MiB);
- caller=(void*)0x10000;assert(release(a.ptr));assert(!release(a.ptr));
- std::vector<uint64_t> tokens;
- for(unsigned i=0;i<MD_RESOURCE_GROWTH_RECEIPTS;i++){auto r=acquire(1);assert(r.ret==1||r.ret==2);tokens.push_back(r.ptr);}
- assert(acquire(1).ret==4);for(auto token:tokens)assert(release(token));
- assert(!md_resource_growth_held);assert(acquire(UINT64_MAX).ret==3);
- std::puts("PASS finite receipt table, overflow and duplicate/foreign-token refusal without underflow");
- // Replay the actual failure: an ordinary request must reclaim first, then
- // tiny real textures can finish without globally lowering the384MiB reserve.
- assert(md_resource_completion_budget(768*MiB,384*MiB)==128*MiB);
- assert(md_resource_completion_budget(256*MiB,128*MiB)==0);
- assert(md_resource_completion_budget(1024*MiB,512*MiB)==128*MiB);
- sample(2048*MiB);auto reset=acquire(1);assert(reset.ptr);assert(release(reset.ptr));
- uint64_t expected_spent=0;
- for(const auto &observed:std::vector<std::pair<uint64_t,uint64_t>>{{402671440,43688},{399918904,87376}}){
-  sample(observed.first);assert(acquire(observed.second).ret==3);
-  auto tiny=acquire(observed.second,1);assert(tiny.ret==2&&tiny.ptr&&tiny.len==observed.first);
-  expected_spent+=observed.second;assert(md_resource_completion_spent==expected_spent);
-  assert(md_resource_growth_held==observed.second);assert(release(tiny.ptr));
-  assert(md_resource_completion_spent==expected_spent&&!md_resource_growth_held);
- }
- const uint64_t before_unknown=md_resource_completion_spent;
- assert(acquire(1,2).ret==4&&md_resource_completion_spent==before_unknown);
- assert(acquire(MiB+1,1).ret==3&&md_resource_completion_spent==before_unknown);
- sample(256*MiB);assert(acquire(1,1).ret==3); // Absolute floor is never spent.
- sample(256*MiB+1);auto edge=acquire(1,1);assert(edge.ptr);assert(release(edge.ptr));
- const auto before_raii=md_resource_completion_spent;
- sample(380*MiB);
- {
-  dxmt::ResourceGrowthPermit normal(MiB);assert(normal.denied()&&normal.nativeStatus()==3);
-  dxmt::ResourceGrowthPermit retry(MiB,true);assert(retry.known()&&!retry.denied()&&retry.needsReclaim());
-  assert(md_resource_growth_held==MiB&&md_resource_completion_spent==before_raii+MiB);
-  dxmt::ResourceGrowthPermit moved(static_cast<dxmt::ResourceGrowthPermit&&>(retry));
-  assert(md_resource_growth_held==MiB);
- }
- assert(!md_resource_growth_held&&md_resource_completion_spent==before_raii+MiB);
- std::puts("PASS actual43688/87376-byte texture failures: normal request denies, explicit post-reclaim retry grants; large/unknown/floor-violating requests still deny");
- // CPU receipts are short-lived; their release cannot repeatedly replenish
- // the completion lane while real memory is still under pressure.
- sample(2048*MiB);reset=acquire(1);assert(reset.ptr);assert(release(reset.ptr));
- sample(380*MiB);
- for(unsigned i=0;i<128;++i){auto small=acquire(MiB,1);assert(small.ptr&&small.ret==2);assert(release(small.ptr));}
- assert(md_resource_completion_spent==128*MiB&&!md_resource_growth_held);
- assert(acquire(1,1).ret==3);
- sample(500*MiB);auto ordinary=acquire(MiB);assert(ordinary.ptr);assert(release(ordinary.ptr));
- assert(md_resource_completion_spent==128*MiB);
- sample(380*MiB);fail_query=true;auto unavailable=acquire(MiB,1);assert(!unavailable.ret&&!unavailable.ptr);
- fail_query=false;assert(md_resource_completion_spent==128*MiB&&acquire(1,1).ret==3);
- sample(1000*MiB);reset=acquire(1);assert(reset.ptr);assert(release(reset.ptr));
- assert(!md_resource_completion_spent);
- std::puts("PASS finite128MiB pressure-episode lane: sequential releases and unknown/partial recovery cannot refill it; fresh real recovery does");
- // Pending creators consume the same physical headroom. At380MiB remaining,
- // the256MiB absolute floor permits124 concurrent1MiB creators, not128/160.
- sample(380*MiB);ready=0;granted=0;go=false;done=false;workers.clear();
- for(unsigned i=0;i<8;++i)workers.emplace_back([&]{
-  caller=(void*)0x10000;std::vector<uint64_t> held;ready++;
-  while(!go.load())std::this_thread::yield();
-  for(unsigned j=0;j<20;++j){auto small=acquire(MiB,1);if(small.ptr){++granted;held.push_back(small.ptr);}else assert(small.ret==3);}
-  ready++;while(!done.load())std::this_thread::yield();
-  for(auto token:held)assert(release(token));
- });
- while(ready<8){std::this_thread::yield();}
- go=true;
- while(ready<16){std::this_thread::yield();}
- assert(granted==124&&md_resource_growth_held==124*MiB&&md_resource_completion_spent==124*MiB);
- done=true;for(auto&t:workers)t.join();assert(!md_resource_growth_held);
- for(unsigned i=0;i<4;++i){auto small=acquire(MiB,1);assert(small.ptr);assert(release(small.ptr));}
- assert(md_resource_completion_spent==128*MiB&&acquire(1,1).ret==3);
- std::puts("PASS concurrent completion creators preserve256MiB measured hard floor and share the same finite episode allowance");
- // A denied owner, unavailable receipt slot, or exhausted token generation
- // must not spend completion allowance before a real receipt is published.
- sample(2048*MiB);reset=acquire(1);assert(reset.ptr);assert(release(reset.ptr));tokens.clear();
- for(unsigned i=0;i<MD_RESOURCE_GROWTH_RECEIPTS;++i){auto r=acquire(1);assert(r.ptr);tokens.push_back(r.ptr);}
- sample(380*MiB);assert(acquire(MiB,1).ret==4&&!md_resource_completion_spent);
- for(auto token:tokens)assert(release(token));
- const auto saved_next=md_resource_growth_next;md_resource_growth_next=0;
- assert(acquire(MiB,1).ret==4&&!md_resource_completion_spent);md_resource_growth_next=saved_next;
- owner_state(0,1,1,0,1);assert(acquire(MiB,1).ret==4&&!md_resource_completion_spent);
- owner_state(0,1,0,0,1);auto owned_lane=acquire(MiB,1);assert(owned_lane.ptr);
- caller=(void*)0x20000;assert(!release(owned_lane.ptr));caller=(void*)0x10000;
- assert(release(owned_lane.ptr)&&!release(owned_lane.ptr)&&md_resource_completion_spent==MiB);
- sample(2048*MiB);reset=acquire(1);assert(reset.ptr);assert(release(reset.ptr));assert(!md_resource_completion_spent);
- std::puts("PASS completion allowance rolls back before receipt publication; foreign/duplicate CPU release cannot replenish it");
- // An interrupted creator cannot unwind its C++ object. The actual native
- // reaper must retain its credit until Wine's existing complete CPU proof.
- a=acquire(64*MiB);caller=(void*)0x20000;b=acquire(32*MiB);assert(b.ptr);caller=(void*)0x10000;
+ auto own=acquire(64*MiB);caller=(void*)0x20000;assert(!release(own.ptr));caller=(void*)0x10000;assert(release(own.ptr)&&!release(own.ptr));
+ std::puts("PASS finite receipt slots recover after actual creator release; overflow, unavailable measurements, C++ RAII/moves and foreign/duplicate releases preserve honest allocation behavior");
+ // Preserve the actual server CPU-quiescence proof and generation reuse test.
+ auto a=acquire(64*MiB);caller=(void*)0x20000;auto b=acquire(32*MiB);assert(b.ptr);caller=(void*)0x10000;
  madeira_resource_growth_retire(caller,1);assert(md_resource_growth_held==96*MiB);
  owner_state(0,1,1,0,1);madeira_resource_growth_retire(caller,1);assert(md_resource_growth_held==96*MiB);
- assert(acquire(1).ret==4);owner_state(0,0,1,0,1);
- madeira_resource_growth_retire(caller,1);assert(md_resource_growth_held==96*MiB);
+ assert(acquire(1).ret==4);owner_state(0,0,1,0,1);madeira_resource_growth_retire(caller,1);assert(md_resource_growth_held==96*MiB);
  owner_state(0,0,1,1,1);fixture_finish_process_memory(caller);
  assert((cleanup==std::vector<int>{1,2,3,4,5,6,7,8,9}));assert(md_resource_growth_held==32*MiB);
- owner_state(0,1,0,0,3);auto c=acquire(16*MiB);assert(c.ptr);assert(!release(a.ptr));
- madeira_resource_growth_retire(caller,1);assert(md_resource_growth_held==48*MiB);
- assert(release(c.ptr));caller=(void*)0x20000;assert(release(b.ptr));assert(!md_resource_growth_held);
- std::puts("PASS canceled creator credit reaped only by actual Wine quiescent generation; live/foreign/reused-owner credit preserved; no GPU/VM resource freed");
- caller=(void*)0x10000;sample(380*MiB);auto canceled_lane=acquire(MiB,1);assert(canceled_lane.ptr);
- owner_state(0,0,1,1,3);madeira_resource_growth_retire(caller,3);
- assert(!md_resource_growth_held&&md_resource_completion_spent==MiB);
- owner_state(0,1,0,0,4);assert(!release(canceled_lane.ptr));assert(md_resource_completion_spent==MiB);
- std::puts("PASS quiescent cancellation retires only CPU credit; completed growth history survives owner death and reused generations");
- assert(queries>8&&acquire_calls>8&&release_calls>8);
- std::puts("PASS production physical growth admission/RAII/native retirement; host policy tests, not iPhone physical-memory or gameplay results");
+ owner_state(0,1,0,0,1);assert(!release(a.ptr));caller=(void*)0x20000;assert(release(b.ptr));caller=(void*)0x10000;
+ std::puts("PASS actual server cleanup returns only proven quiescent CPU credits before guest-window recycling");
+ // Validated GPU intent precedes initialization. CPU release cannot undo it;
+ // publication is single-shot and a forged event/owner cannot rewrite it.
+ sample(600*MiB);a=acquire(64*MiB);assert(a.ptr);
+ assert(handoff(a.ptr,0xdead,UINT64_MAX).ret==4&&md_resource_growth_held==64*MiB);
+ assert(handoff(a.ptr,0x51,7).ret==4);assert(handoff(a.ptr,0x51,UINT64_MAX).ret==1);
+ assert(!release(a.ptr)&&handoff(a.ptr,0x51,UINT64_MAX).ret==4);
+ caller=(void*)0x20000;assert(handoff(a.ptr,0x51,7).ret==4);caller=(void*)0x10000;
+ assert(handoff(a.ptr,0x52,7).ret==4);assert(handoff(a.ptr,0x51,7).ret==1);
+ assert(handoff(a.ptr,0x51,6).ret==4&&!release(a.ptr));
+ check_release_unlocked=true;events[0].value=7;
+ auto after_gpu=acquire(1);assert(after_gpu.ptr&&md_resource_growth_held==1&&release(after_gpu.ptr));
+ assert(event_loans.empty());
+ // The C++ permit also keeps intent through destructor/exception paths and
+ // transfers final GPU ownership only after a valid actual fence.
+ events[0].value=0;
+ {dxmt::ResourceGrowthPermit p(32*MiB);assert(p.beginGpuInitialization(0x51));assert(p.finishGpuInitialization(9));}
+ assert(md_resource_growth_held==32*MiB);events[0].value=9;
+ auto flush=acquire(1);assert(flush.ptr&&md_resource_growth_held==1&&release(flush.ptr));
+ {dxmt::ResourceGrowthPermit p(32*MiB);assert(p.beginGpuInitialization(0x51));assert(p.finishGpuInitialization(0));}
+ assert(!md_resource_growth_held&&event_loans.empty());
+ std::puts("PASS native/actual C++ GPU intent protocol: forged/foreign events, duplicate publication and fence downgrade decline; only real completion or proven no-work ends credit");
+ // A132MiB reservation includes100MiB destination plus32MiB NEW scratch.
+ // CPU return is not completion. On GPU completion the actual100MiB resident
+ // backing stays charged in the fresh OS reading; only prospective132MiB ends.
+ sample(340*MiB);events[0].value=0;a=acquire(132*MiB);assert(a.ptr);
+ assert(handoff(a.ptr,0x51,UINT64_MAX).ret==1&&handoff(a.ptr,0x51,11).ret==1);
+ auto blocked=acquire(32*MiB);assert(blocked.ret==3&&detail(blocked,3)==2);
+ std::thread gpu_signal([&]{await_waiter();sample(240*MiB);events[0].value=11;});
+ auto ready_gpu=acquire(32*MiB,1);gpu_signal.join();
+ assert(ready_gpu.ptr&&detail(ready_gpu,0)==5904*MiB&&detail(ready_gpu,1)==0);
+ assert(md_resource_growth_held==32*MiB&&release(ready_gpu.ptr)&&event_loans.empty());
+ // Completion never means the resident bytes themselves became free.
+ sample(300*MiB);events[0].value=0;a=acquire(100*MiB);assert(a.ptr);
+ assert(handoff(a.ptr,0x51,UINT64_MAX).ret==1&&handoff(a.ptr,0x51,12).ret==1);
+ std::thread still_resident([&]{await_waiter();sample(200*MiB);events[0].value=12;});
+ auto still_no_room=acquire(16*MiB,1);still_resident.join();assert(still_no_room.ret==3&&detail(still_no_room,3)==1);
+ assert(!md_resource_growth_held&&event_loans.empty());
+ sample(220*MiB);auto actually_freed=acquire(16*MiB);assert(actually_freed.ptr&&release(actually_freed.ptr));
+ std::puts("PASS real GPU-event progress wakes bounded retry without CPU release; fresh resident footprint remains charged and only actual physical recovery permits new backing");
+ // A canceled process can leave real GPU work. Native quiescence is not a GPU
+ // fence, and a new generation must not clear its predecessor's GPU receipts.
+ sample(600*MiB);events[0].value=0;a=acquire(64*MiB);assert(a.ptr);
+ assert(handoff(a.ptr,0x51,UINT64_MAX).ret==1&&handoff(a.ptr,0x51,15).ret==1);
+ owner_state(0,0,1,1,1);madeira_resource_growth_retire((void*)0x10000,1);assert(md_resource_growth_held==64*MiB);
+ owner_state(0,1,0,0,3);assert(!release(a.ptr));madeira_resource_growth_retire((void*)0x10000,1);assert(md_resource_growth_held==64*MiB);
+ caller=(void*)0x20000;auto other=acquire(1);assert(other.ptr&&md_resource_growth_held==64*MiB+1&&release(other.ptr));
+ events[0].value=15;other=acquire(1);assert(other.ptr&&md_resource_growth_held==1&&release(other.ptr)&&event_loans.empty());
+ caller=(void*)0x10000;
+ // An unknown forced termination MID-initialization has no trustworthy final
+ // fence. Retain that intent even if the event advances or the CPU owner dies.
+ events[2].value=UINT64_MAX;a=acquire(64*MiB);assert(a.ptr&&handoff(a.ptr,0x61,UINT64_MAX).ret==1);
+ owner_state(0,0,1,1,3);madeira_resource_growth_retire((void*)0x10000,3);
+ caller=(void*)0x20000;other=acquire(1);assert(other.ptr&&md_resource_growth_held==64*MiB+1&&release(other.ptr));
+ assert(md_resource_growth_held==64*MiB&&event_loans.size()==1);
+ std::puts("PASS GPU debt survives CPU death/generation reuse until actual completion; interrupted intent without a fence remains conservatively owned");
+ assert(queries>8&&acquire_calls>8&&release_calls>8&&event_reads>0&&event_releases>0);
+ std::puts("PASS production fresh-live budget and native ownership/wait paths; controlled host measurements/events are not iPhone memory or rendering results");
 }
 '''
 abi=(ROOT/'dxmt/src/winemetal/winemetal.h').read_text()

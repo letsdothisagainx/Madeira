@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 
 namespace dxmt {
@@ -132,9 +133,11 @@ inline MemoryPressureSnapshot memoryPressureSnapshot(bool refresh = false) {
   return cache.snapshot;
 }
 
-// A real shared-native receipt for an entire resource-creation operation.
-// Hold through initial upload encoding; this limits CPU-concurrent bursts.
-// It does not claim to reserve late GPU residency or arbitrary guest memory.
+// A shared-native reservation for prospective backing and upload growth. The
+// initializer transfers it to its real GPU event before recording work; CPU
+// return cannot refund uncompleted GPU commitments. Resident resources are
+// subsequently represented by the fresh physical measurement, not a second
+// cumulative allocation-history quota.
 class ResourceGrowthPermit {
   uint64_t token_ = 0;
   uint64_t available_ = 0;
@@ -142,6 +145,9 @@ class ResourceGrowthPermit {
   bool known_ = false;
   bool denied_ = false;
   bool reclaim_ = false;
+  bool gpu_initialization_ = false;
+  uint64_t gpu_event_ = 0;
+  uint64_t footprint_ = 0, pending_ = 0, floor_ = 0, reason_ = 0;
 
   void release() noexcept {
     if (!token_) return;
@@ -158,13 +164,15 @@ public:
     struct madeira_ctl_args args = {};
     args.op = 41;
     args.ptr = bytes;
-    // The finite small-resource completion lane is available only after the
-    // caller has drained completion-proven spares and retried real uploads.
+    // Only a post-reclaim retry may wait for existing creators/GPU events.
     args.len = after_emergency_reclaim ? 1 : 0;
     MadeiraCtl(&args);
     native_status_ = args.ret;
     if (!args.ret) return; // Remote/old backend: retain honest allocator behavior.
     available_ = args.len;
+    uint64_t details[4] = {};
+    std::memcpy(details, args.name, sizeof(details));
+    footprint_ = details[0]; pending_ = details[1]; floor_ = details[2]; reason_ = details[3];
     known_ = args.ret <= 4;
     reclaim_ = args.ret >= 2;
     if ((args.ret == 1 || args.ret == 2) && args.ptr &&
@@ -186,6 +194,9 @@ public:
       available_ = other.available_;
       native_status_ = other.native_status_;
       known_ = other.known_; denied_ = other.denied_; reclaim_ = other.reclaim_;
+      gpu_initialization_ = other.gpu_initialization_; other.gpu_initialization_ = false;
+      gpu_event_ = other.gpu_event_; other.gpu_event_ = 0;
+      footprint_ = other.footprint_; pending_ = other.pending_; floor_ = other.floor_; reason_ = other.reason_;
     }
     return *this;
   }
@@ -196,6 +207,36 @@ public:
   bool needsReclaim() const { return reclaim_; }
   uint64_t available() const { return available_; }
   uint64_t nativeStatus() const { return native_status_; }
+  uint64_t footprint() const { return footprint_; }
+  uint64_t pending() const { return pending_; }
+  uint64_t floor() const { return floor_; }
+  uint64_t reason() const { return reason_; }
+
+  // Mark GPU intent BEFORE any initializer command can be recorded. A forced
+  // CPU-thread exit must never return prospective GPU backing as free credit.
+  bool beginGpuInitialization(uint64_t event) {
+    if (!token_) return true;
+    struct madeira_ctl_args args = {};
+    args.op = 43; args.ptr = token_; args.len = event;
+    const uint64_t intent = std::numeric_limits<uint64_t>::max();
+    std::memcpy(args.name, &intent, sizeof(intent));
+    MadeiraCtl(&args);
+    if (!args.ret) return true; // An older/remote backend owns its existing semantics.
+    if (args.ret != 1) return false;
+    gpu_initialization_ = true; gpu_event_ = event;
+    return true;
+  }
+
+  bool finishGpuInitialization(uint64_t fence) {
+    if (!gpu_initialization_) return true;
+    struct madeira_ctl_args args = {};
+    args.op = 43; args.ptr = token_; args.len = gpu_event_;
+    std::memcpy(args.name, &fence, sizeof(fence));
+    MadeiraCtl(&args);
+    if (args.ret != 1) return false;
+    token_ = 0; gpu_initialization_ = false; gpu_event_ = 0;
+    return true;
+  }
 };
 
 } // namespace dxmt

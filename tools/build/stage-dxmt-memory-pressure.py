@@ -10,7 +10,7 @@ import shutil
 
 def stage_pressure_only(source):
     include = '#include "memory_pressure_native.h"'
-    if include in source or any('case ' + str(op) + ':' in source for op in (40, 41, 42)):
+    if include in source or any('case ' + str(op) + ':' in source for op in (40, 41, 42, 43)):
         raise ValueError('native memory-pressure input is already staged or an owned control op is occupied')
     start = source.index('static NTSTATUS _madeira_ctl(void *args) {')
     end = source.index('\n/* ml2000: the other ops', start)
@@ -33,13 +33,27 @@ def stage_pressure_only(source):
     md_resource_growth_release(a);
     break;
   }
+  case 43: { /* GPU handoff: registered native event + target value, pointer-free. */
+    if (wmtr_enabled()) break;
+    md_resource_growth_handoff(a);
+    break;
+  }
 '''
     body = body.replace(anchor, addition + anchor)
     staged = source[:start] + include + '\n' + body + source[end:]
     wow64 = '  if (a && a->op == 7) return _madeira_ctl(args);'
     if staged.count(wow64) != 1:
         raise ValueError('DXMT pointer-free WoW64 forwarding contract changed')
-    return staged.replace(wow64, '  if (a && (a->op == 7 || a->op == 40 || a->op == 41 || a->op == 42)) return _madeira_ctl(args);')
+    staged = staged.replace(wow64, '  if (a && (a->op == 7 || a->op == 40 || a->op == 41 || a->op == 42 || a->op == 43)) return _madeira_ctl(args);')
+    # Registration observes only the native result of the genuine factory.
+    # Its remote branch returns before this hook and retains its old behavior.
+    event_header = '#include "resource_growth_event_native.h"'
+    signature = 'static NTSTATUS\n_MTLDevice_newSharedEvent(void *obj) {'
+    anchor = '  params->ret = (obj_handle_t)[(id<MTLDevice>)params->handle newSharedEvent];'
+    if event_header in staged or staged.count(signature) != 1 or staged.count(anchor) != 1:
+        raise ValueError('native shared-event registration contract changed')
+    staged = staged.replace(signature, event_header + '\n\n' + signature, 1)
+    return staged.replace(anchor, anchor + '\n  madeira_growth_event_register_created((id<MTLSharedEvent>)(uintptr_t)params->ret);', 1)
 
 
 def stage(source):
@@ -66,9 +80,10 @@ def main():
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(output)
     shutil.copyfile(args.headers / 'memory_pressure_native.h', args.output.parent / 'memory_pressure_native.h')
+    shutil.copyfile(args.headers / 'resource_growth_event_native.h', args.output.parent / 'resource_growth_event_native.h')
     print(json.dumps({'stage': 'memory-pressure-v1', 'source_sha256': hashlib.sha256(original).hexdigest(),
                       'output_sha256': hashlib.sha256(output).hexdigest(), 'native_control_op': 40,
-                      'growth_control_ops': [41, 42], 'growth_scope': 'whole-cpu-texture-creation',
+                      'growth_control_ops': [41, 42, 43], 'growth_scope': 'cpu-creation-to-real-gpu-event',
                       'old_op_7': 'unchanged', 'measurement': 'task-footprint+os-proc-available-memory'}))
 
 

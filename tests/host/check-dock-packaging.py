@@ -278,9 +278,9 @@ printf '[native-group-retire-v1][wow-placement-v1][wow-native-export-v1][fex-cal
 printf '[cef-image-owner-v1][guest-breakpoint64-v1][udp-send-failure-v1][udp-recv-failure-v1][udp-native-progress-v1]MadeiraSocketControl:traffic-class-bounds-v1[nsi-ipv4-route-v1]' >> "$TEST_APP/Madeira.debug.dylib"
 if [ "${OMIT_CS2_TEXTURE_SCOPE:-}" != 1 ]; then printf '[cs2-texture-scope-v1] phase=child-environment-prepared' >> "$TEST_APP/Madeira.debug.dylib"; fi
 if [ "${STALE_WAIT_I386:-}" = 1 ]; then printf 'old wait implementation' > "$TEST_APP/i386-windows/ntdll.dll"; fi
-printf '[dynamic-memory-pressure-v1] policy=bounded-hot-v2 storage=owner-heap-v1 counter-storage=census-perf-heap-v1 scan=registered-cursor-v1 pe-command-state=dedup-hud-v1 scheduler=ready-work-v1 texture-admission=physical-v1 texture-accounting=bc-blocks-v1 [texture-growth-budget-v1][texture-growth-retire-v1][texture-completion-lane-v1][metal-vertex-descriptor-owner-v1][upload-memory-v1][madeira-memory-pressure-v1][metal-resource-batch-v1] release-probe=opt-in' >> "$TEST_APP/Madeira.debug.dylib"
+printf '[dynamic-memory-pressure-v1] policy=bounded-hot-v2 storage=owner-heap-v1 counter-storage=census-perf-heap-v1 scan=registered-cursor-v1 pe-command-state=dedup-hud-v1 scheduler=ready-work-v1 texture-admission=physical-v1 texture-accounting=bc-blocks-v1 [texture-growth-budget-v1][texture-growth-retire-v1][texture-live-budget-v2][texture-gpu-events-v1][initializer-failure-v1][metal-vertex-descriptor-owner-v1][upload-memory-v1][madeira-memory-pressure-v1][metal-resource-batch-v1] release-probe=opt-in' >> "$TEST_APP/Madeira.debug.dylib"
 if [ "${STALE_DXMT_COMPLETION_LANE:-}" = 1 ]; then
-  sed 's/\\[texture-completion-lane-v1\\]//g' "$TEST_APP/Madeira.debug.dylib" > "$TEST_APP/native.stale"
+  sed 's/\\[texture-live-budget-v2\\]//g' "$TEST_APP/Madeira.debug.dylib" > "$TEST_APP/native.stale"
   mv "$TEST_APP/native.stale" "$TEST_APP/Madeira.debug.dylib"
 fi
 if [ "${STALE_DXMT_NATIVE:-}" = 1 ]; then
@@ -366,7 +366,7 @@ done
     # Independently exercise the final streamed ZIP scan. Keep the complete
     # current app, producer manifest and every previous native capability;
     # mutate only this capability in the archived linked-image fixture.
-    lane = b'[texture-completion-lane-v1]'
+    lane = b'[texture-live-budget-v2]'
     stale_lane_ipa = t/'dist/old-completion-lane.ipa'
     with zipfile.ZipFile(t/'dist/Madeira.ipa') as source, zipfile.ZipFile(stale_lane_ipa, 'w') as output:
         for item in source.infolist():
@@ -378,7 +378,7 @@ done
     try:
         memory.check(t/'app/Madeira', t, ipa=stale_lane_ipa)
     except AssertionError as error:
-        assert str(error) == 'stale linked IPA DXMT memory implementation: [texture-completion-lane-v1]', error
+        assert str(error) == 'stale linked IPA DXMT memory implementation: [texture-live-budget-v2]', error
     else:
         raise AssertionError('archived old native completion lane passed the actual IPA scan')
     print('PASS final streamed IPA scan rejects only the missing compiled completion lane despite a valid current app and producer manifest')
@@ -430,7 +430,7 @@ done
     result=run({'STALE_DXMT_NATIVE':'1'})
     assert result.returncode and 'stale compiled DXMT memory contract' in result.stderr,result.stderr
     result=run({'STALE_DXMT_COMPLETION_LANE':'1'})
-    assert result.returncode and 'stale compiled DXMT memory contract: [texture-completion-lane-v1]' in result.stderr,result.stderr
+    assert result.returncode and 'stale compiled DXMT memory contract: [texture-live-budget-v2]' in result.stderr,result.stderr
     print('PASS actual final packaging rejects an old linked native budget while every previous DXMT capability remains present')
     print('PASS real DXMT memory recipe, source transaction and all-farm ABI/export provenance survive actual app/IPA packaging; stale PE/native copies fail actual gates; no GPU or memory reduction claim')
     print('PASS stale native registration utility and trust observer fail their actual final provenance/package gates')

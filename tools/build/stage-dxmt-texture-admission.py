@@ -21,15 +21,52 @@ def replace_once(source, before, after):
 ADMISSION_HELPER = r'''// Failures are exceptional, bounded and path-free. One non-template counter
 // covers all factory instantiations; saturation avoids wraparound log bursts.
 static void
-ReportTextureFailure(const char *reason, uint64_t bytes, uint64_t available) {
+ReportTextureFailure(const char *reason, uint64_t bytes, uint64_t available,
+                     const ResourceGrowthPermit *permit = nullptr) {
   static std::atomic<uint32_t> reports{0};
   auto count = reports.load(std::memory_order_relaxed);
   while (count < 8 && !reports.compare_exchange_weak(
       count, count + 1, std::memory_order_relaxed)) {}
   if (count < 8)
     ERR("[texture-admission-v1] result=E_OUTOFMEMORY reason=", reason,
-        " bytes=", bytes, " available=", available);
+        " bytes=", bytes, " available=", available,
+        " footprint=", permit ? permit->footprint() : 0,
+        " pending=", permit ? permit->pending() : 0,
+        " safety-floor=", permit ? permit->floor() : 0,
+        " budget-reason=", permit ? permit->reason() : 0);
 }
+
+// Scope exit publishes a conservative initializer frontier even when ordinary
+// exception unwinding interrupts creation. Forced thread termination cannot
+// run this destructor; its native intent remains charged instead of inventing
+// GPU completion from CPU-thread death.
+class TextureInitializationCredit {
+  ResourceGrowthPermit &permit_;
+  ResourceInitializer &initializer_;
+  bool started_ = false, finished_ = false;
+public:
+  TextureInitializationCredit(ResourceGrowthPermit &permit, ResourceInitializer &initializer)
+      : permit_(permit), initializer_(initializer) {
+    static const volatile char contract[] = "[texture-gpu-credit-v1]";
+    (void)contract[0];
+    started_ = permit_.beginGpuInitialization(initializer_.event().handle);
+  }
+  bool valid() const { return started_; }
+  bool finish() {
+    if (!started_) return false;
+    finished_ = permit_.finishGpuInitialization(initializer_.initializationFence());
+    return finished_;
+  }
+  ~TextureInitializationCredit() {
+    if (started_ && !finished_) {
+#if defined(__cpp_exceptions)
+      try { (void)finish(); } catch (...) { /* Native intent stays conservatively charged. */ }
+#else
+      (void)finish();
+#endif
+    }
+  }
+};
 
 // A normal texture-growth request must not scan every dynamic buffer on
 // every mip/resource while the same completion frontier is unchanged. This
@@ -64,15 +101,24 @@ ReclaimTextureGrowth(CommandQueue &queue, uint64_t bytes, bool allocation_denied
 // A creation credit covers destination backing and the complete initial-data
 // enqueue window, not the texture's lifetime. The native side serializes fresh
 // physical-headroom readings with other outstanding creation credits.
+template <typename Forecast>
 static bool
-PrepareTextureGrowth(MTLD3D11Device *device, ResourceGrowthPermit &permit, uint64_t bytes) {
+PrepareTextureGrowth(MTLD3D11Device *device, ResourceGrowthPermit &permit, uint64_t bytes, Forecast &&forecast) {
   auto &queue = device->GetDXMTDevice().queue();
   const bool release_warm = queue.allocationRecoveryDrain(permit.nativeStatus());
   if (!permit.denied() && !permit.needsReclaim())
     return true;
   ReclaimTextureGrowth(queue, bytes, release_warm);
-  if (!permit.denied())
-    return true;
+  if (!permit.denied()) {
+    const uint64_t fresh = forecast();
+    if (fresh == bytes) return true;
+    // Drop the old CPU-only receipt BEFORE acquiring its replacement. RHS
+    // construction during move-assignment must not temporarily double-charge
+    // this same creator or wait on its own reservation.
+    permit = ResourceGrowthPermit(0);
+    permit = ResourceGrowthPermit(fresh);
+    if (!permit.denied()) return true;
+  }
 
   // No initializer mutex is held while waiting. FlushToWait publishes genuine
   // pending uploads; the event is GPU-signalled, never a CPU recording fence.
@@ -80,7 +126,9 @@ PrepareTextureGrowth(MTLD3D11Device *device, ResourceGrowthPermit &permit, uint6
   if (submitted)
     queue.initializer.waitForMemoryPressure(submitted, 50);
   ReclaimTextureGrowth(queue, bytes, release_warm);
-  permit = ResourceGrowthPermit(bytes, true);
+  const uint64_t fresh = forecast();
+  permit = ResourceGrowthPermit(0);
+  permit = ResourceGrowthPermit(fresh, true);
   return !permit.denied();
 }
 
@@ -109,10 +157,48 @@ def stage_factory(source):
     ReportTextureFailure("capacity-overflow", creation_bytes, memoryPressureSnapshot(true).available);
     return E_OUTOFMEMORY;
   }
-  ResourceGrowthPermit creation_permit(creation_bytes);
-  if (!PrepareTextureGrowth(pDevice, creation_permit, creation_bytes)) {
+  auto &creation_initializer = pDevice->GetDXMTDevice().queue().initializer;
+  auto creation_transaction = creation_initializer.lockTextureCreation();
+  auto forecast_creation = [&]() -> uint64_t {
+  WMTTextureInfo largest = info;
+  largest.mipmap_level_count = largest.array_length = largest.sample_count = 1;
+  if (largest.type == WMTTextureTypeCube || largest.type == WMTTextureTypeCubeArray)
+    largest.type = WMTTextureType2D;
+  const uint64_t largest_bytes = mem_census_texture_bytes(largest, admission_native_bc);
+  uint64_t temporary_bytes = 0;
+  if (pInitialData) {
+    uint64_t subresources = mem_census_capacity_mul(info.mipmap_level_count, info.array_length);
+    if (info.type == WMTTextureTypeCube || info.type == WMTTextureTypeCubeArray)
+      subresources = mem_census_capacity_mul(subresources, 6);
+    const uint64_t padding = mem_census_capacity_mul(subresources, 255);
+    if (padding > UINT64_MAX - creation_bytes || creation_bytes + padding > SIZE_MAX)
+      return UINT64_MAX;
+    const uint64_t payload = creation_bytes + padding;
+    temporary_bytes = creation_initializer.forecastUploadGrowth(size_t(payload), size_t(largest_bytes));
+    // A multi-block batch can waste a tail at each rotation. For oversized
+    // batches, conservatively reserve another complete batch rather than
+    // calling its summed payload an exact scalar-allocation prediction.
+    if (temporary_bytes && payload > (uint64_t{4} << 20)) {
+      if (payload > UINT64_MAX - temporary_bytes) return UINT64_MAX;
+      temporary_bytes += payload;
+    }
+    if (!admission_native_bc && mem_census_bc_block_bytes(info.pixel_format)) {
+      if (largest_bytes > UINT64_MAX - temporary_bytes) return UINT64_MAX;
+      temporary_bytes += largest_bytes; // Actual fallback decode scratch, absent on native BC devices.
+    }
+  } else if (!(info.usage & WMTTextureUsageRenderTarget)) {
+    if (largest_bytes > SIZE_MAX) return UINT64_MAX;
+    temporary_bytes = creation_initializer.forecastZeroGrowth(size_t(largest_bytes));
+  }
+  if (temporary_bytes > UINT64_MAX - creation_bytes) return UINT64_MAX;
+  return creation_bytes + temporary_bytes;
+  };
+  const uint64_t prospective_bytes = forecast_creation();
+  if (prospective_bytes == UINT64_MAX) return E_OUTOFMEMORY;
+  ResourceGrowthPermit creation_permit(prospective_bytes);
+  if (!PrepareTextureGrowth(pDevice, creation_permit, prospective_bytes, forecast_creation)) {
     ReportTextureFailure(creation_permit.nativeStatus() == 3 ? "physical-budget" : "creation-credit-or-owner",
-                         creation_bytes, creation_permit.available());
+                         creation_bytes, creation_permit.available(), &creation_permit);
     return E_OUTOFMEMORY;
   }
 
@@ -122,10 +208,31 @@ def stage_factory(source):
     // A TextureAllocation wrapper can exist even when Metal returned nil.
     // Never rename, upload to, or publish that failed native allocation.
     if (!allocation || !allocation->texture()) {
-      ReportTextureFailure("native-nil", creation_bytes, creation_permit.available());
+      ReportTextureFailure("native-nil", creation_bytes, creation_permit.available(), &creation_permit);
+      return false;
+    }
+    TextureInitializationCredit gpu_credit(creation_permit, initializer);
+    if (!gpu_credit.valid()) {
+      ReportTextureFailure("gpu-reservation", creation_bytes, creation_permit.available(), &creation_permit);
       return false;
     }
     texture->rename(std::move(allocation));''')
+    source = replace_once(source,
+        '        initializer.initWithZero(texture.ptr(), texture->current(), sub.ArraySlice, sub.MipLevel);',
+        '''        if (!initializer.initWithZero(texture.ptr(), texture->current(), sub.ArraySlice, sub.MipLevel)) {
+          ReportTextureFailure("initial-upload-failed", creation_bytes, creation_permit.available(), &creation_permit);
+          return false;
+        }''')
+    source = replace_once(source, '''        initializer.initWithData(
+            texture.ptr(), texture->current(), sub.ArraySlice, sub.MipLevel, data.pSysMem, data.SysMemPitch,
+            data.SysMemSlicePitch
+        );''', '''        if (!initializer.initWithData(
+            texture.ptr(), texture->current(), sub.ArraySlice, sub.MipLevel, data.pSysMem, data.SysMemPitch,
+            data.SysMemSlicePitch
+        )) {
+          ReportTextureFailure("initial-upload-failed", creation_bytes, creation_permit.available(), &creation_permit);
+          return false;
+        }''')
     source = replace_once(source, '''      }
     }
   };
@@ -138,7 +245,7 @@ def stage_factory(source):
     // Healthy/unknown paths retain the existing batching policy.
     if (creation_permit.needsReclaim())
       initializer.flushToWait();
-    return true;
+    return gpu_credit.finish();
   };
 
   auto shared_flag =''')

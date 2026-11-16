@@ -26,6 +26,7 @@ PERF = ('src/dxmt/dxmt_command_queue.hpp', 'src/dxmt/dxmt_command_queue.cpp',
 COMMAND_STATE = ('src/d3d11/d3d11_context_impl.cpp', 'src/d3d11/d3d11_swapchain.cpp')
 SCHEDULER = ('src/dxmt/dxmt_tasks.hpp',)
 TEXTURE_ACCOUNTING = ('src/dxmt/dxmt_mem_census.hpp', 'src/dxmt/dxmt_texture.cpp')
+INITIALIZER_FAILURE = ('src/dxmt/dxmt_resource_initializer.cpp', 'src/dxmt/dxmt_resource_initializer.hpp')
 TEXTURE_ADMISSION = ('src/d3d11/d3d11_texture_device.cpp', 'src/dxmt/dxmt_resource_initializer.hpp')
 HEADER = 'src/dxmt/memory_pressure.hpp'
 
@@ -78,6 +79,7 @@ def prepare(root, state):
         ('perf', 'stage-dxmt-perf-heap.py', PERF),
         ('command-state', 'stage-dxmt-command-state.py', COMMAND_STATE),
         ('task-wake', 'stage-dxmt-task-wake.py', SCHEDULER),
+        ('initializer-failure', 'stage-dxmt-initializer-failure.py', INITIALIZER_FAILURE),
         ('texture-accounting', 'stage-dxmt-texture-accounting.py', TEXTURE_ACCOUNTING),
         ('texture-admission', 'stage-dxmt-texture-admission.py', TEXTURE_ADMISSION),
     ):

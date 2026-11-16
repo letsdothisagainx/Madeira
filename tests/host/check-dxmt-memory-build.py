@@ -36,7 +36,7 @@ with tempfile.TemporaryDirectory(prefix='madeira-dxmt-transaction-') as director
         path.write_bytes(data)
         original[name] = data
     scripts = ['stage-dxmt-memory-compat.py', 'stage-dxmt-upload-memory.py', 'stage-dxmt-dynamic-memory.py',
-               'stage-dxmt-census-heap.py', 'stage-dxmt-perf-heap.py', 'stage-dxmt-command-state.py', 'stage-dxmt-task-wake.py',
+               'stage-dxmt-initializer-failure.py', 'stage-dxmt-census-heap.py', 'stage-dxmt-perf-heap.py', 'stage-dxmt-command-state.py', 'stage-dxmt-task-wake.py',
                'stage-dxmt-texture-accounting.py', 'stage-dxmt-texture-admission.py']
     for name in scripts:
         path = repo / 'tools/build' / name
@@ -97,7 +97,7 @@ with tempfile.TemporaryDirectory(prefix='madeira-dxmt-transaction-') as director
     native = Path(directory) / 'native.a'
     native.write_bytes(b'archive fixture' + b'\0'.join(package.NATIVE_MARKERS))
     package.markers(native, package.NATIVE_MARKERS)
-    lane = b'[texture-completion-lane-v1]'
+    lane = b'[texture-live-budget-v2]'
     assert lane in package.NATIVE_MARKERS
     native.write_bytes(b'archive fixture' + b'\0'.join(marker for marker in package.NATIVE_MARKERS if marker != lane))
     try:

@@ -21,15 +21,16 @@ MANIFEST = 'arm64ec-windows/madeira-dxmt-memory.json'
 PE_MARKERS = (b'[dynamic-memory-pressure-v1]', b'policy=bounded-hot-v2', b'storage=owner-heap-v1',
               b'counter-storage=census-perf-heap-v1', b'scan=registered-cursor-v1',
               b'pe-command-state=dedup-hud-v1', b'scheduler=ready-work-v1', b'[upload-memory-v1]',
-              b'texture-admission=physical-v1', b'texture-accounting=bc-blocks-v1')
+              b'texture-admission=physical-v1', b'texture-accounting=bc-blocks-v1', b'[initializer-failure-v1]')
 NATIVE_MARKERS = (*PE_MARKERS, b'[madeira-memory-pressure-v1]',
                   b'[metal-resource-batch-v1]', b'release-probe=opt-in',
                   b'[texture-growth-budget-v1]', b'[metal-vertex-descriptor-owner-v1]',
-                  b'[texture-completion-lane-v1]')
+                  b'[texture-live-budget-v2]', b'[texture-gpu-events-v1]')
 APP_NATIVE_MARKERS = (b'[texture-growth-retire-v1]',)
-FACTORY_MARKERS = (b'[texture-admission-v1]',)
+FACTORY_MARKERS = (b'[texture-admission-v1]', b'[texture-gpu-credit-v1]')
 RECIPES = (
     'tools/build/stage-dxmt-memory-compat.py', 'tools/build/stage-dxmt-upload-memory.py',
+    'tools/build/stage-dxmt-initializer-failure.py',
     'tools/build/stage-dxmt-dynamic-memory.py', 'tools/build/stage-dxmt-memory-pressure.py',
     'tools/build/stage-dxmt-census-heap.py', 'tools/build/stage-dxmt-perf-heap.py',
     'tools/build/stage-dxmt-command-state.py', 'tools/build/stage-dxmt-native-batch.py',
@@ -41,6 +42,7 @@ RECIPES = (
     'tools/check-dxmt-memory-package.py', 'tools/check-system-programs.py',
     'build/dxmt-ios/build.sh', 'build/dxmt-ios/memory_pressure.hpp',
     'build/dxmt-ios/memory_pressure_native.h', 'build/dxmt-ios/graphics_diagnostics.h',
+    'build/dxmt-ios/resource_growth_event_native.h',
     'build/dxmt-ios/metal_lifecycle.h', 'build/dxmt-ios/metal_submission_gate.h',
     'tools/build/stage-dxmt-diagnostics.py', 'tools/build/stage-dxmt-lifecycle.py',
 )
