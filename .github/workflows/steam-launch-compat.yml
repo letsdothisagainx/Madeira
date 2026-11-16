@@ -1,0 +1,50 @@
+name: Verify Steam launch isolation and address-wait lifetime
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'tools/build/stage-wait-address-lifetime.py'
+      - 'tools/build/stage-native-counter-writes.py'
+      - 'tools/check-wait-address-package.py'
+      - 'tools/check-native-srw-code.py'
+      - 'build/ntdll-unix/process_ios.c'
+      - 'app/Madeira/Library.swift'
+      - 'app/Madeira/ContentView.swift'
+      - 'tests/host/check-wait-address-*.py'
+      - 'tests/host/check-cs2-texture-*.py'
+      - '.github/workflows/steam-launch-compat.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  actual-launch-primitives:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, xcode-27]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: git submodule update --init --depth 1 wine dxmt
+      - name: Exercise actual wait cleanup and per-child environment isolation
+        env:
+          CC: clang
+          CXX: clang++
+        run: |
+          python3 tests/host/check-wait-address-lifetime.py
+          python3 tests/host/check-native-srw-wake.py
+          python3 tests/host/check-native-counter-stage.py
+          python3 tests/host/check-cs2-texture-child-environment.py
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            python3 tests/host/check-cs2-texture-memory-profile.py --require-swift
+            python3 tests/host/check-pool-startup-budget.py --require-swift
+          else
+            python3 tests/host/check-cs2-texture-memory-profile.py
+            python3 tests/host/check-pool-startup-budget.py
+          fi
+          python3 tests/host/check-wait-address-package.py

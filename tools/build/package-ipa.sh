@@ -163,6 +163,8 @@ python3 "$ROOT/tools/check-system-programs.py" \
   --root "$ROOT/app/Madeira" --source-root "$ROOT/wine" --app "$APP" --ipa "$DIST/Madeira.ipa"
 python3 "$ROOT/tools/check-dxmt-memory-package.py" \
   --root "$ROOT/app/Madeira" --repo-root "$ROOT" --app "$APP" --ipa "$DIST/Madeira.ipa"
+python3 "$ROOT/tools/check-wait-address-package.py" \
+  --root "$ROOT/app/Madeira" --repo-root "$ROOT" --app "$APP" --ipa "$DIST/Madeira.ipa"
 python3 "$ROOT/tools/check-trust-diagnostics-package.py" \
   --root "$ROOT/app/Madeira" --source-root "$ROOT/wine" --repo-root "$ROOT" \
   --app "$APP" --ipa "$DIST/Madeira.ipa"

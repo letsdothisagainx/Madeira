@@ -39,6 +39,7 @@ with tempfile.TemporaryDirectory() as temp:
     stage_verifier=t/'tools/build/stage-native-counter-writes.py';stage_verifier.parent.mkdir(parents=True,exist_ok=True)
     stage_verifier.write_bytes((root/'tools/build/stage-native-counter-writes.py').read_bytes())
     (stage_verifier.parent/'stage-native-srw-wake.py').write_bytes((root/'tools/build/stage-native-srw-wake.py').read_bytes())
+    (stage_verifier.parent/'stage-wait-address-lifetime.py').write_bytes((root/'tools/build/stage-wait-address-lifetime.py').read_bytes())
     (stage_verifier.parent/'stage-native-lfh-size.py').write_bytes((root/'tools/build/stage-native-lfh-size.py').read_bytes())
     # Keep the real provenance gate active. Xcode below supplies a structural
     # Mach-O with real fixture source digests; it is deliberately not executable.
@@ -215,6 +216,25 @@ with tempfile.TemporaryDirectory() as temp:
     subprocess.run(['python3',str(t/'tools/build/stage-dxmt-memory-compat.py'),
                     'restore',str(memory_state)],check=True,stdout=subprocess.PIPE)
     memory.check(t/'app/Madeira',t,write=True,transaction=memory_state)
+    # Compose the real wait-lifetime package gate with the existing native
+    # counter DATA fixtures. These bytes exercise packaging, not Wine execution.
+    wait_spec=importlib.util.spec_from_file_location('dock_wait_fixture',root/'tests/host/check-wait-address-package.py')
+    wait=importlib.util.module_from_spec(wait_spec);wait_spec.loader.exec_module(wait)
+    wait_stage,wait_repo,_,_=wait.setup(t/'wait-fixture')
+    for name in wait.CHECK.OWNED_INPUTS:
+        target=t/name;target.parent.mkdir(parents=True,exist_ok=True)
+        shutil.copyfile(root/name,target)
+    for name in wait.CHECK.STOCK_INPUTS:
+        target=t/'wine'/name;target.parent.mkdir(parents=True,exist_ok=True)
+        shutil.copyfile(root/'wine'/name,target)
+    for farm in wait.CHECK.FARMS:
+        image=t/'app/Madeira'/farm/'ntdll.dll'
+        prior=image.read_bytes() if farm!='i386-windows' else b''
+        image.write_bytes(wait.augment_base_ntdll(prior,farm))
+        relative=Path('wine')/wait.CHECK.code.TREES[farm]/'dlls/ntdll'/farm/'sync.o'
+        target=t/relative;target.parent.mkdir(parents=True,exist_ok=True)
+        shutil.copyfile(wait_repo/relative,target)
+    wait.CHECK.check(t/'app/Madeira',t,build_root=t/'wine',write=True)
     (t/'tools').mkdir(exist_ok=True)
     (t/'tools/check-io-abi-package.py').write_text((root/'tools/check-io-abi-package.py').read_text())
     bodies = {
@@ -230,6 +250,8 @@ cp "$ROOT/app/Madeira/aarch64-windows/wow64.dll" "$ROOT/app/Madeira/aarch64-wind
 cp "$ROOT/app/Madeira/aarch64-windows/services.exe" "$TEST_APP/aarch64-windows/"
 cp "$ROOT/app/Madeira/aarch64-windows/ntdll.dll" "$TEST_APP/aarch64-windows/"
 cp "$ROOT/app/Madeira/arm64ec-windows/ntdll.dll" "$TEST_APP/arm64ec-windows/"
+cp "$ROOT/app/Madeira/i386-windows/ntdll.dll" "$TEST_APP/i386-windows/"
+cp "$ROOT/app/Madeira/arm64ec-windows/madeira-wait-address.json" "$TEST_APP/arm64ec-windows/"
 for farm in aarch64-windows arm64ec-windows i386-windows; do
   for resource in regsvr32.exe rundll32.exe user32.dll ole32.dll kernelbase.dll wintrust.dll crypt32.dll advapi32.dll; do
     cp "$ROOT/app/Madeira/$farm/$resource" "$TEST_APP/$farm/"
@@ -254,6 +276,8 @@ if [ "${STALE_NATIVE_NTDLL:-}" = 1 ]; then printf 'old ntdll' > "$TEST_APP/arm64
 if [ "${STALE_SCM:-}" = 1 ]; then printf 'old SCM' > "$TEST_APP/aarch64-windows/services.exe"; fi
 printf '[native-group-retire-v1][wow-placement-v1][wow-native-export-v1][fex-callback-v2][child-native-dll-v1][process-wow64-v1][child-native-ntdll-v1][guest-trap-context-v1][surface-expose-v1][steam-client-update-v1][alias-prot-compat][image-alias-retire-v1][swp-context-v1][alias-prot-v2][fex-exit-v1][native-thread-cancel-v1][io-abi] v2 native-owned IOSB scopes active[wow-write][guest32-symbols][guest32-cxx-first-v1][cef-atexit-v1][steam-handoff-v1]_madeira_child_server_exited[fex-owner-v1] pre-crt[fex-owner-v1] retired[fex-owner-census-v2][hold-release-v2][deliver-hold-v2][native-window-retire-v1]_winios_native_window_create_winios_native_window_retire[guest32-fault-v1][steam-progress-v1]_winios_ui_progress_snapshot[srv-poll-drop-v1]poll-slots-highwater=' > "$TEST_APP/Madeira.debug.dylib"
 printf '[cef-image-owner-v1][guest-breakpoint64-v1][udp-send-failure-v1][udp-recv-failure-v1][udp-native-progress-v1]MadeiraSocketControl:traffic-class-bounds-v1[nsi-ipv4-route-v1]' >> "$TEST_APP/Madeira.debug.dylib"
+if [ "${OMIT_CS2_TEXTURE_SCOPE:-}" != 1 ]; then printf '[cs2-texture-scope-v1] phase=child-environment-prepared' >> "$TEST_APP/Madeira.debug.dylib"; fi
+if [ "${STALE_WAIT_I386:-}" = 1 ]; then printf 'old wait implementation' > "$TEST_APP/i386-windows/ntdll.dll"; fi
 printf '[dynamic-memory-pressure-v1] policy=bounded-hot-v2 storage=owner-heap-v1 counter-storage=census-perf-heap-v1 scan=registered-cursor-v1 pe-command-state=dedup-hud-v1 scheduler=ready-work-v1 texture-admission=physical-v1 texture-accounting=bc-blocks-v1 [texture-growth-budget-v1][texture-growth-retire-v1][metal-vertex-descriptor-owner-v1][upload-memory-v1][madeira-memory-pressure-v1][metal-resource-batch-v1] release-probe=opt-in' >> "$TEST_APP/Madeira.debug.dylib"
 if [ "${STALE_DXMT_NATIVE:-}" = 1 ]; then
   sed 's/\\[madeira-memory-pressure-v1\\]//g' "$TEST_APP/Madeira.debug.dylib" > "$TEST_APP/native.stale"
@@ -328,6 +352,12 @@ done
     env=dict(os.environ, ROOT=str(t), GITHUB_SHA=revision, TEST_APP=str(t/'app/DerivedData/Build/Products/Debug-iphoneos/Madeira.app'), PATH=str(commands)+os.pathsep+os.environ['PATH'])
     def run(extra=None):
         return subprocess.run(['bash',str(package)],env=dict(env,**(extra or {})),capture_output=True,text=True)
+    result=run(); assert result.returncode == 0, result.stdout+result.stderr
+    result=run({'STALE_WAIT_I386':'1'})
+    assert result.returncode and 'stale app WaitOnAddress component: i386-windows/ntdll.dll' in result.stderr, result.stderr
+    result=run({'OMIT_CS2_TEXTURE_SCOPE':'1'})
+    assert result.returncode and 'linked native image lacks genuine CS2 child-profile scope preparation' in result.stderr, result.stderr
+    print('PASS actual final packaging rejects stale i386 address waits and missing native CS2 profile scoping')
     result=run(); assert result.returncode == 0, result.stdout+result.stderr
     with zipfile.ZipFile(t/'dist/Madeira.ipa') as archive:
         assert archive.read('Payload/Madeira.app/madeira-jit.js')==jit_script.read_bytes()

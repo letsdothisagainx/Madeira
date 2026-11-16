@@ -1111,6 +1111,204 @@ static WCHAR *ios_env_with( const WCHAR *env, const char *const *names, int coun
     return out;
 }
 
+/* BEGIN CS2 TEXTURE CHILD ENVIRONMENT */
+/* The UI's CS2 memory choice is not a Steam/CEF renderer setting. Merge only
+ * the one app-owned option into the genuine AMD64 game's child environment,
+ * before its imports run. All validation is optional: a failed policy merge
+ * leaves process creation and the caller's original environment unchanged. */
+#define IOS_CS2_TEXTURE_ENV_MAX 65536
+#define IOS_CS2_TEXTURE_PATH_MAX 1024
+#define IOS_CS2_TEXTURE_CONFIG_MAX 259
+
+static BOOL ios_cs2_texture_read( const void *source, void *target, SIZE_T bytes )
+{
+    mach_vm_size_t copied = 0;
+    if (!source || !bytes) return FALSE;
+    return mach_vm_read_overwrite( mach_task_self(), (mach_vm_address_t)source, bytes,
+                                  (mach_vm_address_t)target, &copied ) == KERN_SUCCESS && copied == bytes;
+}
+
+static WCHAR ios_cs2_texture_lower( WCHAR c )
+{
+    return c >= 'A' && c <= 'Z' ? c + 'a' - 'A' : c;
+}
+
+static BOOL ios_cs2_texture_ascii( const WCHAR *text, SIZE_T len, const char *ascii, BOOL fold )
+{
+    SIZE_T i;
+    if (len != strlen( ascii )) return FALSE;
+    for (i = 0; i < len; ++i)
+        if ((fold ? ios_cs2_texture_lower( text[i] ) : text[i]) != (unsigned char)ascii[i]) return FALSE;
+    return TRUE;
+}
+
+static BOOL ios_cs2_texture_space( WCHAR c )
+{
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+static BOOL ios_cs2_texture_path( const UNICODE_STRING *source, WCHAR *out, SIZE_T *length,
+                                  BOOL require_maximum )
+{
+    static const char suffix[] = "\\game\\bin\\win64\\cs2.exe";
+    SIZE_T i, start = 0, component, len;
+    if (!source || !source->Buffer || !source->Length || source->Length % sizeof(WCHAR) ||
+        (require_maximum && source->Length > source->MaximumLength) ||
+        source->Length >= IOS_CS2_TEXTURE_PATH_MAX * sizeof(WCHAR)) return FALSE;
+    len = source->Length / sizeof(WCHAR);
+    if (!ios_cs2_texture_read( source->Buffer, out, source->Length )) return FALSE;
+    for (i = 0; i < len; ++i)
+    {
+        if (!out[i] || out[i] < 32) return FALSE;
+        if (out[i] == '/') out[i] = '\\';
+        out[i] = ios_cs2_texture_lower( out[i] );
+    }
+    if (len >= 4 && out[0] == '\\' && out[3] == '\\' &&
+        ((out[1] == '?' && out[2] == '?') || (out[1] == '\\' && out[2] == '?'))) start = 4;
+    len -= start;
+    if (len < 4 || out[start] < 'a' || out[start] > 'z' || out[start+1] != ':' || out[start+2] != '\\')
+        return FALSE;
+    if (start) memmove( out, out + start, len * sizeof(WCHAR) );
+    /* Do not reinterpret an ambiguous path, an ADS, or a path with traversal
+     * components as the actual game. PS_ATTRIBUTE_IMAGE_NAME must agree too. */
+    component = 3;
+    for (i = 3; i <= len; ++i)
+    {
+        if (i < len && (out[i] == ':' || out[i] == '?' || out[i] == '*')) return FALSE;
+        if (i < len && out[i] != '\\') continue;
+        if (i == component || (i-component == 1 && out[component] == '.') ||
+            (i-component == 2 && out[component] == '.' && out[component+1] == '.')) return FALSE;
+        component = i + 1;
+    }
+    if (len < sizeof(suffix)-1 ||
+        !ios_cs2_texture_ascii( out + len - (sizeof(suffix)-1), sizeof(suffix)-1, suffix, FALSE )) return FALSE;
+    out[len] = 0;
+    *length = len;
+    return TRUE;
+}
+
+static BOOL ios_cs2_texture_custom( const WCHAR *value, SIZE_T len )
+{
+    SIZE_T at = 0, end, key_end, begin;
+    while (at < len)
+    {
+        end = at;
+        while (end < len && value[end] != ';' && value[end] != '\n' && value[end] != '\r') ++end;
+        begin = at;
+        while (begin < end && ios_cs2_texture_space( value[begin] )) ++begin;
+        key_end = begin;
+        while (key_end < end && value[key_end] != '=') ++key_end;
+        while (key_end > begin && ios_cs2_texture_space( value[key_end-1] )) --key_end;
+        if (ios_cs2_texture_ascii( value+begin, key_end-begin, "d3d11.mipClampBC", FALSE ) ||
+            ios_cs2_texture_ascii( value+begin, key_end-begin, "d3d11.mipClampAuto", FALSE ) ||
+            ios_cs2_texture_ascii( value+begin, key_end-begin, "d3d11.mipClampAutoMB", FALSE )) return TRUE;
+        at = end + 1;
+    }
+    return FALSE;
+}
+
+static WCHAR *ios_cs2_texture_build_environment( const UNICODE_STRING *image, const UNICODE_STRING *actual,
+                                                USHORT machine, const WCHAR *environment, SIZE_T bytes,
+                                                const char *option, SIZE_T *out_bytes )
+{
+    WCHAR image_path[IOS_CS2_TEXTURE_PATH_MAX], actual_path[IOS_CS2_TEXTURE_PATH_MAX];
+    WCHAR *copy = NULL, *out = NULL;
+    SIZE_T image_len, actual_len, count, at = 0, end, eq, used, output_count, i, o;
+    SIZE_T config_value = 0, config_end = 0, option_len;
+    unsigned int app_count = 0, game_count = 0, config_count = 0;
+
+    *out_bytes = 0;
+    if (!option || (strcmp(option,"d3d11.mipClampAuto=0") && strcmp(option,"d3d11.mipClampAuto=1")) ||
+        machine != IMAGE_FILE_MACHINE_AMD64) return NULL;
+    if (!ios_cs2_texture_path( image, image_path, &image_len, TRUE ) ||
+        !ios_cs2_texture_path( actual, actual_path, &actual_len, FALSE ) || image_len != actual_len ||
+        memcmp( image_path, actual_path, image_len * sizeof(WCHAR) )) return NULL;
+    if (!environment || bytes < 2 * sizeof(WCHAR) || bytes > IOS_CS2_TEXTURE_ENV_MAX || bytes % sizeof(WCHAR))
+        return NULL;
+    count = bytes / sizeof(WCHAR);
+    if (!(copy = malloc( bytes ))) return NULL;
+    if (!ios_cs2_texture_read( environment, copy, bytes )) goto done;
+    while (at < count && copy[at])
+    {
+        end = at;
+        while (end < count && copy[end]) ++end;
+        if (end == count) goto done;
+        eq = at;
+        while (eq < end && copy[eq] != '=') ++eq;
+        if (eq < end)
+        {
+            const WCHAR *value = copy + eq + 1;
+            SIZE_T value_len = end - eq - 1;
+            if (ios_cs2_texture_ascii( copy+at, eq-at, "steamappid", TRUE ))
+            {
+                if (++app_count != 1 || !ios_cs2_texture_ascii( value, value_len, "730", FALSE )) goto done;
+            }
+            else if (ios_cs2_texture_ascii( copy+at, eq-at, "steamgameid", TRUE ))
+            {
+                if (++game_count != 1 || !ios_cs2_texture_ascii( value, value_len, "730", FALSE )) goto done;
+            }
+            else if (ios_cs2_texture_ascii( copy+at, eq-at, "dxmt_config", TRUE ))
+            {
+                if (++config_count != 1 || value_len > IOS_CS2_TEXTURE_CONFIG_MAX ||
+                    ios_cs2_texture_custom( value, value_len )) goto done;
+                config_value = eq + 1; config_end = end;
+            }
+            else if (ios_cs2_texture_ascii( copy+at, eq-at, "madeira_mip_clamp_auto", TRUE ))
+            {
+                for (i = 0; i < value_len; ++i) if (!ios_cs2_texture_space( value[i] )) goto done;
+            }
+        }
+        at = end + 1;
+    }
+    if (at >= count || !app_count) goto done;
+    used = at + 1; /* Entries, their NULs, and the final environment NUL. */
+    option_len = strlen( option );
+    if (config_count)
+    {
+        SIZE_T value_len = config_end - config_value;
+        if (value_len + !!value_len + option_len > IOS_CS2_TEXTURE_CONFIG_MAX) goto done;
+        output_count = used + !!value_len + option_len;
+    }
+    else output_count = used + strlen("DXMT_CONFIG=") + option_len + 1;
+    if (output_count > IOS_CS2_TEXTURE_ENV_MAX / sizeof(WCHAR) ||
+        !(out = malloc( output_count * sizeof(WCHAR) ))) goto done;
+    o = 0;
+    if (config_count)
+    {
+        /* Keep the original variable spelling/value/order; append only the
+         * selected option, leaving every unrelated UTF-16 code unit alone. */
+        memcpy( out, copy, config_end * sizeof(WCHAR) ); o = config_end;
+        if (config_end > config_value) out[o++] = ';';
+    }
+    else
+    {
+        memcpy( out, copy, (used-1) * sizeof(WCHAR) ); o = used-1;
+        for (i = 0; "DXMT_CONFIG="[i]; ++i) out[o++] = "DXMT_CONFIG="[i];
+    }
+    for (i = 0; i < option_len; ++i) out[o++] = (unsigned char)option[i];
+    if (config_count)
+    {
+        memcpy( out+o, copy+config_end, (used-config_end) * sizeof(WCHAR) );
+        o += used - config_end;
+    }
+    else { out[o++] = 0; out[o++] = 0; }
+    *out_bytes = o * sizeof(WCHAR);
+ done:
+    free( copy );
+    return out;
+}
+
+static WCHAR *ios_cs2_texture_environment( const UNICODE_STRING *image, const UNICODE_STRING *actual,
+                                          USHORT machine, const WCHAR *environment, SIZE_T bytes,
+                                          const char *option, SIZE_T *out_bytes )
+{
+    int saved_errno = errno;
+    WCHAR *out = ios_cs2_texture_build_environment( image, actual, machine, environment, bytes, option, out_bytes );
+    errno = saved_errno;
+    return out;
+}
+/* END CS2 TEXTURE CHILD ENVIRONMENT */
+
 /* A Steam game's session log under its own name.
  *
  * The app keeps each run's log as Documents/logs/<exe>-<yyyy-MM-dd_HH-mm-ss>.txt
@@ -1430,8 +1628,9 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
     data_size_t handles_size, jobs_size;
     obj_handle_t *handles, *jobs;
 #ifdef WINE_IOS
-    RTL_USER_PROCESS_PARAMETERS htmlipc_params;
+    RTL_USER_PROCESS_PARAMETERS htmlipc_params, cs2_texture_params;
     WCHAR *htmlipc_path = NULL, *htmlipc_command = NULL;
+    WCHAR *cs2_texture_env = NULL;
     BOOL htmlipc_redirected = FALSE;
     uint32_t startup_timing = 0;
 #endif
@@ -2354,6 +2553,20 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
     /* a 32-bit child is about to need a guest window (see ios_wow_session_arm) */
     if (machine == IMAGE_FILE_MACHINE_I386 && !(pe_info.image_flags & IMAGE_FLAGS_ComPlusNativeReady))
         ios_wow_session_arm();
+    {
+        SIZE_T texture_env_bytes;
+        cs2_texture_env = ios_cs2_texture_environment( &params->ImagePathName, &path, pe_info.machine,
+            params->Environment, params->EnvironmentSize, getenv("MADEIRA_CS2_TEXTURE_DXMT_CONFIG"),
+            &texture_env_bytes );
+        if (cs2_texture_env)
+        {
+            cs2_texture_params = *params;
+            cs2_texture_params.Environment = cs2_texture_env;
+            cs2_texture_params.EnvironmentSize = texture_env_bytes;
+            params = &cs2_texture_params;
+            dprintf( 2, "[cs2-texture-scope-v1] phase=child-environment-prepared\n" );
+        }
+    }
 #endif
     if (!(startup_info = create_startup_info( attr.ObjectName, process_flags, params, &pe_info, &startup_info_size )))
         goto done;
@@ -2582,6 +2795,7 @@ done:
     free( unix_name );
     free( nt_name.Buffer );
 #ifdef WINE_IOS
+    free( cs2_texture_env );
     free( htmlipc_command );
     free( htmlipc_path );
 #endif

@@ -2905,6 +2905,9 @@ struct ContentView: View {
         ws_log_quiet = 1
 
         DispatchQueue.global(qos: .userInitiated).async {
+            // A previous Steam session must not supply a renderer policy to a
+            // Desktop/probe/unrelated launch, including a failed preparation.
+            unsetenv(CS2TextureMemoryProfile.childConfigKey)
             // Private startup policy belongs to this launch only. The generated
             // Steam command keeps the original game's profile in `profile`.
             unsetenv("WINE_IOS_JIT_HEAD_RESERVE_MB")
@@ -2940,6 +2943,12 @@ struct ContentView: View {
             for name in cs2PartitionNames {
                 unsetenv(name)
                 if !cs2PartitionLocks.contains(name) { cs2PartitionLocks.append(name) }
+            }
+            // The child-only texture control is owned by the launch UI, never
+            // by a later global/game config import or a guest environment.
+            unsetenv(CS2TextureMemoryProfile.childConfigKey)
+            if !cs2PartitionLocks.contains(CS2TextureMemoryProfile.childConfigKey) {
+                cs2PartitionLocks.append(CS2TextureMemoryProfile.childConfigKey)
             }
             let cs2PartitionLocksReady = setenv("MADEIRA_ENV_LOCKED", cs2PartitionLocks.joined(separator: ","), 1) == 0
 
@@ -3254,12 +3263,19 @@ struct ContentView: View {
             let customMipAuto = MadeiraConfig.gameValue("env.MADEIRA_MIP_CLAMP_AUTO")
                 ?? MadeiraConfig.get("env.MADEIRA_MIP_CLAMP_AUTO")
                 ?? getenv("MADEIRA_MIP_CLAMP_AUTO").map { String(cString: $0) }
+            let textureBaseline = dxmtOptions
             let textureMemory = CS2TextureMemoryProfile.apply(options: dxmtOptions,
                 appID: profile?.steamAppID, saved: profile?.cs2TextureMemoryProfile,
                 budget: cs2TextureMemoryBudget, environmentAuto: customMipAuto, standalone: standaloneProbe)
-            dxmtOptions = textureMemory.options
+            let textureTransport = CS2TextureMemoryProfile.transport(
+                baseline: textureBaseline, decision: textureMemory, nativeSteam: nativeSteamClient)
+            dxmtOptions = textureTransport.options
+            var textureDeferred = false
+            if let childConfig = textureTransport.childConfig {
+                textureDeferred = setenv(CS2TextureMemoryProfile.childConfigKey, childConfig, 1) == 0
+            }
             if textureMemory.applicable {
-                logStore.log("[cs2-texture-memory-v1] selected=\(textureMemory.selected.rawValue) source=\(textureMemory.source) applied=\(textureMemory.applied ? 1 : 0) budget-mb=\(cs2TextureMemoryBudget.map { String($0 >> 20) } ?? "unknown")")
+                logStore.log("[cs2-texture-memory-v1] selected=\(textureMemory.selected.rawValue) source=\(textureMemory.source) applied=\(!nativeSteamClient && textureMemory.applied ? 1 : 0) deferred=\(textureDeferred ? 1 : 0) budget-mb=\(cs2TextureMemoryBudget.map { String($0 >> 20) } ?? "unknown")")
             }
             // Unset otherwise, so a previous session's options in this app process do not apply.
             if !dxmtOptions.isEmpty { setenv("DXMT_CONFIG", dxmtOptions.joined(separator: ";"), 1) } else { unsetenv("DXMT_CONFIG") }

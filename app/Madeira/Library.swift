@@ -187,8 +187,28 @@ enum CS2TextureMemoryProfile {
         let applicable: Bool
         let applied: Bool
     }
+    struct Transport {
+        let options: [String]
+        let childConfig: String?
+    }
+    static let childConfigKey = "MADEIRA_CS2_TEXTURE_DXMT_CONFIG"
     static let automaticBudgetLimit = UInt64(8) << 30
     static let explanation = "Balanced reduces one top mip from large BC textures only when memory runs short; small textures are unchanged. Automatic selects Balanced for constrained launches. Full quality keeps all requested mip levels and needs more memory. Explicit custom DXMT mip settings take precedence. Applies at the next launch."
+
+    /// Native Steam and CEF keep the exact pre-profile renderer options. Only
+    /// the one option this profile adds is published as app-owned child policy;
+    /// NtCreateUserProcess merges it into the actual CS2 environment later.
+    static func transport(baseline: [String], decision: Decision, nativeSteam: Bool) -> Transport {
+        guard nativeSteam else { return Transport(options: decision.options, childConfig: nil) }
+        guard decision.applicable, decision.applied,
+              decision.options.count == baseline.count + 1,
+              Array(decision.options.dropLast()) == baseline,
+              let option = decision.options.last,
+              ["d3d11.mipClampAuto=0", "d3d11.mipClampAuto=1"].contains(option) else {
+            return Transport(options: baseline, childConfig: nil)
+        }
+        return Transport(options: baseline, childConfig: option)
+    }
 
     static func measuredBudget(available: UInt64, footprint: UInt64, installed: UInt64, valid: Bool) -> UInt64? {
         guard valid, footprint > 0, installed > 0, available <= installed,

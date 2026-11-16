@@ -67,6 +67,8 @@ xcodebuild -downloadComponent MetalToolchain >/dev/null 2>&1 || true
 "$ROOT/tools/build/build-dxmt-memory-compat.sh"
 "$ROOT/tools/build/prepare-vcruntime.sh"
 "$ROOT/build/stage-licenses.sh"
+python3 "$ROOT/tools/check-wait-address-package.py" --root "$ROOT/app/Madeira" \
+  --repo-root "$ROOT" --build-root "$ROOT/wine" --write
 "$ROOT/tools/build/package-ipa.sh"
 
 printf '\n\033[1;32mDone: %s/dist/Madeira.ipa\033[0m\n' "$ROOT"

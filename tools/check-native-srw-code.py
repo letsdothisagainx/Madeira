@@ -24,7 +24,9 @@ class Image:
         self.metadata = code.PE.inspect(data, farm, required_export=required_export)
         pe = struct.unpack_from('<I', data, 0x3c)[0]
         self.opt = pe + 24
-        self.base = struct.unpack_from('<Q', data, self.opt + 24)[0]
+        magic = struct.unpack_from('<H', data, self.opt)[0]
+        self.base = struct.unpack_from('<I' if magic == 0x10b else '<Q', data,
+                                       self.opt + (28 if magic == 0x10b else 24))[0]
         optional = struct.unpack_from('<H', data, pe + 20)[0]
         count = struct.unpack_from('<H', data, pe + 6)[0]
         self.sections = []
@@ -49,7 +51,7 @@ class Image:
 
     def native_target(self, machine):
         target = self.metadata['export_rva']
-        if machine == 'aarch64':
+        if machine in ('aarch64', 'i386'):
             return target
         directory, length = struct.unpack_from('<II', self.data, self.opt + 112 + 10 * 8)
         assert directory and length >= 208, 'ARM64EC SRW load configuration missing'

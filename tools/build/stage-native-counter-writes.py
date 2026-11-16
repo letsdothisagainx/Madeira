@@ -33,6 +33,10 @@ _lfh_spec = importlib.util.spec_from_file_location("native_lfh_size", ROOT / "to
 _lfh_size = importlib.util.module_from_spec(_lfh_spec)
 _lfh_spec.loader.exec_module(_lfh_size)
 
+_wait_spec = importlib.util.spec_from_file_location("wait_address_lifetime", ROOT / "tools/build/stage-wait-address-lifetime.py")
+_wait_lifetime = importlib.util.module_from_spec(_wait_spec)
+_wait_spec.loader.exec_module(_wait_lifetime)
+
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
     if text.count(old) != 1:
@@ -127,6 +131,7 @@ static inline LONG *ios_srw_index_writer(void)
         "&ios_srw_ring[(i - n) & 511]", "&ios_srw_ring_writer()[(i - n) & 511]", FILES[1])
     out[FILES[3]] += "\n@ extern -private ios_srw_ring\n@ extern -private ios_srw_ring_idx\n@ extern -private ios_srw_history_write_contract\n"
     out[FILES[1]] = _srw_wake.stage(out[FILES[1]])
+    out[FILES[1]] = _wait_lifetime.stage(out[FILES[1]])
     out["dlls/ntdll/heap.c"] = _lfh_size.stage(out["dlls/ntdll/heap.c"])
     return out
 

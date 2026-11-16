@@ -30,6 +30,7 @@ def function(source, signature):
 def production_header():
     stager = module('native_counter_stage', ROOT / 'tools/build/stage-native-counter-writes.py')
     wake = module('native_srw_wake', ROOT / 'tools/build/stage-native-srw-wake.py')
+    lifetime = module('wait_address_lifetime', ROOT / 'tools/build/stage-wait-address-lifetime.py')
     sources = {name: (ROOT / 'wine' / name).read_text() for name in stager.FILES}
     original = sources[stager.FILES[1]]
     staged = stager.stage(sources)[stager.FILES[1]]
@@ -47,12 +48,13 @@ def production_header():
     bodies = staged[staged.index(first):staged.index(end)]
     assert bodies.count(wake.GUARDED) == 1
     assert bodies.replace(wake.GUARDED, wake.ORIGINAL, 1) == original[original.index(first):original.index(end)]
-    # Public address-wait/wake APIs retain their exact bodies. Counters alone
-    # use the previously established writer accessor in the composed overlay.
+    # Wake selection stays byte-exact. Wait cleanup has only the separately
+    # verified stack-lifetime correction; counters keep their writer accessor.
     futex_names = ['NTSTATUS WINAPI RtlWaitOnAddress(', 'void WINAPI RtlWakeAddressAll(',
                    'void WINAPI RtlWakeAddressSingle(']
     for signature in futex_names:
-        assert function(staged, signature).replace('ios_xp_nt_writer()->', 'ios_xp_nt.') == function(original, signature)
+        expected = lifetime.stage(original) if signature == futex_names[0] else original
+        assert function(staged, signature).replace('ios_xp_nt_writer()->', 'ios_xp_nt.') == function(expected, signature)
     struct_start = staged.index('struct srw_lock\n')
     struct_end = staged.index('C_ASSERT( sizeof(struct srw_lock) == 4 );', struct_start)
     header = staged[struct_start:struct_end] + '\n'

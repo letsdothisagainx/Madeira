@@ -41,7 +41,15 @@ assert 'MadeiraConfig.get("env.MADEIRA_MIP_CLAMP_AUTO")' in worker
 assert 'getenv("MADEIRA_MIP_CLAMP_AUTO")' in worker
 assert 'CS2TextureMemoryProfile.measuredBudget(' in worker
 assert 'selected=\\(textureMemory.selected.rawValue)' in worker
-assert 'applied=\\(textureMemory.applied ? 1 : 0)' in worker
+assert 'let textureBaseline = dxmtOptions' in worker
+assert 'nativeSteam: nativeSteamClient' in worker
+assert 'dxmtOptions = textureTransport.options' in worker
+assert 'setenv(CS2TextureMemoryProfile.childConfigKey, childConfig, 1)' in worker
+assert worker.index('unsetenv(CS2TextureMemoryProfile.childConfigKey)') < worker.index('profile.applyEnvironment()')
+assert worker.count('unsetenv(CS2TextureMemoryProfile.childConfigKey)') == 2
+assert 'cs2PartitionLocks.append(CS2TextureMemoryProfile.childConfigKey)' in worker
+assert 'applied=\\(!nativeSteamClient && textureMemory.applied ? 1 : 0)' in worker
+assert 'deferred=\\(textureDeferred ? 1 : 0)' in worker
 print('PASS CS2 picker, optional persistence, genuine Steam original-profile handoff, final DXMT merge and standalone isolation source wiring')
 
 swift = os.environ.get('SWIFTC') or shutil.which('swiftc')
@@ -67,6 +75,31 @@ for budget in budgets {
     assert(d.applicable && d.applied && d.selected == .balanced)
     assert(d.options == baseline + ["d3d11.mipClampAuto=1"])
 }
+let balancedTransport = CS2TextureMemoryProfile.transport(baseline: baseline,
+    decision: decision("balanced", options: baseline), nativeSteam: true)
+assert(balancedTransport.options == baseline)
+assert(balancedTransport.childConfig == "d3d11.mipClampAuto=1")
+let fullTransport = CS2TextureMemoryProfile.transport(baseline: baseline,
+    decision: decision("full", options: baseline), nativeSteam: true)
+assert(fullTransport.options == baseline && fullTransport.childConfig == "d3d11.mipClampAuto=0")
+let directTransport = CS2TextureMemoryProfile.transport(baseline: baseline,
+    decision: decision("balanced", options: baseline), nativeSteam: false)
+assert(directTransport.options == baseline + ["d3d11.mipClampAuto=1"] && directTransport.childConfig == nil)
+for d in [decision(options: baseline, app: nil), decision(options: baseline, app: 356400),
+          decision(options: baseline, standalone: true), decision(options: baseline, env: "0"),
+          decision(options: baseline + ["d3d11.mipClampBC=0"])] {
+    let b = d.options
+    let t = CS2TextureMemoryProfile.transport(baseline: b, decision: d, nativeSteam: true)
+    assert(t.options == b && t.childConfig == nil)
+}
+let forged = CS2TextureMemoryProfile.Decision(options: baseline + ["unrelated.option=1"],
+    selected: .balanced, source: "test", applicable: true, applied: true)
+assert(CS2TextureMemoryProfile.transport(baseline: baseline, decision: forged, nativeSteam: true).childConfig == nil)
+let changedBase = CS2TextureMemoryProfile.Decision(options: ["changed=1", "d3d11.mipClampAuto=1"],
+    selected: .balanced, source: "test", applicable: true, applied: true)
+assert(CS2TextureMemoryProfile.transport(baseline: baseline, decision: changedBase, nativeSteam: true).options == baseline)
+assert(CS2TextureMemoryProfile.childConfigKey == "MADEIRA_CS2_TEXTURE_DXMT_CONFIG")
+print("PASS native Steam/CEF options remain byte-for-byte baseline; only one profile-added child option deferred; direct CS2/custom/probe isolation preserved")
 let roomy = decision(budget: 12 * GiB)
 assert(roomy.selected == .full && roomy.options.last == "d3d11.mipClampAuto=0")
 assert(decision("full").selected == .full && decision("full").options.last == "d3d11.mipClampAuto=0")
