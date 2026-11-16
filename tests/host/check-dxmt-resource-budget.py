@@ -255,6 +255,19 @@ int main(){
  assert((cleanup==std::vector<int>{1,2,3,4,5,6,7,8,9}));assert(md_resource_growth_held==32*MiB);
  owner_state(0,1,0,0,1);assert(!release(a.ptr));caller=(void*)0x20000;assert(release(b.ptr));caller=(void*)0x10000;
  std::puts("PASS actual server cleanup returns only proven quiescent CPU credits before guest-window recycling");
+ // Metadata pressure is a submit advisory while physical capacity remains
+ // healthy. The128th tiny pending creation requests a genuine private flush;
+ // only its eventual event completion makes those receipts reusable.
+ sample(2048*MiB);events[0].value=0;
+ for(unsigned i=1;i<=MD_RESOURCE_GROWTH_RECEIPTS/2;++i){
+  auto p=acquire(1);assert(p.ptr&&p.ret==(i<MD_RESOURCE_GROWTH_RECEIPTS/2 ? 1u:2u));
+  assert(handoff(p.ptr,0x51,UINT64_MAX).ret==1&&handoff(p.ptr,0x51,1).ret==1);
+ }
+ assert(md_resource_growth_held==MD_RESOURCE_GROWTH_RECEIPTS/2&&!md_resource_growth_pressure);
+ events[0].value=1;auto after_submit=acquire(1);
+ assert(after_submit.ptr&&after_submit.ret==1&&md_resource_growth_held==1&&release(after_submit.ptr));
+ assert(event_loans.empty());
+ std::puts("PASS healthy half-cap metadata advisory submits pending initialization; actual event completion restores receipt capacity without a byte-history quota");
  // Completed credits and their bounded registry loans retire atomically with
  // respect to slot reuse, despite actual event destruction occurring unlocked.
  // Pause a full256-entry close batch and race another owner/queue against it.

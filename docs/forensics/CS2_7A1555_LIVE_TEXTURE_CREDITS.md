@@ -61,7 +61,10 @@ the archive does not prove how often they occurred in this run.
   keeps its slot/credit through native event-loan cleanup outside the budget
   lock; another queue cannot reuse the slot before the matching bounded loan
   is actually available. A deterministic full-capacity two-owner test covers
-  this cleanup race.
+  this cleanup race. At half receipt capacity, a grant also requests real
+  private-batch submission. Small batches from idle initializers cannot fill
+  the bounded metadata pool without first receiving a submission advisory;
+  this is not a byte-history quota or a claim of GPU completion.
 - Normal admission never waits for an unpublished private batch. A denied
   producer flushes its real pending batch before a bounded retry; native
   waits release the budget mutex and resample real memory. Darwin's relative

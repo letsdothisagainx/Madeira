@@ -232,7 +232,7 @@ static inline void md_resource_growth_acquire(struct madeira_ctl_args *args) {
   void *owner = NULL, *current_owner = NULL;
   int identity, wait_status, cancel_state;
   uint64_t cookies[MD_RESOURCE_GROWTH_RECEIPTS];
-  unsigned slot, cookie_count;
+  unsigned slot, occupied, index, cookie_count;
   (void)md_resource_growth_contract[0];
   (void)md_resource_live_contract[0];
   args->ret = 0; args->ptr = 0; args->len = 0;
@@ -277,8 +277,12 @@ static inline void md_resource_growth_acquire(struct madeira_ctl_args *args) {
   }
   args->len = available;
   md_resource_growth_diagnostics(args, measurement.ptr, md_resource_growth_held, floor, 0);
-  for (slot = 0; slot < MD_RESOURCE_GROWTH_RECEIPTS; ++slot)
-    if (!md_resource_growth_receipts[slot].token) break;
+  slot = MD_RESOURCE_GROWTH_RECEIPTS;
+  occupied = 0;
+  for (index = 0; index < MD_RESOURCE_GROWTH_RECEIPTS; ++index) {
+    if (md_resource_growth_receipts[index].token) ++occupied;
+    else if (slot == MD_RESOURCE_GROWTH_RECEIPTS) slot = index;
+  }
   if (available <= floor || bytes > available - floor) {
     md_resource_growth_pressure = 1;
     md_resource_growth_diagnostics(args, measurement.ptr, md_resource_growth_held, floor, 1);
@@ -337,7 +341,12 @@ static inline void md_resource_growth_acquire(struct madeira_ctl_args *args) {
   md_resource_growth_receipts[slot].lease = lease;
   md_resource_growth_receipts[slot].phase = 1;
   md_resource_growth_held += bytes;
-  args->ret = md_resource_growth_pressure ? 2 : 1;
+  // Small healthy batches can otherwise occupy every receipt while remaining
+  // unsubmitted in several idle initializers. Request a real private-queue
+  // flush before metadata fills; this advisory neither completes GPU work nor
+  // changes physical thresholds or evicts any live/reusable allocation.
+  args->ret = (md_resource_growth_pressure ||
+               occupied + 1 >= MD_RESOURCE_GROWTH_RECEIPTS / 2) ? 2 : 1;
 unlock:
   pthread_mutex_unlock(&md_resource_growth_mutex);
   pthread_setcancelstate(cancel_state, NULL);
