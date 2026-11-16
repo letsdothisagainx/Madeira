@@ -14,7 +14,7 @@ root = Path(__file__).resolve().parents[2]
 workflow = (root / '.github/workflows/build.yml').read_text()
 assert 'scripts/' not in workflow and 'research/dxmt' not in workflow
 assert workflow.count('key: ${{ steps.key.outputs.key }}\n    steps:') == 2
-assert workflow.count('key: plan19-${{ steps.sdk.outputs.key }}-${{ steps.key.outputs.key }}') == 2
+assert workflow.count('key: plan19-${{ needs.plan.outputs.sdk }}-${{ steps.key.outputs.key }}') == 2
 assert workflow.count('key: plan19-${{ steps.sdk.outputs.key }}-${{ needs.') == 2
 # The optional selection constrains the actual plan fingerprint using the same
 # real matching/mismatching script exercised below; it cannot supply outputs.
@@ -59,6 +59,25 @@ with tempfile.TemporaryDirectory(prefix='madeira-build-inputs-') as folder:
         output.unlink(missing_ok=True)
         subprocess.run(['bash', '-euo', 'pipefail', '-c', script], cwd=root, env=dict(env, **(extra or {})), check=True)
         return dict(line.split('=', 1) for line in output.read_text().splitlines())
+    verify = re.search(r"      - name: Verify restored LLVM archives\n        if: .*\n        run: \|\n((?:          .+\n)+)", workflow)
+    assert verify
+    verify = textwrap.dedent(verify[1])
+    cache_root = folder / 'strict-cache'
+    required = ['toolchains/llvm-ios-build/lib/libLLVMCore.a', 'toolchains/llvm-ios-build/lib/libLLVMSupport.a',
+                'toolchains/llvm-ios-build/include/llvm/Config/llvm-config.h', 'toolchains/llvm-project/llvm/include/llvm/IR/Module.h']
+    for name in required:
+        path = cache_root / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(b'fixture')
+    import hashlib
+    cache_manifest = cache_root / 'toolchains/llvm-ios-build/.madeira-cache.sha256'
+    cache_manifest.write_text(''.join(hashlib.sha256(b'fixture').hexdigest() + '  lib/' + name + '\n'
+                                    for name in ['libLLVMCore.a', 'libLLVMSupport.a']))
+    def verify_cache():
+        return subprocess.run(['bash','-euo','pipefail','-c',verify],cwd=cache_root,capture_output=True).returncode
+    assert verify_cache() == 0
+    cache_archive = cache_root / required[0]; cache_archive.write_bytes(b'corrupt')
+    assert verify_cache() != 0
+    cache_archive.write_bytes(b'fixture'); (cache_root / required[-1]).unlink()
+    assert verify_cache() != 0
     first = fingerprint()
     assert first == fingerprint()
     assert first == fingerprint({'JOBS': '3'})
@@ -167,7 +186,7 @@ for component, label, destination in [('llvm', 'LLVM', 'toolchains'),
         f'      - name: Retain {label} outputs for this run\n', 1)[1], maxsplit=1, flags=re.M)[0]
     consumer = app_workflow.split(f'      - name: Recover {label} outputs from this run\n', 1)[1].split('      - ', 1)[0]
     # Same-run artifacts avoid trusting outputs from unrelated PRs.
-    expected_sdk = 'needs.plan.outputs.sdk' if component == 'llvm' else 'steps.sdk.outputs.key'
+    expected_sdk = 'needs.plan.outputs.sdk'
     assert f'name: native-{component}-${{{{ {expected_sdk} }}}}' in producer
     assert f'name: native-{component}-${{{{ needs.plan.outputs.sdk }}}}' in consumer
     assert 'actions/download-artifact@v4' in consumer and 'run-id:' not in consumer
@@ -177,7 +196,12 @@ for component, label, destination in [('llvm', 'LLVM', 'toolchains'),
 assert 'include-hidden-files: true' in workflow.split('Retain LLVM outputs for this run', 1)[1].split('\n  fex:', 1)[0]
 llvm_job = workflow.split('  llvm:\n',1)[1].split('\n  fex:',1)[0]
 assert "- id: sdk\n        if: steps.cache.outputs.cache-hit != 'true'\n        run: bash tools/build/ci-input-key.sh" in llvm_job
-assert "name: Verify restored LLVM archives\n        if: steps.cache.outputs.cache-hit == 'true'\n        run: tools/build/build-llvm-ios.sh" in llvm_job
+assert "name: Verify restored LLVM archives\n        if: steps.cache.outputs.cache-hit == 'true'\n        run: |" in llvm_job
+for job, following in [('llvm', 'fex'), ('fex', 'i386'), ('i386', 'app')]:
+    provider = workflow.split('  ' + job + ':\n', 1)[1].split('\n  ' + following + ':', 1)[0]
+    assert "- id: sdk\n        if: steps.cache.outputs.cache-hit != 'true'\n        run: bash tools/build/ci-input-key.sh" in provider
+    assert provider.index('      - id: cache\n') < provider.index('      - id: sdk\n')
+
 for name in ['build-llvm-ios.sh', 'build-fex-ios.sh']:
     assert name in (root / 'tools/build-ipa.sh').read_text()
 with tempfile.TemporaryDirectory(prefix='madeira-cache-miss-') as tmp:
