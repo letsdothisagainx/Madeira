@@ -84,6 +84,22 @@ ar() { touch "$2"; }
     # pipeline's Rust/build ordering with the other tool fixtures.
     (pipeline / 'tools/build').mkdir(parents=True, exist_ok=True)
     (pipeline / 'tools/build/stage-io-status-abi.py').write_text('import sys\n')
+    # This fixture isolates pipeline ordering, not the real PE producer gate
+    # (which has its own compiled-object and composed IPA package tests).
+    (pipeline / 'tools/check-wait-address-package.py').write_text('''
+import argparse, os
+from pathlib import Path
+p = argparse.ArgumentParser()
+p.add_argument('--root', type=Path, required=True)
+p.add_argument('--repo-root', type=Path, required=True)
+p.add_argument('--build-root', type=Path, required=True)
+p.add_argument('--write', action='store_true', required=True)
+a = p.parse_args()
+assert a.root == a.repo_root / 'app/Madeira'
+assert a.build_root == a.repo_root / 'wine'
+assert (a.root / 'libmadeira_rppairing.a').is_file()
+Path(os.environ['TRACE'] + '.wait-checked').touch()
+''')
     for relative in set(re.findall(r'"\$ROOT/([^"]+\.sh)"', entry)) | {'build/rppairing-ios/build.sh'}:
         path = pipeline / relative
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -107,7 +123,8 @@ ar() { touch "$2"; }
         path.chmod(0o755)
     package = pipeline / 'tools/build/package-ipa.sh'
     package.write_text('#!/bin/bash\nset -eu\ntest -s "$ROOT/app/Madeira/libmadeira_rppairing.a"\n'
-                       'test -s "$ROOT/app/Madeira/legal/LICENSES-rppairing-crates.txt"\ntouch "$TRACE.packaged"\n')
+                       'test -s "$ROOT/app/Madeira/legal/LICENSES-rppairing-crates.txt"\n'
+                       'test -f "$TRACE.wait-checked"\ntouch "$TRACE.packaged"\n')
     result = subprocess.run(['bash', str(entry_path)], capture_output=True, text=True,
                             env=dict(os.environ, PATH=str(tools) + os.pathsep + os.environ['PATH'],
                                      TEST_TOOLS=str(tools), TRACE=str(pipeline / 'trace')))
