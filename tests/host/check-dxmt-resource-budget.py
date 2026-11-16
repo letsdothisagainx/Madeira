@@ -86,8 +86,10 @@ static std::map<uint64_t,FakeEvent*> event_loans;
 static uint64_t next_event_cookie=1;
 static std::atomic<unsigned> event_reads{0},event_releases{0};
 static std::atomic<bool> check_release_unlocked{false};
+static std::atomic<bool> pause_event_close{false},event_close_entered{false},allow_event_close{false};
 extern "C" uint64_t madeira_growth_event_retain(uint64_t handle,void*owner,unsigned long long lease){
  std::lock_guard<std::mutex> lock(event_mutex);
+ if(event_loans.size()>=MD_RESOURCE_GROWTH_RECEIPTS)return 0;
  for(auto&e:events)if(e.handle==handle&&e.owner==owner&&e.lease==lease){
   uint64_t cookie=next_event_cookie++;event_loans.emplace(cookie,&e);return cookie;
  }
@@ -99,6 +101,7 @@ extern "C" int madeira_growth_event_value(uint64_t cookie,uint64_t*out){
  *out=i->second->value.load();return 1;
 }
 extern "C" void madeira_growth_event_release(uint64_t cookie){
+ if(pause_event_close){event_close_entered=true;while(!allow_event_close.load())std::this_thread::yield();}
  if(check_release_unlocked){assert(!pthread_mutex_trylock(&md_resource_growth_mutex));pthread_mutex_unlock(&md_resource_growth_mutex);}
  std::lock_guard<std::mutex> lock(event_mutex);assert(event_loans.erase(cookie)==1);++event_releases;
 }
@@ -252,6 +255,27 @@ int main(){
  assert((cleanup==std::vector<int>{1,2,3,4,5,6,7,8,9}));assert(md_resource_growth_held==32*MiB);
  owner_state(0,1,0,0,1);assert(!release(a.ptr));caller=(void*)0x20000;assert(release(b.ptr));caller=(void*)0x10000;
  std::puts("PASS actual server cleanup returns only proven quiescent CPU credits before guest-window recycling");
+ // Completed credits and their bounded registry loans retire atomically with
+ // respect to slot reuse, despite actual event destruction occurring unlocked.
+ // Pause a full256-entry close batch and race another owner/queue against it.
+ sample(2048*MiB);events[0].value=0;
+ for(unsigned i=0;i<MD_RESOURCE_GROWTH_RECEIPTS;++i){
+  auto p=acquire(1);assert(p.ptr&&handoff(p.ptr,0x51,UINT64_MAX).ret==1&&handoff(p.ptr,0x51,1).ret==1);
+ }
+ assert(event_loans.size()==MD_RESOURCE_GROWTH_RECEIPTS&&md_resource_growth_held==MD_RESOURCE_GROWTH_RECEIPTS);
+ pause_event_close=true;events[0].value=1;
+ std::thread closing([&]{caller=(void*)0x10000;auto p=acquire(1);assert(p.ptr&&release(p.ptr));});
+ auto close_deadline=std::chrono::steady_clock::now()+std::chrono::seconds(2);
+ while(!event_close_entered.load()){assert(std::chrono::steady_clock::now()<close_deadline);std::this_thread::yield();}
+ caller=(void*)0x20000;auto during_close=acquire(1);
+ assert(during_close.ret==3&&detail(during_close,3)==2&&md_resource_growth_held==MD_RESOURCE_GROWTH_RECEIPTS);
+ std::thread second_queue([&]{
+  caller=(void*)0x20000;auto p=acquire(1,1);assert(p.ptr);
+  assert(handoff(p.ptr,0x52,UINT64_MAX).ret==1&&handoff(p.ptr,0x52,0).ret==1);
+ });
+ await_waiter();allow_event_close=true;closing.join();second_queue.join();pause_event_close=false;
+ assert(!md_resource_growth_held&&event_loans.empty()&&!md_resource_growth_waiters);caller=(void*)0x10000;
+ std::puts("PASS256-slot GPU-close race: another queue waits while loans close unlocked, then obtains a genuine event loan without transient false OOM");
  // Validated GPU intent precedes initialization. CPU release cannot undo it;
  // publication is single-shot and a forged event/owner cannot rewrite it.
  sample(600*MiB);a=acquire(64*MiB);assert(a.ptr);

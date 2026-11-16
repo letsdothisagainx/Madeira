@@ -115,14 +115,35 @@ static inline void md_resource_growth_notify_locked(void) {
 
 static inline uint64_t md_resource_growth_drop_locked(unsigned slot) {
   const uint64_t cookie = md_resource_growth_receipts[slot].event_cookie;
+  if (cookie) {
+    // Keep the slot and its credit until the native loan is actually closed.
+    // Reusing it sooner can exhaust the equal-size event-loan registry while
+    // another queue is still releasing a completed batch outside this lock.
+    md_resource_growth_receipts[slot].phase = 4;
+    return cookie;
+  }
   md_resource_growth_held -= md_resource_growth_receipts[slot].bytes;
   memset(&md_resource_growth_receipts[slot], 0, sizeof(md_resource_growth_receipts[slot]));
-  return cookie;
+  return 0;
 }
 
 static inline void md_resource_growth_release_events(const uint64_t *cookies, unsigned count) {
-  unsigned i;
+  unsigned i, slot;
+  if (!count) return;
+  // Objective-C destruction must remain outside the growth mutex. Retiring
+  // slots cannot be reused until every loan in this batch has returned.
   for (i = 0; i < count; ++i) madeira_growth_event_release(cookies[i]);
+  pthread_mutex_lock(&md_resource_growth_mutex);
+  for (slot = 0; slot < MD_RESOURCE_GROWTH_RECEIPTS; ++slot) {
+    if (md_resource_growth_receipts[slot].phase != 4) continue;
+    for (i = 0; i < count; ++i)
+      if (md_resource_growth_receipts[slot].event_cookie == cookies[i]) break;
+    if (i == count) continue;
+    md_resource_growth_held -= md_resource_growth_receipts[slot].bytes;
+    memset(&md_resource_growth_receipts[slot], 0, sizeof(md_resource_growth_receipts[slot]));
+  }
+  md_resource_growth_notify_locked();
+  pthread_mutex_unlock(&md_resource_growth_mutex);
 }
 
 /* Initialized resident backing is already counted by the OS. Until its real
@@ -132,7 +153,6 @@ static inline void md_resource_growth_release_events(const uint64_t *cookies, un
 static inline unsigned md_resource_growth_poll_gpu_locked(uint64_t *cookies) {
   struct {uint64_t handle, value; int known;} cache[16];
   unsigned cached = 0, slot, i, count = 0;
-  int released = 0;
   for (slot = 0; slot < MD_RESOURCE_GROWTH_RECEIPTS; ++slot) {
     uint64_t value = 0;
     int known = 0;
@@ -149,9 +169,7 @@ static inline unsigned md_resource_growth_poll_gpu_locked(uint64_t *cookies) {
     }
     if (!known || value < md_resource_growth_receipts[slot].target) continue;
     cookies[count++] = md_resource_growth_drop_locked(slot);
-    released = 1;
   }
-  if (released) md_resource_growth_notify_locked();
   return count;
 }
 
@@ -372,7 +390,6 @@ static inline void md_resource_growth_handoff(struct madeira_ctl_args *args) {
     }
     if (!target || value >= target) {
       cookie = md_resource_growth_drop_locked(slot);
-      md_resource_growth_notify_locked();
     } else {
       md_resource_growth_receipts[slot].target = target;
       md_resource_growth_receipts[slot].phase = 3;
@@ -381,7 +398,7 @@ static inline void md_resource_growth_handoff(struct madeira_ctl_args *args) {
   } else args->ret = 4; /* No foreign event, duplicate begin or fence downgrade. */
  unlock:
   pthread_mutex_unlock(&md_resource_growth_mutex);
-  if (cookie) madeira_growth_event_release(cookie);
+  if (cookie) md_resource_growth_release_events(&cookie, 1);
   pthread_setcancelstate(cancel_state, NULL);
  done:
   errno = saved_errno;

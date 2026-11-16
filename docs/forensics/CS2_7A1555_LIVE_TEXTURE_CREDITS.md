@@ -57,7 +57,11 @@ the archive does not prove how often they occurred in this run.
   before recording commands. Retire it only after the actual GPU frontier
   completes. CPU return, elapsed time, or process termination does not prove
   GPU completion. Owner/lease validation and bounded event loans prevent
-  trusting arbitrary guest-supplied Objective-C pointers.
+  trusting arbitrary guest-supplied Objective-C pointers. A completed receipt
+  keeps its slot/credit through native event-loan cleanup outside the budget
+  lock; another queue cannot reuse the slot before the matching bounded loan
+  is actually available. A deterministic full-capacity two-owner test covers
+  this cleanup race.
 - Normal admission never waits for an unpublished private batch. A denied
   producer flushes its real pending batch before a bounded retry; native
   waits release the budget mutex and resample real memory. Darwin's relative
