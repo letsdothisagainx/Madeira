@@ -251,17 +251,24 @@ jobs:
     if: needs.plan.outputs.reuse != 'true'
     runs-on: xcode-27
     env:
-      MADEIRA_PLANNED_SDK: ${{ needs.plan.outputs.sdk }}
-      MADEIRA_PLANNED_IPA: ${{ needs.plan.outputs.ipaenv }}
+      # An explicitly requested SDK remains strict. Otherwise the compiler
+      # worker determines its own coherent cache graph; plan is a reuse probe.
+      MADEIRA_PLANNED_SDK: ${{ inputs.planned_sdk_key }}
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      # Reject mixed runner images before spending minutes on host regressions.
-      # The same toolchain fingerprint and planned-key checks remain required.
+      # Measure and pin the actual compiler before choosing dependency caches.
+      # Same-run dependency artifacts require an exact SDK fingerprint match.
       - id: sdk
         run: bash tools/build/ci-input-key.sh
+      - id: key
+        run: echo "ipa=ipa-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.sdk.outputs.ipa }}-$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
+      - name: Pin actual compiler inputs for the build
+        run: |
+          echo "MADEIRA_PLANNED_SDK=${{ steps.sdk.outputs.key }}" >> "$GITHUB_ENV"
+          echo "MADEIRA_PLANNED_IPA=${{ steps.sdk.outputs.ipa }}" >> "$GITHUB_ENV"
       - name: Ensure real cryptographic regression provider
         run: brew list openssl@3 >/dev/null 2>&1 || brew install openssl@3
       - name: Check embedded signal ownership and Dock packaging
@@ -295,14 +302,14 @@ jobs:
           path: app/Madeira/i386-windows
       # These artifacts belong to this workflow run and the planned SDK.
       - name: Recover LLVM outputs from this run
-        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        if: steps.cache-llvm.outputs.cache-hit != 'true' && steps.sdk.outputs.key == needs.plan.outputs.sdk
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: native-llvm-${{ needs.plan.outputs.sdk }}
           path: toolchains
       - name: Recover FEX outputs from this run
-        if: steps.cache-fex.outputs.cache-hit != 'true'
+        if: steps.cache-fex.outputs.cache-hit != 'true' && steps.sdk.outputs.key == needs.plan.outputs.sdk
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
@@ -310,7 +317,7 @@ jobs:
           path: FEX/build-ios
       - name: Recover i386 outputs from this run
         id: transfer-i386
-        if: steps.cache-i386.outputs.cache-hit != 'true'
+        if: steps.cache-i386.outputs.cache-hit != 'true' && steps.sdk.outputs.key == needs.plan.outputs.sdk
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
@@ -427,7 +434,7 @@ jobs:
           retention-days: 3
       - uses: actions/cache/save@v4
         with:
-          key: ${{ needs.plan.outputs.ipa }}
+          key: ${{ steps.key.outputs.ipa }}
           path: dist/Madeira.ipa
       - uses: actions/upload-artifact@v4
         with:

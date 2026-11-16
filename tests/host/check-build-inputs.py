@@ -23,7 +23,7 @@ assert 'MADEIRA_PLANNED_SDK: ${{ inputs.planned_sdk_key }}' in plan
 assert re.search(r"planned_sdk_key:\n(?:        .*\n)*?        default: ''", workflow)
 script = (root / 'tools/build/ci-input-key.sh').read_text()
 assert workflow.count('run: bash tools/build/ci-input-key.sh') == 5
-assert workflow.count('MADEIRA_PLANNED_SDK: ${{ needs.plan.outputs.sdk }}') == 4
+assert workflow.count('MADEIRA_PLANNED_SDK: ${{ needs.plan.outputs.sdk }}') == 3
 assert "'.github/workflows/build.yml')" not in workflow, 'workflow-only edits must not rebuild LLVM/FEX'
 assert 'toolchains/llvm-ios-build/.madeira-cache.sha256' in workflow
 assert 'toolchains/gnutls-ios' in workflow and 'build/gnutls-ios/obj/*.done' in workflow
@@ -174,6 +174,12 @@ with tempfile.TemporaryDirectory(prefix='madeira-build-inputs-') as folder:
     ipa.write_bytes(b'damaged ZIP')
     assert not valid_ipa(), 'a corrupt completed IPA must not be reused'
 app_workflow = workflow.split('\n  app:\n', 1)[1]
+assert 'MADEIRA_PLANNED_SDK: ${{ inputs.planned_sdk_key }}' in app_workflow
+assert 'echo "MADEIRA_PLANNED_SDK=${{ steps.sdk.outputs.key }}" >> "$GITHUB_ENV"' in app_workflow
+assert 'echo "MADEIRA_PLANNED_IPA=${{ steps.sdk.outputs.ipa }}" >> "$GITHUB_ENV"' in app_workflow
+assert 'key: ${{ steps.key.outputs.ipa }}' in app_workflow
+assert 'key: ${{ needs.plan.outputs.ipa }}' not in app_workflow
+
 assert 'fail-on-cache-miss: true' not in app_workflow, 'native cache transfer must allow a rebuild'
 fallback = re.search(r'      - name: Rebuild missing 32-bit DLLs\n'
                      r"        if: steps.cache-i386.outputs.cache-hit != 'true' && steps.transfer-i386.outcome != 'success'\n"
@@ -190,6 +196,8 @@ for component, label, destination in [('llvm', 'LLVM', 'toolchains'),
     assert f'name: native-{component}-${{{{ {expected_sdk} }}}}' in producer
     assert f'name: native-{component}-${{{{ needs.plan.outputs.sdk }}}}' in consumer
     assert 'actions/download-artifact@v4' in consumer and 'run-id:' not in consumer
+    assert "steps.sdk.outputs.key == needs.plan.outputs.sdk" in consumer
+
     assert f'path: {destination}\n' in consumer
     assert 'continue-on-error: true' in producer and 'continue-on-error: true' in consumer
     assert 'retention-days: 1' in producer and 'overwrite: true' in producer
