@@ -1,0 +1,22 @@
+name: Verify cross-page vector store execution
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'tests/host/check-cross-page-vector-store.py'
+      - '.github/workflows/cross-page-store.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  native-store:
+    runs-on: xcode-27
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Execute captured ARM64 stores on anonymous and shared file mappings
+        env:
+          CC: clang
+        run: python3 tests/host/check-cross-page-vector-store.py --require-arm64
