@@ -3172,7 +3172,11 @@ static int ios_lean_diag;
  * release the thread: the kernel keeps retrying the access without ever
  * completing it.
  *
- * Every 100 ms this check looks at the threads; only a RUNNING thread that
+ * Task discovery runs every 100 ms. Successfully completed stores enroll at
+ * most eight native threads for 5 ms follow-up, expiring after one second
+ * without another completion. A dedicated worker owns the state independently
+ * of diagnostic sampling; creation failure retains the 100 ms fallback.
+ * Only a RUNNING thread that
  * spent at least 60% of the interval in the kernel is suspended and read. If
  * it is a guest thread (x28 points at a FEX frame) at a store that crosses a
  * page, at the same pc and address as at the previous check, it is stuck: the
@@ -3233,48 +3237,180 @@ static int ios_ldst_ea( uint32_t insn, const arm_thread_state64_t *st, uint64_t 
 }
 
 int ios_store_split_crossing( uint32_t insn, arm_thread_state64_t *st, const arm_neon_state64_t *neon,
-                              uintptr_t rx, uintptr_t rw, size_t sz );   /* ml1289, signal_arm64_ios.c */
+                              uintptr_t rx, uintptr_t rw, size_t sz );
 
-static void ios_stuck_store_check( void )
+/* Production recovery has a single owner, independent of the diagnostic
+ * sampler. Only a thread whose store was actually completed can enter this
+ * bounded follow-up set. Port references pin native thread identity, not guest
+ * TIDs or reusable Mach port names. Ordinary task discovery remains 100 ms. */
+#define IOS_STUCK_HOT_SLOTS 8
+#define IOS_STUCK_HOT_TTL_MS 1000
+static struct ios_stuck_hot_entry
+{
+    mach_port_t port;
+    uint64_t native_id, expires_ms, seen_us, sys_us;
+    struct ios_stuck_entry state;
+} ios_stuck_hot[IOS_STUCK_HOT_SLOTS];
+static uint64_t ios_stuck_discovery_due;
+static int ios_stuck_worker_started;
+
+static void ios_stuck_hot_drop( unsigned slot )
+{
+    if (ios_stuck_hot[slot].port)
+        mach_port_deallocate( mach_task_self(), ios_stuck_hot[slot].port );
+    memset( &ios_stuck_hot[slot], 0, sizeof(ios_stuck_hot[slot]) );
+}
+
+static void ios_stuck_hot_reset( void )
+{
+    unsigned i;
+    for (i = 0; i < IOS_STUCK_HOT_SLOTS; ++i) ios_stuck_hot_drop( i );
+}
+
+static int ios_stuck_hot_contains( uint64_t native_id )
+{
+    unsigned i;
+    for (i = 0; i < IOS_STUCK_HOT_SLOTS; ++i)
+        if (ios_stuck_hot[i].port && ios_stuck_hot[i].native_id == native_id) return 1;
+    return 0;
+}
+
+static int ios_stuck_clock_us( uint64_t *now_us )
+{
+    struct timespec ts;
+    if (clock_gettime( CLOCK_MONOTONIC, &ts )) return 0;
+    *now_us = (uint64_t)ts.tv_sec * 1000000 + (uint64_t)ts.tv_nsec / 1000;
+    return 1;
+}
+
+static void ios_stuck_hot_enroll( mach_port_t port, const struct ios_stuck_entry *entry )
+{
+    thread_basic_info_data_t bi;
+    thread_identifier_info_data_t idi;
+    mach_msg_type_number_t bic = THREAD_BASIC_INFO_COUNT, idc = THREAD_IDENTIFIER_INFO_COUNT;
+    uint64_t now_us;
+    unsigned i;
+    if (ios_stuck_hot_contains( entry->tid )) return;
+    /* The successful store and its full-task scan may have taken time. Pair
+     * this post-completion CPU baseline with a fresh clock, not scan start. */
+    if (thread_info( port, THREAD_IDENTIFIER_INFO, (thread_info_t)&idi, &idc ) != KERN_SUCCESS ||
+        idi.thread_id != entry->tid ||
+        thread_info( port, THREAD_BASIC_INFO, (thread_info_t)&bi, &bic ) != KERN_SUCCESS ||
+        bi.system_time.seconds < 0 || bi.system_time.microseconds < 0 ||
+        !ios_stuck_clock_us( &now_us )) return;
+    for (i = 0; i < IOS_STUCK_HOT_SLOTS; ++i)
+    {
+        if (ios_stuck_hot[i].port) continue;
+        /* Acquire our own send right before task_threads() releases its right.
+         * Failed acquisition cannot leave a stale candidate behind. */
+        if (mach_port_mod_refs( mach_task_self(), port, MACH_PORT_RIGHT_SEND, 1 ) != KERN_SUCCESS) return;
+        ios_stuck_hot[i].port = port;
+        ios_stuck_hot[i].native_id = entry->tid;
+        ios_stuck_hot[i].state = *entry;
+        ios_stuck_hot[i].expires_ms = now_us / 1000 + IOS_STUCK_HOT_TTL_MS;
+        ios_stuck_hot[i].seen_us = now_us;
+        ios_stuck_hot[i].sys_us = (uint64_t)bi.system_time.seconds * 1000000 + bi.system_time.microseconds;
+        return;
+    }
+}
+
+/* A successful return means the full store was written and the new PC was
+ * accepted by Mach. No caller enrolls or renews a thread on mere observation.
+ * Negative return means capture/publication failed; release a follow-up right.
+ * All potentially blocking logs happen after our suspension is balanced. */
+static int ios_stuck_store_inspect( mach_port_t thread, uint64_t native_id,
+                                   struct ios_stuck_entry *entry, uint64_t dt, uint64_t dsys )
 {
     extern void *ios_jit_rx_base_global, *ios_jit_rw_base_global;
     extern size_t ios_jit_pool_size_global;
+    arm_thread_state64_t st;
+    arm_neon_state64_t neon;
+    mach_msg_type_number_t cnt = ARM_THREAD_STATE64_COUNT, nc = ARM_NEON_STATE64_COUNT;
+    uint64_t pc, bb = 0, ea = 0;
+    uint32_t insn = 0;
+    unsigned len = 0;
+    int got, have_neon, cross;
+
+    if (thread_suspend( thread ) != KERN_SUCCESS)
+    {
+        entry->pc = entry->ea = entry->hits = 0;
+        return -1;
+    }
+    got = thread_get_state( thread, ARM_THREAD_STATE64, (thread_state_t)&st, &cnt ) == KERN_SUCCESS;
+    have_neon = thread_get_state( thread, ARM_NEON_STATE64, (thread_state_t)&neon, &nc ) == KERN_SUCCESS;
+    if (!got || !ios_ts_read( st.__x[28], &bb, 8 ) || bb <= 0x10000)
+    {
+        entry->pc = entry->ea = entry->hits = 0;
+        thread_resume( thread );
+        return -1;
+    }
+    pc = arm_thread_state64_get_pc( st );
+    cross = ios_ts_read( pc, &insn, 4 ) && ios_ldst_ea( insn, &st, &ea, &len ) &&
+            ((ea ^ (ea + len - 1)) & ~(uint64_t)(vm_page_size - 1));
+    if (cross && entry->pc == pc && entry->ea == ea)
+    {
+        unsigned hits = ++entry->hits;
+        int r = ios_store_split_crossing( insn, &st, have_neon ? &neon : NULL,
+                                          (uintptr_t)ios_jit_rx_base_global, (uintptr_t)ios_jit_rw_base_global,
+                                          ios_jit_pool_size_global );
+        if (r > 0)
+        {
+            __darwin_arm_thread_state64_set_pc_fptr( st, (void *)(uintptr_t)(pc + 4) );
+            if (thread_set_state( thread, ARM_THREAD_STATE64, (thread_state_t)&st, ARM_THREAD_STATE64_COUNT ) != KERN_SUCCESS)
+                r = -2;   /* bytes written, authoritative PC unchanged */
+            else
+                ios_stuck_fixed++;
+        }
+        thread_resume( thread );
+        if (ios_stuck_logs < 400 && (r > 0 || hits <= 3 || hits % 10 == 0))
+        {
+            ios_stuck_logs++;
+            wine_log_write( "[stuck-store] ml1292 tid=%llu hits=%u pc=0x%llx insn=%08x ea=0x%llx len=%u "
+                            "sys+%llu ms in %llu ms: %s (%llu completed so far)",
+                            (unsigned long long)native_id, hits, (unsigned long long)pc, insn,
+                            (unsigned long long)ea, len, (unsigned long long)dsys, (unsigned long long)dt,
+                            r > 0 ? "completed, pc+4" : r == -2 ? "written, set_state FAILED"
+                            : r < 0 ? "refused (a page not writable)" : "not a store it decodes", ios_stuck_fixed );
+        }
+        if (r > 0) { entry->pc = entry->ea = entry->hits = 0; return 1; }
+        return r == -2 ? -1 : 0;
+    }
+    thread_resume( thread );
+    entry->pc = cross ? pc : 0;
+    entry->ea = cross ? ea : 0;
+    return 0;
+}
+
+static void ios_stuck_store_check( void )
+{
     mach_port_t self_port = pthread_mach_thread_np( pthread_self() );
     thread_act_array_t tl;
     mach_msg_type_number_t tc;
     struct timespec ts;
-    uint64_t now;
+    uint64_t now, now_us;
     unsigned k;
 
     if (clock_gettime( CLOCK_MONOTONIC, &ts ))
     {
         ios_stuck_history_reset( &ios_stuck );
+        ios_stuck_hot_reset();
         return;
     }
-    now = (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+    now_us = (uint64_t)ts.tv_sec * 1000000 + (uint64_t)ts.tv_nsec / 1000;
+    now = now_us / 1000;
     if (task_threads( mach_task_self(), &tl, &tc ) != KERN_SUCCESS)
     {
         ios_stuck_history_reset( &ios_stuck );
         return;
     }
-    /* Keep the previous complete snapshot immutable while building this one.
-     * The old 64-slot LRU evicted late-enumerated live threads every pass,
-     * so they could never receive the two observations this check requires.
-     * Failure/oversize declines before suspending or changing any thread. */
     if (!ios_stuck_history_begin( &ios_stuck, tc )) goto release_threads;
     for (k = 0; k < tc; k++)
     {
         thread_basic_info_data_t bi;
         thread_identifier_info_data_t idi;
-        arm_thread_state64_t st;
-        arm_neon_state64_t neon;
-        mach_msg_type_number_t bic = THREAD_BASIC_INFO_COUNT, idc = THREAD_IDENTIFIER_INFO_COUNT,
-                               cnt = ARM_THREAD_STATE64_COUNT, nc = ARM_NEON_STATE64_COUNT;
-        uint64_t pc, bb = 0, ea = 0, dt, sys, dsys;
-        uint32_t insn = 0;
-        unsigned len = 0;
+        mach_msg_type_number_t bic = THREAD_BASIC_INFO_COUNT, idc = THREAD_IDENTIFIER_INFO_COUNT;
+        uint64_t dt, sys, dsys;
         struct ios_stuck_entry *entry;
-        int got, have_neon, cross;
 
         if (tl[k] == self_port) continue;
         if (thread_info( tl[k], THREAD_BASIC_INFO, (thread_info_t)&bi, &bic ) != KERN_SUCCESS) continue;
@@ -3283,75 +3419,116 @@ static void ios_stuck_store_check( void )
         sys = (uint64_t)bi.system_time.seconds * 1000 + bi.system_time.microseconds / 1000;
         entry = ios_stuck_history_observe( &ios_stuck, idi.thread_id, now, sys, &dt, &dsys );
         if (!entry) continue;
-        if (bi.run_state != TH_STATE_RUNNING || !dt || (uint64_t)dsys * 10 < dt * 6)
+        if (ios_stuck_hot_contains( idi.thread_id ))
         {
-            entry->pc = 0; entry->hits = 0;
+            /* The same owner handles these through the retained native port.
+             * Full-history observations must not duplicate a hot comparison. */
+            entry->pc = entry->ea = entry->hits = 0;
             continue;
         }
-
-        /* kernel-bound: read it */
-        if (thread_suspend( tl[k] ) != KERN_SUCCESS)
+        if (bi.run_state != TH_STATE_RUNNING || !dt || dsys * 10 < dt * 6)
         {
             entry->pc = entry->ea = entry->hits = 0;
             continue;
         }
-        got = thread_get_state( tl[k], ARM_THREAD_STATE64, (thread_state_t)&st, &cnt ) == KERN_SUCCESS;
-        have_neon = thread_get_state( tl[k], ARM_NEON_STATE64, (thread_state_t)&neon, &nc ) == KERN_SUCCESS;
-        if (!got || !ios_ts_read( st.__x[28], &bb, 8 ) || bb <= 0x10000)   /* not in FEX state */
-        {
-            entry->pc = entry->ea = entry->hits = 0;
-            thread_resume( tl[k] );
-            continue;
-        }
-        pc = arm_thread_state64_get_pc( st );
-        cross = ios_ts_read( pc, &insn, 4 ) && ios_ldst_ea( insn, &st, &ea, &len ) &&
-                ((ea ^ (ea + len - 1)) & ~(uint64_t)(vm_page_size - 1));
-        if (cross && entry->pc == pc && entry->ea == ea)
-        {
-            unsigned hits = ++entry->hits;
-            int r = ios_store_split_crossing( insn, &st, have_neon ? &neon : NULL,
-                                              (uintptr_t)ios_jit_rx_base_global, (uintptr_t)ios_jit_rw_base_global,
-                                              ios_jit_pool_size_global );
-            if (r > 0)
-            {
-                __darwin_arm_thread_state64_set_pc_fptr( st, (void *)(uintptr_t)(pc + 4) );
-                if (thread_set_state( tl[k], ARM_THREAD_STATE64, (thread_state_t)&st, ARM_THREAD_STATE64_COUNT ) != KERN_SUCCESS)
-                    r = -2;   /* the store is written, pc not moved: the thread redoes the same bytes */
-                else
-                    ios_stuck_fixed++;
-            }
-            thread_resume( tl[k] );
-            if (ios_stuck_logs < 400 && (r > 0 || hits <= 3 || hits % 10 == 0))
-            {
-                ios_stuck_logs++;
-                wine_log_write( "[stuck-store] ml1292 tid=%llu hits=%u pc=0x%llx insn=%08x ea=0x%llx len=%u "
-                                "sys+%llu ms in %llu ms: %s (%llu completed so far)",
-                                (unsigned long long)idi.thread_id, hits, (unsigned long long)pc, insn,
-                                (unsigned long long)ea, len, (unsigned long long)dsys, (unsigned long long)dt,
-                                r > 0 ? "completed, pc+4" : r == -2 ? "written, set_state FAILED"
-                                : r < 0 ? "refused (a page not writable)" : "not a store it decodes", ios_stuck_fixed );
-            }
-            if (r > 0) { entry->pc = 0; entry->hits = 0; }
-        }
-        else
-        {
-            thread_resume( tl[k] );
-            entry->pc = cross ? pc : 0;
-            entry->ea = cross ? ea : 0;
-        }
+        if (ios_stuck_store_inspect( tl[k], idi.thread_id, entry, dt, dsys ) > 0)
+            ios_stuck_hot_enroll( tl[k], entry );
     }
-    /* Only identities observed in this task snapshot survive. Recycled Mach
-     * port names and Windows thread IDs cannot inherit an earlier PC/EA. */
     ios_stuck_history_end( &ios_stuck );
 release_threads:
     for (k = 0; k < tc; k++) mach_port_deallocate( mach_task_self(), tl[k] );
     vm_deallocate( mach_task_self(), (vm_address_t)tl, tc * sizeof(*tl) );
 }
 
+static void ios_stuck_store_hot_check( uint64_t now_us )
+{
+    unsigned i;
+    (void)now_us; /* discovery time is not a per-target CPU sampling clock */
+    for (i = 0; i < IOS_STUCK_HOT_SLOTS; ++i)
+    {
+        struct ios_stuck_hot_entry *hot = &ios_stuck_hot[i];
+        thread_basic_info_data_t bi;
+        thread_identifier_info_data_t idi;
+        mach_msg_type_number_t bic = THREAD_BASIC_INFO_COUNT, idc = THREAD_IDENTIFIER_INFO_COUNT;
+        uint64_t dt, sys, dsys, sampled_us;
+        if (!hot->port) continue;
+        if (thread_info( hot->port, THREAD_IDENTIFIER_INFO, (thread_info_t)&idi, &idc ) != KERN_SUCCESS ||
+            idi.thread_id != hot->native_id ||
+            thread_info( hot->port, THREAD_BASIC_INFO, (thread_info_t)&bi, &bic ) != KERN_SUCCESS ||
+            bi.system_time.seconds < 0 || bi.system_time.microseconds < 0 ||
+            !ios_stuck_clock_us( &sampled_us ) || sampled_us / 1000 >= hot->expires_ms || sampled_us < hot->seen_us)
+        {
+            ios_stuck_hot_drop( i );
+            continue;
+        }
+        sys = (uint64_t)bi.system_time.seconds * 1000000 + bi.system_time.microseconds;
+        dt = sampled_us > hot->seen_us ? sampled_us - hot->seen_us : 0;
+        dsys = sys >= hot->sys_us ? sys - hot->sys_us : 0;
+        if (sys < hot->sys_us) dt = 0;
+        hot->seen_us = sampled_us;
+        hot->sys_us = sys;
+        if (bi.run_state != TH_STATE_RUNNING || !dt || dsys * 10 < dt * 6)
+        {
+            hot->state.pc = hot->state.ea = hot->state.hits = 0;
+            continue;
+        }
+        {
+            int r = ios_stuck_store_inspect( hot->port, hot->native_id, &hot->state, dt / 1000, dsys / 1000 );
+            if (r < 0) ios_stuck_hot_drop( i );
+            else if (r > 0) hot->expires_ms = sampled_us / 1000 + IOS_STUCK_HOT_TTL_MS;
+        }
+    }
+}
+
+/* Finite tick permits the production schedule to be exercised with controlled
+ * native API adapters. No task-wide enumeration runs at the hot cadence. */
+static void ios_stuck_store_recovery_tick( uint64_t now_us )
+{
+    uint64_t now = now_us / 1000;
+    ios_stuck_store_hot_check( now_us );
+    if (now >= ios_stuck_discovery_due)
+    {
+        ios_stuck_store_check();
+        ios_stuck_discovery_due = now + 100;
+    }
+}
+
+static unsigned ios_stuck_store_recovery_delay( void )
+{
+    unsigned i;
+    for (i = 0; i < IOS_STUCK_HOT_SLOTS; ++i)
+        if (ios_stuck_hot[i].port) return 5000;
+    return 100000;
+}
+
+static void ios_stuck_store_recovery_poll( void )
+{
+    struct timespec ts;
+    if (clock_gettime( CLOCK_MONOTONIC, &ts ))
+    {
+        ios_stuck_history_reset( &ios_stuck );
+        ios_stuck_hot_reset();
+        ios_stuck_discovery_due = 0;
+        return;
+    }
+    ios_stuck_store_recovery_tick( (uint64_t)ts.tv_sec * 1000000 + (uint64_t)ts.tv_nsec / 1000 );
+}
+
+static void *ios_stuck_store_recovery_main( void *unused )
+{
+    (void)unused;
+    pthread_set_qos_class_self_np( QOS_CLASS_UTILITY, 0 );
+    for (;;)
+    {
+        ios_stuck_store_recovery_poll();
+        usleep( ios_stuck_store_recovery_delay() );
+    }
+    return NULL;
+}
+
 static void ios_thread_sampler_main(void)
 {
     int gen = 0;
-    /* ml1288: MADEIRA_STUCK_CHECK=0 turns off the check that completes a store stuck across a 16 KB page. */
     const char *sc = getenv( "MADEIRA_STUCK_CHECK" );
     const int stuck_check = !(sc && sc[0] == '0');
     ios_ts_calibrate();
@@ -3360,10 +3537,13 @@ static void ios_thread_sampler_main(void)
     for (;;) {
         int b;
         unsigned tick;
-        for (tick = 0; tick < 200; tick++)   /* ml1288: the stuck-store check every 100 ms between bursts */
+        for (tick = 0; tick < 200; tick++)   /* diagnostic cadence; recovery has its own worker */
         {
             usleep( 100000 );
-            if (stuck_check && !ios_lean_diag) ios_stuck_store_check();
+            /* Creation failure retains the former slow recovery path. A
+             * successful dedicated worker is the sole owner of this state. */
+            if (!ios_stuck_worker_started && stuck_check && !ios_lean_diag)
+                ios_stuck_store_recovery_poll();
         }
         if (!ios_lean_diag) {
         for (b = 0; b < 4; b++) { ios_thread_sampler_pass(b); usleep(250000); }
@@ -6479,6 +6659,28 @@ void server_init_process_done(void)
                 wine_log_write("[lean-diag] madeira-bcd MADEIRA_LEAN_DIAG=%s: [thread-sample] bursts, guest RIP profile ([rip-profile], "
                                "[cpu-split]) and [wprof] off; [sync-census] every 20 s and [xp]/[xp-t]/[xp-api] every 250 ms / 1 s as "
                                "before; the warmer's memory walks every ~10 min", lean_env);
+            {
+                const char *stuck_env = getenv( "MADEIRA_STUCK_CHECK" );
+                if (!ios_lean_diag && !(stuck_env && stuck_env[0] == '0'))
+                {
+                    pthread_t recovery_thread;
+                    int error, detach_error = 0;
+                    /* Publish ownership before creation; the diagnostic task
+                     * is dispatched only after success/failure is settled. */
+                    ios_stuck_worker_started = 1;
+                    error = pthread_create( &recovery_thread, NULL, ios_stuck_store_recovery_main, NULL );
+                    if (error)
+                    {
+                        ios_stuck_worker_started = 0;
+                    }
+                    else detach_error = pthread_detach( recovery_thread );
+                    wine_log_write( "[store-recovery-v1] mode=%s discovery-ms=100 follow-ms=%u slots=%u expire-ms=%u "
+                                    "create-error=%d detach-error=%d",
+                                    ios_stuck_worker_started ? "dedicated" : "sampler-fallback",
+                                    ios_stuck_worker_started ? 5u : 100u, (unsigned)IOS_STUCK_HOT_SLOTS,
+                                    (unsigned)IOS_STUCK_HOT_TTL_MS, error, detach_error );
+                }
+            }
             dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ ios_thread_sampler_main(); });
             dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ ios_xprobe_main(); });   /* ml1128 */
             if (!ios_lean_diag) dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ ios_wprof_main(); });   /* ml1129 */

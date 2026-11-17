@@ -139,16 +139,17 @@ typedef struct { uint32_t numer, denom; } mach_timebase_info_data_t;
 static void mach_timebase_info( mach_timebase_info_data_t *t ) { t->numer = 125; t->denom = 3; }
 static jmp_buf done; static int sleeps, ticks, passes, profiles, census1115, census1122, bursts, armed_lean, armed_full;
 static int ios_lean_diag;
+static int ios_stuck_worker_started = 1, recovery_polls;
 volatile long long ios_alert_wakes, ios_alert_waits, ios_qpc_syscalls, ios_affinity_sets;
 volatile int ios_srv_req_count;
 volatile long long ios_alert_lat_n, ios_alert_lat_ticks, ios_alert_lat_hist[6], ios_alert_spin_tries, ios_alert_spin_hits;
 static void ios_ts_calibrate( void ) {}
-static void ios_stuck_store_check( void ) {}
+static void ios_stuck_store_recovery_poll( void ) { recovery_polls++; }
 static void ios_thread_sampler_pass( int b ) { (void)b; passes++; }
 static void ios_guest_rip_profile( int gen ) { (void)gen; profiles++; }
 static unsigned h_sleep( unsigned s ) { if (s != 20) abort(); if (++sleeps > 5) longjmp( done, 1 ); ios_alert_wakes += 100; return 0; }
-/* The production loop now uses 200 short sleeps so it can check stuck stores
- * between bursts. Preserve the fixture's five-burst stop for that clock too. */
+/* Preserve five diagnostic iterations; only worker-start failure can run
+ * production recovery on this sampler now. */
 static int h_usleep( unsigned us ) { if (us == 100000 && !(ticks++ % 200)) h_sleep(20); return 0; }
 static void wine_log_write( const char *fmt, ... ) __attribute__((format(printf, 1, 2)));
 static void wine_log_write( const char *fmt, ... )
@@ -167,12 +168,15 @@ int main( void )
 {
     const char *e = getenv( "LEAN" );
     ios_lean_diag = e && *e == '1';
+    ios_stuck_worker_started = !getenv("RECOVERY_FALLBACK");
     if (!setjmp( done )) ios_thread_sampler_main();
-    printf( "%d %d %d %d %d %d %d %d\n", sleeps - 1, passes, profiles, bursts, census1115, census1122, armed_full, armed_lean );
+    printf( "%d %d %d %d %d %d %d %d %d\n", sleeps - 1, passes, profiles, bursts, census1115, census1122, armed_full, armed_lean, recovery_polls );
     return 0;
 }
 '''
-outs, err = compile_run(harness, "sampler", [{}, {"LEAN": "1"}])
+outs, err = compile_run(harness, "sampler", [{}, {"LEAN": "1"},
+    {"RECOVERY_FALLBACK": "1"}, {"RECOVERY_FALLBACK": "1", "MADEIRA_STUCK_CHECK": "0"},
+    {"RECOVERY_FALLBACK": "1", "LEAN": "1"}])
 if outs is None:
     check(False, "ios_thread_sampler_main compiles on this host: " + err[-800:])
 else:
@@ -185,6 +189,12 @@ else:
     check(lean[:4] == [5, 0, 0, 0] and lean[6] == 0 and lean[7] == 1,
           "with the switch: no pass, no guest profile, no burst line (%s)" % lean)
     check(lean[4] >= 4 and lean[5] == 5, "with the switch: [sync-census] every 20 s as before (%s)" % lean)
+    fallback = [int(x) for x in outs[2][1].split()]
+    disabled = [int(x) for x in outs[3][1].split()]
+    lean_fallback = [int(x) for x in outs[4][1].split()]
+    check(full[8] == lean[8] == 0, "dedicated recovery is not duplicated by diagnostics")
+    check(fallback[8] == 1000, "worker-start failure retains 100ms recovery polls")
+    check(disabled[8] == lean_fallback[8] == 0, "both opt-outs also disable fallback recovery")
 
 # ---- virtual_ios.c helpers on this host -------------------------------------
 lean_v = func_body(virt, "static int ios_lean_diag_virtual( void )")

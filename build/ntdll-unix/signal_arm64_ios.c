@@ -2999,13 +2999,9 @@ int ios_store_split_crossing( uint32_t insn, arm_thread_state64_t *st,
         part_len[parts++] = len;
         done += len;
     }
-    {
-        static int split_n;
-        if (split_n < 8)
-            dprintf( STDERR_FILENO, "[split-store] ml1289 #%d insn=0x%08x bytes=%u ea=0x%llx parts=%u %s\n",
-                     ++split_n, insn, bytes, (unsigned long long)ea, parts,
-                     done == bytes ? "emulated" : "REFUSED: a page of the store has no alias and is not writable" );
-    }
+    /* The recovery caller can hold the writer suspended here. Formatting can
+     * acquire a libc allocator/stdio lock owned by that writer; report the
+     * returned status only after the caller balances its suspension. */
     if (done != bytes) return -1;
     for (i = 0, done = 0; i < parts; done += part_len[i], i++)
     {

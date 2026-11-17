@@ -174,6 +174,7 @@ static pthread_t fixture_pthread_self(void){return 1;}
 #define pthread_self fixture_pthread_self
 #include <assert.h>
 #include <stdlib.h>
+#include <unistd.h>
 typedef unsigned mach_port_t,thread_t,thread_act_t,mach_msg_type_number_t,kern_return_t;
 typedef uintptr_t vm_address_t,mach_vm_address_t;
 typedef size_t mach_vm_size_t;
@@ -194,6 +195,12 @@ typedef struct {unsigned char x[512];} arm_neon_state64_t;
 #define ARM_NEON_STATE64 2
 #define TH_STATE_RUNNING 1
 #define KERN_SUCCESS 0
+#define MACH_PORT_RIGHT_SEND 0
+#ifndef QOS_CLASS_UTILITY
+#define QOS_CLASS_UTILITY 0
+#endif
+#define pthread_set_qos_class_self_np fixture_set_qos
+static int fixture_set_qos(unsigned c,int r){(void)c;(void)r;return 0;}
 #define arm_thread_state64_get_pc(s) ((s).__pc)
 #define arm_thread_state64_get_sp(s) ((s).__sp)
 #ifdef __darwin_arm_thread_state64_set_pc_fptr
@@ -227,6 +234,7 @@ static int thread_get_state(unsigned t,unsigned flavor,void *out,unsigned *n){(v
  if(flavor==ARM_THREAD_STATE64){arm_thread_state64_t *p=out;memset(p,0,sizeof(*p));p->__pc=test_pc;p->__x[28]=0x10000;p->__x[8]=0x1ffec;}
  return 0;}
 static int thread_set_state(unsigned t,unsigned f,void *out,unsigned n){(void)t;(void)f;(void)out;(void)n;fixture_state_sets++;return 0;}
+static int mach_port_mod_refs(unsigned t,unsigned p,unsigned r,int d){(void)t;(void)p;(void)r;(void)d;return 0;}
 static int mach_port_deallocate(unsigned t,unsigned p){(void)t;(void)p;return 0;}
 static int vm_deallocate(unsigned t,uintptr_t a,size_t n){(void)t;(void)a;(void)n;return 0;}
 static int ios_ts_read(uint64_t a,void *out,size_t n){if(a==0x10000&&n==8){if(current_port==1&&generation==fail_fex_generation)return 0;*(uint64_t*)out=0x20000;return 1;}if(a==test_pc&&n==4){*(uint32_t*)out=0x3d800500;return 1;}return 0;}

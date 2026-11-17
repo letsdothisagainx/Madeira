@@ -11,6 +11,7 @@ on:
       - 'tests/host/check-sparse-cross-page-store.py'
       - 'tests/host/check-cross-page-store-recovery.py'
       - 'tests/host/check-stuck-store-history.py'
+      - 'tests/host/check-stuck-store-scheduling.py'
       - '.github/workflows/cross-page-store.yml'
 
 permissions:
@@ -38,3 +39,7 @@ jobs:
         env:
           CC: clang
         run: python3 tests/host/check-stuck-store-history.py --sanitize
+      - name: Verify production recovery scheduling and native ownership
+        env:
+          CC: clang
+        run: python3 tests/host/check-stuck-store-scheduling.py --sanitize

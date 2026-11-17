@@ -34,9 +34,9 @@ def function(source, signature):
 helper = function(signal, 'int ios_store_split_crossing( uint32_t insn,')
 alias = function(signal, 'static uintptr_t ios_write_alias( uintptr_t addr )')
 trapped = function(signal, 'static int ios_alias_write_is_trapped( uintptr_t addr )')
-caller_start = server.index('            int r = ios_store_split_crossing( insn, &st,')
-caller_end = server.index('            thread_resume( tl[k] );', caller_start)
-caller = server[caller_start:caller_end] + '            thread_resume( tl[k] );\n'
+caller_start = server.index('        int r = ios_store_split_crossing( insn, &st,')
+caller_end = server.index('        thread_resume( thread );', caller_start)
+caller = server[caller_start:caller_end] + '        thread_resume( thread );\n'
 
 C = r'''
 #define _GNU_SOURCE
@@ -147,8 +147,7 @@ static int actual_caller(uint32_t insn, arm_thread_state64_t *state,
 {
     arm_thread_state64_t st = *state;
     arm_neon_state64_t neon = *vector;
-    unsigned k = 0;
-    mach_port_t tl[] = {1};
+    mach_port_t thread = 1;
     uintptr_t pc = arm_thread_state64_get_pc(st);
 '''
 C += caller
