@@ -61,6 +61,7 @@ with tempfile.TemporaryDirectory() as temp:
     (bridge_dir/'madeira-htmlipc-bridge.manifest.json').write_text(json.dumps(bridge_manifest))
     (t/'tools').mkdir(exist_ok=True)
     (t/'tools/check-ios-network-package.py').write_bytes((root/'tools/check-ios-network-package.py').read_bytes())
+    (t/'tools/check-self-suspend-package.py').write_bytes((root/'tools/check-self-suspend-package.py').read_bytes())
     (t/'tools/check-htmlipc-image.py').write_text((root/'tools/check-htmlipc-image.py').read_text())
     (t/'tools/check-dxmt-pixel-probe.py').write_text((root/'tools/check-dxmt-pixel-probe.py').read_text())
     # Structural, deliberately non-executable PE fixture for the packaging
@@ -278,7 +279,7 @@ printf '[native-group-retire-v1][wow-placement-v1][wow-native-export-v1][fex-cal
 printf '[cef-image-owner-v1][guest-breakpoint64-v1][udp-send-failure-v1][udp-recv-failure-v1][udp-native-progress-v1]MadeiraSocketControl:traffic-class-bounds-v1[nsi-ipv4-route-v1]' >> "$TEST_APP/Madeira.debug.dylib"
 if [ "${OMIT_CS2_TEXTURE_SCOPE:-}" != 1 ]; then printf '[cs2-texture-scope-v1] phase=child-environment-prepared' >> "$TEST_APP/Madeira.debug.dylib"; fi
 if [ "${STALE_WAIT_I386:-}" = 1 ]; then printf 'old wait implementation' > "$TEST_APP/i386-windows/ntdll.dll"; fi
-printf '[dynamic-memory-pressure-v1] policy=bounded-hot-v3 storage=owner-heap-v1 counter-storage=census-perf-heap-v1 scan=registered-cursor-v2 pe-command-state=dedup-hud-v1 scheduler=ready-work-v1 texture-admission=physical-v1 texture-accounting=bc-blocks-v1 [texture-growth-budget-v1][texture-growth-retire-v1][texture-live-budget-v2][texture-gpu-events-v1][initializer-failure-v1][metal-vertex-descriptor-owner-v1][upload-memory-v1][madeira-memory-pressure-v1][native-heap-relief-v1][metal-resource-batch-v1] release-probe=opt-in' >> "$TEST_APP/Madeira.debug.dylib"
+printf '[dynamic-memory-pressure-v1] policy=bounded-hot-v3 storage=owner-heap-v1 counter-storage=census-perf-heap-v1 scan=registered-cursor-v2 pe-command-state=dedup-hud-v1 scheduler=ready-work-v1 texture-admission=physical-v1 texture-accounting=bc-blocks-v1 [texture-growth-budget-v1][texture-growth-retire-v1][texture-live-budget-v2][texture-gpu-events-v1][initializer-failure-v1][metal-vertex-descriptor-owner-v1][upload-memory-v1][madeira-memory-pressure-v1][native-heap-relief-v1][self-suspend-identity-v1][self-suspend-flow-v1][metal-resource-batch-v1] release-probe=opt-in' >> "$TEST_APP/Madeira.debug.dylib"
 if [ "${STALE_DXMT_COMPLETION_LANE:-}" = 1 ]; then
   sed 's/\\[texture-live-budget-v2\\]//g' "$TEST_APP/Madeira.debug.dylib" > "$TEST_APP/native.stale"
   mv "$TEST_APP/native.stale" "$TEST_APP/Madeira.debug.dylib"

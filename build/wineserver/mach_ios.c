@@ -23,6 +23,7 @@
 #include "../madeira_cfg.h"   /* ml1095 */
 
 #include <assert.h>
+#include <stddef.h>
 #include <errno.h>
 #include <stdio.h>
 #include <signal.h>
@@ -41,6 +42,47 @@
 #include "process.h"
 #include "thread.h"
 #include "request.h"
+#include "../ntdll-unix/self_suspend_protocol.h"
+
+/* The operation still owns the resolved object here. Return authoritative
+ * self identity in existing fixed-reply padding, without another handle
+ * lookup, extra access rights, allocation or Wine packet layout change. */
+_Static_assert(sizeof(struct suspend_thread_reply) == 16, "suspend reply ABI");
+_Static_assert(sizeof(struct resume_thread_reply) == 16, "resume reply ABI");
+_Static_assert(offsetof(struct suspend_thread_reply, count) == 8, "suspend count ABI");
+_Static_assert(offsetof(struct resume_thread_reply, count) == 8, "resume count ABI");
+_Static_assert(sizeof(((struct suspend_thread_reply *)0)->__pad_12) == 4, "suspend identity padding ABI");
+_Static_assert(sizeof(((struct resume_thread_reply *)0)->__pad_12) == 4, "resume identity padding ABI");
+static const volatile char ios_suspend_identity_contract[] = "[self-suspend-identity-v1]";
+extern void ios_self_suspend_server_begin( unsigned, unsigned, uintptr_t, unsigned, unsigned );
+extern void ios_self_suspend_server_resume( unsigned, unsigned, uintptr_t, unsigned, unsigned,
+                                           unsigned, unsigned, unsigned, unsigned );
+void ios_suspend_thread_reply( struct thread *thread, void *padding, int operation )
+{
+    const uint32_t tag = MADEIRA_SUSPEND_IDENTITY_MAGIC | (thread == current ? 1u : 0u);
+
+    (void)ios_suspend_identity_contract[0];
+    if (get_error()) return;
+    memcpy( padding, &tag, sizeof(tag) );
+    /* Pure atomic publication only: count/hold mutation already completed,
+     * and the serialized server cannot process a resumer before this returns. */
+    if (!operation && thread == current)
+        ios_self_suspend_server_begin( get_process_id( thread->process ), get_thread_id( thread ),
+                                       (uintptr_t)thread->teb, get_process_id( current->process ),
+                                       get_thread_id( current ) );
+}
+
+/* Passive consumer; ordinary count, wakeup and Mach-hold operations run first.
+ * Process suspension is reported separately from the per-thread count. */
+void ios_suspend_resume_observe( struct thread *thread, int old_count )
+{
+    ios_self_suspend_server_resume( get_process_id( thread->process ), get_thread_id( thread ),
+                                    (uintptr_t)thread->teb,
+                                    current ? get_process_id( current->process ) : 0,
+                                    current ? get_thread_id( current ) : 0,
+                                    old_count, thread->suspend, thread->ios_mach_suspended,
+                                    thread->process->suspend );
+}
 
 #ifdef USE_MACH
 

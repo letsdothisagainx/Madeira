@@ -2881,18 +2881,32 @@ NTSTATUS WINAPI NtOpenThread( HANDLE *handle, ACCESS_MASK access,
 }
 
 
+#ifdef WINE_IOS
+#include "self_suspend_protocol.h"
+#include "self_suspend_trace.h"
+#endif
+
 /******************************************************************************
  *              NtSuspendThread   (NTDLL.@)
  */
 NTSTATUS WINAPI NtSuspendThread( HANDLE handle, ULONG *count )
 {
     unsigned int ret;
+#ifdef WINE_IOS
+    struct madeira_suspend_identity_reply identity = {0};
+    uint32_t identity_tag = 0;
+    unsigned int old_count = 0;
+#endif
 
     SERVER_START_REQ( suspend_thread )
     {
         req->handle = wine_server_obj_handle( handle );
         if (!(ret = wine_server_call( req )))
         {
+#ifdef WINE_IOS
+            old_count = reply->count;
+            memcpy( &identity_tag, reply->__pad_12, sizeof(identity_tag) );
+#endif
             if (count) *count = reply->count;
         }
     }
@@ -2910,21 +2924,41 @@ NTSTATUS WINAPI NtSuspendThread( HANDLE handle, ULONG *count )
      * a zero-timeout select only returns once the thread is no longer suspended. */
     if (!ret)
     {
-        BOOL self = handle == GetCurrentThread();
-        if (!self)
-        {
-            THREAD_BASIC_INFORMATION tbi;
-            self = !NtQueryInformationThread( handle, ThreadBasicInformation, &tbi, sizeof(tbi), NULL ) &&
-                   HandleToULong( tbi.ClientId.UniqueThread ) == GetCurrentThreadId();
-        }
+        const BOOL receipt_valid = (identity_tag & ~UINT32_C(1)) == MADEIRA_SUSPEND_IDENTITY_MAGIC;
+        /* Identity is captured atomically with server handle resolution. A real
+         * self handle needs only THREAD_SUSPEND_RESUME, not query rights. The
+         * legacy path remains compatible with zero-filled older server replies. */
+        BOOL self = receipt_valid ? (identity_tag & 1) :
+                    handle == GetCurrentThread() || !NtCompareObjects( handle, GetCurrentThread() );
         if (self)
         {
+            struct ios_self_suspend_snapshot snapshot;
+            unsigned ticket;
             static LONG self_suspends;
             LONG n = InterlockedIncrement( &self_suspends );
+            identity.magic = MADEIRA_SUSPEND_IDENTITY_MAGIC;
+            identity.self = 1;
+            identity.pid = HandleToULong( NtCurrentTeb()->ClientId.UniqueProcess );
+            identity.tid = HandleToULong( NtCurrentTeb()->ClientId.UniqueThread );
+            /* The Unix RPC never re-enters the PE syscall dispatcher. Its
+             * active saved frame still belongs to this NtSuspendThread entry.
+             * Capture only the first observed self suspension for this target. */
+            memset( &snapshot, 0, sizeof(snapshot) );
+            {
+                struct ios_self_suspend_watch *watch = ios_self_suspend_find( identity.pid, identity.tid,
+                                                                            (uintptr_t)NtCurrentTeb() );
+                if (watch && !__atomic_load_n( &watch->caller_reported, __ATOMIC_RELAXED ))
+                    ios_self_suspend_capture( &snapshot, get_syscall_frame() );
+            }
+            ticket = ios_self_suspend_client_begin( &identity, (uintptr_t)handle, ret, old_count,
+                                                    &snapshot, receipt_valid );
             if (n <= 4 || !(n & (n - 1)))
                 dprintf( 2, "[self-suspend] madeira-bcd: tid=%04x suspended itself (#%d); waiting for the resume\n",
                          (int)GetCurrentThreadId(), (int)n );
-            server_select( NULL, 0, SELECT_INTERRUPTIBLE, 0, NULL, NULL );
+            {
+                unsigned wait_status = server_select( NULL, 0, SELECT_INTERRUPTIBLE, 0, NULL, NULL );
+                ios_self_suspend_client_wait( ticket, wait_status );
+            }
         }
     }
 #endif
@@ -2938,16 +2972,29 @@ NTSTATUS WINAPI NtSuspendThread( HANDLE handle, ULONG *count )
 NTSTATUS WINAPI NtResumeThread( HANDLE handle, ULONG *count )
 {
     unsigned int ret;
+#ifdef WINE_IOS
+    struct madeira_suspend_identity_reply identity = {0};
+    uint32_t identity_tag = 0;
+    unsigned old_count = 0;
+#endif
 
     SERVER_START_REQ( resume_thread )
     {
         req->handle = wine_server_obj_handle( handle );
         if (!(ret = wine_server_call( req )))
         {
+#ifdef WINE_IOS
+            old_count = reply->count;
+            memcpy( &identity_tag, reply->__pad_12, sizeof(identity_tag) );
+#endif
             if (count) *count = reply->count;
         }
     }
     SERVER_END_REQ;
+#ifdef WINE_IOS
+    ios_self_suspend_client_resume( &identity, (uintptr_t)handle, ret, old_count,
+              (identity_tag & ~UINT32_C(1)) == MADEIRA_SUSPEND_IDENTITY_MAGIC );
+#endif
     return ret;
 }
 

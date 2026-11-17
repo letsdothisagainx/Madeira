@@ -457,6 +457,7 @@ jobs:
       - name: Check compiled SCM producer and NDR argument frames
         run: |
           python3 tools/build/native-provenance.py check --root "$GITHUB_WORKSPACE" --revision "$GITHUB_SHA" --ipa scm-ipa/Madeira.ipa
+          python3 tools/check-self-suspend-package.py --ipa scm-ipa/Madeira.ipa
           python3 -m venv "$RUNNER_TEMP/scm-abi-tools"
           "$RUNNER_TEMP/scm-abi-tools/bin/pip" install -r build/scm-rpc/test-requirements.txt
           unzip -q scm-ipa/Madeira.ipa 'Payload/Madeira.app/arm64ec-windows/*' -d scm-ipa

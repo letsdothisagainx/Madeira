@@ -29,6 +29,12 @@ cases = {
     # Native Unix is rebuilt in each app job; only complete IPA reuse owns it.
     'native-provenance-generator': ('tools/build/native-provenance.py', {'ipa'}),
     'native-provenance-parser': ('build/native_build_provenance.h', {'ipa'}),
+    'self-suspend-client': ('build/ntdll-unix/thread_ios.c', {'ipa'}),
+    'self-suspend-protocol': ('build/ntdll-unix/self_suspend_protocol.h', {'ipa'}),
+    'self-suspend-trace': ('build/ntdll-unix/self_suspend_trace.h', {'ipa'}),
+    'self-suspend-producer': ('build/wineserver/mach_ios.c', {'ipa'}),
+    'self-suspend-stage': ('build/wineserver/stage-self-suspend.py', {'ipa'}),
+    'self-suspend-package': ('tools/check-self-suspend-package.py', {'ipa'}),
     'native-srw-wake-stage': ('tools/build/stage-native-srw-wake.py', {'ipa'}),
     'native-srw-code-proof': ('tools/check-native-srw-code.py', {'ipa'}),
     'native-counter-source-stage': ('tools/build/stage-native-counter-writes.py', {'ipa'}),

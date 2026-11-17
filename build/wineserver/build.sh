@@ -62,7 +62,8 @@ python3 "$BUILD_DIR/stage-steam-lifecycle.py" "$WINE_SRC/server/process.c" "$OBJ
 # existing retirement observer; retaining the basename keeps that stage's type
 # selection explicit. The final thread.o is always replaced in the archive.
 python3 "$BUILD_DIR/stage-async-apc.py" --source "$WINE_SRC/server/thread.c" --output "$OBJ_DIR/async-apc/thread.c"
-python3 "$BUILD_DIR/stage-steam-lifecycle.py" "$OBJ_DIR/async-apc/thread.c" "$OBJ_DIR/thread_lifecycle.c"
+python3 "$BUILD_DIR/stage-self-suspend.py" --source "$OBJ_DIR/async-apc/thread.c" --output "$OBJ_DIR/self-suspend/thread.c"
+python3 "$BUILD_DIR/stage-steam-lifecycle.py" "$OBJ_DIR/self-suspend/thread.c" "$OBJ_DIR/thread_lifecycle.c"
 
 # Patched files: name:source_file:replaces_in_archive
 PATCHED_FILES=(
