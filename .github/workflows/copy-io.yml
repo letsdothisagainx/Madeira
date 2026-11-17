@@ -1,0 +1,45 @@
+name: Verify copy and positional read corrections
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'build/ntdll-unix/copy_loop_trace.h'
+      - 'build/ntdll-unix/pread_observation.h'
+      - 'tools/build/stage-ntdll-scatter-read.py'
+      - 'tools/build/stage-dxmt-shader-singleflight.py'
+      - 'tests/host/check-copy-loop-trace.py'
+      - 'tests/host/check-pread-observation.py'
+      - 'tests/host/check-scatter-short-read.py'
+      - 'tests/host/check-dxmt-shader-singleflight.py'
+      - '.github/workflows/copy-io.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  production-paths:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, xcode-27]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: git submodule update --init --depth 1 wine dxmt
+      - name: Exercise actual staged copy and read paths
+        env:
+          CC: clang
+          CXX: clang++
+        run: |
+          python3 tests/host/check-copy-loop-trace.py
+          python3 tests/host/check-pread-observation.py
+          python3 tests/host/check-scatter-short-read.py
+          python3 tests/host/check-rwx-kernel-writes.py
+          python3 tests/host/check-dxmt-shader-singleflight.py
+          python3 tests/host/check-dxmt-memory-build.py
+      - name: Measure equivalent warm positional reads
+        env:
+          CC: clang
+        run: python3 tests/host/bench-pread-observation.py

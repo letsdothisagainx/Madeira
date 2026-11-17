@@ -334,6 +334,9 @@ output.write_text(text)
 PYCODE
             if [ "$name" = file ]; then
                 python3 "$REPO_ROOT/tools/build/stage-htmlipc-log-file.py" "$OBJ_DIR/${name}_ios.c"
+                python3 "$REPO_ROOT/tools/build/stage-ntdll-scatter-read.py" \
+                    --source "$OBJ_DIR/${name}_ios.c" --output "$OBJ_DIR/${name}_scatter_ios.c"
+                mv "$OBJ_DIR/${name}_scatter_ios.c" "$OBJ_DIR/${name}_ios.c"
             else
                 python3 "$REPO_ROOT/tools/build/stage-ios-socket-errors.py" "$OBJ_DIR/${name}_ios.c"
                 python3 "$REPO_ROOT/tools/build/stage-ios-socket-control.py" \

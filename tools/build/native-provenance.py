@@ -26,7 +26,8 @@ KEY = 'MadeiraNativeBuildProvenance'
 EXTRA_SOURCES = {
     # The immutable ISA proof is part of the virtual-memory implementation.
     # Bind it into the linked compile-input digest, including header-only edits.
-    'virtual': ('build/ntdll-unix/pe_x64_write_span.h',),
+    'virtual': ('build/ntdll-unix/pe_x64_write_span.h',
+                'build/ntdll-unix/pread_observation.h'),
 }
 
 

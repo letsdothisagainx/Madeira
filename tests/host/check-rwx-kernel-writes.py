@@ -169,6 +169,7 @@ static NTSTATUS check_write_access( void *addr, size_t size, BOOL *ww ) { (void)
 static void update_write_watches( void *addr, size_t size, size_t accessed ) { (void)addr; (void)size; (void)accessed; }
 '''
 code += guard_bitmap
+code += '#define IOS_PREAD_OWNER(pid,tid) 0\n#define IOS_PREAD_BACKING_FD (-1)\n#include "pread_observation.h"\n'
 code += upto(virtual, '#define IOS_JIT_MAX_ANON_ALIASES', 'static volatile int ios_jit_anon_alias_tombstones = 0;')
 code += function(virtual, 'uintptr_t ios_jit_anon_alias_lookup(uintptr_t fault_addr)\n{')
 code += function(virtual, 'int ios_jit_anon_alias_find_cover(void *user_va, size_t size, void **rw_out, void **rx_out)\n{')

@@ -29713,6 +29713,38 @@ unsigned int virtual_locked_server_call( void *req_ptr )
  * pages without an alias are written directly if they are writable. The check runs before the first read(), so a
  * partial transfer is never repeated. Write watches are not updated for alias pages (PAGE_EXECUTE_READWRITE with
  * MEM_WRITE_WATCH is not expected in practice). */
+/* Identify only the current image through fault-safe copies. Cache by logical
+ * owner AND PID: native threads can enter different Wine pseudo-processes. */
+static int ios_pread_capture_owner(unsigned *pid, unsigned *tid)
+{
+    static _Thread_local void *owner;
+    static _Thread_local unsigned owner_pid;
+    static _Thread_local int role;
+    static _Thread_local unsigned retry;
+    TEB *teb = NtCurrentTeb();
+    unsigned current_pid;
+    PEB peb;
+    RTL_USER_PROCESS_PARAMETERS parameters;
+    WCHAR image[IOS_CS2_PATH];
+    if (!teb || !teb->Peb) return 0;
+    current_pid = (unsigned)(ULONG_PTR)teb->ClientId.UniqueProcess;
+    if (owner != teb->Peb || owner_pid != current_pid || (role < 0 && !(++retry & 63)))
+    {
+        owner = teb->Peb; owner_pid = current_pid; role = -1;
+        if (ios_io_trace_read(owner, &peb, sizeof(peb)) && peb.ProcessParameters &&
+            ios_io_trace_read(peb.ProcessParameters, &parameters, sizeof(parameters)) &&
+            parameters.ImagePathName.Length && !(parameters.ImagePathName.Length & 1) &&
+            parameters.ImagePathName.Length < sizeof(image) &&
+            ios_io_trace_read(parameters.ImagePathName.Buffer, image, parameters.ImagePathName.Length))
+            role = ios_cs2_role(image, parameters.ImagePathName.Length / sizeof(WCHAR));
+    }
+    if (role != 1) return 0;
+    *pid = current_pid;
+    *tid = (unsigned)(ULONG_PTR)teb->ClientId.UniqueThread;
+    return 1;
+}
+#include "pread_observation.h"
+
 #define IOS_KW_PAGE   0x1000
 #define IOS_KW_BOUNCE (1024 * 1024)
 
@@ -29816,7 +29848,7 @@ static ssize_t ios_kw_read( int fd, char *addr, size_t size, off_t offset, BOOL 
     for (;;)
     {
         size_t want = size - done < cap ? size - done : cap;
-        ssize_t got = positional ? pread( fd, bounce, want, offset + done ) : read( fd, bounce, want );
+        ssize_t got = positional ? ios_pread_native( fd, bounce, want, offset + done ) : read( fd, bounce, want );
 
         if (got < 0)
         {
@@ -29934,20 +29966,37 @@ ssize_t virtual_locked_pread( int fd, void *addr, size_t size, off_t offset )
     BOOL has_write_watch = FALSE;
     int err = EFAULT;
     ssize_t ret;
+    struct ios_pread_scope probe;
 
-    if (ios_kw_has_rw_alias( (uintptr_t)addr, (uintptr_t)addr + size )) return ios_kw_read( fd, addr, size, offset, TRUE );
-    ret = pread( fd, addr, size, offset );
-    if (ret != -1 || use_kernel_writewatch || errno != EFAULT) return ret;
+    ios_pread_begin(&probe, size, offset);
+    if (ios_kw_has_rw_alias( (uintptr_t)addr, (uintptr_t)addr + size ))
+    {
+        probe.route = IOS_PREAD_ALIAS;
+        ret = ios_kw_read( fd, addr, size, offset, TRUE );
+        ios_pread_end(&probe, fd, ret);
+        return ret;
+    }
+    ret = ios_pread_native( fd, addr, size, offset );
+    if (ret != -1 || use_kernel_writewatch || errno != EFAULT)
+    {
+        ios_pread_end(&probe, fd, ret);
+        return ret;
+    }
 
+    probe.route = IOS_PREAD_WRITEWATCH;
+    ios_pread_lock_start(&probe);
     server_enter_uninterrupted_section( &virtual_mutex, &sigset );
+    ios_pread_lock_acquired(&probe);
     if (!check_write_access( addr, size, &has_write_watch ))
     {
-        ret = pread( fd, addr, size, offset );
+        ret = ios_pread_native( fd, addr, size, offset );
         err = errno;
         if (has_write_watch) update_write_watches( addr, size, max( 0, ret ));
     }
+    ios_pread_lock_done(&probe);
     server_leave_uninterrupted_section( &virtual_mutex, &sigset );
     errno = err;
+    ios_pread_end(&probe, fd, ret);
     return ret;
 }
 

@@ -1005,6 +1005,87 @@ static void ios_ts_print_hot_context(const struct ios_ts_hot_context *hot, uint6
     snprintf(line + n, sizeof(line) - n, " ]"); wine_log_write("%s", line);
 }
 
+#include "copy_loop_trace.h"
+
+struct ios_ts_copy_capture
+{
+    struct ios_copy_loop_sample loop;
+    struct ios_copy_trace_progress progress;
+    uint64_t pid, tid, teb, owner, block, frame, rip, pc, lr;
+    unsigned have_code, captured;
+    unsigned char code[64];
+};
+static struct ios_copy_trace_state ios_ts_copy_ledger;
+
+static void ios_ts_capture_copy(const arm_thread_state64_t *state, uint64_t teb,
+                                uint64_t block, struct ios_ts_copy_capture *out)
+{
+    extern void *ios_jit_rx_base_global;
+    extern size_t ios_jit_pool_size_global;
+    extern int ios_jit_low_contains(uintptr_t);
+    extern int ios_jit_pool_image_pc(uintptr_t, uintptr_t *);
+    uint64_t pc = arm_thread_state64_get_pc(*state), regs[29];
+    uintptr_t rx = (uintptr_t)ios_jit_rx_base_global;
+    uint32_t code[21];
+    int saved_errno = errno;
+    /* No new suspension, payload read, allocation or guest call. Only the
+     * already-held sampler snapshot and safely read generated instructions.
+     * Code may be inaccessible at a region boundary; that is a missed sample. */
+    if (ios_ts_copy_ledger.total >= IOS_COPY_TRACE_LIMIT || !teb || !block || pc < 0x10028 ||
+        !((pc >= rx && pc - rx < ios_jit_pool_size_global) || ios_jit_low_contains(pc)) ||
+        ios_jit_pool_image_pc(pc, NULL) || !ios_ts_read(pc - 40, code, sizeof(code))) goto done;
+    memcpy(regs, state->__x, sizeof(regs));
+    if (!ios_copy_loop_decode(code, 21, pc - 40, pc, regs, &out->loop)) goto done;
+    out->teb = teb; out->block = block; out->frame = state->__x[28];
+    out->pc = pc; out->lr = arm_thread_state64_get_lr(*state);
+    out->captured = 1;
+done:
+    errno = saved_errno;
+}
+
+static void ios_ts_print_copy(struct ios_ts_copy_capture *copy, uint64_t mapped_rip,
+                             struct ios_ts_map *map)
+{
+    const char *module = NULL;
+    uint64_t rva = 0;
+    char bytes[sizeof(copy->code) * 3 + 1];
+    struct ios_ts_hot_context identity = {0};
+    unsigned i;
+    /* This runs after thread_resume. No symbol walking, CPU-area reads, guest
+     * code reads or ledger work prolongs the existing suspension. Steam/CEF
+     * copies cannot consume the game-only bounded capture budget. A changed
+     * identity/frame is a missed observation, never attributed to a successor. */
+    if (!copy->captured || !map || !map->n || strcasecmp(map->m[0].name, "cs2.exe")) return;
+    ios_ts_saved_guest64(copy->teb, &identity);
+    if (!identity.have_guest || identity.frame != copy->frame || identity.owner != map->peb) return;
+    if (!ios_copy_trace_note(&ios_ts_copy_ledger, identity.owner, identity.tid, copy->teb,
+                             copy->block, &copy->loop, &copy->progress)) return;
+    copy->pid = identity.pid; copy->tid = identity.tid; copy->owner = identity.owner;
+    copy->rip = mapped_rip; /* Reuse the sampler's already-resolved block map. */
+    if (copy->rip && copy->progress.sample == 1)
+        copy->have_code = ios_ts_read(copy->rip, copy->code, sizeof(copy->code));
+    module = ios_ts_mod_for(map, copy->rip, &rva);
+    wine_log_write("[copy-loop-v1] pid=%04llx tid=%04llx owner=%#llx teb=%#llx sample=%u/4 block=%#llx loop=%#llx host-pc=%#llx lr=%#llx guest-block-entry=%#llx module=%s rva=%#llx source=current-host-registers slot=%u src-reg=%u dst-reg=%u end-reg=%u iteration-src=%#llx iteration-dst=%#llx end=%#llx remaining-valid=%u remaining=%llu original-request=unmeasured same-span=%u forward-deltas=%u src-delta=%llu dst-delta=%llu invocation-identity=unmeasured",
+                   (unsigned long long)copy->pid, (unsigned long long)copy->tid,
+                   (unsigned long long)copy->owner, (unsigned long long)copy->teb,
+                   copy->progress.sample, (unsigned long long)copy->block,
+                   (unsigned long long)copy->loop, (unsigned long long)copy->pc,
+                   (unsigned long long)copy->lr, (unsigned long long)copy->rip,
+                   module ? module : "unresolved", (unsigned long long)rva,
+                   copy->loop.slot, copy->loop.src_reg, copy->loop.dst_reg, copy->loop.end_reg,
+                   (unsigned long long)copy->loop.src, (unsigned long long)copy->loop.dst,
+                   (unsigned long long)copy->loop.end, copy->loop.have_remaining,
+                   (unsigned long long)copy->loop.remaining, copy->progress.same_span,
+                   copy->progress.forward, (unsigned long long)copy->progress.src_delta,
+                   (unsigned long long)copy->progress.dst_delta);
+    if (copy->have_code)
+    {
+        for (i = 0; i < sizeof(copy->code); ++i) snprintf(bytes + i * 3, 4, "%02x ", copy->code[i]);
+        wine_log_write("[copy-loop-v1] guest-code=%#llx bytes=%s payload-read=0",
+                       (unsigned long long)copy->rip, bytes);
+    }
+}
+
 static void ios_thread_sampler_pass(int burst)
 {
     extern uint64_t ios_native_rip_from_hostpc( uint64_t, uint64_t, const char ** );
@@ -1019,6 +1100,7 @@ static void ios_thread_sampler_pass(int burst)
         uint64_t pc, lr, sp, x28, x17, x18, x23, bb = 0, rip = 0, cr[16], stk[64], nstk[64];
         int have_bb, have_cr, have_stk, have_nstk;
         struct ios_ts_hot_context hot = {0};
+        struct ios_ts_copy_capture copy = {0};
         int capture_hot;
         const char *why = "";
         if (tlist[k] == self_port) continue;
@@ -1045,6 +1127,7 @@ static void ios_thread_sampler_pass(int burst)
             hot.nhost = ios_ts_host_chain(sp, arm_thread_state64_get_fp(st), lr, hot.host);
             ios_ts_saved_guest64(x18, &hot);
         }
+        if (running && have_bb) ios_ts_capture_copy(&st, x18, bb, &copy);
         thread_resume(tlist[k]);
         if (have_bb) rip = ios_native_rip_from_hostpc(bb, pc, &why);
         {
@@ -1082,6 +1165,7 @@ static void ios_thread_sampler_pass(int burst)
                 n += snprintf(line + n, sizeof(line) - n, " ]");
             }
             wine_log_write("%s", line);
+            ios_ts_print_copy(&copy, rip, mp);
             if (capture_hot && !rip) ios_ts_print_hot_context(&hot, pc, mp);
             printed++;
         }
