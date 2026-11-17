@@ -46,6 +46,7 @@ with tempfile.TemporaryDirectory() as temp:
     # The separate native-provenance check compiles the actual accessors/decoder.
     (t/'tools/build/native-provenance.py').write_bytes((root/'tools/build/native-provenance.py').read_bytes())
     for relative in ('build/ntdll-unix/virtual_ios.c','build/ntdll-unix/pe_x64_write_span.h',
+                     'build/ntdll-unix/pread_observation.h',
                      'app/Madeira/JITAllocator.c'):
         target=t/relative;target.parent.mkdir(parents=True,exist_ok=True)
         target.write_bytes((root/relative).read_bytes())
@@ -179,7 +180,7 @@ with tempfile.TemporaryDirectory() as temp:
     compat_spec=importlib.util.spec_from_file_location('dock_dxmt_memory_stage',root/'tools/build/stage-dxmt-memory-compat.py')
     compat=importlib.util.module_from_spec(compat_spec);compat_spec.loader.exec_module(compat)
     source_names=['src/dxmt/'+name for name in compat.UPLOAD]+list(compat.DYNAMIC)
-    source_names+=list(compat.CENSUS)+list(compat.PERF)+list(compat.COMMAND_STATE)+list(compat.SCHEDULER)+list(compat.TEXTURE_ACCOUNTING)+list(compat.TEXTURE_ADMISSION)
+    source_names+=list(compat.CENSUS)+list(compat.PERF)+list(compat.COMMAND_STATE)+list(compat.SCHEDULER)+list(compat.SHADER_SINGLEFLIGHT)+list(compat.TEXTURE_ACCOUNTING)+list(compat.TEXTURE_ADMISSION)
     source_names+=['src/winemetal/unix/winemetal_unix.c']
     for relative in source_names:
         target=t/'dxmt'/relative;target.parent.mkdir(parents=True,exist_ok=True)
@@ -279,7 +280,7 @@ printf '[native-group-retire-v1][wow-placement-v1][wow-native-export-v1][fex-cal
 printf '[cef-image-owner-v1][guest-breakpoint64-v1][udp-send-failure-v1][udp-recv-failure-v1][udp-native-progress-v1]MadeiraSocketControl:traffic-class-bounds-v1[nsi-ipv4-route-v1]' >> "$TEST_APP/Madeira.debug.dylib"
 if [ "${OMIT_CS2_TEXTURE_SCOPE:-}" != 1 ]; then printf '[cs2-texture-scope-v1] phase=child-environment-prepared' >> "$TEST_APP/Madeira.debug.dylib"; fi
 if [ "${STALE_WAIT_I386:-}" = 1 ]; then printf 'old wait implementation' > "$TEST_APP/i386-windows/ntdll.dll"; fi
-printf '[dynamic-memory-pressure-v1] policy=bounded-hot-v3 storage=owner-heap-v1 counter-storage=census-perf-heap-v1 scan=registered-cursor-v2 pe-command-state=dedup-hud-v1 scheduler=ready-work-v1 texture-admission=physical-v1 texture-accounting=bc-blocks-v1 [texture-growth-budget-v1][texture-growth-retire-v1][texture-live-budget-v2][texture-gpu-events-v1][initializer-failure-v1][metal-vertex-descriptor-owner-v1][upload-memory-v1][madeira-memory-pressure-v1][native-heap-relief-v1][self-suspend-identity-v1][self-suspend-flow-v1][metal-resource-batch-v1] release-probe=opt-in' >> "$TEST_APP/Madeira.debug.dylib"
+printf '[dynamic-memory-pressure-v1] policy=bounded-hot-v3 storage=owner-heap-v1 counter-storage=census-perf-heap-v1 scan=registered-cursor-v2 pe-command-state=dedup-hud-v1 scheduler=ready-work-v1 shader-create=singleflight-v1 texture-admission=physical-v1 texture-accounting=bc-blocks-v1 [texture-growth-budget-v1][texture-growth-retire-v1][texture-live-budget-v2][texture-gpu-events-v1][initializer-failure-v1][metal-vertex-descriptor-owner-v1][upload-memory-v1][madeira-memory-pressure-v1][native-heap-relief-v1][self-suspend-identity-v1][self-suspend-flow-v1][metal-resource-batch-v1] release-probe=opt-in' >> "$TEST_APP/Madeira.debug.dylib"
 if [ "${STALE_DXMT_COMPLETION_LANE:-}" = 1 ]; then
   sed 's/\\[texture-live-budget-v2\\]//g' "$TEST_APP/Madeira.debug.dylib" > "$TEST_APP/native.stale"
   mv "$TEST_APP/native.stale" "$TEST_APP/Madeira.debug.dylib"

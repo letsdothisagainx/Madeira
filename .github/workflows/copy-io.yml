@@ -39,6 +39,7 @@ jobs:
           python3 tests/host/check-rwx-kernel-writes.py
           python3 tests/host/check-dxmt-shader-singleflight.py
           python3 tests/host/check-dxmt-memory-build.py
+          python3 tests/host/check-dock-packaging.py
       - name: Measure equivalent warm positional reads
         env:
           CC: clang
