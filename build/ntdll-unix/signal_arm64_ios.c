@@ -2915,7 +2915,7 @@ int ios_store_split_crossing( uint32_t insn, arm_thread_state64_t *st,
         if (v) elem = size == 3 ? 0 : 4u << size;            /* S, D, Q */
         else   elem = size == 0 ? 4 : size == 2 ? 8 : 0;     /* W, X (01 is STGP) */
         if (!elem) return 0;
-        imm = (((int64_t)((insn >> 15) & 0x7f)) << 57 >> 57) * (int64_t)elem;
+        imm = ((int64_t)((insn >> 15) & 0x7f) - ((insn & (1u << 21)) ? 128 : 0)) * (int64_t)elem;
         ea = mode == 1 ? base : base + (uint64_t)imm;
         wb = mode == 1 || mode == 3;
         bytes = 2 * elem;
@@ -2932,7 +2932,7 @@ int ios_store_split_crossing( uint32_t insn, arm_thread_state64_t *st,
         else if ((insn & 0x00200c00u) == 0x00200800u)            /* register offset */
         {
             const unsigned option = (insn >> 13) & 7, rm = (insn >> 16) & 31;
-            uint64_t off = rm == 31 ? 0 : st->__x[rm];
+            uint64_t off = rm == 31 ? 0 : rm == 30 ? st->__lr : rm == 29 ? st->__fp : st->__x[rm];
             if (!(option & 2)) return 0;
             if (option == 2) off = (uint32_t)off;
             else if (option == 6) off = (uint64_t)(int64_t)(int32_t)off;
@@ -2943,7 +2943,7 @@ int ios_store_split_crossing( uint32_t insn, arm_thread_state64_t *st,
         {
             const unsigned idx = (insn >> 10) & 3;
             if (idx == 2) return 0;                                /* unprivileged */
-            imm = ((int64_t)((insn >> 12) & 0x1ff)) << 55 >> 55;
+            imm = (int64_t)((insn >> 12) & 0x1ff) - ((insn & (1u << 20)) ? 512 : 0);
             ea = idx == 1 ? base : base + (uint64_t)imm;
             wb = idx == 1 || idx == 3;
         }

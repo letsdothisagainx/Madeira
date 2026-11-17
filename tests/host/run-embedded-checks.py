@@ -25,6 +25,8 @@ commands = [
     ['python3', 'tests/host/check-self-suspend-trace.py'],
     ['python3', 'tests/host/check-self-suspend-package.py'],
     ['python3', 'tests/host/check-copy-loop-trace.py'],
+    ['python3', 'tests/host/check-stuck-store-history.py', '--sanitize'],
+    ['python3', 'tests/host/check-cross-page-store-recovery.py', '--require-darwin', '--sanitize'],
     ['python3', 'tests/host/check-pread-observation.py'],
     ['python3', 'tests/host/check-scatter-short-read.py'],
     ['python3', 'tests/host/check-dxmt-shader-singleflight.py'],

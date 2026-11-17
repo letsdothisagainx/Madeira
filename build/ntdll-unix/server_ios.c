@@ -3181,8 +3181,8 @@ static int ios_lean_diag;
  * serves normally), the base register written back for the indexed forms, pc
  * moved past it, and the thread resumed. `[stuck-store]` lines report each
  * episode. MADEIRA_STUCK_CHECK=0 turns the check off. */
-#define ML1288_SLOTS 64
-static struct { uint64_t tid, pc, ea, seen_ms; uint32_t sys_ms, hits; } ios_stuck[ML1288_SLOTS];
+#include "stuck_store_history.h"
+static struct ios_stuck_history ios_stuck;
 static int ios_stuck_logs;
 static unsigned long long ios_stuck_fixed;
 
@@ -3191,7 +3191,8 @@ static int ios_ldst_ea( uint32_t insn, const arm_thread_state64_t *st, uint64_t 
 {
     unsigned rn = (insn >> 5) & 31, size = insn >> 30, v = (insn >> 26) & 1, opc = (insn >> 22) & 3;
     unsigned scale = v ? (size | ((opc & 2) << 1)) : size;
-    uint64_t base = rn == 31 ? arm_thread_state64_get_sp( *st ) : st->__x[rn];
+    uint64_t base = rn == 31 ? arm_thread_state64_get_sp( *st ) : rn == 30 ? st->__lr :
+                    rn == 29 ? st->__fp : st->__x[rn];
 
     if ((insn & 0x3b000000u) == 0x39000000u)            /* LDR/STR, unsigned immediate */
     {
@@ -3200,25 +3201,28 @@ static int ios_ldst_ea( uint32_t insn, const arm_thread_state64_t *st, uint64_t 
     if ((insn & 0x3b200c00u) == 0x38200800u)            /* LDR/STR, register offset */
     {
         unsigned rm = (insn >> 16) & 31, option = (insn >> 13) & 7, s = (insn >> 12) & 1;
-        uint64_t m = rm == 31 ? 0 : st->__x[rm];
+        uint64_t m = rm == 31 ? 0 : rm == 30 ? st->__lr : rm == 29 ? st->__fp : st->__x[rm];
         if (option == 2) m = (uint32_t)m;
         else if (option == 6) m = (uint64_t)(int64_t)(int32_t)m;
         *ea = base + (m << (s ? scale : 0)); *len = 1u << scale; return 1;
     }
     if ((insn & 0x3b200000u) == 0x38000000u)            /* LDUR/STUR, pre/post-index */
     {
-        int64_t imm9 = ((int64_t)((insn >> 12) & 0x1ff) << 55) >> 55;
+        int64_t imm9 = (insn >> 12) & 0x1ff;
+        if (imm9 & 0x100) imm9 -= 0x200;
         *ea = ((insn >> 10) & 3) == 1 ? base : base + imm9; *len = 1u << scale; return 1;
     }
     if ((insn & 0x3a000000u) == 0x28000000u)            /* LDP/STP */
     {
         unsigned psc = v ? 2 + (insn >> 30) : 2 + (insn >> 31);
-        int64_t imm7 = ((int64_t)((insn >> 15) & 0x7f) << 57) >> 57;
-        *ea = ((insn >> 23) & 3) == 1 ? base : base + (imm7 << psc); *len = 2u << psc; return 1;
+        int64_t imm7 = (insn >> 15) & 0x7f;
+        if (imm7 & 0x40) imm7 -= 0x80;
+        *ea = ((insn >> 23) & 3) == 1 ? base : base + imm7 * (INT64_C(1) << psc); *len = 2u << psc; return 1;
     }
     if ((insn & 0x3f200c00u) == 0x19000000u)            /* LDAPUR/STLUR */
     {
-        int64_t imm9 = ((int64_t)((insn >> 12) & 0x1ff) << 55) >> 55;
+        int64_t imm9 = (insn >> 12) & 0x1ff;
+        if (imm9 & 0x100) imm9 -= 0x200;
         *ea = base + imm9; *len = 1u << size; return 1;
     }
     if ((insn & 0x3f000000u) == 0x08000000u)            /* LDAR/STLR/LDXR family */
@@ -3242,9 +3246,22 @@ static void ios_stuck_store_check( void )
     uint64_t now;
     unsigned k;
 
-    clock_gettime( CLOCK_MONOTONIC, &ts );
+    if (clock_gettime( CLOCK_MONOTONIC, &ts ))
+    {
+        ios_stuck_history_reset( &ios_stuck );
+        return;
+    }
     now = (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
-    if (task_threads( mach_task_self(), &tl, &tc ) != KERN_SUCCESS) return;
+    if (task_threads( mach_task_self(), &tl, &tc ) != KERN_SUCCESS)
+    {
+        ios_stuck_history_reset( &ios_stuck );
+        return;
+    }
+    /* Keep the previous complete snapshot immutable while building this one.
+     * The old 64-slot LRU evicted late-enumerated live threads every pass,
+     * so they could never receive the two observations this check requires.
+     * Failure/oversize declines before suspending or changing any thread. */
+    if (!ios_stuck_history_begin( &ios_stuck, tc )) goto release_threads;
     for (k = 0; k < tc; k++)
     {
         thread_basic_info_data_t bi;
@@ -3253,50 +3270,45 @@ static void ios_stuck_store_check( void )
         arm_neon_state64_t neon;
         mach_msg_type_number_t bic = THREAD_BASIC_INFO_COUNT, idc = THREAD_IDENTIFIER_INFO_COUNT,
                                cnt = ARM_THREAD_STATE64_COUNT, nc = ARM_NEON_STATE64_COUNT;
-        uint64_t pc, bb = 0, ea = 0, dt;
-        uint32_t insn = 0, sys, dsys;
-        unsigned len = 0, slot, i;
+        uint64_t pc, bb = 0, ea = 0, dt, sys, dsys;
+        uint32_t insn = 0;
+        unsigned len = 0;
+        struct ios_stuck_entry *entry;
         int got, have_neon, cross;
 
         if (tl[k] == self_port) continue;
         if (thread_info( tl[k], THREAD_BASIC_INFO, (thread_info_t)&bi, &bic ) != KERN_SUCCESS) continue;
         if (thread_info( tl[k], THREAD_IDENTIFIER_INFO, (thread_info_t)&idi, &idc ) != KERN_SUCCESS) continue;
-        sys = bi.system_time.seconds * 1000 + bi.system_time.microseconds / 1000;
-
-        for (slot = 0; slot < ML1288_SLOTS; slot++) if (ios_stuck[slot].tid == idi.thread_id) break;
-        if (slot == ML1288_SLOTS)
-        {
-            for (slot = 0, i = 1; i < ML1288_SLOTS; i++)   /* a free slot, else the longest unseen */
-                if (ios_stuck[i].seen_ms < ios_stuck[slot].seen_ms) slot = i;
-            ios_stuck[slot].tid = idi.thread_id; ios_stuck[slot].seen_ms = now;
-            ios_stuck[slot].sys_ms = sys;
-            ios_stuck[slot].pc = 0; ios_stuck[slot].hits = 0;
-            continue;
-        }
-        dt = now - ios_stuck[slot].seen_ms;
-        dsys = sys - ios_stuck[slot].sys_ms;
-        ios_stuck[slot].seen_ms = now; ios_stuck[slot].sys_ms = sys;
+        if (bi.system_time.seconds < 0 || bi.system_time.microseconds < 0) continue;
+        sys = (uint64_t)bi.system_time.seconds * 1000 + bi.system_time.microseconds / 1000;
+        entry = ios_stuck_history_observe( &ios_stuck, idi.thread_id, now, sys, &dt, &dsys );
+        if (!entry) continue;
         if (bi.run_state != TH_STATE_RUNNING || !dt || (uint64_t)dsys * 10 < dt * 6)
         {
-            ios_stuck[slot].pc = 0; ios_stuck[slot].hits = 0;
+            entry->pc = 0; entry->hits = 0;
             continue;
         }
 
         /* kernel-bound: read it */
-        if (thread_suspend( tl[k] ) != KERN_SUCCESS) continue;
+        if (thread_suspend( tl[k] ) != KERN_SUCCESS)
+        {
+            entry->pc = entry->ea = entry->hits = 0;
+            continue;
+        }
         got = thread_get_state( tl[k], ARM_THREAD_STATE64, (thread_state_t)&st, &cnt ) == KERN_SUCCESS;
         have_neon = thread_get_state( tl[k], ARM_NEON_STATE64, (thread_state_t)&neon, &nc ) == KERN_SUCCESS;
         if (!got || !ios_ts_read( st.__x[28], &bb, 8 ) || bb <= 0x10000)   /* not in FEX state */
         {
+            entry->pc = entry->ea = entry->hits = 0;
             thread_resume( tl[k] );
             continue;
         }
         pc = arm_thread_state64_get_pc( st );
         cross = ios_ts_read( pc, &insn, 4 ) && ios_ldst_ea( insn, &st, &ea, &len ) &&
                 ((ea ^ (ea + len - 1)) & ~(uint64_t)(vm_page_size - 1));
-        if (cross && ios_stuck[slot].pc == pc && ios_stuck[slot].ea == ea)
+        if (cross && entry->pc == pc && entry->ea == ea)
         {
-            unsigned hits = ++ios_stuck[slot].hits;
+            unsigned hits = ++entry->hits;
             int r = ios_store_split_crossing( insn, &st, have_neon ? &neon : NULL,
                                               (uintptr_t)ios_jit_rx_base_global, (uintptr_t)ios_jit_rw_base_global,
                                               ios_jit_pool_size_global );
@@ -3313,21 +3325,25 @@ static void ios_stuck_store_check( void )
             {
                 ios_stuck_logs++;
                 wine_log_write( "[stuck-store] ml1292 tid=%llu hits=%u pc=0x%llx insn=%08x ea=0x%llx len=%u "
-                                "sys+%u ms in %llu ms: %s (%llu completed so far)",
+                                "sys+%llu ms in %llu ms: %s (%llu completed so far)",
                                 (unsigned long long)idi.thread_id, hits, (unsigned long long)pc, insn,
-                                (unsigned long long)ea, len, dsys, (unsigned long long)dt,
+                                (unsigned long long)ea, len, (unsigned long long)dsys, (unsigned long long)dt,
                                 r > 0 ? "completed, pc+4" : r == -2 ? "written, set_state FAILED"
                                 : r < 0 ? "refused (a page not writable)" : "not a store it decodes", ios_stuck_fixed );
             }
-            if (r > 0) { ios_stuck[slot].pc = 0; ios_stuck[slot].hits = 0; }
+            if (r > 0) { entry->pc = 0; entry->hits = 0; }
         }
         else
         {
             thread_resume( tl[k] );
-            ios_stuck[slot].pc = cross ? pc : 0;
-            ios_stuck[slot].ea = cross ? ea : 0;
+            entry->pc = cross ? pc : 0;
+            entry->ea = cross ? ea : 0;
         }
     }
+    /* Only identities observed in this task snapshot survive. Recycled Mach
+     * port names and Windows thread IDs cannot inherit an earlier PC/EA. */
+    ios_stuck_history_end( &ios_stuck );
+release_threads:
     for (k = 0; k < tc; k++) mach_port_deallocate( mach_task_self(), tl[k] );
     vm_deallocate( mach_task_self(), (vm_address_t)tl, tc * sizeof(*tl) );
 }

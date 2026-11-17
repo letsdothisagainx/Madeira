@@ -30,6 +30,7 @@ cases = {
     'native-provenance-generator': ('tools/build/native-provenance.py', {'ipa'}),
     'native-provenance-parser': ('build/native_build_provenance.h', {'ipa'}),
     'self-suspend-client': ('build/ntdll-unix/thread_ios.c', {'ipa'}),
+    'cross-page-store-history': ('build/ntdll-unix/stuck_store_history.h', {'ipa'}),
     'self-suspend-protocol': ('build/ntdll-unix/self_suspend_protocol.h', {'ipa'}),
     'self-suspend-trace': ('build/ntdll-unix/self_suspend_trace.h', {'ipa'}),
     'self-suspend-producer': ('build/wineserver/mach_ios.c', {'ipa'}),

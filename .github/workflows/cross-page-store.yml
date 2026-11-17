@@ -4,7 +4,12 @@ on:
   workflow_dispatch:
   push:
     paths:
+      - 'build/ntdll-unix/server_ios.c'
+      - 'build/ntdll-unix/signal_arm64_ios.c'
+      - 'build/ntdll-unix/stuck_store_history.h'
       - 'tests/host/check-cross-page-vector-store.py'
+      - 'tests/host/check-cross-page-store-recovery.py'
+      - 'tests/host/check-stuck-store-history.py'
       - '.github/workflows/cross-page-store.yml'
 
 permissions:
@@ -20,3 +25,11 @@ jobs:
         env:
           CC: clang
         run: python3 tests/host/check-cross-page-vector-store.py --require-arm64
+      - name: Verify production store completion and inaccessible-neighbor refusal
+        env:
+          CC: clang
+        run: python3 tests/host/check-cross-page-store-recovery.py --require-darwin --sanitize
+      - name: Verify recovery coverage across the complete native thread snapshot
+        env:
+          CC: clang
+        run: python3 tests/host/check-stuck-store-history.py --sanitize
