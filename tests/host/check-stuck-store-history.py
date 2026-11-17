@@ -196,6 +196,9 @@ typedef struct {unsigned char x[512];} arm_neon_state64_t;
 #define KERN_SUCCESS 0
 #define arm_thread_state64_get_pc(s) ((s).__pc)
 #define arm_thread_state64_get_sp(s) ((s).__sp)
+#ifdef __darwin_arm_thread_state64_set_pc_fptr
+#undef __darwin_arm_thread_state64_set_pc_fptr
+#endif
 #define __darwin_arm_thread_state64_set_pc_fptr(s,p) ((s).__pc=(uintptr_t)(p))
 static unsigned thread_n,generation,ids[8192],native_ids[8192],helper_calls[8192],suspends[8192],current_port;
 static int allocation_failure;
