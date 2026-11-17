@@ -6,6 +6,7 @@ native context capture and the wait transport are controlled host adapters;
 this is not a CS2/iPhone execution or a Mach suspension measurement.
 """
 from pathlib import Path
+import hashlib
 import os
 import re
 import runpy
@@ -35,9 +36,58 @@ server = runpy.run_path(str(ROOT / 'build/wineserver/stage-self-suspend.py'))['s
 transport = (ROOT / 'build/ntdll-unix/server_ios.c').read_text()
 handles = (ROOT / 'wine/server/handle.c').read_text()
 mach = (ROOT / 'build/wineserver/mach_ios.c').read_text()
-baseline = subprocess.check_output(['git', '-C', str(ROOT), 'show',
-    'bf0f0a0a2b682c59658d318e8491dd4d5a27b0c3:build/ntdll-unix/thread_ios.c'], text=True)
-old_suspend = function(baseline, 'NTSTATUS WINAPI NtSuspendThread(').replace('NtSuspendThread(', 'old_NtSuspendThread(', 1)
+# Verbatim negative control from bf0f0a0a2b682c59658d318e8491dd4d5a27b0c3.
+# Wine thread.c: Copyright 1996, 2003 Alexandre Julliard, LGPL-2.1-or-later;
+# includes Madeira's existing iOS self-wait extension. Keep exact source bytes.
+BASELINE_SUSPEND = r'''NTSTATUS WINAPI NtSuspendThread( HANDLE handle, ULONG *count )
+{
+    unsigned int ret;
+
+    SERVER_START_REQ( suspend_thread )
+    {
+        req->handle = wine_server_obj_handle( handle );
+        if (!(ret = wine_server_call( req )))
+        {
+            if (count) *count = reply->count;
+        }
+    }
+    SERVER_END_REQ;
+#ifdef WINE_IOS
+    /* madeira-bcd: a thread that suspends itself must stop until it is resumed.
+     * Elsewhere the server's SIGUSR1 makes usr1_handler wait in wait_suspend();
+     * on iOS that signal never runs its handler (task #32), so SuspendThread on
+     * oneself returned at once. Crysis's intro-video threads suspend themselves
+     * once per frame and are resumed by the main thread: here they spun instead,
+     * piling the count up to MAXIMUM_SUSPEND_COUNT, and when a video ended the
+     * thread's exit (NtTerminateThread's select) waited on that count forever,
+     * so the main thread sat out a 30 s join timeout between videos
+     * (log 2026-09-30 12:25, build 244). Wait here the way wait_suspend does:
+     * a zero-timeout select only returns once the thread is no longer suspended. */
+    if (!ret)
+    {
+        BOOL self = handle == GetCurrentThread();
+        if (!self)
+        {
+            THREAD_BASIC_INFORMATION tbi;
+            self = !NtQueryInformationThread( handle, ThreadBasicInformation, &tbi, sizeof(tbi), NULL ) &&
+                   HandleToULong( tbi.ClientId.UniqueThread ) == GetCurrentThreadId();
+        }
+        if (self)
+        {
+            static LONG self_suspends;
+            LONG n = InterlockedIncrement( &self_suspends );
+            if (n <= 4 || !(n & (n - 1)))
+                dprintf( 2, "[self-suspend] madeira-bcd: tid=%04x suspended itself (#%d); waiting for the resume\n",
+                         (int)GetCurrentThreadId(), (int)n );
+            server_select( NULL, 0, SELECT_INTERRUPTIBLE, 0, NULL, NULL );
+        }
+    }
+#endif
+    return ret;
+}
+'''
+assert hashlib.sha256(BASELINE_SUSPEND.encode()).hexdigest() == '5e9e3a54f6033ffba93b31d7898684fca960a474d69669709425a2aab817a039', 'changed negative-control source'
+old_suspend = BASELINE_SUSPEND.replace('NtSuspendThread(', 'old_NtSuspendThread(', 1)
 candidate = function(client, 'NTSTATUS WINAPI NtSuspendThread(')
 
 PRELUDE = r'''
