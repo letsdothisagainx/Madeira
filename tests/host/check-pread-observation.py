@@ -116,6 +116,18 @@ int main(void)
     ios_pread_lines=0;ios_pread_last_line=0;ios_pread_sequence=0;
     for(int i=0;i<4;i++)assert(virtual_locked_pread(input,output,sizeof(output),0)==8192);
     assert(ios_pread_lines==1);
+    /* Large requests cannot silently restore per-read clocks. Check the
+     * actual observer for 64KiB,1MiB,16MiB: first four plus eight of the next
+     * sixty calls are timed, with two clock reads for each admitted sample. */
+    const size_t observed_sizes[]={65536,1048576,16777216};
+    clock_step=1;ios_pread_initial_routes=7;
+    for(unsigned s=0;s<3;s++)
+    {
+        ios_pread_lines=0;ios_pread_sequence=0;uint64_t before=now_ticks;
+        for(int i=0;i<64;i++){struct ios_pread_scope scope;ios_pread_begin(&scope,observed_sizes[s],0);ios_pread_end(&scope,input,0);}
+        assert(now_ticks-before==24&&!ios_pread_lines);
+    }
+    clock_step=10000000;
     /* Other pseudo-processes perform no capture clock/fd lookup. */
     owner=2;uint64_t clocks=now_ticks;assert(virtual_locked_pread(input,output,16,0)==16);assert(now_ticks==clocks);owner=1;
     ios_pread_lines=0;ios_pread_last_line=0;clock_step=2000000000;

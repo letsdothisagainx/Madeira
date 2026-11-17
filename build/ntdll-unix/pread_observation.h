@@ -67,11 +67,13 @@ static void ios_pread_begin(struct ios_pread_scope *scope, size_t size, off_t of
     scope->active = 0;
     if (__atomic_load_n(&ios_pread_lines, __ATOMIC_RELAXED) >= IOS_PREAD_MAX_LINES ||
         !IOS_PREAD_OWNER(&pid, &tid)) goto done;
-    /* MiB reads are timed until the output cap. Medium reads are sampled one
-     * in eight, smaller reads one in 64, after four initial calls/thread.
-     * Never add a syscall per byte/page. Ineligible processes do not read a
-     * clock or an fd path. Spacing and the lifetime output cap apply below. */
-    if (++ios_pread_sequence > 4 && size < 1048576 &&
+    /* All reads >=64 KiB are sampled one in eight, smaller reads one in 64,
+     * after four initial calls/thread. Large sizes must not enable clocks or
+     * shared atomic updates on every read. This bounded, sparse observation
+     * can miss individual stalls; it never adds a syscall per byte/page.
+     * Ineligible processes do not read a clock or an fd path. Spacing and the
+     * lifetime output cap apply below. */
+    if (++ios_pread_sequence > 4 &&
         (ios_pread_sequence & (size >= 65536 ? 7 : 63))) goto done;
     memset(scope, 0, sizeof(*scope));
     scope->pid = pid; scope->tid = tid;
