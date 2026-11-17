@@ -1069,7 +1069,7 @@ static void ios_ts_print_copy(struct ios_ts_copy_capture *copy, uint64_t mapped_
                    (unsigned long long)copy->pid, (unsigned long long)copy->tid,
                    (unsigned long long)copy->owner, (unsigned long long)copy->teb,
                    copy->progress.sample, (unsigned long long)copy->block,
-                   (unsigned long long)copy->loop, (unsigned long long)copy->pc,
+                   (unsigned long long)copy->loop.loop, (unsigned long long)copy->pc,
                    (unsigned long long)copy->lr, (unsigned long long)copy->rip,
                    module ? module : "unresolved", (unsigned long long)rva,
                    copy->loop.slot, copy->loop.src_reg, copy->loop.dst_reg, copy->loop.end_reg,

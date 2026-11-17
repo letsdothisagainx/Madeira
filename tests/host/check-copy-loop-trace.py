@@ -156,3 +156,156 @@ sampler = native.split('static void ios_thread_sampler_pass(int burst)', 1)[1].s
 assert sampler.index('ios_ts_capture_copy(&st') < sampler.index('thread_resume(tlist[k]);\n        if (have_bb)')
 assert sampler.index('ios_ts_print_copy(&copy') > sampler.index('thread_resume(tlist[k]);\n        if (have_bb)')
 print('copy observer integration: existing-suspension capture, post-resume logging, no payload reads or new guest execution')
+
+# Compile and execute the actual production formatter, not a reimplementation.
+# The typed capture struct and printf attribute also catch invalid struct casts
+# and argument/format mismatches before an expensive iOS build is dispatched.
+def production_block(marker, trailing_semicolon=False):
+    start = native.index(marker)
+    opening = native.index('{', start)
+    depth = 1
+    end = opening + 1
+    while depth:
+        depth += (native[end] == '{') - (native[end] == '}')
+        end += 1
+    if trailing_semicolon:
+        assert native[end] == ';'
+        end += 1
+    return native[start:end]
+
+declarations = '\n'.join(production_block(marker, True) for marker in (
+    'struct ios_ts_mod {', 'struct ios_ts_map {',
+    'struct ios_ts_hot_context\n', 'struct ios_ts_copy_capture\n'))
+printer = production_block('static void ios_ts_print_copy(')
+FORMAT_PRELUDE = r'''
+#include <assert.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <string.h>
+#include <strings.h>
+#include "copy_loop_trace.h"
+'''
+FORMAT_ADAPTERS = r'''
+static struct ios_copy_trace_state ios_ts_copy_ledger;
+static struct ios_ts_hot_context fixture_identity;
+static unsigned fixture_identity_reads, fixture_code_reads, fixture_logs;
+static char fixture_output[32768];
+static size_t fixture_used;
+static void ios_ts_saved_guest64(uint64_t teb, struct ios_ts_hot_context *identity)
+{
+    assert(teb == 0x7000000000);
+    ++fixture_identity_reads;
+    *identity = fixture_identity;
+}
+static const char *ios_ts_mod_for(struct ios_ts_map *map, uint64_t va, uint64_t *rva)
+{
+    for (int i = 0; i < map->n; ++i)
+        if (va >= map->m[i].base && va - map->m[i].base < map->m[i].size)
+        { *rva = va - map->m[i].base; return map->m[i].name; }
+    return NULL;
+}
+static int ios_ts_read(uint64_t address, void *out, size_t bytes)
+{
+    /* The formatter may read a bounded guest-code window, never the source or
+     * destination payload. These assertions catch any change to that boundary. */
+    assert(address == 0x71d510fa2a && bytes == 64);
+    ++fixture_code_reads;
+    memset(out, 0xa5, bytes);
+    return 1;
+}
+static void wine_log_write(const char *, ...) __attribute__((format(printf, 1, 2)));
+static void wine_log_write(const char *format, ...)
+{
+    char line[1024]; /* Match the real logger's line-size bound. */
+    va_list arguments;
+    va_start(arguments, format);
+    int length = vsnprintf(line, sizeof(line), format, arguments);
+    va_end(arguments);
+    assert(length >= 0 && (size_t)length < sizeof(line));
+    assert((size_t)length + 2 < sizeof(fixture_output) - fixture_used);
+    memcpy(fixture_output + fixture_used, line, length);
+    fixture_used += length;
+    fixture_output[fixture_used++] = '\n';
+    fixture_output[fixture_used] = 0;
+    ++fixture_logs;
+}
+'''
+FORMAT_MAIN = r'''
+int main(void)
+{
+    const uint32_t observed[] = {
+        0x3dc00000, 0x91008000, 0x3d800100, 0x3cdf0000, 0x3d800500,
+        0x91008108, 0xeb01011f, 0xb945eb8b, 0x3400004b, 0xd4395fc0, 0x54fffec3
+    };
+    uint64_t regs[29] = {0};
+    struct ios_ts_copy_capture copy = {0};
+    struct ios_ts_map map = {0};
+    map.peb = 0x118db8000;
+    map.n = 2;
+    strcpy(map.m[0].name, "steam.exe");
+    strcpy(map.m[1].name, "tier0.dll");
+    map.m[1].base = 0x71d4e80000; map.m[1].size = 0x400000;
+    copy.captured = 1; copy.teb = 0x7000000000;
+    copy.frame = 0x7e7d405140; copy.block = 0x7c3226a000;
+    copy.pc = 0x7c3226ad60; copy.lr = 0x7c322377cc;
+    regs[0] = 0x100003 + 32; regs[8] = 0x200007 + 32; regs[1] = 0x280007;
+    assert(ios_copy_loop_decode(observed, 11, 0x7c3226ad38, copy.pc, regs, &copy.loop));
+    ios_ts_print_copy(&copy, 0x71d510fa2a, &map);
+    assert(!fixture_logs && !fixture_identity_reads && !ios_ts_copy_ledger.total);
+    strcpy(map.m[0].name, "CS2.EXE");
+    fixture_identity.have_guest = 1;
+    fixture_identity.pid = 0x38c; fixture_identity.tid = 0x390;
+    fixture_identity.owner = map.peb;
+    fixture_identity.frame = copy.frame + 16; /* stale frame */
+    ios_ts_print_copy(&copy, 0x71d510fa2a, &map);
+    assert(!fixture_logs && !ios_ts_copy_ledger.total);
+    fixture_identity.frame = copy.frame;
+    fixture_identity.owner = map.peb + 16; /* wrong process */
+    ios_ts_print_copy(&copy, 0x71d510fa2a, &map);
+    assert(!fixture_logs && !ios_ts_copy_ledger.total);
+    fixture_identity.owner = map.peb;
+    copy.captured = 0;
+    ios_ts_print_copy(&copy, 0x71d510fa2a, &map);
+    assert(!fixture_logs && !ios_ts_copy_ledger.total);
+    copy.captured = 1;
+    ios_ts_print_copy(&copy, 0x71d510fa2a, &map);
+    assert(ios_ts_copy_ledger.total == 1 && fixture_logs == 2 && fixture_code_reads == 1);
+    assert(strstr(fixture_output, "pid=038c tid=0390 owner=0x118db8000"));
+    assert(strstr(fixture_output, "loop=0x7c3226ad38 host-pc=0x7c3226ad60"));
+    assert(strstr(fixture_output, "module=tier0.dll rva=0x28fa2a"));
+    assert(strstr(fixture_output, "slot=10 src-reg=0 dst-reg=8 end-reg=1"));
+    assert(strstr(fixture_output, "iteration-src=0x100003 iteration-dst=0x200007"));
+    assert(strstr(fixture_output, "remaining-valid=1 remaining=524288 original-request=unmeasured"));
+    assert(strstr(fixture_output, "invocation-identity=unmeasured"));
+    assert(strstr(fixture_output, "guest-code=0x71d510fa2a bytes=a5 a5 a5"));
+    for (unsigned i = 0; i < 3; ++i)
+    {
+        copy.loop.src += 32; copy.loop.dst += 32; copy.loop.remaining -= 32;
+        ios_ts_print_copy(&copy, 0x71d510fa2a, &map);
+    }
+    assert(ios_ts_copy_ledger.total == 4);
+    assert(strstr(fixture_output, "same-span=1 forward-deltas=1 src-delta=32 dst-delta=32"));
+    unsigned logs = fixture_logs;
+    ios_ts_print_copy(&copy, 0x71d510fa2a, &map);
+    assert(ios_ts_copy_ledger.total == 4 && fixture_logs == logs);
+    puts("actual production copy formatter: typed printf compilation, live loop/RVA/register/progression fields, Steam/stale-identity gates and per-key cap passed");
+    return 0;
+}
+'''
+with tempfile.TemporaryDirectory(prefix='madeira-copy-format-') as work:
+    source = Path(work) / 'formatter.c'
+    binary = Path(work) / 'formatter'
+    compile_command = [os.environ.get('CC', 'cc'), '-std=c11', '-O2', '-Wall', '-Wextra',
+                       '-Werror', '-Wformat=2', '-I', str(ROOT / 'build/ntdll-unix'),
+                       str(source), '-o', str(binary)]
+    source.write_text(FORMAT_PRELUDE + declarations + FORMAT_ADAPTERS + printer + FORMAT_MAIN)
+    subprocess.run(compile_command, check=True)
+    subprocess.run([str(binary)], check=True)
+    # Reproduce the invalid production struct cast as a negative control. The
+    # same typed fixture must reject it rather than passing substring checks.
+    assert '(unsigned long long)copy->loop.loop' in printer
+    broken = printer.replace('(unsigned long long)copy->loop.loop', '(unsigned long long)copy->loop')
+    source.write_text(FORMAT_PRELUDE + declarations + FORMAT_ADAPTERS + broken + FORMAT_MAIN)
+    failed = subprocess.run(compile_command, text=True, capture_output=True)
+    assert failed.returncode, 'actual production formatter struct-cast negative control compiled'
+    print('actual production formatter negative control: invalid struct-to-integer cast rejected by compiler')
