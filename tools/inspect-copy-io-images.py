@@ -63,6 +63,36 @@ def inspect(image, name, rva):
     print(f'IMAGE {name} sha256={hashlib.sha256(image).hexdigest()} machine={machine:04x} '
           f'timestamp={stamp:08x} image-size={image_size:#x} symbols={nsym}')
     print(f'TARGET {name}+{rva:#x} preceding-functions={preceding[-4:]} next-functions={following[:2]}')
+    def function_at(address):
+        candidates = [row for row in functions if row[0] <= address]
+        return candidates[-1] if candidates else None
+
+    def print_callers(target, depth=0):
+        if depth >= 2:
+            return
+        callers = []
+        for _, va, _, raw, raw_size, flags in sections:
+            if not flags & 0x20000000:
+                continue
+            for off in range(0, raw_size - 3, 4):
+                word = struct.unpack_from('<I', image, raw + off)[0]
+                if word & 0xfc000000 != 0x94000000:
+                    continue
+                delta = word & 0x3ffffff
+                if delta & 0x2000000:
+                    delta -= 0x4000000
+                address = va + off
+                if address + delta * 4 == target:
+                    callers.append((address, function_at(address)))
+        print(f'CALLERS depth={depth} target={target:#x} count={len(callers)} rows={callers[:16]}')
+        seen = set()
+        for _, function in callers[:16]:
+            if function and function[0] not in seen:
+                seen.add(function[0])
+                print_callers(function[0], depth + 1)
+
+    if preceding:
+        print_callers(preceding[-1][0])
     for section_name, va, _, raw, raw_size, flags in sections:
         if va <= rva < va + raw_size:
             assert flags & 0x20000000, 'captured PC is not in executable section'
