@@ -32,6 +32,11 @@ on:
         description: Resolve captured UCRT/D3D11 copy PCs in an exact archived IPA instead of building
         required: false
         default: ''
+      inspect_cs2_client:
+        description: Attempt anonymous retrieval of the exact recorded Windows client DLL (analysis only)
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -573,6 +578,12 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/copy-image-tools"
           "$RUNNER_TEMP/copy-image-tools/bin/pip" install capstone==5.0.6
           "$RUNNER_TEMP/copy-image-tools/bin/python" tools/inspect-copy-io-images.py previous-ipa/Madeira.ipa --expected-uuid "$MADEIRA_INSPECT_UUID" --query ucrtbase.dll:0x62b68 --query d3d11.dll:0x63484 --query kernelbase.dll:0x6dee4 --query kernelbase.dll:0x78f4c --query ntdll.dll:0x5a698
+      - name: Inspect exact official anonymous CS2 client content
+        if: inputs.inspect_cs2_client == true
+        timeout-minutes: 6
+        run: |
+          "$RUNNER_TEMP/copy-image-tools/bin/pip" install pefile==2024.8.26 xxhash==3.5.0
+          "$RUNNER_TEMP/copy-image-tools/bin/python" tools/inspect-official-cs2-client.py --scratch "$RUNNER_TEMP/official-cs2-client"
 
   inspect-fex:
     if: inputs.inspect_fex_run_id != ''
