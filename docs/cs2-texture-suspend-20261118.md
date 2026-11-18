@@ -105,7 +105,7 @@ failure to select Low. The child-environment preparation row exists at line
 61986/62905/63063. This deliberately preserves requested physical mip identity;
 it is not an automatic mip-dropping quality shortcut. No profile change is made.
 
-## Exact suspension caller and remaining blocker
+## Exact suspension caller and remaining question
 
 Read-only GitHub Actions inspection downloaded the actual a1ab IPA artifact
 (run `44172963516`, artifact `14370284511`) and verified its UUID.
@@ -138,19 +138,93 @@ thread, not proof of an orphaned independent context operation. Protocol tests
 exercise actual pthread continuation, early resume races, nested counts,
 process scope and handle variants. No suspension-semantics change is justified.
 
-The matching **39,120,536-byte `client.dll-eb5eed5d42f84131`** is absent from the
-repository, IPA and export. Its instructions around return RVA `0x457b`, function
-purpose, and intended resumer therefore remain unresolved. Texture failures
-precede the suspend, but causality is not established. Missing generic sampled
-resume lines are not treated as proof that none was attempted. No forced resume,
-count clearing or fabricated success is introduced.
+An isolated, read-only Actions job obtained the official Windows game file
+anonymously from depot `2347771`, exact manifest `6054210037651104742`, path
+`game/csgo/bin/win64/client.dll`. The actual post-update file is **39,141,528
+bytes**, SHA-256
+`39de4a6d1881ebf9726a43ffcb1e05ce12d007750053afc52eed5a97b7d21c7d`.
+Its `SizeOfImage=0x298d000`, timestamp `0x6afd14c1`, and computed FEX mapping
+identity `eb5eed5d42f84131` match the loaded module. The export's 39,120,536-byte
+cached audit precedes Steam's update; requiring that stale size would reject
+the matching current image. The analysis does not execute or modify the game.
+
+Exact disassembly resolves `client.dll+0x457b` to a context/register capture
+routine spanning `0x4520..0x4a10`. It opens its input thread ID, calls
+`SuspendThread` at `0x4575`, then `GetThreadContext` at `0x4588`,
+`ResumeThread` at `0x4597`, and `CloseHandle` at `0x45a0`. The recorded return
+address is exactly the end of that suspension call. Thus its intended resume
+is in the same caller, after context capture; a self-target stops before that
+resume can be reached. This establishes the stopping mechanism independently
+of generic sampled resume logs.
+
+The validated direct caller at `0x432c`, in `0x3140..0x4516`, passes its own
+input thread ID unchanged. That routine processes request records and serializes
+results. It contains no current-thread query or thread enumeration establishing
+where that ID originates. A real leaf tail thunk at `0x14a7c0`, which correctly
+has no unwind entry because it does not change the stack, adds `0x50` to its
+object pointer and loads the thread ID from the adjusted pointer's `+0x60`
+(original object `+0xb0`) before jumping to `0x3140`. This establishes a stored
+callback argument, not a thread ID invented by the suspend wrapper. Wine's
+inspected current-ID, OpenThread, server-ID and Toolhelp paths show no
+demonstrated mismatch.
+
+The writer is also resolved: `client+0x5281` calls the genuine
+`GetCurrentThreadId`, and `0x53aa` stores that result at the callback object's
+`+0xb0`. The object is submitted through `g_pThreadPool` virtual slot `+0x80`
+at `0x53d6`. Its matched vtable's `+0x28` entry is the leaf capture thunk.
+The job therefore saves its creator's ID and ultimately executes its capture
+on that same thread in the failing run. Matched client RTTI identifies its
+wrapper as the lambda job for
+`ReceiveRequestDiagnostic(CUserMessageRequestDiagnostic_t const&)` using
+`IThreadPool::QueueJobWithFlags`. This is a received diagnostic-message path,
+not an established fatal-OOM handler. An earlier nonself suspension also appears
+in the export.
+
+The same exact official manifest also supplies matching `tier0.dll`, mapping
+identity `8f2d32d37c93635a`, SHA-256
+`0bcd160dfa72d9f97fbf85095d59baad18fca61f20d840e83a5bd9f7635d5c32`,
+3,979,416 bytes. Exact RTTI and chained x64 unwind ranges resolve the actual
+`CGlobalThreadPool`/`CThreadPool` slot `+0x80` to `tier0+0xa5500`.
+Its branch at `+0xa558b` really invokes the submitted job's callback inline at
+`+0xa55a7`; the other path queues it through `+0xa5780`. The inline gates read
+pool dword `+0x130` and pool byte `+0x159` together with job byte `+0x15`.
+The supplied job's latter byte is 2. The export does not record those pool
+fields or the outer return chain distinguishing submission-time inline dispatch
+from later job helping. Therefore the exact gate/dispatch taken, and why that
+state occurs, remain unestablished. No unsupported flag meaning is inferred
+from an older SDK layout. Texture failures precede this request, but the evidence
+does not establish that they caused its dispatch.
+
+The matching image inspections succeeded in Actions runs `44280845850`,
+`44281373288`, `44282794106`, `44283105934` and `44284128882`, on a separate analysis ref.
+No forced resume, count clearing,
+proprietary binary patch or fabricated success is introduced.
 
 ## Validation limits
+
+The focused tests compile the actual staged allocator/factory methods rather
+than replacing admission with an equivalent model. The eight-row replay keeps
+the recorded floor and available-memory operands unchanged. In the controlled
+initial-data cases, the final three compact charges are 31,488, 33,536 and
+131,840 bytes and are admitted. The first five remain denied at their original
+headroom; the test admits their complete charges only after supplying a fresh
+measurement with 68 MiB more available memory.
+
+The transient-lifetime reproducer leaves 68 MiB of newly completed test-owned
+storage retained under the previous recovery latch. The corrected path releases
+that storage, while preserving a separate pending 32 MiB buffer and its bytes.
+No completion means no release. Eight concurrent denials claim the same
+completion frontier once; repeated soft-pressure calls retain warm dynamic
+buffers. These byte counts describe controlled owned buffers, not measured
+iPhone RSS. Actual initializer transfer tests cover six texture shapes and 142
+subresources, including native BC, row/depth padding, mip chains and cube arrays.
 
 The operand replay, real owned-buffer transfer, completion-frontier, native
 predicate and full staged-factory tests establish code behavior with explicit
 allocator, GPU-event and footprint inputs. Reclaiming test-owned bytes does not
 establish an equal iPhone physical-footprint reduction. Successful creation of
 required map textures, responsive team selection, continued main-thread frames
-and actual gameplay remain unverified on device. The suspension caller's purpose
-still requires the exact game image or matching code evidence.
+and actual gameplay remain unverified on device. The game capture routine and
+its own intended resume are resolved; the upstream self-targeting request still
+requires further evidence before a suspension-related compatibility patch is
+justified.
