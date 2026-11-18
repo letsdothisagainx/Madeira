@@ -18,6 +18,8 @@ import xxhash
 
 APP, DEPOT, MANIFEST = 730, 2347771, 6054210037651104742
 FILE = 'game/csgo/bin/win64/client.dll'
+TIER0 = 'game/bin/win64/tier0.dll'
+TIER0_ID = '8f2d32d37c93635a'
 EXPECTED_BYTES = 39120536
 EXPECTED_ID = 'eb5eed5d42f84131'
 TOOL_URL = ('https://github.com/SteamRE/DepotDownloader/releases/download/'
@@ -31,6 +33,93 @@ def report_log(path):
         r'(?i)anonymous|connect|fail|error|denied|depot|manifest|download|license', line)]
     for line in useful[-35:]:
         print('STEAM ' + re.sub(r'https?://\S+', '[url]', line)[:500])
+
+
+def inspect_tier0(path):
+    image = path.read_bytes()
+    assert len(image) <= 16 << 20, 'tier0 exceeds analysis bound'
+    pe = pefile.PE(data=image)
+    base = pe.OPTIONAL_HEADER.ImageBase
+    identity = xxhash.xxh3_64_intdigest(b'tier0.dll') ^ ((pe.OPTIONAL_HEADER.SizeOfImage << 32) | pe.FILE_HEADER.TimeDateStamp)
+    print(f'TIER0_OBSERVED bytes={len(image)} sha256={hashlib.sha256(image).hexdigest()} identity={identity:016x} timestamp={pe.FILE_HEADER.TimeDateStamp:#x} image-size={pe.OPTIONAL_HEADER.SizeOfImage:#x}')
+    assert f'{identity:016x}' == TIER0_ID and pe.FILE_HEADER.Machine == 0x8664, 'runtime tier0 identity mismatch'
+    exports = {sym.address: (sym.name or b'').decode(errors='replace')
+               for sym in getattr(getattr(pe, 'DIRECTORY_ENTRY_EXPORT', None), 'symbols', [])}
+    imports = {}
+    for descriptor in getattr(pe, 'DIRECTORY_ENTRY_IMPORT', []):
+        for imported in descriptor.imports:
+            imports[imported.address - base] = descriptor.dll.decode() + '!' + (imported.name.decode() if imported.name else '#' + str(imported.ordinal))
+    functions = [(r.struct.BeginAddress, r.struct.EndAddress, r.struct.UnwindData)
+                 for r in getattr(pe, 'DIRECTORY_ENTRY_EXCEPTION', [])]
+    md = cs.Cs(cs.CS_ARCH_X86, cs.CS_MODE_64)
+    md.detail = True
+    def show_function(target, label):
+        matches = [r for r in functions if r[0] <= target < r[1]]
+        if not matches:
+            print(f'TIER0_FUNCTION_UNPROVEN label={label} rva={target:#x}')
+            return
+        begin, end, unwind = matches[0]
+        print(f'TIER0_FUNCTION label={label} target={target:#x} begin={begin:#x} end={end:#x} unwind={unwind:#x} raw-unwind={pe.get_data(unwind, 48).hex()}')
+        for ins in md.disasm(pe.get_data(begin, min(end - begin, 16384)), begin):
+            print(f'TIER0_CODE {ins.address:#x}: {ins.bytes.hex()} {ins.mnemonic} {ins.op_str}')
+            for operand in ins.operands:
+                if operand.type == cs.x86.X86_OP_MEM and operand.mem.base == cs.x86.X86_REG_RIP:
+                    slot = ins.address + ins.size + operand.mem.disp
+                    if slot in imports:
+                        print(f'TIER0_IMPORT instruction={ins.address:#x} slot={slot:#x} name={imports[slot]}')
+    selected = [(rva, name) for rva, name in exports.items()
+                if any(t in name for t in ('ThreadPool', 'g_pThreadPool', 'AddJob', 'CreateJob'))]
+    for rva, name in selected[:100]:
+        print(f'TIER0_EXPORT rva={rva:#x} name={name!r}')
+        if 'g_pThreadPool' in name:
+            raw = pe.get_data(rva, 64)
+            print(f'TIER0_GLOBAL rva={rva:#x} raw={raw.hex()}')
+            pointer = struct.unpack_from('<Q', raw)[0]
+            if base <= pointer < base + pe.OPTIONAL_HEADER.SizeOfImage:
+                print(f'TIER0_GLOBAL_OBJECT rva={pointer-base:#x} raw={pe.get_data(pointer-base, 128).hex()}')
+        elif any(t in name for t in ('CreateThreadPool', 'ThreadPool@@', 'AddJob')):
+            show_function(rva, name)
+    # Match x64 MSVC type descriptor -> complete object locator -> vftable.
+    # Report only a true signature/self-RVA locator, not arbitrary text bytes.
+    sections = [(section.VirtualAddress, section.get_data()) for section in pe.sections
+                if not section.Characteristics & 0x20000000]
+    type_count, table_count = 0, 0
+    for section_rva, raw in sections:
+        for match in re.finditer(rb'\.\?AV[^\0]{0,180}ThreadPool[^\0]{0,180}\0', raw):
+            type_count += 1
+            assert type_count <= 32, 'too many thread-pool RTTI descriptors'
+            descriptor = section_rva + match.start() - 16
+            print(f'TIER0_RTTI type-rva={descriptor:#x} name={match.group()!r}')
+            needle = struct.pack('<I', descriptor)
+            for candidate_section_rva, candidate_raw in sections:
+                position = -1
+                while True:
+                    position = candidate_raw.find(needle, position + 1)
+                    if position < 0:
+                        break
+                    locator = candidate_section_rva + position - 12
+                    if position < 12:
+                        continue
+                    fields = struct.unpack('<6I', pe.get_data(locator, 24))
+                    if fields[0] != 1 or fields[3] != descriptor or fields[5] != locator:
+                        continue
+                    print(f'TIER0_COL rva={locator:#x} fields={fields}')
+                    pointer_bytes = struct.pack('<Q', base + locator)
+                    for vtable_section_rva, vtable_raw in sections:
+                        p = -1
+                        while True:
+                            p = vtable_raw.find(pointer_bytes, p + 1)
+                            if p < 0:
+                                break
+                            table_count += 1
+                            assert table_count <= 16, 'too many thread-pool vtables'
+                            table = vtable_section_rva + p + 8
+                            entries = struct.unpack('<24Q', pe.get_data(table, 24 * 8))
+                            print(f'TIER0_VTABLE rva={table:#x} entries={[hex(v-base) for v in entries]}')
+                            target = entries[16] - base
+                            if 0 <= target < pe.OPTIONAL_HEADER.SizeOfImage:
+                                show_function(target, f'vtable{table:#x}+0x80')
+    print(f'TIER0_SUMMARY threadpool-types={type_count} vtables={table_count}')
 
 
 def main():
@@ -54,7 +143,7 @@ def main():
         tool.write_bytes(package.read('DepotDownloader'))
     tool.chmod(0o700)
     filelist = scratch / 'filelist.txt'
-    filelist.write_text(FILE + '\n')
+    filelist.write_text(FILE + '\n' + TIER0 + '\n')
     content = scratch / 'content'
     command = [str(tool), '-app', str(APP), '-depot', str(DEPOT), '-manifest', str(MANIFEST),
                '-os', 'windows', '-osarch', '64', '-filelist', str(filelist),
@@ -290,7 +379,8 @@ def main():
             validated_reference(section.VirtualAddress + start, destination, 'rip-address')
     print(f'UPSTREAM_SUMMARY validated-functions={len(upstream_ranges)} absolute-pointer-slots={len(pointer_slots)} raw-rva-words={raw_refs}')
     for low, (high, instructions) in upstream_ranges.items():
-        print(f'UPSTREAM_FUNCTION begin={low:#x} end={high:#x}')
+        urva = next(r[2] for r in functions if r[0] == low)
+        print(f'UPSTREAM_FUNCTION begin={low:#x} end={high:#x} unwind={urva:#x} raw-unwind={pe.get_data(urva, 48).hex()}')
         for ins in instructions[:2200]:
             print(f'UPSTREAM_CODE {ins.address:#x}: {ins.bytes.hex()} {ins.mnemonic} {ins.op_str}')
             for operand in ins.operands:
@@ -298,6 +388,13 @@ def main():
                     slot = ins.address + ins.size + operand.mem.disp
                     if slot in imports:
                         print(f'UPSTREAM_IMPORT instruction={ins.address:#x} slot={slot:#x} name={imports[slot]}')
+                    if ins.mnemonic == 'lea':
+                        raw_text = pe.get_data(slot, 128).split(b'\0', 1)[0]
+                        if 4 <= len(raw_text) <= 127 and all(32 <= b < 127 for b in raw_text):
+                            print(f'UPSTREAM_STRING instruction={ins.address:#x} slot={slot:#x} value={raw_text.decode()!r}')
+    tier0_candidates = [p for p in content.rglob('tier0.dll') if p.as_posix().endswith(TIER0)]
+    assert len(tier0_candidates) == 1, 'exact official tier0 file missing'
+    inspect_tier0(tier0_candidates[0])
     print('PASS exact official-manifest client content inspected without execution; purpose requires disassembly interpretation')
 
 
