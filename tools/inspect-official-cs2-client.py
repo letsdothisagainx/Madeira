@@ -171,7 +171,7 @@ def main():
     # One additional upstream level: identify a direct call, a RIP-relative
     # function-address load, or a data-table pointer to the known caller.
     # Every code reference is validated from the containing unwind range.
-    upstream_targets = set(callers)
+    upstream_targets = set(callers) | {0x14a7c0}
     print(f'UPSTREAM_SCAN targets={sorted(upstream_targets)} source=ffd80496-plus-unwind-validation')
     for destination in upstream_targets:
         ix = bisect.bisect_left(starts, destination)
@@ -181,6 +181,19 @@ def main():
         for symbol in getattr(getattr(pe, 'DIRECTORY_ENTRY_EXPORT', None), 'symbols', []):
             if symbol.address == destination:
                 print(f'UPSTREAM_EXPORT target={destination:#x} name={symbol.name!r} ordinal={symbol.ordinal}')
+    load_config = getattr(getattr(pe, 'DIRECTORY_ENTRY_LOAD_CONFIG', None), 'struct', None)
+    if load_config is not None:
+        cf_table = getattr(load_config, 'GuardCFFunctionTable', 0)
+        cf_count = getattr(load_config, 'GuardCFFunctionCount', 0)
+        cf_flags = getattr(load_config, 'GuardFlags', 0)
+        print(f'UPSTREAM_CFG table={cf_table:#x} count={cf_count} flags={cf_flags:#x}')
+        stride = 4 + ((cf_flags >> 28) & 15)
+        if cf_table and cf_count <= 1000000:
+            table_data = pe.get_data(cf_table - pe.OPTIONAL_HEADER.ImageBase, cf_count * stride)
+            fid = [struct.unpack_from('<I', table_data, i * stride)[0] for i in range(cf_count)]
+            for destination in upstream_targets:
+                ix = bisect.bisect_left(fid, destination)
+                print(f'UPSTREAM_CFG_NEAR target={destination:#x} entries={[hex(x) for x in fid[max(0, ix - 2):ix + 3]]}')
     pointer_slots = {}
     raw_refs = 0
     for section in pe.sections:
@@ -206,7 +219,7 @@ def main():
                     break
                 slot = section.VirtualAddress + position
                 pointer_slots[slot] = destination
-                print(f'UPSTREAM_DATA_POINTER slot={slot:#x} target={destination:#x}')
+                print(f'UPSTREAM_DATA_POINTER slot={slot:#x} target={destination:#x} neighbors={raw[max(0, position - 128):position + 128].hex()}')
                 assert len(pointer_slots) <= 32, 'upstream data-reference inspection exceeds bound'
     upstream_ranges = {}
     def validated_reference(address, destination, kind):
@@ -270,7 +283,8 @@ def main():
             if raw[position + 1] & 0xc7 != 0x05:
                 continue
             destination = section.VirtualAddress + position + 6 + struct.unpack_from('<i', raw, position + 2)[0]
-            if destination not in upstream_targets and destination not in pointer_slots:
+            near_table = any(slot - 256 <= destination <= slot and (slot - destination) % 8 == 0 for slot in pointer_slots)
+            if destination not in upstream_targets and not near_table:
                 continue
             start = position - 1 if position and 0x40 <= raw[position - 1] <= 0x4f else position
             validated_reference(section.VirtualAddress + start, destination, 'rip-address')
