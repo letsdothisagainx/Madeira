@@ -568,11 +568,11 @@ jobs:
           run-id: ${{ inputs.inspect_copy_run_id }}
           github-token: ${{ github.token }}
           path: previous-ipa
-      - name: Resolve exact packaged copy and D3D11 caller instructions
+      - name: Resolve exact packaged copy and suspension caller instructions
         run: |
           python3 -m venv "$RUNNER_TEMP/copy-image-tools"
           "$RUNNER_TEMP/copy-image-tools/bin/pip" install capstone==5.0.6
-          "$RUNNER_TEMP/copy-image-tools/bin/python" tools/inspect-copy-io-images.py previous-ipa/Madeira.ipa --expected-uuid "$MADEIRA_INSPECT_UUID" --query ucrtbase.dll:0x62b68 --query d3d11.dll:0x63484
+          "$RUNNER_TEMP/copy-image-tools/bin/python" tools/inspect-copy-io-images.py previous-ipa/Madeira.ipa --expected-uuid "$MADEIRA_INSPECT_UUID" --query ucrtbase.dll:0x62b68 --query d3d11.dll:0x63484 --query kernelbase.dll:0x6dee4 --query kernelbase.dll:0x78f4c --query ntdll.dll:0x5a698
 
   inspect-fex:
     if: inputs.inspect_fex_run_id != ''
