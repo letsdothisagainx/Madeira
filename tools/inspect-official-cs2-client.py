@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Bounded anonymous official-depot retrieval; never execute or alter a Valve PE."""
 import argparse
+import bisect
 import hashlib
 import os
 from pathlib import Path
@@ -128,6 +129,45 @@ def main():
                         continue
                     if len(text) >= 5 and all(c.isprintable() for c in text):
                         print(f'STRING instruction={ins.address:#x} rva={rva:#x} encoding={encoding} value={text[:160]!r}')
+    # Validate direct-call candidates against real instruction boundaries from
+    # the containing x64 unwind range. Never label a raw E8 byte as a call.
+    functions.sort()
+    starts = [r[0] for r in functions]
+    callers = {}
+    for section in pe.sections:
+        if not section.Characteristics & 0x20000000:
+            continue
+        raw = section.get_data()
+        position = -1
+        while True:
+            position = raw.find(b'\xe8', position + 1)
+            if position < 0 or position + 5 > len(raw):
+                break
+            address = section.VirtualAddress + position
+            displacement = struct.unpack_from('<i', raw, position + 1)[0]
+            if address + 5 + displacement != matches[0][0]:
+                continue
+            index = bisect.bisect_right(starts, address) - 1
+            if index < 0:
+                continue
+            low, high, _ = functions[index]
+            if not low <= address < high or address - low > 16384:
+                continue
+            instructions = list(md.disasm(pe.get_data(low, min(high, low + 16384) - low), low))
+            if not any(i.address == address and i.group(cs.CS_GRP_CALL) and i.size == 5 for i in instructions):
+                continue
+            print(f'CALLER_XREF instruction={address:#x} function={low:#x}..{high:#x} target={matches[0][0]:#x}')
+            callers[low] = (high, instructions)
+            assert len(callers) <= 16, 'caller inspection exceeds bound'
+    for low, (high, instructions) in callers.items():
+        print(f'CALLER_FUNCTION begin={low:#x} end={high:#x}')
+        for ins in instructions[:1500]:
+            print(f'CALLER_CODE {ins.address:#x}: {ins.bytes.hex()} {ins.mnemonic} {ins.op_str}')
+            for operand in ins.operands:
+                if operand.type == cs.x86.X86_OP_MEM and operand.mem.base == cs.x86.X86_REG_RIP:
+                    slot = ins.address + ins.size + operand.mem.disp
+                    if slot in imports:
+                        print(f'CALLER_IMPORT instruction={ins.address:#x} slot={slot:#x} name={imports[slot]}')
     print('PASS exact official-manifest client content inspected without execution; purpose requires disassembly interpretation')
 
 
