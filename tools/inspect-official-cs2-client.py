@@ -53,20 +53,43 @@ def inspect_tier0(path):
                  for r in getattr(pe, 'DIRECTORY_ENTRY_EXCEPTION', [])]
     md = cs.Cs(cs.CS_ARCH_X86, cs.CS_MODE_64)
     md.detail = True
+    shown = set()
+    def chain_root(record, depth=0):
+        assert depth < 16, 'unwind chain exceeds bound'
+        begin, end, unwind = record
+        header = pe.get_data(unwind, 4)
+        if header[0] >> 3 & 4:
+            offset = 4 + ((header[2] + 1) & ~1) * 2
+            parent = struct.unpack('<3I', pe.get_data(unwind + offset, 12))
+            return chain_root(parent, depth + 1)
+        return begin
     def show_function(target, label):
         matches = [r for r in functions if r[0] <= target < r[1]]
         if not matches:
             print(f'TIER0_FUNCTION_UNPROVEN label={label} rva={target:#x}')
             return
-        begin, end, unwind = matches[0]
-        print(f'TIER0_FUNCTION label={label} target={target:#x} begin={begin:#x} end={end:#x} unwind={unwind:#x} raw-unwind={pe.get_data(unwind, 48).hex()}')
-        for ins in md.disasm(pe.get_data(begin, min(end - begin, 16384)), begin):
-            print(f'TIER0_CODE {ins.address:#x}: {ins.bytes.hex()} {ins.mnemonic} {ins.op_str}')
-            for operand in ins.operands:
-                if operand.type == cs.x86.X86_OP_MEM and operand.mem.base == cs.x86.X86_REG_RIP:
-                    slot = ins.address + ins.size + operand.mem.disp
-                    if slot in imports:
-                        print(f'TIER0_IMPORT instruction={ins.address:#x} slot={slot:#x} name={imports[slot]}')
+        root = chain_root(matches[0])
+        if root in shown:
+            print(f'TIER0_FUNCTION_ALREADY_SHOWN label={label} root={root:#x}')
+            return
+        shown.add(root)
+        segments = [r for r in functions if chain_root(r) == root]
+        total = 0
+        for begin, end, unwind in segments:
+            total += end - begin
+            assert total <= 32768, 'logical Tier0 function exceeds instruction bound'
+            print(f'TIER0_FUNCTION label={label} target={target:#x} root={root:#x} begin={begin:#x} end={end:#x} unwind={unwind:#x} raw-unwind={pe.get_data(unwind, 48).hex()}')
+            for ins in md.disasm(pe.get_data(begin, end - begin), begin):
+                print(f'TIER0_CODE {ins.address:#x}: {ins.bytes.hex()} {ins.mnemonic} {ins.op_str}')
+                for operand in ins.operands:
+                    if operand.type == cs.x86.X86_OP_MEM and operand.mem.base == cs.x86.X86_REG_RIP:
+                        slot = ins.address + ins.size + operand.mem.disp
+                        if slot in imports:
+                            print(f'TIER0_IMPORT instruction={ins.address:#x} slot={slot:#x} name={imports[slot]}')
+                        if ins.mnemonic == 'lea':
+                            text = pe.get_data(slot, 128).split(b'\0', 1)[0]
+                            if 4 <= len(text) <= 127 and all(32 <= b < 127 for b in text):
+                                print(f'TIER0_STRING instruction={ins.address:#x} rva={slot:#x} value={text.decode()!r}')
     selected = [(rva, name) for rva, name in exports.items()
                 if any(t in name for t in ('ThreadPool', 'g_pThreadPool', 'AddJob', 'CreateJob'))]
     for rva, name in selected[:100]:
@@ -119,6 +142,8 @@ def inspect_tier0(path):
                             target = entries[16] - base
                             if 0 <= target < pe.OPTIONAL_HEADER.SizeOfImage:
                                 show_function(target, f'vtable{table:#x}+0x80')
+    for target in (0xa4190, 0xa7490):
+        show_function(target, 'pool-Start-vtable+0x18')
     print(f'TIER0_SUMMARY threadpool-types={type_count} vtables={table_count}')
 
 
@@ -392,6 +417,14 @@ def main():
                         raw_text = pe.get_data(slot, 128).split(b'\0', 1)[0]
                         if 4 <= len(raw_text) <= 127 and all(32 <= b < 127 for b in raw_text):
                             print(f'UPSTREAM_STRING instruction={ins.address:#x} slot={slot:#x} value={raw_text.decode()!r}')
+    print(f'CLIENT_JOB_NAME rva=0x1abc088 raw={pe.get_data(0x1abc088, 128).hex()}')
+    locator_ptr = struct.unpack('<Q', pe.get_data(0x1abc488 - 8, 8))[0]
+    locator_rva = locator_ptr - pe.OPTIONAL_HEADER.ImageBase
+    if 0 <= locator_rva < pe.OPTIONAL_HEADER.SizeOfImage:
+        fields = struct.unpack('<6I', pe.get_data(locator_rva, 24))
+        print(f'CLIENT_JOB_RTTI vtable=0x1abc488 locator={locator_rva:#x} fields={fields}')
+        if fields[0] == 1 and fields[5] == locator_rva:
+            print(f'CLIENT_JOB_TYPE descriptor={fields[3]:#x} name={pe.get_data(fields[3] + 16, 256).split(bytes([0]),1)[0]!r}')
     tier0_candidates = [p for p in content.rglob('tier0.dll') if p.as_posix().endswith(TIER0)]
     assert len(tier0_candidates) == 1, 'exact official tier0 file missing'
     inspect_tier0(tier0_candidates[0])
