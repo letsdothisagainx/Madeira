@@ -59,7 +59,7 @@ def inspect(image, name, rva):
     # ARM64EC uses a native 8-byte RUNTIME_FUNCTION table in CHPE metadata;
     # its ordinary exception directory can contain x64 12-byte entries.
     # Never decode the latter as native ARM64 unwind records.
-    redirects, metadata = {}, None
+    redirects, metadata, containing_starts = {}, None, set()
     config, config_size = directory(10)
     if config and config_size >= 208:
         preferred = struct.unpack_from('<Q', image, pe + 24 + 24)[0]
@@ -98,6 +98,7 @@ def inspect(image, name, rva):
                 else:
                     continue
                 if begin <= rva < begin + length:
+                    containing_starts.add(begin)
                     print(f'NATIVE_UNWIND entry={native_table + i * 8:#x} begin={begin:#x} '
                           f'end={begin + length:#x} raw={unwind:#x} {detail}')
 
@@ -114,7 +115,7 @@ def inspect(image, name, rva):
             if export <= entry < export + export_size:
                 continue
             native = redirects.get(entry, entry)
-            if 0 <= rva - native < 128:
+            if native in containing_starts or 0 <= rva - native < 128:
                 export_rows.append((symbol, hex(entry), hex(native), rva - native))
         print(f'EXPORT_NEAR target={rva:#x} names/export/native/delta={export_rows}')
 
@@ -137,6 +138,17 @@ def inspect(image, name, rva):
                 raise AssertionError('unterminated import thunk table')
         else:
             raise AssertionError('unterminated import descriptor table')
+    if metadata:
+        iat, iat_bytes = directory(12)
+        native_iat = value('<I', metadata + 44)[0]
+        copy_iat = value('<I', metadata + 76)[0]
+        print(f'HYBRID_IAT original={iat:#x}+{iat_bytes:#x} native={native_iat:#x} copy={copy_iat:#x}')
+        if iat and iat_bytes and native_iat:
+            for slot, imported in list(imports.items()):
+                if iat <= slot < iat + iat_bytes:
+                    alternate = native_iat + slot - iat
+                    assert alternate not in imports or imports[alternate] == imported
+                    imports[alternate] = imported + ' [ARM64EC auxiliary IAT]'
     rows = []
     if sym and nsym:
         strings = sym + nsym * 18
