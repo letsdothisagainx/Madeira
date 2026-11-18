@@ -207,7 +207,7 @@ static unsigned flush_with_credit=0, last_flush_initializations=0;
 static std::atomic<bool> block_initialization{false}, initialization_entered{false}, unblock_initialization{false};
 namespace dxmt {
 using mutex = std::mutex;
-constexpr size_t kResourceInitializerGpuUploadHeapSize=0x2000000;
+[[maybe_unused]] constexpr size_t kResourceInitializerGpuUploadHeapSize=0x2000000;
 template<class T> class Rc : public std::shared_ptr<T> {
  using Base=std::shared_ptr<T>;
 public:
