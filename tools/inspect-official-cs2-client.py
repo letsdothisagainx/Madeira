@@ -81,6 +81,10 @@ def inspect_tier0(path):
             print(f'TIER0_FUNCTION label={label} target={target:#x} root={root:#x} begin={begin:#x} end={end:#x} unwind={unwind:#x} raw-unwind={pe.get_data(unwind, 48).hex()}')
             for ins in md.disasm(pe.get_data(begin, end - begin), begin):
                 print(f'TIER0_CODE {ins.address:#x}: {ins.bytes.hex()} {ins.mnemonic} {ins.op_str}')
+                if ins.group(cs.CS_GRP_CALL):
+                    for operand in ins.operands:
+                        if operand.type == cs.x86.X86_OP_IMM and operand.imm in exports:
+                            print(f'TIER0_CALLEE instruction={ins.address:#x} target={operand.imm:#x} export={exports[operand.imm]!r}')
                 for operand in ins.operands:
                     if operand.type == cs.x86.X86_OP_MEM and operand.mem.base == cs.x86.X86_REG_RIP:
                         slot = ins.address + ins.size + operand.mem.disp
@@ -91,7 +95,7 @@ def inspect_tier0(path):
                             if 4 <= len(text) <= 127 and all(32 <= b < 127 for b in text):
                                 print(f'TIER0_STRING instruction={ins.address:#x} rva={slot:#x} value={text.decode()!r}')
     selected = [(rva, name) for rva, name in exports.items()
-                if any(t in name for t in ('ThreadPool', 'g_pThreadPool', 'AddJob', 'CreateJob'))]
+                if any(t in name for t in ('ThreadPool', 'g_pThreadPool', 'AddJob', 'CreateJob', 'CPUInformation'))]
     for rva, name in selected[:100]:
         print(f'TIER0_EXPORT rva={rva:#x} name={name!r}')
         if 'g_pThreadPool' in name:
@@ -142,7 +146,7 @@ def inspect_tier0(path):
                             target = entries[16] - base
                             if 0 <= target < pe.OPTIONAL_HEADER.SizeOfImage:
                                 show_function(target, f'vtable{table:#x}+0x80')
-    for target in (0xa4190, 0xa7490, 0xa5f80, 0xa5780, 0xa7520, 0xa7680):
+    for target in (0xa4190, 0xa7490, 0xa5cf0, 0xa5f80, 0xa5780, 0xa7520, 0xa7680):
         show_function(target, 'exact-pool-start-queue-stop-suspend-path')
     field_writers = set()
     for record in functions:
