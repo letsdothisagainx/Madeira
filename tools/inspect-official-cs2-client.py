@@ -142,8 +142,24 @@ def inspect_tier0(path):
                             target = entries[16] - base
                             if 0 <= target < pe.OPTIONAL_HEADER.SizeOfImage:
                                 show_function(target, f'vtable{table:#x}+0x80')
-    for target in (0xa4190, 0xa7490):
-        show_function(target, 'pool-Start-vtable+0x18')
+    for target in (0xa4190, 0xa7490, 0xa5f80, 0xa5780, 0xa7520, 0xa7680):
+        show_function(target, 'exact-pool-start-queue-stop-suspend-path')
+    field_writers = set()
+    for record in functions:
+        low, high, _ = record
+        if not 0xa3900 <= low < 0xa7900:
+            continue
+        for instruction in md.disasm(pe.get_data(low, high - low), low):
+            for operand in instruction.operands:
+                if operand.type != cs.x86.X86_OP_MEM or operand.mem.base in (cs.x86.X86_REG_RIP, cs.x86.X86_REG_RSP, cs.x86.X86_REG_RBP, 0):
+                    continue
+                if any(operand.mem.disp <= field < operand.mem.disp + operand.size for field in (0x130, 0x159)):
+                    print(f'TIER0_POOL_FIELD instruction={instruction.address:#x} root={chain_root(record):#x} access={operand.access} bytes={operand.size} code={instruction.mnemonic} {instruction.op_str}')
+                    if operand.access & cs.CS_AC_WRITE:
+                        field_writers.add(chain_root(record))
+    assert len(field_writers) <= 16, 'pool field writer bound exceeded'
+    for target in sorted(field_writers):
+        show_function(target, 'observed-pool-field-writer')
     print(f'TIER0_SUMMARY threadpool-types={type_count} vtables={table_count}')
 
 
