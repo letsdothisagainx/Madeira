@@ -168,6 +168,86 @@ def main():
                     slot = ins.address + ins.size + operand.mem.disp
                     if slot in imports:
                         print(f'CALLER_IMPORT instruction={ins.address:#x} slot={slot:#x} name={imports[slot]}')
+    # One additional upstream level: identify a direct call, a RIP-relative
+    # function-address load, or a data-table pointer to the known caller.
+    # Every code reference is validated from the containing unwind range.
+    upstream_targets = set(callers)
+    pointer_slots = {}
+    for section in pe.sections:
+        if section.Characteristics & 0x20000000:
+            continue
+        raw = section.get_data()
+        for destination in upstream_targets:
+            value = struct.pack('<Q', pe.OPTIONAL_HEADER.ImageBase + destination)
+            position = -1
+            while True:
+                position = raw.find(value, position + 1)
+                if position < 0:
+                    break
+                slot = section.VirtualAddress + position
+                pointer_slots[slot] = destination
+                print(f'UPSTREAM_DATA_POINTER slot={slot:#x} target={destination:#x}')
+                assert len(pointer_slots) <= 32, 'upstream data-reference inspection exceeds bound'
+    upstream_ranges = {}
+    def validated_reference(address, destination, kind):
+        index = bisect.bisect_right(starts, address) - 1
+        if index < 0:
+            return
+        low, high, _ = functions[index]
+        if not low <= address < high or high - low > 32768:
+            return
+        instructions = list(md.disasm(pe.get_data(low, high - low), low))
+        instruction = next((i for i in instructions if i.address == address), None)
+        if instruction is None:
+            return
+        if kind == 'branch':
+            valid = instruction.group(cs.CS_GRP_CALL) or instruction.group(cs.CS_GRP_JUMP)
+            valid = valid and any(o.type == cs.x86.X86_OP_IMM and o.imm == destination for o in instruction.operands)
+        else:
+            valid = any(o.type == cs.x86.X86_OP_MEM and o.mem.base == cs.x86.X86_REG_RIP
+                        and instruction.address + instruction.size + o.mem.disp == destination for o in instruction.operands)
+        if not valid:
+            return
+        print(f'UPSTREAM_XREF instruction={address:#x} kind={kind} destination={destination:#x} function={low:#x}..{high:#x}')
+        upstream_ranges[low] = (high, instructions)
+        assert len(upstream_ranges) <= 24, 'upstream function inspection exceeds bound'
+    for section in pe.sections:
+        if not section.Characteristics & 0x20000000:
+            continue
+        raw = section.get_data()
+        for opcode in (0xe8, 0xe9):
+            position = -1
+            while True:
+                position = raw.find(bytes([opcode]), position + 1)
+                if position < 0 or position + 5 > len(raw):
+                    break
+                address = section.VirtualAddress + position
+                destination = address + 5 + struct.unpack_from('<i', raw, position + 1)[0]
+                if destination in upstream_targets:
+                    validated_reference(address, destination, 'branch')
+        # LEA reg,[RIP+disp32] takes an address without calling it. Native
+        # callback and vtable assignment sites often use this exact encoding.
+        position = -1
+        while True:
+            position = raw.find(b'\x8d', position + 1)
+            if position < 0 or position + 6 > len(raw):
+                break
+            if raw[position + 1] & 0xc7 != 0x05:
+                continue
+            destination = section.VirtualAddress + position + 6 + struct.unpack_from('<i', raw, position + 2)[0]
+            if destination not in upstream_targets and destination not in pointer_slots:
+                continue
+            start = position - 1 if position and 0x40 <= raw[position - 1] <= 0x4f else position
+            validated_reference(section.VirtualAddress + start, destination, 'rip-address')
+    for low, (high, instructions) in upstream_ranges.items():
+        print(f'UPSTREAM_FUNCTION begin={low:#x} end={high:#x}')
+        for ins in instructions[:2200]:
+            print(f'UPSTREAM_CODE {ins.address:#x}: {ins.bytes.hex()} {ins.mnemonic} {ins.op_str}')
+            for operand in ins.operands:
+                if operand.type == cs.x86.X86_OP_MEM and operand.mem.base == cs.x86.X86_REG_RIP:
+                    slot = ins.address + ins.size + operand.mem.disp
+                    if slot in imports:
+                        print(f'UPSTREAM_IMPORT instruction={ins.address:#x} slot={slot:#x} name={imports[slot]}')
     print('PASS exact official-manifest client content inspected without execution; purpose requires disassembly interpretation')
 
 
