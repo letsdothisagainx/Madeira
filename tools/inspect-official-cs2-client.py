@@ -215,7 +215,21 @@ def main():
             return
         low, high, _ = functions[index]
         print(f'UPSTREAM_CANDIDATE instruction={address:#x} kind={kind} destination={destination:#x} unwind={low:#x}..{high:#x}')
-        if not low <= address < high or address - low > 524288:
+        if not low <= address < high:
+            following = functions[index + 1] if index + 1 < len(functions) else None
+            gap_end = min(following[0] if following else address + 256, address + 256)
+            gap_begin = max(high, address - 256)
+            print(f'UPSTREAM_GAP candidate={address:#x} preceding={low:#x}..{high:#x} following={following!r} window={gap_begin:#x}..{gap_end:#x}')
+            if 0 < gap_end - gap_begin <= 1024:
+                for instruction in md.disasm(pe.get_data(gap_begin, gap_end - gap_begin), gap_begin):
+                    print(f'GAP_CODE {instruction.address:#x}: {instruction.bytes.hex()} {instruction.mnemonic} {instruction.op_str}')
+                    for operand in instruction.operands:
+                        if operand.type == cs.x86.X86_OP_MEM and operand.mem.base == cs.x86.X86_REG_RIP:
+                            slot = instruction.address + instruction.size + operand.mem.disp
+                            if slot in imports:
+                                print(f'GAP_IMPORT instruction={instruction.address:#x} slot={slot:#x} name={imports[slot]}')
+            return
+        if address - low > 524288:
             return
         instructions = list(md.disasm(pe.get_data(low, min(high, max(address + 512, low + 32768)) - low), low))
         instruction = next((i for i in instructions if i.address == address), None)
