@@ -172,12 +172,32 @@ def main():
     # function-address load, or a data-table pointer to the known caller.
     # Every code reference is validated from the containing unwind range.
     upstream_targets = set(callers)
+    print(f'UPSTREAM_SCAN targets={sorted(upstream_targets)} source=ffd80496-plus-unwind-validation')
+    for destination in upstream_targets:
+        ix = bisect.bisect_left(starts, destination)
+        for low, high, unwind_rva in functions[max(0, ix - 2):ix + 3]:
+            raw_unwind = pe.get_data(unwind_rva, 48)
+            print(f'UPSTREAM_UNWIND begin={low:#x} end={high:#x} unwind={unwind_rva:#x} raw={raw_unwind.hex()} flags={raw_unwind[0] >> 3}')
+        for symbol in getattr(getattr(pe, 'DIRECTORY_ENTRY_EXPORT', None), 'symbols', []):
+            if symbol.address == destination:
+                print(f'UPSTREAM_EXPORT target={destination:#x} name={symbol.name!r} ordinal={symbol.ordinal}')
     pointer_slots = {}
+    raw_refs = 0
     for section in pe.sections:
         if section.Characteristics & 0x20000000:
             continue
         raw = section.get_data()
         for destination in upstream_targets:
+            rva_bytes = struct.pack('<I', destination)
+            position = -1
+            while True:
+                position = raw.find(rva_bytes, position + 1)
+                if position < 0:
+                    break
+                raw_refs += 1
+                if raw_refs <= 24:
+                    slot = section.VirtualAddress + position
+                    print(f'UPSTREAM_RAW_RVA slot={slot:#x} target={destination:#x} neighbors={raw[max(0, position - 16):position + 32].hex()}')
             value = struct.pack('<Q', pe.OPTIONAL_HEADER.ImageBase + destination)
             position = -1
             while True:
@@ -194,9 +214,10 @@ def main():
         if index < 0:
             return
         low, high, _ = functions[index]
-        if not low <= address < high or high - low > 32768:
+        print(f'UPSTREAM_CANDIDATE instruction={address:#x} kind={kind} destination={destination:#x} unwind={low:#x}..{high:#x}')
+        if not low <= address < high or address - low > 524288:
             return
-        instructions = list(md.disasm(pe.get_data(low, high - low), low))
+        instructions = list(md.disasm(pe.get_data(low, min(high, max(address + 512, low + 32768)) - low), low))
         instruction = next((i for i in instructions if i.address == address), None)
         if instruction is None:
             return
@@ -209,7 +230,7 @@ def main():
         if not valid:
             return
         print(f'UPSTREAM_XREF instruction={address:#x} kind={kind} destination={destination:#x} function={low:#x}..{high:#x}')
-        upstream_ranges[low] = (high, instructions)
+        upstream_ranges[low] = (high, instructions if high - low <= 32768 else [i for i in instructions if abs(i.address - address) <= 512])
         assert len(upstream_ranges) <= 24, 'upstream function inspection exceeds bound'
     for section in pe.sections:
         if not section.Characteristics & 0x20000000:
@@ -239,6 +260,7 @@ def main():
                 continue
             start = position - 1 if position and 0x40 <= raw[position - 1] <= 0x4f else position
             validated_reference(section.VirtualAddress + start, destination, 'rip-address')
+    print(f'UPSTREAM_SUMMARY validated-functions={len(upstream_ranges)} absolute-pointer-slots={len(pointer_slots)} raw-rva-words={raw_refs}')
     for low, (high, instructions) in upstream_ranges.items():
         print(f'UPSTREAM_FUNCTION begin={low:#x} end={high:#x}')
         for ins in instructions[:2200]:
