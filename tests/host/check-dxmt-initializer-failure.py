@@ -27,6 +27,7 @@ def module(name, path):
 
 UPLOAD = module('initializer_upload_stage', ROOT / 'tools/build/stage-dxmt-upload-memory.py')
 STAGE = module('initializer_failure_stage', ROOT / 'tools/build/stage-dxmt-initializer-failure.py')
+ACCOUNT = module('initializer_account_stage', ROOT / 'tools/build/stage-dxmt-texture-accounting.py')
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--sanitize', action='store_true')
 args = parser.parse_args()
@@ -184,6 +185,7 @@ public:
   wmtcmd_blit_nop blit_cmd_head;wmtcmd_base *blit_cmd_tail;
   ClearRenderPassInfo clear_render_pass_head,*clear_render_pass_tail;RefTracker ref_tracker;
   std::vector<WMT::Reference<WMT::Buffer>> gpu;
+  std::vector<size_t> upload_requests;
   ResourceInitializer(){cpu_command_heap=std::malloc(kResourceInitializerCpuCommandHeapSize);assert(cpu_command_heap);reset();}
   ~ResourceInitializer(){ref_tracker.clear();if(zero_buffer_census_)mem_census_sub(MEMOWN_INIT_UPLOAD,zero_buffer_census_);std::free(cpu_command_heap);}
   void reset();uint64_t flushInternal();uint64_t initializationFence();void prepareUploadLocked(size_t){}
@@ -191,6 +193,7 @@ public:
   bool retainAllocation(Allocation*);
   WMT::Buffer allocateZeroBuffer(size_t);size_t forecastZeroGrowth(size_t);
   WMT::Buffer allocateGpuHeap(size_t bytes,size_t &offset){
+    upload_requests.push_back(bytes);
     WMTBufferInfo info{};info.length=bytes;auto buffer=device_.newBuffer(info);offset=0;
     if(!buffer)return {};
     upload_bytes_since_flush_+=bytes;gpu.push_back(std::move(buffer));return gpu.back();
@@ -219,8 +222,84 @@ uint64_t ResourceInitializer::flushInternal(){
 }
 '''
 
+# Use the actual format enumeration and capacity functions for the batch
+# bound. The upload request is recorded from the real initWithData body;
+# no second row/block-copy algorithm supplies its requested byte count.
+wmt = (ROOT / 'dxmt/src/winemetal/winemetal.h').read_text()
+pixel_enum = function(wmt, 'enum WMTPixelFormat :') + ';'
+begin = PRELUDE.index('enum WMTPixelFormat {')
+end = PRELUDE.index('\nstruct Texture {', begin)
+PRELUDE = PRELUDE[:begin] + pixel_enum + '''
+constexpr auto WMTPixelFormatRGBA8 = WMTPixelFormatRGBA8Unorm;
+constexpr auto WMTPixelFormatDepth = WMTPixelFormatDepth32Float;
+constexpr int WMTTextureTypeCube=5,WMTTextureTypeCubeArray=6;
+struct WMTTextureInfo {
+ WMTPixelFormat pixel_format;uint32_t width,height,depth,mipmap_level_count,array_length,sample_count;int type;
+};
+#define ORIGINAL_FORMAT(f) ((f) & ~WMTPixelFormatCustomSwizzle)
+''' + PRELUDE[end:]
+census = ACCOUNT.stage_file(ACCOUNT.FILES[0], (ROOT / 'dxmt' / ACCOUNT.FILES[0]).read_text())
+capacity = function(census, 'inline uint32_t\nmem_census_texel_bytes(') + '\n' + ACCOUNT.HELPER + '\n'
+old_texel = function(PRELUDE, 'size_t MTLGetTexelSize(')
+PRELUDE = PRELUDE.replace(old_texel, capacity + '''
+size_t MTLGetTexelSize(WMTPixelFormat format) {
+ const uint32_t block=mem_census_bc_block_bytes(format);
+ return block?block:mem_census_texel_bytes(format);
+}''', 1)
+
 MAIN = r'''
 void require(bool condition,const char *message){if(!condition){std::cerr<<message<<'\n';std::exit(41);}}
+#ifdef STAGED
+static void actual_upload_batch_bounds(){
+ struct Shape {uint32_t w,h,d,mips,arrays;WMTPixelFormat format;int type;};
+ const Shape cases[]={
+  {67,35,1,7,3,WMTPixelFormatRGBA8,WMTTextureType2D},
+  {67,35,1,7,2,WMTPixelFormatBC1_RGBA,WMTTextureType2D},
+  {65,33,1,7,2,WMTPixelFormatBC7_RGBAUnorm,WMTTextureTypeCubeArray},
+  {31,17,7,5,1,WMTPixelFormatBC3_RGBA,WMTTextureType3D},
+  {33,19,5,6,1,WMTPixelFormatRGBA8,WMTTextureType3D},
+  {33,1,1,6,2,WMTPixelFormatRGBA8,WMTTextureType1DArray},
+ };
+ unsigned batches=0,total_subresources=0;
+ for(const auto&shape:cases){
+  ResourceInitializer init;Texture texture;texture.w=shape.w;texture.h=shape.h;texture.d=shape.d;
+  texture.format=shape.format;texture.type=shape.type;
+  WMTTextureInfo info{};info.pixel_format=shape.format;info.width=shape.w;info.height=shape.h;info.depth=shape.d;
+  info.mipmap_level_count=shape.mips;info.array_length=shape.arrays;info.sample_count=1;info.type=shape.type;
+  const uint64_t faces=shape.type==WMTTextureTypeCubeArray || shape.type==WMTTextureTypeCube?6:1;
+  const uint64_t count=uint64_t(shape.mips)*shape.arrays*faces;
+  const uint64_t creation=mem_census_texture_bytes(info,true);
+  const uint64_t forecast_payload=creation+count*255;
+  uint64_t actual=0,padded=0;
+  for(uint32_t slice=0;slice<shape.arrays*faces;++slice)
+   for(uint32_t level=0;level<shape.mips;++level){
+    WMTTextureInfo sub=info;sub.width=std::max(1u,shape.w>>level);sub.height=std::max(1u,shape.h>>level);
+    sub.depth=std::max(1u,shape.d>>level);sub.mipmap_level_count=sub.array_length=1;
+    if(faces==6)sub.type=WMTTextureType2D;
+    const size_t capacity=mem_census_texture_bytes(sub,true);
+    WMTTextureInfo row=sub;row.height=row.depth=1;
+    const size_t row_bytes=mem_census_texture_bytes(row,true);
+    const size_t rows=capacity/(row_bytes*sub.depth);
+    const size_t pitch=row_bytes+1+((slice+level)%13),depth_pitch=pitch*rows+3+level;
+    const uint8_t value=uint8_t(0x40+(slice+level)%100);
+    std::vector<uint8_t> data(depth_pitch*sub.depth,value);
+    TextureAllocation target(capacity);
+    const auto before=init.upload_requests.size();
+    require(init.initWithData(&texture,&target,slice,level,data.data(),pitch,depth_pitch)!=0,"actual batch upload failed");
+    require(init.upload_requests.size()==before+1,"actual batch upload did not issue exactly one allocation request");
+    const size_t request=init.upload_requests.back();
+    require(request==capacity,"texture accounting underestimated or mismatched actual initWithData request");
+    actual+=request;padded+=align(request,size_t(256));
+    init.flushInternal();require(target.refs==1,"actual batch upload retained a completed destination");
+    require(std::all_of(target.backing.handle->bytes.begin(),target.backing.handle->bytes.end(),[&](auto byte){return byte==value;}),"odd row/depth pitch or native BC transfer bytes changed");
+   }
+  require(actual==creation,"multi-mip/face/array upload sum differs from actual texture capacity");
+  require(padded<=forecast_payload&&padded<=align(forecast_payload,size_t(256)),"whole-batch compact forecast undercharges actual aligned allocation requests");
+  ++batches;total_subresources+=count;
+ }
+ std::cout<<"PASS actual initWithData batch bounds: "<<batches<<" shapes / "<<total_subresources<<" subresources; odd rows/depth pitch, mips, cube arrays, 1D/3D and native BC use exact capacity plus bounded256-byte padding\n";
+}
+#endif
 int main(int argc,char **argv){
   use_pow2=argc>1 && std::strcmp(argv[1],"pow2")==0;
   {
@@ -230,6 +309,7 @@ int main(int argc,char **argv){
     init.flushInternal();require(std::all_of(target.backing.handle->bytes.begin(),target.backing.handle->bytes.end(),[](auto b){return b==0;}),"buffer zero bytes changed");
   }
 #ifdef STAGED
+  actual_upload_batch_bounds();
   {
     ResourceInitializer init;Texture texture;TextureAllocation target(64);
     std::atomic<bool> started{false},finished{false};
@@ -347,7 +427,7 @@ upload = {FILES[0]: UPLOAD.stage_initializer(original[FILES[0]]),
 staged = {name: STAGE.stage_file(name, upload[name]) for name in FILES}
 assert staged[FILES[0]].count('for (unsigned retry = 0; retry < 2; ++retry)') == 5
 assert 'zero_allocation_failed_' in staged[FILES[1]]
-assert 'size_t forecastUploadGrowth(size_t total_payload_bytes, size_t first_subresource_bytes = 0);' in staged[FILES[1]]
+assert 'size_t forecastUploadGrowth(size_t total_payload_bytes, size_t first_subresource_bytes = 0, bool compact = false);' in staged[FILES[1]]
 assert 'size_t forecastZeroGrowth(size_t bytes);' in staged[FILES[1]]
 assert staged[FILES[0]].count('std::lock_guard<std::recursive_mutex> creation_lock(creation_mutex_);') == 11
 assert staged[FILES[0]].count('std::lock_guard<dxmt::mutex> lock(mutex_);') == 11

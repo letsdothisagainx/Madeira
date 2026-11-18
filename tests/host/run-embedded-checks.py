@@ -129,6 +129,8 @@ commands = [
     ['python3', 'tests/host/check-cs2-texture-child-environment.py'],
     ['python3', 'tests/host/check-dxmt-texture-accounting.py'],
     ['python3', 'tests/host/check-dxmt-texture-admission.py'],
+    ['python3', 'tests/host/check-texture-rejection-operands.py'],
+    ['python3', 'tests/host/check-dxmt-transient-recovery.py', '--sanitize'],
     ['python3', 'tests/host/check-dxmt-mip-profile.py'],
     ['python3', 'tests/host/check-metal-descriptor-lifetime.py'],
     ['python3', 'tests/host/check-dxmt-dynamic-memory.py'],

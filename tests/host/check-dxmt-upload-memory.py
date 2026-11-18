@@ -221,11 +221,13 @@ public:
   uint64_t refreshCompletedLocked(bool trim, bool release_warm = false);
   uint64_t trimMemoryPressure(bool release_warm = false);
   MemoryPressureDecision transientMemoryPressureDecision();
-  size_t forecastUploadGrowth(size_t total_payload_bytes, size_t first_subresource_bytes = 0);
+  size_t forecastUploadGrowth(size_t total_payload_bytes, size_t first_subresource_bytes = 0, bool compact = false);
   uint64_t initializationFence();
   void prepareUploadLocked(size_t size);
   uint64_t current_seq_id_=1, cached_coherent_seq_id=0;
   size_t upload_bytes_since_flush_=0;
+  size_t texture_upload_minimum_=0;
+  /* ACTUAL_TEXTURE_UPLOAD_SCOPE */
   WMT::EventState upload_queue_event_;
   WMT::Queue upload_queue_{&upload_queue_event_};
   std::shared_ptr<std::vector<uint8_t>> zero_buffer_;
@@ -484,6 +486,68 @@ int main() {
 }
 '''
 
+COMPACT_MAIN = r'''
+int main() {
+  using namespace dxmt;
+  pressure.reserve=805306368; pressure.available=204899864;
+  ResourceInitializer init;
+  const size_t payload=15360+2*255, first=12288;
+  require(init.forecastUploadGrowth(payload,first)==(32u<<20), "healthy natural batch minimum changed");
+  {
+    auto scope=init.textureUploadScope();
+    const size_t charged=init.forecastUploadGrowth(payload,first,true);
+    require(charged==align(payload,256) && charged<20000, "compact forecast retained natural32MiB overhead");
+    const size_t before=counts.allocated;
+    auto [a,ao]=init.gpu_command_heap_allocator.allocate(1,0,first,256,init.texture_upload_minimum_);
+    auto [b,bo]=init.gpu_command_heap_allocator.allocate(1,0,3072,256,init.texture_upload_minimum_);
+    std::fill_n(a.payload->data.data()+ao,first,0x4a);
+    std::fill_n(b.payload->data.data()+bo,3072,0x5b);
+    require(counts.allocated==before+1 && counts.bytes==charged, "actual growth differs from admitted compact batch");
+    require(init.gpu_command_heap_allocator.trim_completed(0,false)==0, "pending compact data was released");
+    require(a.payload->data[ao]==0x4a && b.payload->data[bo]==0x5b, "compact mip contents changed");
+    {
+      auto nested=init.textureUploadScope();
+      init.forecastUploadGrowth(80,80,true);
+      require(init.texture_upload_minimum_==256,"compact minimum ignores required upload alignment");
+    }
+    require(init.texture_upload_minimum_==charged,"nested scope failed to restore parent batch");
+    init.current_seq_id_=2;init.upload_queue_event_.value=1;
+    require(init.trimMemoryPressure()==0 && counts.bytes==charged,"soft pressure discarded compact warm backing");
+    require(init.forecastUploadGrowth(payload,first,true)==0,"completed compact block was not reusable");
+    init.gpu_command_heap_allocator.allocate(2,1,first,256,init.texture_upload_minimum_);
+    require(counts.allocated==before+1,"successive compact batches recreated compatible backing");
+  }
+  require(init.texture_upload_minimum_==0,"creation scope leaked compact policy to other callers");
+  try {auto scope=init.textureUploadScope();init.forecastUploadGrowth(80,80,true);throw 1;}catch(int){}
+  require(init.texture_upload_minimum_==0,"unwinding leaked compact allocation mode");
+  require(init.gpu_command_heap_allocator.trim_completed(1,false)==0,"pending second batch released");
+  require(init.gpu_command_heap_allocator.trim_completed(2,false)>0 && counts.bytes==0,"completed compact lifetime leaked");
+  require(init.forecastUploadGrowth(payload,first)==(32u<<20),"healthy batching not restored");
+  {
+    RingBumpState<CountingAllocator,256> scaled(CountingAllocator{});
+    scaled.allocate(1,0,128,16); // Completed tail fits first mip, not whole batch.
+    const size_t total=64+528+300+3*15, minimum=align(total,16);
+    const size_t growth=scaled.batch_growth(1,total,64,16,minimum);
+    require(growth==minimum && minimum>256,"whole compact batch was clipped back to natural size");
+    const size_t before=counts.bytes;
+    auto [small,so]=scaled.allocate(2,1,64,16,minimum);
+    std::fill_n(small.payload->data.data()+so,64,0x61);
+    auto [large,lo]=scaled.allocate(2,1,528,16,minimum);
+    auto *retained=large.payload->data.data()+lo;
+    std::fill_n(retained,528,0x72);
+    require(counts.bytes-before==growth,"partial tail caused more new bytes than forecast");
+    require(scaled.trim_completed(1,false)==0,"mid-batch trim released executing data");
+    auto [last,last_offset]=scaled.allocate(3,2,300,16,minimum);
+    std::fill_n(last.payload->data.data()+last_offset,300,0x83);
+    require(counts.bytes-before==growth,"mid-batch frontier change expanded backing");
+    require(scaled.trim_completed(2,false)==256 && retained[0]==0x72 && retained[527]==0x72,
+            "new submission's still-live compact bytes were reclaimed");
+    require(scaled.trim_completed(3,false)==minimum && counts.bytes==0,"completed scaled batch was retained");
+  }
+  std::cout<<"PASS compact real initializer/ring: payload-aligned capacity and exact actual-growth charge; pending bytes, warm reuse, nested/unwind scope and healthy32MiB policy preserved\n";
+}
+'''
+
 
 UPLOAD_REUSE_CALLS = r'''
 int main() {
@@ -672,14 +736,25 @@ def initializer_backend():
     source = (ROOT / "build/dxmt-ios/memory_pressure.hpp").read_text()
     start = source.index("struct MemoryPressureSnapshot")
     end = source.index("namespace memory_pressure_detail", start)
-    return INITIALIZER_BACKEND.replace("/* ACTUAL_MEMORY_PRESSURE_POLICY */", source[start:end])
+    header = STAGE.stage_initializer_header((SOURCE / 'dxmt_resource_initializer.hpp').read_text())
+    def declaration(signature):
+        begin = header.index(signature)
+        opening = header.index('{', begin)
+        depth, end = 1, opening + 1
+        while depth:
+            depth += (header[end] == '{') - (header[end] == '}')
+            end += 1
+        return header[begin:end] + (';' if header[end:end+1] == ';' else '')
+    scope = declaration('  class TextureUploadScope {') + '\n' + declaration('  TextureUploadScope textureUploadScope()')
+    return INITIALIZER_BACKEND.replace("/* ACTUAL_MEMORY_PRESSURE_POLICY */", source[start:end]).replace('/* ACTUAL_TEXTURE_UPLOAD_SCOPE */', scope)
 
 
-def compile_initializer(directory, name, ring, source, main, ring_block_size=256):
+def compile_initializer(directory, name, ring, source, main, ring_block_size=256, upload_alignment=16):
     cpp = directory / (name + ".cpp")
     exe = directory / name
     backend = initializer_backend().replace('RingBumpState<CountingAllocator,256>',
                                             f'RingBumpState<CountingAllocator,{ring_block_size}>')
+    backend = backend.replace('kResourceInitializerGpuUploadHeapAlignment=16', f'kResourceInitializerGpuUploadHeapAlignment={upload_alignment}')
     cpp.write_text(PRELUDE + ring_code(ring) + ALLOCATOR + backend +
                    initializer_methods(source) + main)
     subprocess.run(["g++", "-std=c++20", "-O1", "-g", "-pthread", "-fsanitize=address,undefined",
@@ -702,6 +777,7 @@ def main():
         print("AFTER:", after.stdout.strip())
         init_source = STAGE.stage_initializer((SOURCE / "dxmt_resource_initializer.cpp").read_text())
         print(compile_initializer(directory, "initializer", staged, init_source, INITIALIZER_MAIN))
+        print(compile_initializer(directory, "compact", staged, init_source, COMPACT_MAIN, 32 << 20, 256))
         # Compile the actual staged method and the previous unconditional
         # native-query prologue against identical owned upload bytes. This is
         # a host call-count regression, not an iPhone loading/FPS benchmark.

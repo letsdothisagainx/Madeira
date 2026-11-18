@@ -30,6 +30,8 @@ ReportTextureFailure(const char *reason, uint64_t bytes, uint64_t available,
   if (count < 8)
     ERR("[texture-admission-v1] result=E_OUTOFMEMORY reason=", reason,
         " bytes=", bytes, " available=", available,
+        " charged-bytes=", permit ? permit->requestedBytes() : bytes,
+        " temporary-growth=", permit && permit->requestedBytes() >= bytes ? permit->requestedBytes() - bytes : 0,
         " footprint=", permit ? permit->footprint() : 0,
         " pending=", permit ? permit->pending() : 0,
         " safety-floor=", permit ? permit->floor() : 0,
@@ -72,30 +74,35 @@ public:
 // every mip/resource while the same completion frontier is unchanged. This
 // stamp suppresses only redundant reclamation, never native admission checks.
 static void
-ReclaimTextureGrowth(CommandQueue &queue, uint64_t bytes, bool allocation_denied = false) {
+ReclaimTextureGrowth(CommandQueue &queue, uint64_t bytes, bool release_warm = false,
+                     bool allocation_denied = false) {
   const auto pressure = memoryPressureSnapshot(true);
   const uint64_t coherent = queue.CoherentSeqId();
-  const bool emergency = allocation_denied || (pressure.valid &&
+  const bool emergency = release_warm || (pressure.valid &&
       (pressure.available <= pressure.reserve / 4 || bytes >= pressure.available));
   struct SweepStamp {
     uint64_t domain = 0, coherent = 0, largest = 0;
     bool valid = false, emergency = false;
   };
   thread_local SweepStamp previous;
-  if (allocation_denied || !previous.valid || previous.domain != queue.memoryDomain() ||
+  if (release_warm || !previous.valid || previous.domain != queue.memoryDomain() ||
       previous.coherent != coherent || bytes > previous.largest ||
       (emergency && !previous.emergency)) {
     previous = {queue.memoryDomain(), coherent, bytes, pressure.valid, emergency};
     // Only this queue's proven GPU-complete cache entries are eligible.
     // Existing hot leases and high/low-water hysteresis retain control.
-    DynamicBuffer::TrimCompletedForQueue(queue.memoryDomain(), coherent, allocation_denied, nullptr, bytes);
-    if (allocation_denied)
-      queue.trimCompletedTransientMemory();
+    DynamicBuffer::TrimCompletedForQueue(queue.memoryDomain(), coherent, release_warm, nullptr, bytes);
   }
+  // The warm-name drain is latched for a pressure episode, but newly completed
+  // transient submissions can become reclaimable later in the same episode.
+  // The queue claims each completion frontier once; a creator must not keep
+  // those blocks solely because an earlier creator already drained warm names.
+  if (allocation_denied || release_warm)
+    queue.trimCompletedTransientMemory();
   // Uploads have a private GPU event and can finish without a main-queue
   // present. Keep sampling that event rather than inferring its completion
   // from the main queue's unchanged coherence counter.
-  queue.initializer.trimMemoryPressure(allocation_denied);
+  queue.initializer.trimMemoryPressure(allocation_denied || release_warm);
 }
 
 // A creation credit covers destination backing and the complete initial-data
@@ -108,7 +115,7 @@ PrepareTextureGrowth(MTLD3D11Device *device, ResourceGrowthPermit &permit, uint6
   const bool release_warm = queue.allocationRecoveryDrain(permit.nativeStatus());
   if (!permit.denied() && !permit.needsReclaim())
     return true;
-  ReclaimTextureGrowth(queue, bytes, release_warm);
+  ReclaimTextureGrowth(queue, bytes, release_warm, permit.denied());
   if (!permit.denied()) {
     const uint64_t fresh = forecast();
     if (fresh == bytes) return true;
@@ -125,7 +132,7 @@ PrepareTextureGrowth(MTLD3D11Device *device, ResourceGrowthPermit &permit, uint6
   const uint64_t submitted = queue.initializer.flushToWait();
   if (submitted)
     queue.initializer.waitForMemoryPressure(submitted, 50);
-  ReclaimTextureGrowth(queue, bytes, release_warm);
+  ReclaimTextureGrowth(queue, bytes, release_warm, permit.denied());
   const uint64_t fresh = forecast();
   permit = ResourceGrowthPermit(0);
   permit = ResourceGrowthPermit(fresh, true);
@@ -159,6 +166,7 @@ def stage_factory(source):
   }
   auto &creation_initializer = pDevice->GetDXMTDevice().queue().initializer;
   auto creation_transaction = creation_initializer.lockTextureCreation();
+  auto upload_scope = creation_initializer.textureUploadScope();
   auto forecast_creation = [&]() -> uint64_t {
   WMTTextureInfo largest = info;
   largest.mipmap_level_count = largest.array_length = largest.sample_count = 1;
@@ -174,11 +182,23 @@ def stage_factory(source):
     if (padding > UINT64_MAX - creation_bytes || creation_bytes + padding > SIZE_MAX)
       return UINT64_MAX;
     const uint64_t payload = creation_bytes + padding;
-    temporary_bytes = creation_initializer.forecastUploadGrowth(size_t(payload), size_t(largest_bytes));
-    // A multi-block batch can waste a tail at each rotation. For oversized
-    // batches, conservatively reserve another complete batch rather than
-    // calling its summed payload an exact scalar-allocation prediction.
-    if (temporary_bytes && payload > (uint64_t{4} << 20)) {
+    // Admission and the real allocator share this batch minimum. Under
+    // physical pressure a tiny immutable texture must not require a fresh
+    // natural 32 MiB upload block merely to transfer a few aligned KiB.
+    // Existing completed/tail backing is still reusable at no new charge.
+    // This cached sample selects a block policy only. Admission still samples
+    // fresh native headroom, and a denial refreshes it before reforecasting.
+    // Stay within the initializer's existing natural upload capacity. A very
+    // large mip/array batch retains the old chunked path rather than asking
+    // Metal for a new monolithic buffer above its supported buffer length.
+    const bool compact = payload <= kResourceInitializerGpuUploadHeapSize &&
+        memoryPressureSnapshot().needsReclaim(creation_bytes);
+    temporary_bytes = creation_initializer.forecastUploadGrowth(size_t(payload), size_t(largest_bytes), compact);
+    // Natural-size batching can waste tails at rotations. Its existing
+    // conservative allowance remains. Compact mode gives every new block
+    // room for the entire aligned batch, so it needs no duplicate payload
+    // allowance even when the first subresource used an older block's tail.
+    if (!compact && temporary_bytes && payload > (uint64_t{4} << 20)) {
       if (payload > UINT64_MAX - temporary_bytes) return UINT64_MAX;
       temporary_bytes += payload;
     }

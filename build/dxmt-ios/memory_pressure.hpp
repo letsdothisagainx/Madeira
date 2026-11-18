@@ -148,6 +148,7 @@ class ResourceGrowthPermit {
   bool gpu_initialization_ = false;
   uint64_t gpu_event_ = 0;
   uint64_t footprint_ = 0, pending_ = 0, floor_ = 0, reason_ = 0;
+  uint64_t requested_bytes_ = 0;
 
   void release() noexcept {
     if (!token_) return;
@@ -160,6 +161,7 @@ class ResourceGrowthPermit {
 
 public:
   explicit ResourceGrowthPermit(uint64_t bytes, bool after_emergency_reclaim = false) {
+    requested_bytes_ = bytes;
     if (!bytes) return; // An unavailable size estimate is not invented credit.
     struct madeira_ctl_args args = {};
     args.op = 41;
@@ -197,6 +199,8 @@ public:
       gpu_initialization_ = other.gpu_initialization_; other.gpu_initialization_ = false;
       gpu_event_ = other.gpu_event_; other.gpu_event_ = 0;
       footprint_ = other.footprint_; pending_ = other.pending_; floor_ = other.floor_; reason_ = other.reason_;
+      requested_bytes_ = other.requested_bytes_;
+      other.requested_bytes_ = 0;
     }
     return *this;
   }
@@ -211,6 +215,7 @@ public:
   uint64_t pending() const { return pending_; }
   uint64_t floor() const { return floor_; }
   uint64_t reason() const { return reason_; }
+  uint64_t requestedBytes() const { return requested_bytes_; }
 
   // Mark GPU intent BEFORE any initializer command can be recorded. A forced
   // CPU-thread exit must never return prospective GPU backing as free credit.

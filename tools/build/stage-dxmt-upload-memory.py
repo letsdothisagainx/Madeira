@@ -13,6 +13,30 @@ def replace_once(source, before, after):
 
 
 def stage_ring(source):
+    # Optional pressure sizing changes only new block growth. Existing blocks
+    # retain their completion ownership and every healthy caller uses zero.
+    source = replace_once(source,
+        '  allocate(uint64_t seq_id, uint64_t coherent_id, size_t size, size_t alignment);',
+        '  allocate(uint64_t seq_id, uint64_t coherent_id, size_t size, size_t alignment, size_t minimum_block = 0);')
+    source = replace_once(source,
+        '    uint64_t seq_id, uint64_t coherent_id, size_t size, size_t alignment\n)',
+        '    uint64_t seq_id, uint64_t coherent_id, size_t size, size_t alignment, size_t minimum_block\n)')
+    source = replace_once(source,
+        'seq_id, coherent_id, std::max(size, ring_block_size()) // in case required size is larger than block size',
+        'seq_id, coherent_id, std::max(size, minimum_block ? minimum_block : ring_block_size())')
+    source = replace_once(source, '    bool reusable_oversize = false;',
+        '    bool reusable_oversize = false;\n    bool compact = false;')
+    source = replace_once(source,
+        '    if (first.total_size == ring_block_size() && !first.reusable_oversize) {',
+        '    if ((first.total_size == ring_block_size() || first.compact) && !first.reusable_oversize) {')
+    source = replace_once(source,
+        '      if (ringOversizeReuseEnabled() && front.total_size < block_size) {',
+        '      if ((ringOversizeReuseEnabled() || front.compact) && front.total_size < block_size) {')
+    source = replace_once(source,
+        '      if (front.total_size != ring_block_size() && !front.reusable_oversize) {',
+        '      if (front.total_size != ring_block_size() && !front.reusable_oversize && !front.compact) {')
+    source = replace_once(source, '      .reusable_oversize = reusable_oversize,',
+        '      .reusable_oversize = reusable_oversize,\n      .compact = block_size < ring_block_size(),')
     source = replace_once(source, "    if (front.last_used_seq_id < coherent_id) {",
                           "    if (front.last_used_seq_id <= coherent_id) {")
     source = replace_once(source, "  void free_blocks(uint64_t coherent_id);", """  void free_blocks(uint64_t coherent_id);
@@ -25,30 +49,32 @@ def stage_ring(source):
   // Admission accounts for an actual new block, rather than charging every
   // texture subresource for a complete staging block. Caller serializes its
   // producer; the ring lock also excludes the GPU completion thread's trims.
-  size_t allocation_growth(uint64_t coherent_id, size_t size, size_t alignment) {
+  size_t allocation_growth(uint64_t coherent_id, size_t size, size_t alignment, size_t minimum_block = 0) {
     std::lock_guard<mutex> lock(mutex_);
+    const size_t normal = minimum_block ? minimum_block : ring_block_size();
     if (!fifo.empty()) {
       const auto &latest = fifo.back();
       const size_t aligned = align(latest.allocated_size, alignment);
       if (aligned <= latest.total_size && size <= latest.total_size - aligned)
         return 0;
       const auto &front = fifo.front();
-      if (front.last_used_seq_id <= coherent_id && front.total_size >= std::max(size, ring_block_size()) &&
-          (front.total_size == ring_block_size() || front.reusable_oversize))
+      if (front.last_used_seq_id <= coherent_id && front.total_size >= std::max(size, normal) &&
+          (front.total_size == ring_block_size() || front.reusable_oversize || front.compact))
         return 0;
     }
-    return std::max(size, ring_block_size());
+    return std::max(size, normal);
   }
 
   // A texture's first (largest) subresource can fit the tail of a completed
   // latest block and mark it pending before the remaining mip batch arrives.
   // Do not promise whole-batch reuse merely because that same block could
   // have been recycled had the batch been a single allocation.
-  size_t batch_growth(uint64_t coherent_id, size_t total, size_t first, size_t alignment) {
+  size_t batch_growth(uint64_t coherent_id, size_t total, size_t first, size_t alignment, size_t minimum_block = 0) {
     std::lock_guard<mutex> lock(mutex_);
     if (!total)
       return 0;
-    const size_t growth = std::max(total, ring_block_size());
+    const size_t normal = minimum_block ? minimum_block : ring_block_size();
+    const size_t growth = std::max(total, normal);
     if (!first) first = total;
     if (first > total || !alignment || (alignment & (alignment - 1)))
       return ~size_t{0};
@@ -65,7 +91,7 @@ def stage_ring(source):
       return 0;
     const auto &front = fifo.front();
     if (front.last_used_seq_id <= coherent_id && front.total_size >= growth &&
-        (front.total_size == ring_block_size() || front.reusable_oversize) &&
+        (front.total_size == ring_block_size() || front.reusable_oversize || front.compact) &&
         (&front != &latest || latest_free < first))
       return 0;
     return growth;
@@ -81,7 +107,7 @@ RingBumpState<Allocator, BlockSize, mutex>::trim_completed(uint64_t coherent_id,
     // A bounded natural-size warm block avoids allocating a fresh 32MB Metal
     // upload buffer on every frame under sustained soft pressure. Critical
     // pressure drops it too. Never retain an arbitrarily large ad-hoc block.
-    if (keep_last_normal && fifo.size() == 1 && front.total_size == ring_block_size() &&
+    if (keep_last_normal && fifo.size() == 1 && (front.total_size == ring_block_size() || front.compact) &&
         !front.reusable_oversize)
       break;
     released += front.total_size;
@@ -112,7 +138,7 @@ def stage_initializer_header(source):
 
   // Estimate genuine additional upload backing at the real GPU frontier.
   // This is a synchronized forecast, not a reservation or completion signal.
-  size_t forecastUploadGrowth(size_t total_payload_bytes, size_t first_subresource_bytes = 0);
+  size_t forecastUploadGrowth(size_t total_payload_bytes, size_t first_subresource_bytes = 0, bool compact = false);
 
   // Conservatively cover every initialization operation observed so far,
   // including pending commands and other creators sharing this initializer.
@@ -121,7 +147,31 @@ def stage_initializer_header(source):
   uint64_t refreshCompletedLocked(bool trim, bool release_warm = false);
   void prepareUploadLocked(size_t size);""")
     source = replace_once(source, "  dxmt::mutex mutex_;", """  dxmt::mutex mutex_;
-  MemoryPressureController transient_pressure_controller_;""")
+  MemoryPressureController transient_pressure_controller_;
+  size_t texture_upload_minimum_ = 0;""")
+    source = replace_once(source, '  ResourceInitializer(WMT::Device device);', '''  ResourceInitializer(WMT::Device device);
+
+  // The factory already owns the initializer creation transaction. Restore
+  // its allocation mode before releasing that transaction, including unwind
+  // and nested creation. No backing or GPU lifetime is owned by this scope.
+  class TextureUploadScope {
+    ResourceInitializer &owner_;
+    size_t previous_;
+  public:
+    explicit TextureUploadScope(ResourceInitializer &owner) : owner_(owner) {
+      static const volatile char contract[] = "[texture-compact-upload-v1]";
+      (void)contract[0];
+      std::lock_guard<dxmt::mutex> lock(owner_.mutex_);
+      previous_ = owner_.texture_upload_minimum_;
+      owner_.texture_upload_minimum_ = 0;
+    }
+    TextureUploadScope(const TextureUploadScope &) = delete;
+    ~TextureUploadScope() {
+      std::lock_guard<dxmt::mutex> lock(owner_.mutex_);
+      owner_.texture_upload_minimum_ = previous_;
+    }
+  };
+  TextureUploadScope textureUploadScope() { return TextureUploadScope(*this); }''')
     return source
 
 
@@ -202,14 +252,17 @@ ResourceInitializer::initializationFence() {
 }
 
 size_t
-ResourceInitializer::forecastUploadGrowth(size_t total_payload_bytes, size_t first_subresource_bytes) {
+ResourceInitializer::forecastUploadGrowth(size_t total_payload_bytes, size_t first_subresource_bytes, bool compact) {
   if (!total_payload_bytes)
     return 0;
   std::lock_guard<dxmt::mutex> lock(mutex_);
+  if (total_payload_bytes > SIZE_MAX - (kResourceInitializerGpuUploadHeapAlignment - 1))
+    return SIZE_MAX;
+  texture_upload_minimum_ = compact ? align(total_payload_bytes, kResourceInitializerGpuUploadHeapAlignment) : 0;
   const uint64_t completed = std::max(cached_coherent_seq_id, upload_queue_event_.signaledValue());
   return gpu_command_heap_allocator.batch_growth(
       completed, total_payload_bytes, first_subresource_bytes ? first_subresource_bytes : total_payload_bytes,
-      kResourceInitializerGpuUploadHeapAlignment);
+      kResourceInitializerGpuUploadHeapAlignment, texture_upload_minimum_);
 }
 
 void
@@ -221,7 +274,7 @@ ResourceInitializer::prepareUploadLocked(size_t size) {
   // Metal shared event for every tiny mip otherwise crosses the PE/native
   // boundary thousands of times even though no new storage can be allocated.
   size_t growth = gpu_command_heap_allocator.allocation_growth(
-      cached_coherent_seq_id, size, kResourceInitializerGpuUploadHeapAlignment);
+      cached_coherent_seq_id, size, kResourceInitializerGpuUploadHeapAlignment, texture_upload_minimum_);
   if (!growth)
     return;
   // Only a genuine capacity miss refreshes GPU completion. Recheck after
@@ -229,7 +282,7 @@ ResourceInitializer::prepareUploadLocked(size_t size) {
   // reusable, without a wait, trim, new backing or physical-budget charge.
   cached_coherent_seq_id = std::max(cached_coherent_seq_id, upload_queue_event_.signaledValue());
   growth = gpu_command_heap_allocator.allocation_growth(
-      cached_coherent_seq_id, size, kResourceInitializerGpuUploadHeapAlignment);
+      cached_coherent_seq_id, size, kResourceInitializerGpuUploadHeapAlignment, texture_upload_minimum_);
   if (!growth)
     return;
   const auto pressure = memoryPressureSnapshot();
@@ -251,6 +304,9 @@ ResourceInitializer::prepareUploadLocked(size_t size) {
 
 void
 ResourceInitializer::reset() {""")
+    source = replace_once(source,
+        '      current_seq_id_, cached_coherent_seq_id, size, kResourceInitializerGpuUploadHeapAlignment\n',
+        '      current_seq_id_, cached_coherent_seq_id, size, kResourceInitializerGpuUploadHeapAlignment, texture_upload_minimum_\n')
     return source
 
 
@@ -296,7 +352,8 @@ private:
     return next.fetch_add(1, std::memory_order_relaxed);
   }
   const uint64_t memory_domain_ = NextMemoryDomain();
-  std::atomic<bool> allocation_recovery_latched_{false};""")
+  std::atomic<bool> allocation_recovery_latched_{false};
+  std::atomic<uint64_t> allocation_transient_frontier_{UINT64_MAX};""")
     source = replace_once(source, "  CommandQueue(WMT::Device device);", """  CommandQueue(WMT::Device device);
 
   uint64_t memoryDomain() const { return memory_domain_; }""")
@@ -307,6 +364,12 @@ private:
   // command heap is deliberately excluded. No live texture is evicted.
   uint64_t trimCompletedTransientMemory() {
     const uint64_t completed = CoherentSeqId();
+    auto previous = allocation_transient_frontier_.load(std::memory_order_acquire);
+    for (;;) {
+      if (previous != UINT64_MAX && completed <= previous) return 0;
+      if (allocation_transient_frontier_.compare_exchange_weak(
+          previous, completed, std::memory_order_acq_rel, std::memory_order_acquire)) break;
+    }
     return staging_allocator.trim_completed(completed, false) +
            copy_temp_allocator.trim_completed(completed, false) +
            argbuf_allocator.trim_completed(completed, false);

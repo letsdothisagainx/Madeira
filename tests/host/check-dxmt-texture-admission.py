@@ -206,6 +206,8 @@ static uint64_t waited_seq=0, waited_ms=0;
 static unsigned flush_with_credit=0, last_flush_initializations=0;
 static std::atomic<bool> block_initialization{false}, initialization_entered{false}, unblock_initialization{false};
 namespace dxmt {
+using mutex = std::mutex;
+constexpr size_t kResourceInitializerGpuUploadHeapSize=0x2000000;
 template<class T> class Rc : public std::shared_ptr<T> {
  using Base=std::shared_ptr<T>;
 public:
@@ -253,10 +255,12 @@ class Initializer {
 public:
  struct EventHandle{uint64_t handle=7;};
  std::recursive_mutex creation_mutex;
+ std::mutex mutex_;size_t texture_upload_minimum_=0;
+ ACTUAL_TEXTURE_UPLOAD_SCOPE
  auto lockTextureCreation(){return std::unique_lock<std::recursive_mutex>(creation_mutex);}
  EventHandle event(){return {};}
  uint64_t initializationFence(){return initialize_calls?1:0;}
- size_t forecastUploadGrowth(size_t,size_t=0){return size_t(forecast_upload);}
+ size_t forecastUploadGrowth(size_t,size_t=0,bool=false){return size_t(forecast_upload);}
  size_t forecastZeroGrowth(size_t){return size_t(forecast_zero);}
  FakeUploadEvent upload_queue_event_; uint64_t submitted=0;
  uint64_t trimMemoryPressure(bool release_warm=false){++trim_calls;if(release_warm)++emergency_trim_calls;if(forecast_after_trim)forecast_upload=forecast_after_trim;return 0;}
@@ -405,7 +409,7 @@ int main(int argc,char**argv){
  clean();
  std::printf("%s failed native backing: HRESULT=%08x initialization-calls=%u\n",expect_candidate?"candidate":"baseline",unsigned(hr),unsigned(initialize_calls));
  // An actual admission refusal cannot create metadata, Metal backing or data.
- reset(device);deny_always=true;out=reinterpret_cast<Tag::COM_IMPL*>(1);
+ reset(device);deny_always=true;forecast_after_trim=32ull<<20;out=reinterpret_cast<Tag::COM_IMPL*>(1);
  hr=create<Tag>(device,desc,initial,&out);
  if(expect_candidate){
   assert(hr==E_OUTOFMEMORY&&!out&&texture_born==0&&backing_calls==0&&initialize_calls==0&&acquire_calls==2);
@@ -413,6 +417,8 @@ int main(int argc,char**argv){
   assert(emergency_trim_calls==2&&emergency_sweep_calls==2&&transient_trim_calls==2);
   assert(failure_logs.size()==2&&failure_logs[1].find("reason=physical-budget")!=std::string::npos);
   assert(failure_logs[1].find("available="+std::to_string(available_bytes))!=std::string::npos);
+  assert(failure_logs[1].find("charged-bytes="+std::to_string(last_charge))!=std::string::npos);
+  assert(last_charge>(32ull<<20));
  }
  else{assert(hr==S_OK&&out&&backing_calls==1);delete out;}
  clean();
@@ -460,12 +466,12 @@ int main(int argc,char**argv){
   out=nullptr;assert(create<Tag>(device,desc,initial,&out)==S_OK&&out);
   assert(out->owner->current()->data[0][0]==1);delete out;
  }
- assert(acquire_calls==200&&emergency_sweep_calls==2&&transient_trim_calls==2&&emergency_trim_calls==2);
+ assert(acquire_calls==200&&emergency_sweep_calls==2&&transient_trim_calls==200&&emergency_trim_calls==200);
  deny_always=false;reply_code=1;
  out=nullptr;assert(create<Tag>(device,desc,initial,&out)==S_OK&&out);delete out;
  deny_always=true;reply_code=2;
  out=nullptr;assert(create<Tag>(device,desc,initial,&out)==S_OK&&out);delete out;
- assert(emergency_sweep_calls==4&&transient_trim_calls==4&&emergency_trim_calls==4);clean();
+ assert(emergency_sweep_calls==4&&transient_trim_calls==202&&emergency_trim_calls==202);clean();
  reset(device);std::atomic<unsigned> recovery_winners{0};std::vector<std::thread> recovery_workers;
  for(unsigned i=0;i<8;++i)recovery_workers.emplace_back([&]{
   if(device.queue().allocationRecoveryDrain(3))++recovery_winners;
@@ -474,7 +480,7 @@ int main(int argc,char**argv){
  assert(recovery_winners==1);
  device.queue().allocationRecoveryDrain(2);assert(!device.queue().allocationRecoveryDrain(3));
  device.queue().allocationRecoveryDrain(1);assert(device.queue().allocationRecoveryDrain(3));
- std::puts("PASS one emergency drain per shared recovery episode; 100 small textures reuse warm uploads; healthy native grant alone rearms it");
+ std::puts("PASS one dynamic-warm drain per recovery episode; actual denials still query completed transient storage; healthy native grant alone rearms warm drain");
  // Native failures are checked in the shared and renamable-depth branches too.
  reset(device);fail_native=true;desc.MiscFlags=D3D11_RESOURCE_MISC_SHARED;
  out=reinterpret_cast<Tag::COM_IMPL*>(1);assert(create<Tag>(device,desc,initial,&out)==E_OUTOFMEMORY&&!out&&initialize_calls==0);clean();
@@ -536,6 +542,7 @@ int main(int argc,char**argv){
  for(const auto&report:failure_logs){
   assert(report.find("[texture-admission-v1] result=E_OUTOFMEMORY reason=")==0);
   assert(report.find("bytes=")!=std::string::npos&&report.find("available=")!=std::string::npos);
+  assert(report.find("charged-bytes=")!=std::string::npos&&report.find("temporary-growth=")!=std::string::npos);
  }
  // The factory transfers its actual reservation before the first recorded
  // initializer operation. CPU return does not repay pending GPU commitments.
@@ -566,6 +573,18 @@ int main(int argc,char**argv){
  assert(last_charge==dxmt::mem_census_texture_bytes(out->owner->info,true)+forecast_after_trim);
  assert((acquire_flags==std::vector<uint64_t>{0,0}));delete out;clean();
  std::puts("PASS actual new upload/zero growth is charged with backing; reclamation reforecasts and replaces its prior receipt before acquisition");
+ reset(device);
+ {
+  dxmt::ResourceGrowthPermit first(12345);
+  dxmt::ResourceGrowthPermit moved(std::move(first));
+  assert(first.requestedBytes()==0&&moved.requestedBytes()==12345);
+  moved=dxmt::ResourceGrowthPermit(54321);
+  assert(moved.requestedBytes()==54321);
+  moved=dxmt::ResourceGrowthPermit(0);
+  assert(moved.requestedBytes()==0);
+ }
+ clean();
+ std::puts("PASS final prospective charge survives permit moves/reforecast and reset without leaking or double-charging credits");
  std::puts("PASS failure-only marker reports actual capacity/headroom and stops after eight total failures");
  std::puts("PASS actual production factory returns genuine failures and preserves all owned backend data; no GPU/RSS claim");
 }
@@ -581,6 +600,10 @@ BACKEND = BACKEND.replace('Rc()=default; Rc(T *ptr):Base(ptr){}',
 BACKEND = BACKEND.replace(' INIT_PRESSURE_WAIT', ' ' + declaration(staged_initializer, 'bool waitForMemoryPressure('))
 queue_header = UPLOAD.stage_queue_header((ROOT / 'dxmt/src/dxmt/dxmt_command_queue.hpp').read_text())
 BACKEND = BACKEND.replace(' RECOVERY_LATCH_METHOD', declaration(queue_header, 'bool allocationRecoveryDrain('))
+scope_header = UPLOAD.stage_initializer_header((ROOT / 'dxmt/src/dxmt/dxmt_resource_initializer.hpp').read_text())
+BACKEND = BACKEND.replace(' ACTUAL_TEXTURE_UPLOAD_SCOPE',
+    declaration(scope_header, 'class TextureUploadScope {').replace('ResourceInitializer', 'Initializer') + '\n' +
+    declaration(scope_header, 'TextureUploadScope textureUploadScope()'))
 
 def factory(text):
     return declaration(text, 'template <typename tag>\nHRESULT CreateDeviceTextureInternal(')

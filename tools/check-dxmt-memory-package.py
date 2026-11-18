@@ -27,7 +27,7 @@ NATIVE_MARKERS = (*PE_MARKERS, b'[madeira-memory-pressure-v1]', b'[native-heap-r
                   b'[texture-growth-budget-v1]', b'[metal-vertex-descriptor-owner-v1]',
                   b'[texture-live-budget-v2]', b'[texture-gpu-events-v1]')
 APP_NATIVE_MARKERS = (b'[texture-growth-retire-v1]',)
-FACTORY_MARKERS = (b'[texture-admission-v1]', b'[texture-gpu-credit-v1]')
+FACTORY_MARKERS = (b'[texture-admission-v1]', b'[texture-gpu-credit-v1]', b'[texture-compact-upload-v1]')
 RECIPES = (
     'tools/build/stage-dxmt-memory-compat.py', 'tools/build/stage-dxmt-upload-memory.py',
     'tools/build/stage-dxmt-initializer-failure.py',

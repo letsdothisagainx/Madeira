@@ -9,6 +9,7 @@ on:
       - 'tools/build/*dxmt*'
       - 'tools/check-dxmt-memory-package.py'
       - 'tests/host/check-dxmt-*'
+      - 'tests/host/check-texture-rejection-operands.py'
       - 'tests/host/check-cs2-texture-memory-profile.py'
       - 'tests/host/check-cs2-video-profile.py'
       - 'tests/host/check-metal-descriptor-lifetime.py'
@@ -22,6 +23,7 @@ on:
       - 'tools/build/*dxmt*'
       - 'tools/check-dxmt-memory-package.py'
       - 'tests/host/check-dxmt-*'
+      - 'tests/host/check-texture-rejection-operands.py'
       - 'tests/host/check-cs2-texture-memory-profile.py'
       - 'tests/host/check-cs2-video-profile.py'
       - 'tests/host/check-metal-descriptor-lifetime.py'
@@ -74,6 +76,8 @@ jobs:
           python3 tests/host/check-fex-view-lifecycle.py
           python3 tests/host/check-dxmt-texture-accounting.py
           python3 tests/host/check-dxmt-texture-admission.py
+          python3 tests/host/check-texture-rejection-operands.py
+          python3 tests/host/check-dxmt-transient-recovery.py --sanitize
           python3 tests/host/check-dxmt-mip-profile.py
           python3 tests/host/check-metal-descriptor-lifetime.py
           python3 tests/host/check-dxmt-dynamic-memory.py

@@ -163,7 +163,7 @@ def stage_header(source):
   }''')
     source = replace_once(source, '  dxmt::mutex mutex_;', '''  std::recursive_mutex creation_mutex_;
   dxmt::mutex mutex_;''')
-    source = replace_once(source, '  size_t forecastUploadGrowth(size_t total_payload_bytes, size_t first_subresource_bytes = 0);', '''  size_t forecastUploadGrowth(size_t total_payload_bytes, size_t first_subresource_bytes = 0);
+    source = replace_once(source, '  size_t forecastUploadGrowth(size_t total_payload_bytes, size_t first_subresource_bytes = 0, bool compact = false);', '''  size_t forecastUploadGrowth(size_t total_payload_bytes, size_t first_subresource_bytes = 0, bool compact = false);
 
   // Only fresh zero backing is charged. This forecast neither allocates nor
   // flushes, and uses the exact native size policy under the initializer lock.
