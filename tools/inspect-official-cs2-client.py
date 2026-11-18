@@ -77,15 +77,15 @@ def main():
     if status or len(candidates) != 1:
         raise SystemExit(f'UNAVAILABLE: official anonymous retrieval exit={status}, exact-file-count={len(candidates)}')
     image = candidates[0].read_bytes()
-    assert len(image) == EXPECTED_BYTES, ('wrong recorded file size', len(image), EXPECTED_BYTES)
     pe = pefile.PE(data=image)
     assert pe.FILE_HEADER.Machine == 0x8664, 'expected official Windows x64 client'
     identity = xxhash.xxh3_64_intdigest(b'client.dll') ^ (
         (pe.OPTIONAL_HEADER.SizeOfImage << 32) | pe.FILE_HEADER.TimeDateStamp)
-    assert f'{identity:016x}' == EXPECTED_ID, ('recorded FEX module identity mismatch', f'{identity:016x}')
-    print(f'MATCH client.dll bytes={len(image)} sha256={hashlib.sha256(image).hexdigest()} '
+    print(f'OBSERVED client.dll bytes={len(image)} expected-audit-bytes={EXPECTED_BYTES} sha256={hashlib.sha256(image).hexdigest()} '
           f'identity={identity:016x} timestamp={pe.FILE_HEADER.TimeDateStamp:#x} '
           f'image-size={pe.OPTIONAL_HEADER.SizeOfImage:#x}')
+    assert len(image) == EXPECTED_BYTES, ('wrong recorded file size', len(image), EXPECTED_BYTES)
+    assert f'{identity:016x}' == EXPECTED_ID, ('recorded FEX module identity mismatch', f'{identity:016x}')
     imports = {}
     for descriptor in getattr(pe, 'DIRECTORY_ENTRY_IMPORT', []):
         for imported in descriptor.imports:
