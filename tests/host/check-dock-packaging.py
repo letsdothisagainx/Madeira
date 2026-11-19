@@ -281,6 +281,7 @@ printf '[cef-image-owner-v1][guest-breakpoint64-v1][udp-send-failure-v1][udp-rec
 if [ "${OMIT_CS2_TEXTURE_SCOPE:-}" != 1 ]; then printf '[cs2-texture-scope-v1] phase=child-environment-prepared' >> "$TEST_APP/Madeira.debug.dylib"; fi
 if [ "${STALE_WAIT_I386:-}" = 1 ]; then printf 'old wait implementation' > "$TEST_APP/i386-windows/ntdll.dll"; fi
 printf '[dynamic-memory-pressure-v1] policy=bounded-hot-v3 storage=owner-heap-v1 counter-storage=census-perf-heap-v1 scan=registered-cursor-v2 pe-command-state=dedup-hud-v1 scheduler=ready-work-v1 shader-create=singleflight-v1 texture-admission=physical-v1 texture-accounting=bc-blocks-v1 [texture-growth-budget-v1][texture-growth-retire-v1][texture-live-budget-v2][texture-gpu-events-v1][initializer-failure-v1][metal-vertex-descriptor-owner-v1][upload-memory-v1][madeira-memory-pressure-v1][native-heap-relief-v1][self-suspend-identity-v1][self-suspend-flow-v1][metal-resource-batch-v1] release-probe=opt-in' >> "$TEST_APP/Madeira.debug.dylib"
+printf '[cpu-encode-memory-v1]' >> "$TEST_APP/Madeira.debug.dylib"
 if [ "${STALE_DXMT_COMPLETION_LANE:-}" = 1 ]; then
   sed 's/\\[texture-live-budget-v2\\]//g' "$TEST_APP/Madeira.debug.dylib" > "$TEST_APP/native.stale"
   mv "$TEST_APP/native.stale" "$TEST_APP/Madeira.debug.dylib"
@@ -368,22 +369,22 @@ done
     # Independently exercise the final streamed ZIP scan. Keep the complete
     # current app, producer manifest and every previous native capability;
     # mutate only this capability in the archived linked-image fixture.
-    lane = b'[texture-live-budget-v2]'
-    stale_lane_ipa = t/'dist/old-completion-lane.ipa'
-    with zipfile.ZipFile(t/'dist/Madeira.ipa') as source, zipfile.ZipFile(stale_lane_ipa, 'w') as output:
-        for item in source.infolist():
-            data = source.read(item)
-            if item.filename == 'Payload/Madeira.app/Madeira.debug.dylib':
-                assert lane in data
-                data = data.replace(lane, b'x'*len(lane))
-            output.writestr(item, data)
-    try:
-        memory.check(t/'app/Madeira', t, ipa=stale_lane_ipa)
-    except AssertionError as error:
-        assert str(error) == 'stale linked IPA DXMT memory implementation: [texture-live-budget-v2]', error
-    else:
-        raise AssertionError('archived old native completion lane passed the actual IPA scan')
-    print('PASS final streamed IPA scan rejects only the missing compiled completion lane despite a valid current app and producer manifest')
+    for index, lane in enumerate((b'[texture-live-budget-v2]', b'[cpu-encode-memory-v1]')):
+        stale_lane_ipa = t/f'dist/old-native-capability-{index}.ipa'
+        with zipfile.ZipFile(t/'dist/Madeira.ipa') as source, zipfile.ZipFile(stale_lane_ipa, 'w') as output:
+            for item in source.infolist():
+                data = source.read(item)
+                if item.filename == 'Payload/Madeira.app/Madeira.debug.dylib':
+                    assert lane in data
+                    data = data.replace(lane, b'x'*len(lane))
+                output.writestr(item, data)
+        try:
+            memory.check(t/'app/Madeira', t, ipa=stale_lane_ipa)
+        except AssertionError as error:
+            assert str(error) == 'stale linked IPA DXMT memory implementation: ' + lane.decode(), error
+        else:
+            raise AssertionError('archived old native capability passed the actual IPA scan: ' + lane.decode())
+    print('PASS final streamed IPA scan rejects missing compiled completion or CPU-encoding retirement despite a valid current app and producer manifest')
     with zipfile.ZipFile(t/'dist/Madeira.ipa') as archive:
         assert archive.read('Payload/Madeira.app/madeira-jit.js')==jit_script.read_bytes()
         provenance=plistlib.loads(archive.read('Payload/Madeira.app/Info.plist'))['MadeiraNativeBuildProvenance']
