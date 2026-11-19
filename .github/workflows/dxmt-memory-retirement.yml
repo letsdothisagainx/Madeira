@@ -66,6 +66,7 @@ jobs:
             python3 tests/host/check-cs2-texture-memory-profile.py --require-swift
             python3 tests/host/check-cs2-video-profile.py --require-swift
             python3 tests/host/check-pool-startup-budget.py --require-swift
+            python3 tests/host/check-dxmt-transient-metal-pressure.py --require-darwin --require-metal
           else
             python3 tests/host/check-dxmt-growth-events.py
             python3 tests/host/check-cs2-texture-memory-profile.py
@@ -76,6 +77,7 @@ jobs:
           python3 tests/host/check-fex-view-lifecycle.py
           python3 tests/host/check-dxmt-texture-accounting.py
           python3 tests/host/check-dxmt-texture-admission.py
+          python3 tests/host/check-dxmt-texture-creation-growth.py
           python3 tests/host/check-texture-rejection-operands.py
           python3 tests/host/check-dxmt-transient-recovery.py --sanitize
           python3 tests/host/check-dxmt-mip-profile.py

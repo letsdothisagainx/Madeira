@@ -58,6 +58,8 @@ with tempfile.TemporaryDirectory(prefix='madeira-dxmt-transaction-') as director
     assert 'TrimCompletedForQueue' in (repo / 'dxmt/src/dxmt/dxmt_dynamic.hpp').read_text()
     assert '[upload-memory-v1]' in (repo / 'dxmt/src/dxmt/dxmt_resource_initializer.cpp').read_text()
     assert '[cpu-encode-memory-v1]' in (repo / 'dxmt/src/dxmt/dxmt_context.cpp').read_text()
+    assert '[transient-reuse-v2]' in (repo / 'dxmt/src/dxmt/dxmt_command_queue.hpp').read_text()
+    assert '[texture-bounded-upload-v1]' in (repo / 'dxmt/src/dxmt/dxmt_resource_initializer.cpp').read_text()
     assert 'MemoryPressureController cpu_pressure_controller_;' in (repo / 'dxmt/src/dxmt/dxmt_context.hpp').read_text()
     assert '[dynamic-memory-pressure-v1]' in (repo / 'dxmt/src/dxmt/dxmt_dynamic.cpp').read_text()
     assert 'memCensusState().dynamic' in (repo / 'dxmt/src/dxmt/dxmt_dynamic.cpp').read_text()
@@ -99,15 +101,15 @@ with tempfile.TemporaryDirectory(prefix='madeira-dxmt-transaction-') as director
     native = Path(directory) / 'native.a'
     native.write_bytes(b'archive fixture' + b'\0'.join(package.NATIVE_MARKERS))
     package.markers(native, package.NATIVE_MARKERS)
-    lane = b'[texture-live-budget-v2]'
-    assert lane in package.NATIVE_MARKERS
-    native.write_bytes(b'archive fixture' + b'\0'.join(marker for marker in package.NATIVE_MARKERS if marker != lane))
-    try:
-        package.markers(native, package.NATIVE_MARKERS)
-    except AssertionError as error:
-        assert lane.decode() in str(error), error
-    else:
-        raise AssertionError('old native budget without completion lane passed compiled marker gate')
+    for lane in (b'[texture-live-budget-v2]', b'[transient-reuse-v2]'):
+        assert lane in package.NATIVE_MARKERS
+        native.write_bytes(b'archive fixture' + b'\0'.join(marker for marker in package.NATIVE_MARKERS if marker != lane))
+        try:
+            package.markers(native, package.NATIVE_MARKERS)
+        except AssertionError as error:
+            assert lane.decode() in str(error), error
+        else:
+            raise AssertionError('old native memory producer passed compiled marker gate: ' + lane.decode())
     print('PASS native budget with every previous capability but no compiled completion lane is rejected')
     native.write_bytes(b'old native archive without the process-budget producer')
     try:

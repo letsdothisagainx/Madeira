@@ -188,7 +188,7 @@ public:
   std::vector<size_t> upload_requests;
   ResourceInitializer(){cpu_command_heap=std::malloc(kResourceInitializerCpuCommandHeapSize);assert(cpu_command_heap);reset();}
   ~ResourceInitializer(){ref_tracker.clear();if(zero_buffer_census_)mem_census_sub(MEMOWN_INIT_UPLOAD,zero_buffer_census_);std::free(cpu_command_heap);}
-  void reset();uint64_t flushInternal();uint64_t initializationFence();void prepareUploadLocked(size_t){}
+  void reset();uint64_t flushInternal();uint64_t initializationFence();bool prepareUploadLocked(size_t){return true;}
   bool pending()const{return blit_cmd_head.next.ptr || clear_render_pass_head.next;}
   bool retainAllocation(Allocation*);
   WMT::Buffer allocateZeroBuffer(size_t);size_t forecastZeroGrowth(size_t);

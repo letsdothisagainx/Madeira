@@ -256,11 +256,13 @@ public:
  struct EventHandle{uint64_t handle=7;};
  std::recursive_mutex creation_mutex;
  std::mutex mutex_;size_t texture_upload_minimum_=0;
+ size_t texture_upload_budget_=0,texture_upload_spent_=0;bool texture_upload_active_=false;
  ACTUAL_TEXTURE_UPLOAD_SCOPE
  auto lockTextureCreation(){return std::unique_lock<std::recursive_mutex>(creation_mutex);}
  EventHandle event(){return {};}
  uint64_t initializationFence(){return initialize_calls?1:0;}
  size_t forecastUploadGrowth(size_t,size_t=0,bool=false){return size_t(forecast_upload);}
+ size_t uploadBlockSize() const {return kResourceInitializerGpuUploadHeapSize;}
  size_t forecastZeroGrowth(size_t){return size_t(forecast_zero);}
  FakeUploadEvent upload_queue_event_; uint64_t submitted=0;
  uint64_t trimMemoryPressure(bool release_warm=false){++trim_calls;if(release_warm)++emergency_trim_calls;if(forecast_after_trim)forecast_upload=forecast_after_trim;return 0;}

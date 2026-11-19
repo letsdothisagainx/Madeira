@@ -13,6 +13,7 @@ def replace_once(source, before, after):
 
 
 def stage_ring(source):
+    source = replace_once(source, '#include <queue>', '#include <queue>\n#include <optional>')
     # Optional pressure sizing changes only new block growth. Existing blocks
     # retain their completion ownership and every healthy caller uses zero.
     source = replace_once(source,
@@ -46,12 +47,19 @@ def stage_ring(source):
   // Pending/latest allocations above this frontier remain owned by the ring.
   uint64_t trim_completed(uint64_t coherent_id, bool keep_last_normal = false);
 
+  // Queue completion may keep one bounded, already completed spare even
+  // while a newer FIFO tail remains pending. Pending entries never move.
+  uint64_t trim_completed_budget(uint64_t coherent_id, size_t warm_budget);
+
   // Admission accounts for an actual new block, rather than charging every
   // texture subresource for a complete staging block. Caller serializes its
   // producer; the ring lock also excludes the GPU completion thread's trims.
   size_t allocation_growth(uint64_t coherent_id, size_t size, size_t alignment, size_t minimum_block = 0) {
     std::lock_guard<mutex> lock(mutex_);
     const size_t normal = minimum_block ? minimum_block : ring_block_size();
+    const size_t required = std::max(size, normal);
+    if (completed_warm_ && completed_warm_->total_size >= required)
+      return 0;
     if (!fifo.empty()) {
       const auto &latest = fifo.back();
       const size_t aligned = align(latest.allocated_size, alignment);
@@ -78,6 +86,8 @@ def stage_ring(source):
     if (!first) first = total;
     if (first > total || !alignment || (alignment & (alignment - 1)))
       return ~size_t{0};
+    if (completed_warm_ && completed_warm_->total_size >= growth)
+      return 0;
     if (fifo.empty())
       return growth;
     const auto &latest = fifo.back();
@@ -102,6 +112,10 @@ uint64_t
 RingBumpState<Allocator, BlockSize, mutex>::trim_completed(uint64_t coherent_id, bool keep_last_normal) {
   std::lock_guard<mutex> lock(mutex_);
   uint64_t released = 0;
+  if (completed_warm_ && !keep_last_normal) {
+    released += completed_warm_->total_size;
+    discard_completed_warm();
+  }
   while (!fifo.empty() && fifo.front().last_used_seq_id <= coherent_id) {
     auto &front = fifo.front();
     // A bounded natural-size warm block avoids allocating a fresh 32MB Metal
@@ -117,7 +131,64 @@ RingBumpState<Allocator, BlockSize, mutex>::trim_completed(uint64_t coherent_id,
   return released;
 }
 
+template <typename Allocator, size_t BlockSize, class mutex>
+uint64_t
+RingBumpState<Allocator, BlockSize, mutex>::trim_completed_budget(uint64_t coherent_id, size_t warm_budget) {
+  std::lock_guard<mutex> lock(mutex_);
+  uint64_t released = 0;
+  if (completed_warm_ && completed_warm_->total_size > warm_budget) {
+    released += completed_warm_->total_size;
+    discard_completed_warm();
+  }
+  while (!fifo.empty() && fifo.front().last_used_seq_id <= coherent_id) {
+    auto &front = fifo.front();
+    const bool reusable = front.total_size == ring_block_size() || front.compact || front.reusable_oversize;
+    if (reusable && front.total_size <= warm_budget) {
+      // Retain only the most recently completed eligible block. It has no
+      // CPU/GPU consumer, unlike the FIFO entries beyond this frontier.
+      if (completed_warm_) {
+        released += completed_warm_->total_size;
+        discard_completed_warm();
+      }
+      completed_warm_.emplace(std::move(front));
+      completed_warm_->allocated_size = 0;
+      completed_warm_->inc_time_to_live = 0;
+    } else {
+      released += front.total_size;
+      if (front.reusable_oversize) --reusable_oversize_blocks_;
+    }
+    fifo.pop();
+  }
+  return released;
+}
+
 """ + marker)
+    source = replace_once(source, '  std::queue<Allocation> fifo;', '''  std::queue<Allocation> fifo;
+  std::optional<Allocation> completed_warm_;
+  void discard_completed_warm() {
+    if (completed_warm_ && completed_warm_->reusable_oversize) --reusable_oversize_blocks_;
+    completed_warm_.reset();
+  }''')
+    source = replace_once(source, '''  free_blocks_keep_first() {
+    std::lock_guard<mutex> lock(mutex_);''', '''  free_blocks_keep_first() {
+    std::lock_guard<mutex> lock(mutex_);
+    discard_completed_warm();''')
+    source = replace_once(source, '''RingBumpState<Allocator, BlockSize, mutex>::free_blocks(uint64_t coherent_id) {
+  std::lock_guard<mutex> lock(mutex_);''', '''RingBumpState<Allocator, BlockSize, mutex>::free_blocks(uint64_t coherent_id) {
+  std::lock_guard<mutex> lock(mutex_);
+  if (completed_warm_ && ((coherent_id >= completed_warm_->last_used_seq_id &&
+      coherent_id - completed_warm_->last_used_seq_id > kStagingBlockLifetime) ||
+      ++completed_warm_->inc_time_to_live > kStagingBlockLifetime || coherent_id == ~uint64_t{0}))
+    discard_completed_warm();''')
+    source = replace_once(source, '''  // Repeated image uploads just above the normal block size otherwise create''', '''  if (completed_warm_ && completed_warm_->total_size >= block_size) {
+    completed_warm_->last_used_seq_id = seq_id;
+    completed_warm_->allocated_size = 0;
+    completed_warm_->inc_time_to_live = 0;
+    fifo.push(std::move(*completed_warm_));
+    completed_warm_.reset(); // ownership moved; the oversize count stays balanced
+    return fifo.back();
+  }
+  // Repeated image uploads just above the normal block size otherwise create''')
     return source
 
 
@@ -140,15 +211,21 @@ def stage_initializer_header(source):
   // This is a synchronized forecast, not a reservation or completion signal.
   size_t forecastUploadGrowth(size_t total_payload_bytes, size_t first_subresource_bytes = 0, bool compact = false);
 
+  // Respect the configured ring class; this does not allocate or query GPU
+  // completion. Large pressure batches stream through one such block.
+  size_t uploadBlockSize() const { return gpu_command_heap_allocator.ring_block_size(); }
+
   // Conservatively cover every initialization operation observed so far,
   // including pending commands and other creators sharing this initializer.
   uint64_t initializationFence();""")
     source = replace_once(source, "  uint64_t flushInternal();", """  uint64_t flushInternal();
   uint64_t refreshCompletedLocked(bool trim, bool release_warm = false);
-  void prepareUploadLocked(size_t size);""")
+  bool prepareUploadLocked(size_t size);""")
     source = replace_once(source, "  dxmt::mutex mutex_;", """  dxmt::mutex mutex_;
   MemoryPressureController transient_pressure_controller_;
-  size_t texture_upload_minimum_ = 0;""")
+  size_t texture_upload_minimum_ = 0;
+  size_t texture_upload_budget_ = 0, texture_upload_spent_ = 0;
+  bool texture_upload_active_ = false;""")
     source = replace_once(source, '  ResourceInitializer(WMT::Device device);', '''  ResourceInitializer(WMT::Device device);
 
   // The factory already owns the initializer creation transaction. Restore
@@ -156,19 +233,28 @@ def stage_initializer_header(source):
   // and nested creation. No backing or GPU lifetime is owned by this scope.
   class TextureUploadScope {
     ResourceInitializer &owner_;
-    size_t previous_;
+    size_t previous_, previous_budget_, previous_spent_;
+    bool previous_active_;
   public:
     explicit TextureUploadScope(ResourceInitializer &owner) : owner_(owner) {
       static const volatile char contract[] = "[texture-compact-upload-v1]";
       (void)contract[0];
       std::lock_guard<dxmt::mutex> lock(owner_.mutex_);
       previous_ = owner_.texture_upload_minimum_;
+      previous_budget_ = owner_.texture_upload_budget_;
+      previous_spent_ = owner_.texture_upload_spent_;
+      previous_active_ = owner_.texture_upload_active_;
       owner_.texture_upload_minimum_ = 0;
+      owner_.texture_upload_budget_ = owner_.texture_upload_spent_ = 0;
+      owner_.texture_upload_active_ = false;
     }
     TextureUploadScope(const TextureUploadScope &) = delete;
     ~TextureUploadScope() {
       std::lock_guard<dxmt::mutex> lock(owner_.mutex_);
       owner_.texture_upload_minimum_ = previous_;
+      owner_.texture_upload_budget_ = previous_budget_;
+      owner_.texture_upload_spent_ = previous_spent_;
+      owner_.texture_upload_active_ = previous_active_;
     }
   };
   TextureUploadScope textureUploadScope() { return TextureUploadScope(*this); }''')
@@ -186,7 +272,7 @@ def stage_initializer(source):
   free(cpu_command_heap);""")
     source = replace_once(source,
         "    flushInternal();\n  do {\n    RETAIN(allocation);\n    ALLOC_BLIT(wmtcmd_blit_copy_from_buffer_to_texture, copy);\n    ALLOC_GPU(temp, total_bytes_needed);",
-        "    flushInternal();\n  prepareUploadLocked(total_bytes_needed);\n  do {\n    RETAIN(allocation);\n    ALLOC_BLIT(wmtcmd_blit_copy_from_buffer_to_texture, copy);\n    ALLOC_GPU(temp, total_bytes_needed);")
+        "    flushInternal();\n  do {\n    // Preflight may submit/wait: run before retaining or linking this blit,\n    // including each CPU-command-space retry in the final staged producer.\n    if (!prepareUploadLocked(total_bytes_needed)) return 0;\n    RETAIN(allocation);\n    ALLOC_BLIT(wmtcmd_blit_copy_from_buffer_to_texture, copy);\n    ALLOC_GPU(temp, total_bytes_needed);")
     source = replace_once(source, "  cached_coherent_seq_id = upload_queue_event_.signaledValue();\n  gpu_command_heap_allocator.free_blocks(cached_coherent_seq_id);", """  refreshCompletedLocked(memoryPressureSnapshot().needsReclaim());""")
     old = """  if (idle()) {
     gpu_command_heap_allocator.free_blocks(cached_coherent_seq_id);
@@ -212,7 +298,11 @@ ResourceInitializer::refreshCompletedLocked(bool trim, bool release_warm) {
   uint64_t released = 0;
   if (trim) {
     const auto decision = transient_pressure_controller_.evaluate(memoryPressureSnapshot());
-    const bool keep_warm = !release_warm && decision.valid && !decision.critical;
+    // Once actual uploads have started, the bounded batch owns one reusable
+    // completed block until its creation scope exits. Before admission/first
+    // upload, even an explicit denial drain remains free to release caches.
+    const bool keep_warm = (texture_upload_budget_ && texture_upload_active_) ||
+        (!release_warm && decision.valid && !decision.critical);
     released = gpu_command_heap_allocator.trim_completed(cached_coherent_seq_id, keep_warm);
   } else
     gpu_command_heap_allocator.free_blocks(cached_coherent_seq_id);
@@ -258,14 +348,28 @@ ResourceInitializer::forecastUploadGrowth(size_t total_payload_bytes, size_t fir
   std::lock_guard<dxmt::mutex> lock(mutex_);
   if (total_payload_bytes > SIZE_MAX - (kResourceInitializerGpuUploadHeapAlignment - 1))
     return SIZE_MAX;
-  texture_upload_minimum_ = compact ? align(total_payload_bytes, kResourceInitializerGpuUploadHeapAlignment) : 0;
+  const size_t natural = gpu_command_heap_allocator.ring_block_size();
+  const bool bounded = compact && total_payload_bytes > natural &&
+      first_subresource_bytes && first_subresource_bytes <= natural;
+  texture_upload_budget_ = bounded ? natural : 0;
+  texture_upload_spent_ = 0;
+  texture_upload_active_ = false;
+  texture_upload_minimum_ = bounded ? natural :
+      compact ? align(total_payload_bytes, kResourceInitializerGpuUploadHeapAlignment) : 0;
+  if (bounded) {
+    static const volatile char contract[] = "[texture-bounded-upload-v1]";
+    (void)contract[0];
+    // Charge one complete block even when an existing block may be reused.
+    // The producer below refuses additional growth after consuming this cap.
+    return natural;
+  }
   const uint64_t completed = std::max(cached_coherent_seq_id, upload_queue_event_.signaledValue());
   return gpu_command_heap_allocator.batch_growth(
       completed, total_payload_bytes, first_subresource_bytes ? first_subresource_bytes : total_payload_bytes,
       kResourceInitializerGpuUploadHeapAlignment, texture_upload_minimum_);
 }
 
-void
+bool
 ResourceInitializer::prepareUploadLocked(size_t size) {
   // Most initial mip/slice uploads fit backing already owned by this ring.
   // That reuse needs no fresh native pressure or event call: the cached
@@ -276,7 +380,7 @@ ResourceInitializer::prepareUploadLocked(size_t size) {
   size_t growth = gpu_command_heap_allocator.allocation_growth(
       cached_coherent_seq_id, size, kResourceInitializerGpuUploadHeapAlignment, texture_upload_minimum_);
   if (!growth)
-    return;
+    return true;
   // Only a genuine capacity miss refreshes GPU completion. Recheck after
   // observing the real event: a formerly pending FIFO block may now be
   // reusable, without a wait, trim, new backing or physical-budget charge.
@@ -284,10 +388,10 @@ ResourceInitializer::prepareUploadLocked(size_t size) {
   growth = gpu_command_heap_allocator.allocation_growth(
       cached_coherent_seq_id, size, kResourceInitializerGpuUploadHeapAlignment, texture_upload_minimum_);
   if (!growth)
-    return;
+    return true;
   const auto pressure = memoryPressureSnapshot();
-  if (!pressure.valid || !pressure.needsReclaim(growth))
-    return; // Unknown pressure is not an invented limit or GPU completion.
+  if (!texture_upload_budget_ && (!pressure.valid || !pressure.needsReclaim(growth)))
+    return true; // Unknown pressure is not an invented limit or GPU completion.
   if (!idle())
     flushInternal();
   const uint64_t submitted = current_seq_id_ - 1;
@@ -298,8 +402,16 @@ ResourceInitializer::prepareUploadLocked(size_t size) {
     upload_queue_event_.waitUntilSignaledValue(submitted, 50);
   }
   refreshCompletedLocked(true);
+  if (texture_upload_budget_) {
+    growth = gpu_command_heap_allocator.allocation_growth(
+        cached_coherent_seq_id, size, kResourceInitializerGpuUploadHeapAlignment, texture_upload_minimum_);
+    if (texture_upload_spent_ > texture_upload_budget_ ||
+        growth > texture_upload_budget_ - texture_upload_spent_)
+      return false; // Real GPU completion did not make the charged block reusable.
+  }
   // The ordinary allocator must still provide genuine backing or fail. Live
   // textures are never evicted and unmet pressure never fabricates success.
+  return true;
 }
 
 void
@@ -307,6 +419,25 @@ ResourceInitializer::reset() {""")
     source = replace_once(source,
         '      current_seq_id_, cached_coherent_seq_id, size, kResourceInitializerGpuUploadHeapAlignment\n',
         '      current_seq_id_, cached_coherent_seq_id, size, kResourceInitializerGpuUploadHeapAlignment, texture_upload_minimum_\n')
+    source = replace_once(source, '''ResourceInitializer::allocateGpuHeap(size_t size, size_t &offset) {
+  auto [block, offset_]''', '''ResourceInitializer::allocateGpuHeap(size_t size, size_t &offset) {
+  // Never flush while the caller may be recording a command. Its preflight
+  // runs before this transaction; this is only a nonflushing budget check.
+  const size_t growth = texture_upload_budget_ ? gpu_command_heap_allocator.allocation_growth(
+      cached_coherent_seq_id, size, kResourceInitializerGpuUploadHeapAlignment, texture_upload_minimum_) : 0;
+  if (texture_upload_budget_ && (texture_upload_spent_ > texture_upload_budget_ ||
+      growth > texture_upload_budget_ - texture_upload_spent_))
+    return {};
+  auto [block, offset_]''')
+    source = replace_once(source, '''  upload_bytes_since_flush_ += size;
+  offset = offset_;
+  return block.buffer;''', '''  if (texture_upload_budget_ && block.buffer) {
+    texture_upload_spent_ += growth;
+    texture_upload_active_ = true;
+  }
+  upload_bytes_since_flush_ += size;
+  offset = offset_;
+  return block.buffer;''')
     return source
 
 
@@ -321,12 +452,24 @@ def stage_queue(source):
       // released its CPU references before this inclusive coherence frontier.
       // Real ring mutexes protect producers; null_mutex CPU/deferred command
       // heaps are deliberately NOT trimmed from this finishing thread.
-      const bool critical = !pressure.valid || pressure.critical;
-      staging_allocator.trim_completed(internal_seq, !critical);
-      copy_temp_allocator.trim_completed(internal_seq, !critical);
-      argbuf_allocator.trim_completed(internal_seq, !critical);
+      const auto snapshot = memoryPressureSnapshot();
+      const size_t warm_budget = TransientRingWarmBudget(snapshot, pressure);
+      // Use compact new blocks while pressure is latched, instead of
+      // discarding/recreating 32MiB buffers for small updates every frame.
+      size_t minimum = std::min<size_t>(4u << 20, decltype(argbuf_allocator)::ring_block_size());
+      const size_t minimum_floor = std::min<size_t>(1u << 20, minimum);
+      while (minimum > minimum_floor && minimum > warm_budget) minimum >>= 1;
+      // Stay at the smallest class reached during this pressure episode;
+      // headroom jitter must not repeatedly promote and evict the same cache.
+      const size_t previous = transient_ring_minimum_.load(std::memory_order_relaxed);
+      transient_ring_minimum_.store(previous ? std::min(previous, minimum) : minimum,
+                                    std::memory_order_release);
+      staging_allocator.trim_completed_budget(internal_seq, warm_budget);
+      copy_temp_allocator.trim_completed_budget(internal_seq, warm_budget);
+      argbuf_allocator.trim_completed_budget(internal_seq, warm_budget);
       initializer.trimMemoryPressure();
     } else {
+      transient_ring_minimum_.store(0, std::memory_order_release);
       staging_allocator.free_blocks(internal_seq);
       copy_temp_allocator.free_blocks(internal_seq);
       argbuf_allocator.free_blocks(internal_seq);
@@ -353,7 +496,23 @@ private:
   }
   const uint64_t memory_domain_ = NextMemoryDomain();
   std::atomic<bool> allocation_recovery_latched_{false};
-  std::atomic<uint64_t> allocation_transient_frontier_{UINT64_MAX};""")
+  std::atomic<uint64_t> allocation_transient_frontier_{UINT64_MAX};
+  std::atomic<size_t> transient_ring_minimum_{0};
+
+  static size_t TransientRingWarmBudget(const MemoryPressureSnapshot &snapshot,
+                                       const MemoryPressureDecision &pressure) {
+    static const volatile char contract[] = "[transient-reuse-v2]";
+    (void)contract[0];
+    if (!pressure.valid || !snapshot.valid) return 0;
+    // One queue shares this budget across its three completion-owned rings.
+    // Critical reuse is deliberately much smaller than the dynamic cache:
+    // <=16MiB total, further reduced by actual remaining physical headroom.
+    // Reusing this already-backed storage incurs no new allocation charge.
+    const uint64_t total = pressure.critical
+        ? std::min<uint64_t>(uint64_t{16} << 20, std::min(snapshot.reserve / 64, snapshot.available / 16))
+        : pressure.warm_cache_budget;
+    return total / 3;
+  }""")
     source = replace_once(source, "  CommandQueue(WMT::Device device);", """  CommandQueue(WMT::Device device);
 
   uint64_t memoryDomain() const { return memory_domain_; }""")
@@ -388,6 +547,18 @@ private:
       return false;
     return !allocation_recovery_latched_.exchange(true, std::memory_order_acq_rel);
   }''')
+    for old, new in (
+        ('staging_allocator.allocate(ready_for_encode, cpu_coherent.signaledValue(), size, alignment)',
+         'staging_allocator.allocate(ready_for_encode, cpu_coherent.signaledValue(), size, alignment, transient_ring_minimum_.load(std::memory_order_acquire))'),
+        ('copy_temp_allocator.allocate(seq, cpu_coherent.signaledValue(), size, alignment)',
+         'copy_temp_allocator.allocate(seq, cpu_coherent.signaledValue(), size, alignment, transient_ring_minimum_.load(std::memory_order_acquire))'),
+        ('argbuf_allocator.allocate(seq, cpu_coherent.signaledValue(), size, 64)',
+         'argbuf_allocator.allocate(seq, cpu_coherent.signaledValue(), size, 64, transient_ring_minimum_.load(std::memory_order_acquire))'),
+    ):
+        count = source.count(old)
+        if count not in (1, 2):
+            raise ValueError('DXMT transient allocation call shape changed: ' + old)
+        source = source.replace(old, new)
     return source
 
 

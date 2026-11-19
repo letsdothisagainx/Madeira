@@ -188,10 +188,12 @@ def stage_factory(source):
     // Existing completed/tail backing is still reusable at no new charge.
     // This cached sample selects a block policy only. Admission still samples
     // fresh native headroom, and a denial refreshes it before reforecasting.
-    // Stay within the initializer's existing natural upload capacity. A very
-    // large mip/array batch retains the old chunked path rather than asking
-    // Metal for a new monolithic buffer above its supported buffer length.
-    const bool compact = payload <= kResourceInitializerGpuUploadHeapSize &&
+    // A large array of individually small subresources streams through one
+    // natural block under pressure. The initializer enforces that charge by
+    // waiting for genuine private-event completion before reuse; it refuses
+    // another block if completion is unavailable. No monolithic batch buffer
+    // or extra Metal maximum-length assumption is introduced.
+    const bool compact = largest_bytes <= creation_initializer.uploadBlockSize() &&
         memoryPressureSnapshot().needsReclaim(creation_bytes);
     temporary_bytes = creation_initializer.forecastUploadGrowth(size_t(payload), size_t(largest_bytes), compact);
     // Natural-size batching can waste tails at rotations. Its existing

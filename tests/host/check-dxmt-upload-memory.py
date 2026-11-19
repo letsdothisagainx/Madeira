@@ -28,6 +28,7 @@ PRELUDE = r'''
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <queue>
 #include <string>
 #include <thread>
@@ -47,12 +48,15 @@ bool ringOversizeReuseEnabled() { return false; }
 
 
 ALLOCATOR = r'''
-struct Counters { std::atomic<size_t> allocated=0, freed=0, bytes=0; } counts;
+struct Counters { std::atomic<size_t> allocated=0, freed=0, bytes=0, requested=0, peak=0; } counts;
 struct CountingAllocator {
   struct Payload {
     std::vector<uint8_t> data;
     explicit Payload(size_t size) : data(size, 0) {
-      ++counts.allocated; counts.bytes += size;
+      ++counts.allocated; counts.requested += size;
+      const size_t live = counts.bytes.fetch_add(size) + size;
+      size_t peak = counts.peak;
+      while (peak < live && !counts.peak.compare_exchange_weak(peak, live)) {}
     }
     ~Payload() { ++counts.freed; counts.bytes -= data.size(); }
   };
@@ -148,11 +152,48 @@ int main() {
   }
   {
     dxmt::RingBumpState<CountingAllocator,256> ring(CountingAllocator{});
+    auto &first=ring.allocate(1,0,256,16).first;
+    first.payload->data[0]=0x51;
+    auto &pending=ring.allocate(2,0,256,16).first;
+    pending.payload->data[0]=0x62;
+    auto *pending_identity=&pending;
+    const size_t allocated=counts.allocated;
+    require(ring.trim_completed_budget(1,256)==0 && counts.bytes==512,
+            "bounded cache dropped a reusable completed prefix while newer work was pending");
+    require(ring.allocation_growth(1,256,16)==0 && ring.batch_growth(1,256,256,16)==0,
+            "warm completed spare was charged as new backing");
+    auto &next=ring.allocate(3,1,256,16).first;
+    require(counts.allocated==allocated && &pending==pending_identity && pending.payload->data[0]==0x62,
+            "completed spare reuse moved/destroyed pending FIFO storage");
+    next.payload->data[0]=0x73;
+    require(ring.trim_completed_budget(2,256)==0 && counts.bytes==512,
+            "completed second block was not retained as the next bounded spare");
+    require(ring.trim_completed(2,false)==256 && next.payload->data[0]==0x73,
+            "explicit denial drain did not drop warm spare or destroyed live data");
+    require(ring.trim_completed_budget(3,64)==256 && counts.bytes==0,
+            "smaller budget retained an oversized cache block");
+  }
+  {
+    dxmt::RingBumpState<CountingAllocator,256> ring(CountingAllocator{});
+    ring.allocate(1,0,64,16,64);
+    require(ring.trim_completed_budget(1,64)==0 && counts.bytes==64,
+            "compact completed spare was not retained within budget");
+    const size_t allocated=counts.allocated;
+    require(ring.allocation_growth(1,64,16,64)==0 && ring.batch_growth(1,64,64,16,64)==0,
+            "compact spare forecast charged new storage");
+    ring.allocate(2,1,64,16,64);
+    require(counts.allocated==allocated, "compact completed spare was not actually reused");
+    ring.trim_completed_budget(2,64);
+    ring.free_blocks_keep_first();
+    require(counts.bytes==0, "dead command-list reset retained the separate warm cache");
+  }
+  {
+    dxmt::RingBumpState<CountingAllocator,256> ring(CountingAllocator{});
     std::atomic<uint64_t> completed{0};
     std::atomic<bool> done{false};
     std::thread consumer([&] {
       while (!done.load(std::memory_order_acquire))
-        ring.trim_completed(completed.load(std::memory_order_acquire));
+        ring.trim_completed_budget(completed.load(std::memory_order_acquire),256);
     });
     for (uint64_t seq=1;seq<=20000;++seq) {
       auto [block, offset]=ring.allocate(seq,completed.load(std::memory_order_acquire),16,16);
@@ -223,10 +264,13 @@ public:
   MemoryPressureDecision transientMemoryPressureDecision();
   size_t forecastUploadGrowth(size_t total_payload_bytes, size_t first_subresource_bytes = 0, bool compact = false);
   uint64_t initializationFence();
-  void prepareUploadLocked(size_t size);
+  bool prepareUploadLocked(size_t size);
   uint64_t current_seq_id_=1, cached_coherent_seq_id=0;
   size_t upload_bytes_since_flush_=0;
   size_t texture_upload_minimum_=0;
+  size_t texture_upload_budget_=0, texture_upload_spent_=0;
+  bool texture_upload_active_=false;
+  size_t uploadBlockSize() const { return gpu_command_heap_allocator.ring_block_size(); }
   /* ACTUAL_TEXTURE_UPLOAD_SCOPE */
   WMT::EventState upload_queue_event_;
   WMT::Queue upload_queue_{&upload_queue_event_};
@@ -634,8 +678,11 @@ int main() {
 
 
 QUEUE_BACKEND = r'''
+namespace dxmt {
 class CompletionQueue {
 public:
+  std::atomic<size_t> transient_ring_minimum_{0};
+/* ACTUAL_QUEUE_RING_BUDGET */
   dxmt::ResourceInitializer initializer;
   dxmt::RingBumpState<CountingAllocator,256> staging_allocator{CountingAllocator{}};
   dxmt::RingBumpState<CountingAllocator,256> copy_temp_allocator{CountingAllocator{}};
@@ -644,11 +691,21 @@ public:
 /* ACTUAL_COMPLETION_RING_TRIM */
   }
   void allocate(uint64_t seq,uint64_t completed) {
-    staging_allocator.allocate(seq,completed,256,16);
-    copy_temp_allocator.allocate(seq,completed,256,16);
-    argbuf_allocator.allocate(seq,completed,256,16);
+    const size_t minimum=transient_ring_minimum_.load(std::memory_order_acquire);
+    auto fill = [&](auto &ring) {
+      auto [block,offset]=ring.allocate(seq,completed,payload_bytes,16,minimum);
+      for (size_t i=0;i<payload_bytes;++i) block.payload->data[offset+i]=uint8_t(seq+i);
+      for (size_t i=0;i<payload_bytes;++i) {
+        require(block.payload->data[offset+i]==uint8_t(seq+i),"queue upload bytes changed before completion");
+        checksum+=block.payload->data[offset+i];
+      }
+    };
+    fill(staging_allocator); fill(copy_temp_allocator); fill(argbuf_allocator);
   }
+  static constexpr size_t payload_bytes=256;
+  uint64_t checksum=0;
 };
+}
 '''
 
 
@@ -656,8 +713,8 @@ QUEUE_MAIN = r'''
 int main() {
   using namespace dxmt;
   CompletionQueue queue;
-  pressure.reserve=1024;
-  pressure.available=400;
+  pressure.reserve=6144;
+  pressure.available=2400;
   pressure.sampled_ns=1;
   queue.allocate(1,0);
   queue.initializer.gpu_command_heap_allocator.allocate(1,0,256,16);
@@ -665,7 +722,7 @@ int main() {
   queue.initializer.upload_queue_event_.value=1;
   queue.finish(1);
   require(counts.bytes==1024, "completion rings discarded normal warm blocks at noncritical pressure");
-  pressure.available=256;
+  pressure.available=1536;
   pressure.sampled_ns=2;
   queue.initializer.pending=true;
   auto &pending=queue.initializer.gpu_command_heap_allocator.allocate(2,1,256,16).first;
@@ -676,12 +733,12 @@ int main() {
   queue.initializer.pending=false;
   queue.initializer.current_seq_id_=3;
   queue.initializer.upload_queue_event_.value=2;
-  pressure.available=400;
+  pressure.available=2400;
   pressure.sampled_ns=3;
   queue.allocate(2,1);
   queue.finish(2);
   require(counts.bytes==0, "shared emergency history recovered a completion ring below half reserve");
-  pressure.available=512;
+  pressure.available=3072;
   pressure.sampled_ns=4;
   queue.allocate(3,2);
   queue.initializer.gpu_command_heap_allocator.allocate(3,2,256,16);
@@ -695,6 +752,91 @@ int main() {
   queue.initializer.trimMemoryPressure(true);
   require(counts.bytes==0 && counts.allocated==counts.freed, "completion-ring test leaked backing");
   std::cout << "PASS actual completion-ring paths: initializer/shared emergency hysteresis, three bounded warm blocks, live upload protection and separated recovery\n";
+}
+'''
+
+QUEUE_PRESSURE_MAIN = r'''
+int main() {
+  using namespace dxmt;
+  uint64_t checksum=0;
+  {
+    CompletionQueue queue;
+    pressure.reserve=768ull<<20;
+    pressure.available=192ull<<20;
+    pressure.limit=6144ull<<20;
+    pressure.footprint=pressure.limit-pressure.available;
+    for (uint64_t seq=1;seq<=100;++seq) {
+      pressure.sampled_ns=seq;
+      queue.allocate(seq,seq-1);
+      queue.finish(seq); // only after the fixture consumes this submission's real bytes
+      if (CANDIDATE) require(counts.bytes<=12ull<<20,"critical queue warm storage exceeded aggregate12MiB budget");
+      else require(counts.bytes==0,"baseline critical completion did not reproduce unconditional disposal");
+    }
+    require(counts.allocated==(CANDIDATE?5u:300u),"critical sequence unexpectedly recreated reusable queue buffers");
+    require(counts.requested==((CANDIDATE?76ull:6800ull)<<20),"controlled allocation traffic does not match actual block growth");
+    const size_t before=counts.allocated;
+    queue.allocate(101,100); queue.finish(101);
+    if (CANDIDATE) require(counts.allocated==before,"steady pressure cache was not genuinely reused");
+    pressure.available=0; pressure.sampled_ns=102;
+    queue.finish(101);
+    require(counts.bytes==0,"absolute zero-headroom episode retained completed warm backing");
+    pressure.available=192ull<<20; pressure.sampled_ns=103;
+    queue.allocate(102,101); queue.finish(102);
+    queue.allocate(103,102); queue.finish(103); // one bounded block-size recovery
+    const size_t recovered=counts.allocated;
+    queue.allocate(104,103); queue.finish(104);
+    if (CANDIDATE) require(counts.allocated==recovered,"pressure recovery caused a new trim/recreate cycle");
+    checksum=queue.checksum;
+  }
+  require(counts.bytes==0 && counts.allocated==counts.freed,"queue destruction leaked warm or pending storage");
+  std::cout<<"queue-critical candidate="<<CANDIDATE<<" allocations="<<counts.allocated
+           <<" requested="<<counts.requested<<" peak-owned="<<counts.peak
+           <<" checksum="<<checksum<<"; controlled workload, no iPhone footprint/FPS claim\n";
+}
+'''
+
+BASELINE_COMPLETION = r'''
+    const auto pressure = initializer.transientMemoryPressureDecision();
+    if (pressure.reclaim) {
+      const bool critical = !pressure.valid || pressure.critical;
+      staging_allocator.trim_completed(internal_seq, !critical);
+      copy_temp_allocator.trim_completed(internal_seq, !critical);
+      argbuf_allocator.trim_completed(internal_seq, !critical);
+      initializer.trimMemoryPressure();
+    } else {
+      staging_allocator.free_blocks(internal_seq);
+      copy_temp_allocator.free_blocks(internal_seq);
+      argbuf_allocator.free_blocks(internal_seq);
+    }
+'''
+
+QUEUE_MINIMUM_MAIN = r'''
+int main() {
+  using namespace dxmt;
+  {
+    CompletionQueue queue;
+    pressure.reserve=768ull<<20; pressure.available=192ull<<20; pressure.sampled_ns=1;
+    queue.finish(0);
+    require(queue.transient_ring_minimum_==(4u<<20),"critical queue did not select4MiB compact blocks");
+    queue.allocate(1,0);queue.finish(1);
+    require(counts.bytes==(12u<<20),"critical aggregate cache exceeds12MiB");
+    pressure.available=96ull<<20;pressure.sampled_ns=2;queue.finish(1);
+    require(queue.transient_ring_minimum_==(2u<<20) && !counts.bytes,"smaller real headroom did not shrink completed cache");
+    queue.allocate(2,1);queue.finish(2);
+    const size_t reused=counts.allocated;
+    for (uint64_t seq=3;seq<35;++seq) {
+      pressure.available=(seq&1?192ull:96ull)<<20;pressure.sampled_ns=seq;
+      queue.allocate(seq,seq-1);queue.finish(seq);
+      require(queue.transient_ring_minimum_==(2u<<20) && counts.allocated==reused && counts.bytes==(6u<<20),
+              "headroom jitter promoted/evicted the same hot queue blocks");
+    }
+    pressure.available=0;pressure.sampled_ns=35;queue.finish(34);
+    require(!counts.bytes && queue.transient_ring_minimum_==(1u<<20),"zero headroom did not drain the warm cache safely");
+    pressure.available=1000ull<<20;pressure.sampled_ns=36;queue.finish(34);
+    require(!queue.transient_ring_minimum_,"healthy high-water recovery did not restore natural allocation behavior");
+  }
+  require(!counts.bytes && counts.allocated==counts.freed,"queue pressure episode leaked storage");
+  std::cout<<"PASS actual queue pressure episode: aggregatebudget, power-of-two compact classes, shrink-only hysteresis across32 headroom changes, zero-headroom drain and healthy recovery\n";
 }
 '''
 
@@ -719,7 +861,7 @@ def initializer_methods(source):
     methods = []
     for name in ("flushInternal", "flushToWait", "refreshCompletedLocked", "trimMemoryPressure",
                  "transientMemoryPressureDecision", "forecastUploadGrowth", "initializationFence", "prepareUploadLocked"):
-        match = re.search(r"(?:std::)?(?:uint64_t|size_t|void|MemoryPressureDecision)\nResourceInitializer::" + name + r"\(", source)
+        match = re.search(r"(?:std::)?(?:uint64_t|size_t|void|bool|MemoryPressureDecision)\nResourceInitializer::" + name + r"\(", source)
         assert match, name
         opening = source.index("{", match.start())
         depth, end = 1, opening+1
@@ -788,12 +930,12 @@ def main():
         end = init_source.index(cached_end, start)
         legacy_prologue = """  auto pressure = memoryPressureSnapshot();
   if (!pressure.valid)
-    return;
+    return true;
   cached_coherent_seq_id = std::max(cached_coherent_seq_id, upload_queue_event_.signaledValue());
-  const size_t growth = gpu_command_heap_allocator.allocation_growth(
+  size_t growth = gpu_command_heap_allocator.allocation_growth(
       cached_coherent_seq_id, size, kResourceInitializerGpuUploadHeapAlignment);
   if (!pressure.needsReclaim(growth) || !growth)
-    return;
+    return true;
 """
         legacy = init_source[:start] + legacy_prologue + init_source[end:]
         baseline_calls = compile_initializer(directory, "old-reuse-calls", staged, legacy,
@@ -803,10 +945,8 @@ def main():
         assert re.search(r"checksum=(\d+)", baseline_calls)[1] == re.search(r"checksum=(\d+)", candidate_calls)[1]
         print("BEFORE unconditional native upload probes:", baseline_calls)
         print("AFTER owned-backing fast path:", candidate_calls)
-        warm_policy = """    const auto decision = transient_pressure_controller_.evaluate(memoryPressureSnapshot());
-    const bool keep_warm = !release_warm && decision.valid && !decision.critical;"""
-        old_policy = """    const auto pressure = memoryPressureSnapshot();
-    const bool keep_warm = !release_warm && pressure.valid && pressure.available >= pressure.reserve / 2;"""
+        warm_policy = "(!release_warm && decision.valid && !decision.critical)"
+        old_policy = "(!release_warm && pressure.valid && pressure.available >= pressure.reserve / 2)"
         assert init_source.count(warm_policy) == 1
         baseline = compile_initializer(directory, "old-warm-stress", staged,
                                        init_source.replace(warm_policy, old_policy, 1), UPLOAD_STRESS)
@@ -820,9 +960,35 @@ def main():
         queue = STAGE.stage_queue((SOURCE / "dxmt_command_queue.cpp").read_text())
         start = queue.index("    const auto pressure = initializer.transientMemoryPressureDecision();")
         end = queue.index("    // Dynamic caches", start)
+        header = STAGE.stage_queue_header((SOURCE / 'dxmt_command_queue.hpp').read_text())
+        def declaration(signature):
+            begin = header.index(signature)
+            opening = header.index('{', begin)
+            depth, close = 1, opening + 1
+            while depth:
+                depth += (header[close] == '{') - (header[close] == '}')
+                close += 1
+            return header[begin:close]
         completion_backend = QUEUE_BACKEND.replace("/* ACTUAL_COMPLETION_RING_TRIM */", queue[start:end])
+        completion_backend = completion_backend.replace("/* ACTUAL_QUEUE_RING_BUDGET */",
+            declaration('  static size_t TransientRingWarmBudget('))
         print(compile_initializer(directory, "completion-rings", staged, init_source,
                                   completion_backend + QUEUE_MAIN))
+        traffic_backend = completion_backend.replace('RingBumpState<CountingAllocator,256>',
+                                                     'RingBumpState<CountingAllocator,33554432>')
+        traffic_backend = traffic_backend.replace('RingBumpState<CountingAllocator,33554432> argbuf_allocator',
+                                                   'RingBumpState<CountingAllocator,4194304> argbuf_allocator')
+        traffic_backend = traffic_backend.replace('payload_bytes=256', 'payload_bytes=32')
+        original_completion = traffic_backend.replace(queue[start:end], BASELINE_COMPLETION)
+        baseline_traffic = compile_initializer(directory, 'queue-critical-baseline', staged, init_source,
+            original_completion + QUEUE_PRESSURE_MAIN.replace('CANDIDATE', 'false'))
+        candidate_traffic = compile_initializer(directory, 'queue-critical-candidate', staged, init_source,
+            traffic_backend + QUEUE_PRESSURE_MAIN.replace('CANDIDATE', 'true'))
+        assert re.search(r'checksum=(\d+)', baseline_traffic)[1] == re.search(r'checksum=(\d+)', candidate_traffic)[1]
+        print('BEFORE critical disposal:', baseline_traffic)
+        print('AFTER bounded completion-owned queue reuse:', candidate_traffic)
+        print(compile_initializer(directory, 'queue-critical-hysteresis', staged, init_source,
+                                  traffic_backend + QUEUE_MINIMUM_MAIN))
     init = STAGE.stage_initializer((SOURCE / "dxmt_resource_initializer.cpp").read_text())
     queue = STAGE.stage_queue((SOURCE / "dxmt_command_queue.cpp").read_text())
     # These guard wiring into production callers; GPU behavior is not simulated.
@@ -830,9 +996,12 @@ def main():
     assert "refreshCompletedLocked" in idle and "free_blocks(cached_coherent_seq_id)" not in idle
     assert "waitUntilSignaledValue(submitted, 50)" in init
     assert "trim && idle() && cached_coherent_seq_id >= current_seq_id_ - 1" in init
-    assert queue.index("chunk.reset();\n    cpu_coherent.signal") < queue.index("staging_allocator.trim_completed")
+    assert queue.index("chunk.reset();\n    cpu_coherent.signal") < queue.index("staging_allocator.trim_completed_budget")
     assert "cpu_command_allocator.trim_completed" not in queue
     assert "DynamicBuffer::TrimCompletedForQueue(memoryDomain(), internal_seq, false)" in queue
+    queue_header = STAGE.stage_queue_header((SOURCE / 'dxmt_command_queue.hpp').read_text())
+    assert queue_header.count('transient_ring_minimum_.load(std::memory_order_acquire)') == 5
+    assert 'cpu_command_allocator.trim_completed_budget' not in queue
     for name, transform in STAGE.STAGES.items():
         first = transform((SOURCE / name).read_text())
         try:

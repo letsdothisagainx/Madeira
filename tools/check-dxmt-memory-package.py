@@ -22,13 +22,14 @@ PE_MARKERS = (b'[dynamic-memory-pressure-v1]', b'policy=bounded-hot-v3', b'stora
               b'counter-storage=census-perf-heap-v1', b'scan=registered-cursor-v2',
               b'pe-command-state=dedup-hud-v1', b'scheduler=ready-work-v1', b'shader-create=singleflight-v1', b'[upload-memory-v1]',
               b'texture-admission=physical-v1', b'texture-accounting=bc-blocks-v1', b'[initializer-failure-v1]',
-              b'[cpu-encode-memory-v1]')
+              b'[cpu-encode-memory-v1]', b'[transient-reuse-v2]')
 NATIVE_MARKERS = (*PE_MARKERS, b'[madeira-memory-pressure-v1]', b'[native-heap-relief-v1]',
                   b'[metal-resource-batch-v1]', b'release-probe=opt-in',
                   b'[texture-growth-budget-v1]', b'[metal-vertex-descriptor-owner-v1]',
                   b'[texture-live-budget-v2]', b'[texture-gpu-events-v1]')
 APP_NATIVE_MARKERS = (b'[texture-growth-retire-v1]',)
-FACTORY_MARKERS = (b'[texture-admission-v1]', b'[texture-gpu-credit-v1]', b'[texture-compact-upload-v1]')
+FACTORY_MARKERS = (b'[texture-admission-v1]', b'[texture-gpu-credit-v1]', b'[texture-compact-upload-v1]',
+                   b'[texture-bounded-upload-v1]')
 RECIPES = (
     'tools/build/stage-dxmt-memory-compat.py', 'tools/build/stage-dxmt-upload-memory.py',
     'tools/build/stage-dxmt-initializer-failure.py',
