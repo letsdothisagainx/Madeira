@@ -282,6 +282,7 @@ if [ "${OMIT_CS2_TEXTURE_SCOPE:-}" != 1 ]; then printf '[cs2-texture-scope-v1] p
 if [ "${STALE_WAIT_I386:-}" = 1 ]; then printf 'old wait implementation' > "$TEST_APP/i386-windows/ntdll.dll"; fi
 printf '[dynamic-memory-pressure-v1] policy=bounded-hot-v3 storage=owner-heap-v1 counter-storage=census-perf-heap-v1 scan=registered-cursor-v2 pe-command-state=dedup-hud-v1 scheduler=ready-work-v1 shader-create=singleflight-v1 texture-admission=physical-v1 texture-accounting=bc-blocks-v1 [texture-growth-budget-v1][texture-growth-retire-v1][texture-live-budget-v2][texture-gpu-events-v1][initializer-failure-v1][metal-vertex-descriptor-owner-v1][upload-memory-v1][madeira-memory-pressure-v1][native-heap-relief-v1][self-suspend-identity-v1][self-suspend-flow-v1][metal-resource-batch-v1] release-probe=opt-in' >> "$TEST_APP/Madeira.debug.dylib"
 printf '[cpu-encode-memory-v1]' >> "$TEST_APP/Madeira.debug.dylib"
+printf '%s' 'checked write failed; partial store, PC unchanged' >> "$TEST_APP/Madeira.debug.dylib"
 if [ "${STALE_DXMT_COMPLETION_LANE:-}" = 1 ]; then
   sed 's/\\[texture-live-budget-v2\\]//g' "$TEST_APP/Madeira.debug.dylib" > "$TEST_APP/native.stale"
   mv "$TEST_APP/native.stale" "$TEST_APP/Madeira.debug.dylib"
@@ -461,7 +462,8 @@ done
     print('PASS stale ARM64EC subfloor DATA capability fails actual final packaging; WoW64 retains the d73 tracker contract')
     result=run({'STALE_EC_CPU':'1'})
     assert result.returncode and 'Xcode packaged stale ARM64EC FEX' in result.stderr, result.stderr
-    for marker in (b'[fex-ir-pool-v1]', b'[fex-owner-allocator-v1]', b'lock=bounded-spin-park-v1'):
+    for marker in (b'[fex-ir-pool-v1]', b'[fex-owner-allocator-v1]', b'lock=bounded-spin-park-v1',
+                   b'[code-buffer-reuse-v1]', b'policy=monotonic-v1', b'candidate_rip=0x'):
         ec_cpu_path.write_bytes(ec_cpu.replace(marker, b'old'))
         result=run()
         assert result.returncode and 'stale arm64ec FEX shared protection' in result.stderr, result.stderr

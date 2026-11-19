@@ -7,8 +7,10 @@ explicitly ordered high-ticket before low-ticket. No FEX checkout is modified.
 """
 from pathlib import Path
 import argparse
+import ast
 import importlib.util
 import os
+import re
 import subprocess
 import tempfile
 
@@ -149,6 +151,14 @@ with tempfile.TemporaryDirectory(prefix='madeira-fex-cb-fixed-') as directory:
     fixed_start = fixed_source.rfind('  {', 0, fixed_marker)
     fixed_end = fixed_source.index(end_marker, fixed_marker) + len('\n  }')
     fixed_block = fixed_source[fixed_start:fixed_end]
+    summary_literals = re.search(r'LogMan::Msg::EFmt\(((?:"(?:[^"\\]|\\.)*"\s*)+),', fixed_block).group(1)
+    summary_format = ''.join(ast.literal_eval(literal) for literal in re.findall(r'"(?:[^"\\]|\\.)*"', summary_literals))
+    assert summary_format.isascii(), 'the actual staged summary must survive RunDiagnostics ASCII filtering'
+    summary = summary_format.format(16384, 4096, 12288, 75, 0x71d514f5d8, 17, 3, 0x12340000, 255, 0x12340000)
+    assert summary == ('[CB_SUMMARY] total=16384 real_compiles=4096 cache_hits=12288 '
+                       'hit_rate=75%  candidate_rip=0x71d514f5d8 candidate_balance=17 sample_skips=3 '
+                       'L1ptr=0x12340000 L1mask=0xff cacheL1=0x12340000')
+    print('PASS actual staged CB_SUMMARY uses ASCII and retains dispatch, compile, cache-hit, candidate and L1 fields')
     getter_start = fixed_source.index('static MadeiraFEXDiagnostics::CompileState& MadeiraFEXCompileStats()')
     getter = fixed_source[getter_start:fixed_source.index('\n}', getter_start) + 2]
     compile_line = '  MadeiraFEXDiagnostics::RecordCompile(MadeiraFEXCompileStats());'

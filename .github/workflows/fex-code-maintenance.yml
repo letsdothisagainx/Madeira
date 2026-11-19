@@ -1,0 +1,48 @@
+name: Verify FEX code generation retirement and released class reuse
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - build/fex-compat/**
+      - build/ntdll-unix/fex_code_buffer_abi.h
+      - build/ntdll-unix/virtual_ios.c
+      - tools/build/stage-fex-compat.py
+      - tests/host/check-fex-code-sweep-retry.py
+      - tests/host/check-fex-guarded-code-producer.py
+      - tests/host/check-fex-code-guard-contract.py
+      - tests/host/check-fex-code-guard-parameters.py
+      - tests/host/check-pool-cs2-budget.py
+      - .github/workflows/fex-code-maintenance.yml
+
+permissions:
+  contents: read
+
+jobs:
+  production-maintenance:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, xcode-27]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch the exact pinned FEX and Wine source
+        run: git submodule update --init --depth 1 FEX wine
+      - name: Exercise staged generation retirement and guarded class adoption
+        env:
+          CC: ${{ runner.os == 'Linux' && 'gcc' || 'clang' }}
+          CXX: ${{ runner.os == 'Linux' && 'g++' || 'clang++' }}
+        run: |
+          python3 tests/host/check-fex-code-sweep-retry.py
+          python3 tests/host/check-fex-guarded-code-producer.py
+          python3 tests/host/check-fex-code-guard-parameters.py
+          python3 tests/host/check-fex-code-guard-contract.py
+          python3 tests/host/check-pool-code-growth-budget.py
+          python3 tests/host/check-pool-free-grace.py
+          python3 tests/host/check-pool-recent-code-wait.py
+          python3 tests/host/check-pool-code-exit.py
+          python3 tests/host/check-pool-cs2-budget.py
+          python3 tests/host/check-fex-cb-summary.py
+          python3 tests/host/check-ci-component-keys.py

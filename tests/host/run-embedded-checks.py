@@ -97,6 +97,7 @@ commands = [
     ['python3', 'tests/host/check-fex-owner-backoff.py'],
     ['python3', 'tests/host/check-fex-arm64ec-startup.py'],
     ['python3', 'tests/host/check-fex-cb-summary.py'],
+    ['python3', 'tests/host/check-fex-code-sweep-retry.py'],
     ['python3', 'tests/host/check-fex-native-diagnostics-alias.py'],
     ['python3', 'tests/host/check-fex-native-diagnostics-package.py'],
     ['python3', 'tests/host/check-fex-native-history.py'],

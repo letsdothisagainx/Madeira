@@ -53,6 +53,7 @@ size_t ios_jit_pool_size_global;
 #define VM_REGION_BASIC_INFO_64 1
 #define MACH_PORT_NULL 0
 typedef uintptr_t mach_vm_address_t;
+typedef uintptr_t vm_offset_t;
 typedef size_t mach_vm_size_t;
 typedef unsigned mach_msg_type_number_t;
 typedef int mach_port_t;
@@ -63,6 +64,12 @@ static int mach_vm_region(int task, uintptr_t *address, size_t *size, int flavor
                           int *info, unsigned *count, int *object)
 { (void)task; (void)address; (void)size; (void)flavor; (void)info; (void)count; (void)object; return 1; }
 static int mach_port_deallocate(int task, int object) { (void)task; (void)object; return 0; }
+static int mach_vm_write(int task, uintptr_t address, vm_offset_t data, unsigned count)
+{
+    (void)task; (void)address; (void)data; (void)count;
+    assert(!"a permanent guard must refuse before issuing a write");
+    return 1;
+}
 static int mach_vm_protect(int task, uintptr_t address, size_t size, int maximum, int prot)
 { (void)task; (void)maximum; return mprotect((void *)address, size, prot); }
 #include "fex_code_guards.h"

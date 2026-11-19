@@ -311,6 +311,7 @@ def fex_cpu(data, backend):
     # IPA. They establish patch presence, not successful device guard arming.
     for marker in (b'[fex-core-init-v1]', b'[fex-ir-pool-v1]', b'[fex-owner-allocator-v1]',
                    b'[code-buffer-grow-v1]', b'WINE_IOS_FEX_CODE_GUARD_V1',
+                   b'[code-buffer-reuse-v1]', b'policy=monotonic-v1', b'candidate_rip=0x',
                    b'lock=bounded-spin-park-v1'):
         assert marker in data, f'stale {backend} FEX shared protection: {marker!r}'
     fex_arena_exports(data, require_hold_release=backend == 'wow64', code_exports=code_exports,
@@ -339,6 +340,7 @@ def check(staged, app, ipa):
     assert b'[fex-owner-v1] pre-crt' in native and b'[fex-owner-v1] retired' in native, 'native FEX ownership lifecycle missing'
     assert b'[fex-owner-census-v2]' in native, 'native FEX live-owner census missing'
     assert b'[pool-code-growth]' in native, 'stale native executable-pool growth budget'
+    assert b'checked write failed; partial store, PC unchanged' in native, 'stale native crossing-store write recovery'
     assert b'[pool-accounting]' in native, 'stale native executable-pool owner accounting'
     assert b'[cs2-window-geometry-v1]' in native, 'stale native original-window geometry observer'
     assert b'[subfloor-contract-v1]' in native, 'stale native fixed-image subfloor protocol consumer'

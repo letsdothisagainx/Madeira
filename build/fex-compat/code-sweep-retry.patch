@@ -1,0 +1,124 @@
+--- a/FEXCore/Source/Interface/Core/CPUBackend.cpp
++++ b/FEXCore/Source/Interface/Core/CPUBackend.cpp
+@@ -10,6 +10,7 @@
+ #include <FEXCore/Utils/PrctlUtils.h>
+ 
+ #include <cstdint>
++#include <chrono>
+ 
+ #if defined(__linux__)
+ #include <linux/prctl.h>
+@@ -821,39 +822,44 @@
+     }
+   }
+ 
+-  /* ml1106: BOUNDED RETRY. The sweep ran ONCE per generation and marked it
+-   * swept even when it skipped threads that were in simulation or pinned by a
+-   * signal frame. A thread that then ran only cached code never migrated, so it
+-   * kept the outgoing generation's buffer alive -- ph-rdr59: the 128 MB
+-   * generation stayed pinned (prev_use_count=63) for ~90 s while every
+-   * successor was refused down to 16-32 MB and rotated (2.1 M recompiles,
+-   * 400-900 ms frames); the moment it was freed (log line 95018) the next
+-   * generation got 128 MB again and the frame rate recovered. Retry the sweep
+-   * for the same generation while the last pass skipped anyone: every 16th
+-   * trigger (a compile), at most 256 times per generation. Threads leave
+-   * simulation on every syscall, so a retry catches them native-side. */
+-  static std::atomic<uint32_t> IosSweepRetryLeft {0};
++  /* Madeira: a thread may remain in simulation or signal-pinned for longer
++   * than any fixed compilation-trigger budget. Retry while a previous sweep
++   * skipped a target, but bound same-generation attempts by monotonic time.
++   * Cache-hit opportunities use the identical lock order as compilation tails.
++   * The cheap trigger filter avoids querying the clock on every cache hit. */
+   static std::atomic<uint32_t> IosSweepThrottle {0};
+   static std::atomic<int> IosSweepLastSkipped {0};
++  static std::atomic<uint64_t> IosSweepNextRetryUS {0};
++  static constexpr uint64_t IosSweepRetryIntervalUS = 25000;
++  static uint64_t IosSweepMonotonicUS() {
++    return std::chrono::duration_cast<std::chrono::microseconds>(
++      std::chrono::steady_clock::now().time_since_epoch()).count();
++  }
+   extern "C" void IosMaybeSweepCodeBuffers(FEXCore::Core::InternalThreadState* CallerThread) {
+-    const uint64_t Gen = IosCodeBufferGenCounter.load(std::memory_order_acquire);
+-    bool Retry = false;
+-    if (Gen == IosSweepLastGen.load(std::memory_order_relaxed)) {
+-      if (IosSweepLastSkipped.load(std::memory_order_relaxed) == 0 || IosSweepRetryLeft.load(std::memory_order_relaxed) == 0) {
++    const uint64_t ObservedGen = IosCodeBufferGenCounter.load(std::memory_order_acquire);
++    if (ObservedGen == IosSweepLastGen.load(std::memory_order_relaxed)) {
++      if (IosSweepLastSkipped.load(std::memory_order_relaxed) == 0) {
+         return;
+       }
+       if ((IosSweepThrottle.fetch_add(1, std::memory_order_relaxed) & 15) != 15) {
+         return;
+       }
+-      Retry = true;
+-    } else {
+-      IosSweepRetryLeft.store(256, std::memory_order_relaxed);
++      if (IosSweepMonotonicUS() < IosSweepNextRetryUS.load(std::memory_order_relaxed)) {
++        return;
++      }
+     }
+     if (IosSweepBusy.exchange(1, std::memory_order_acq_rel) != 0) {
+-      return; // another sweep in flight; it covers this generation or the next trigger will
+-    }
+-    if (Retry) {
+-      IosSweepRetryLeft.fetch_sub(1, std::memory_order_relaxed);
++      return;
++    }
++    // A competing sweep can finish between the optimistic checks and our
++    // claim. Re-read its generation, skipped state and deadline under the
++    // existing busy ownership before touching the registry or entry gate.
++    const uint64_t Gen = IosCodeBufferGenCounter.load(std::memory_order_acquire);
++    const bool Retry = Gen == IosSweepLastGen.load(std::memory_order_relaxed);
++    if (Retry && (IosSweepLastSkipped.load(std::memory_order_relaxed) == 0 ||
++                  IosSweepMonotonicUS() < IosSweepNextRetryUS.load(std::memory_order_relaxed))) {
++      IosSweepBusy.store(0, std::memory_order_release);
++      return;
+     }
+     auto Latest = CallerThread->CPUBackend->GetCodeBufferManager().GetLatest();
+ 
+@@ -899,13 +905,14 @@
+     std::atomic_thread_fence(std::memory_order_seq_cst);
+     __atomic_store_n(&IosCodeBufferSweepGate, 0, __ATOMIC_SEQ_CST);
+     IosSweepLastGen.store(Gen, std::memory_order_relaxed);
+-    IosSweepLastSkipped.store(InSimSkip + SigPinSkip + Raced, std::memory_order_relaxed);   /* ml1106 */
++    IosSweepLastSkipped.store(InSimSkip + SigPinSkip + Raced, std::memory_order_relaxed);
++    IosSweepNextRetryUS.store(IosSweepMonotonicUS() + IosSweepRetryIntervalUS, std::memory_order_relaxed);
+     IosSweepBusy.store(0, std::memory_order_release);
+ 
+     static std::atomic<int> SweepLogCount {0};
+     if ((Migrated || SigPinSkip || Raced) && SweepLogCount.fetch_add(1, std::memory_order_relaxed) < 128) {
+-      LogMan::Msg::EFmt("[gen-sweep] gen={} threads={} migrated={} in_sim={} sig_pin={} raced={} retry={} left={} rev=ml1106", Gen, SnapCount, Migrated,
+-                        InSimSkip, SigPinSkip, Raced, Retry ? 1 : 0, IosSweepRetryLeft.load(std::memory_order_relaxed));
++      LogMan::Msg::EFmt("[gen-sweep] gen={} threads={} migrated={} in_sim={} sig_pin={} raced={} retry={} interval_us={} policy=monotonic-v1", Gen, SnapCount, Migrated,
++                        InSimSkip, SigPinSkip, Raced, Retry ? 1 : 0, IosSweepRetryIntervalUS);
+     }
+   }
+ #endif
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -2218,6 +2218,11 @@
+     // Is the code in the cache?
+     // The backends only check L1 and L2, not L3
+     if (auto HostCode = Thread->LookupCache->FindBlock(Thread, GuestRIP)) {
++#if defined(_WIN32)
++      // FindBlock's scoped map read lock has been released. Keep the same
++      // invalidation-shared -> map-write -> migration order as the tail.
++      IosMaybeSweepCodeBuffers(Thread);
++#endif
+       return HostCode;
+     }
+   }
+@@ -2273,6 +2278,13 @@
+     return 0;
+   } else if (!DebugData) {
+     // DebugData wasn't populated, indicating another thread raced us for compiling this block
++#if defined(FEX_IOS_HOST) && defined(_WIN32)
++    if (!IosUnpublished) {
++      // CompileCode and its FindBlock have returned with emission/map locks
++      // released; ordinary compilation still owns invalidation-shared.
++      IosMaybeSweepCodeBuffers(Thread);
++    }
++#endif
+     return reinterpret_cast<uintptr_t>(CodePtr);
+   }
+ 

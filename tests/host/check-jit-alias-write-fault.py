@@ -36,6 +36,7 @@ code = r'''
 typedef struct { uint64_t __x[29], __fp, __lr, __sp, __pc; } arm_thread_state64_t;
 typedef struct { __uint128_t __v[32]; } arm_neon_state64_t;
 typedef uintptr_t mach_vm_address_t;
+typedef uintptr_t vm_offset_t;
 typedef size_t mach_vm_size_t;
 typedef unsigned mach_msg_type_number_t;
 typedef int mach_port_t;
@@ -55,6 +56,19 @@ static int mach_vm_region(int task, uintptr_t *address, size_t *size, int flavor
     return 1;
 }
 static int mach_port_deallocate(int task, int object) { (void)task; (void)object; return 0; }
+/* This legacy fixture models the checked copy using actual kernel delivery.
+ * The concurrent-revocation suite separately executes real Mach on Darwin. */
+static int mach_vm_write(int task, uintptr_t address, vm_offset_t data, unsigned count)
+{
+    (void)task;
+    int fds[2];
+    if (pipe(fds)) return 1;
+    ssize_t sent = write(fds[1], (void *)data, count);
+    close(fds[1]);
+    ssize_t copied = sent == (ssize_t)count ? read(fds[0], (void *)address, count) : -1;
+    close(fds[0]);
+    return copied == (ssize_t)count ? KERN_SUCCESS : 1;
+}
 #define VM_PROT_WRITE PROT_WRITE
 void *ios_jit_rx_base_global, *ios_jit_rw_base_global;
 size_t ios_jit_pool_size_global;

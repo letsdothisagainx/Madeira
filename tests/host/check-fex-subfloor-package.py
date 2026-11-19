@@ -87,7 +87,8 @@ def fex_fixture(backend='arm64ec'):
         encoded=name+b'\0';data[raw(cursor):raw(cursor)+len(encoded)]=encoded
         slots[name]=raw(0x1040)+index*4;strings[name]=raw(cursor);cursor+=len(encoded)
     markers=(b'[fex-core-init-v1][fex-ir-pool-v1][fex-owner-allocator-v1]'
-             b'[code-buffer-grow-v1]WINE_IOS_FEX_CODE_GUARD_V1 lock=bounded-spin-park-v1')
+             b'[code-buffer-grow-v1]WINE_IOS_FEX_CODE_GUARD_V1 lock=bounded-spin-park-v1'
+             b'[code-buffer-reuse-v1] policy=monotonic-v1 candidate_rip=0x')
     if backend=='wow64':markers+=b'MadeiraBTCpuThreadInit[fex-thread-init-v1]MadeiraBTCpuWriteMemory[fex-guest-write-v1][fex-first-use-v1][fex-blocklist-v1][fex-hold-release-v1][fex-thread-retire-v1]'
     data[raw(0x1800):raw(0x1800)+len(markers)]=markers
     return data,{'pe':pe,'opt':opt,'raw':raw,'sections':sections,'slots':slots,'strings':strings,'diagnostics':diagnostics}
@@ -127,14 +128,15 @@ def run():
     ec_machine=bytearray(base);struct.pack_into('<H',ec_machine,0x84,0xa641);package.fex_cpu(bytes(ec_machine),'arm64ec')
     native,unused=fex_fixture('wow64');package.fex_cpu(bytes(native),'wow64')
     for backend in ('arm64ec','wow64'):
-        for marker in (b'[code-buffer-grow-v1]',b'WINE_IOS_FEX_CODE_GUARD_V1'):
+        for marker in (b'[code-buffer-grow-v1]', b'WINE_IOS_FEX_CODE_GUARD_V1',
+                       b'[code-buffer-reuse-v1]', b'policy=monotonic-v1', b'candidate_rip=0x'):
             stale,_=fex_fixture(backend)
             stale[stale.index(marker)]=0
             try:package.fex_cpu(bytes(stale),backend)
             except AssertionError as error:
                 assert 'shared protection' in str(error) and repr(marker) in str(error)
             else:raise AssertionError('accepted stale '+backend+' guarded producer')
-    print('PASS both final-package CPU gates reject missing guard activation or actual-growth producer markers; patch presence is not device acceptance')
+    print('PASS both final-package CPU gates reject missing guard, growth, released-class reuse, monotonic sweep and ASCII summary producers; patch presence is not device acceptance')
     # The existing allocator-band exports are runtime-initialized variables.
     # They may live in the zero-fill suffix of .data; only the versioned
     # capability's initialized magic must be present in the actual PE file.

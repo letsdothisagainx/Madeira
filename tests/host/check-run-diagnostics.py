@@ -6,8 +6,10 @@ is reported SKIP; CI must pass --require-swift to require actual execution.
 """
 from pathlib import Path
 import argparse
+import ast
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -29,6 +31,17 @@ assert 'SteamGameDiagnostics.collect(documents: documents)' in source
 assert all(name not in source for name in ['loginusers.vdf', 'ssfn', 'config.vdf', 'URLSession'])
 assert 'annotateGap: Bool = false' in (ROOT / 'app/Madeira/SteamGameDiagnostics.swift').read_text()
 print('PASS run export source scope: fixed-source snapshots, typed VAC remains separate, compressed ZIP, owned-directory failure cleanup')
+
+# Read the emitter's complete replacement format directly from the owned
+# downstream patch; check-fex-cb-summary.py separately verifies these bytes in
+# the actual staged CompileBlock. Keep the sanitizer unchanged.
+patch = (ROOT / 'build/fex-compat/native-diagnostics.patch').read_text()
+emitted = '\n'.join(line[1:] for line in patch.splitlines()
+                    if line.startswith((' ', '+')) and not line.startswith('+++'))
+literals = re.search(r'LogMan::Msg::EFmt\(((?:"(?:[^"\\]|\\.)*"\s*)+),', emitted).group(1)
+summary_format = ''.join(ast.literal_eval(literal) for literal in re.findall(r'"(?:[^"\\]|\\.)*"', literals))
+assert summary_format.startswith('[CB_SUMMARY] ') and summary_format.isascii()
+summary_fixture = summary_format.format(16384, 4096, 12288, 75, 0x71d514f5d8, 17, 3, 0x12340000, 255, 0x12340000)
 
 swift = os.environ.get('SWIFTC') or shutil.which('swiftc')
 if not swift:
@@ -73,6 +86,12 @@ import Glibc
         let compactUUID = "00112233445566778899aabbccddeeff"
         let nativeUUID = "00112233-4455-6677-8899-aabbccddeeff"
         let flags = "[cs2-launch-flags-v1] pid=033c tid=0340 steam=1 condebug=1 joy=1 insecure=0 allow-third-party=0 argument-count=3 unknown-count=0 known-sequence=0,1,2 parse-complete=1 coverage=accepted-process-params"
+        let cbSummary = __CB_SUMMARY_FIXTURE__
+        let oldCBSummary = cbSummary.replacingOccurrences(of: "candidate_rip=", with: "candidate_rip\u{2248}")
+        assert(RunDiagnostics.sanitize(oldCBSummary) == nil, "baseline non-ASCII summary must reproduce omission")
+        assert(RunDiagnostics.sanitize(cbSummary) == cbSummary, "ASCII production summary lost useful counters")
+        assert(RunDiagnostics.sanitize(cbSummary + " Cookie: PRIVATE_COOKIE") == nil)
+        assert(RunDiagnostics.sanitize(cbSummary + " access_token=PRIVATE_TOKEN") == nil)
         let provenance = "[native-build-provenance-v1] package-source=\(revision) native-uuid=\(compactUUID) packaged-uuid=\(nativeUUID) uuid-status=match virtual-source=\(virtualHash) expected-virtual=\(virtualHash) virtual-build=\(revision) virtual-status=match jit-source=\(jitHash) expected-jit=\(jitHash) jit-build=\(revision) jit-status=match compiled-code-tail-mb=512 expected-code-tail-mb=512 policy-status=match"
         let faultPrefix = "[fault-site-v1] family=exclusive tracked-rank=1 hits=42 pc=0x7c01234560 code-pe=0x71c0000000 code-rva=123456 "
         let faultRows = ["unchanged", "changed", "unverifiable"].map { faultPrefix + "cookies=" + $0 + " metadata=first-event" }
@@ -81,7 +100,7 @@ import Glibc
             "[allocator] event=code-buffer-capacity reserved-mb=4096 committed-mb=512 free-mb=3584",
             "[process] pid=033c parent=0020 image=cs2.exe machine=8664 status=00000000",
             "[module] pid=033c module=libarm64ecfex.dll image-size=1048576 base=0x12345678",
-            "[steam-service] result=1053", flags]
+            "[steam-service] result=1053", flags, cbSummary]
         let privateRows = [
             "Authorization: Bearer BEARER_PRIVATE_SENTINEL",
             "refresh_token=REFRESH_PRIVATE_SENTINEL", "Set-Cookie: COOKIE_PRIVATE_SENTINEL",
@@ -115,7 +134,7 @@ import Glibc
         assert(RunDiagnostics.sanitize(closure + " access_token=PRIVATE_TOKEN") == nil)
         assert(RunDiagnostics.sanitize(closure + " UNKNOWN_CONNECTION_PAYLOAD_1234567890")!.hasSuffix("[redacted-opaque-value]"))
         let repeated = String(repeating: "[allocator] event=sample reserved-mb=4096 committed-mb=512 status=ready\n", count: 8_000)
-        let main = (useful + faultRows + privateRows + rejectedFaultRows + [String(repeating: "x", count: 20_000), "non-ascii=\u{00e9}"]).joined(separator: "\n") + "\n" + repeated
+        let main = (useful + faultRows + privateRows + rejectedFaultRows + [oldCBSummary, String(repeating: "x", count: 20_000), "non-ascii=\u{00e9}"]).joined(separator: "\n") + "\n" + repeated
         try put("madeira-log.txt", main)
         let steam = "wine/drive_c/Program Files (x86)/Steam/"
         let console = steam + "steamapps/common/Counter-Strike Global Offensive/game/csgo/console.log"
@@ -157,6 +176,8 @@ import Glibc
         assert(["manifest.json", "metadata.json", "clocks-and-markers.json", "sanitized/madeira-session.log", "sanitized/cs2-console.log", "sanitized/steam-console.log", "vac/observations.json", "vac/cs2-console.json", "vac/summary.json"].allSatisfy(names.contains))
         let sanitized = text(entries, "sanitized/madeira-session.log")
         for row in useful { assert(sanitized.contains(row), "useful row lost: " + row) }
+        assert(!sanitized.contains(oldCBSummary), "baseline non-ASCII summary unexpectedly exported")
+        print("PASS actual RunDiagnostics sanitizer: old non-ASCII CB_SUMMARY omitted, production ASCII counters retained, secret-bearing variants still rejected")
         for row in faultRows {
             let expected = row.replacingOccurrences(of: " cookies=", with: " code-seal=")
             assert(RunDiagnostics.sanitize(row) == expected)
@@ -259,6 +280,7 @@ import Glibc
     }
 }
 '''
+code = code.replace('__CB_SUMMARY_FIXTURE__', json.dumps(summary_fixture))
 # Foundation throwing reads must be evaluated before assert's autoclosure.
 replacements = {
     'assert(try fm.contentsOfDirectory(atPath: cancelRoot.path) == ["unrelated"])': 'let cancelRemaining = try fm.contentsOfDirectory(atPath: cancelRoot.path); assert(cancelRemaining == ["unrelated"])',
@@ -303,6 +325,7 @@ with tempfile.TemporaryDirectory(prefix='madeira-run-export-') as temporary:
                 assert secret not in body, 'Private fixture leaked: ' + secret
             assert 'event=code-buffer-capacity' in archive.read('sanitized/madeira-session.log').decode()
             assert 'libarm64ecfex.dll' in archive.read('sanitized/madeira-session.log').decode()
+            assert summary_fixture in archive.read('sanitized/madeira-session.log').decode()
             assert 'VAC was unable to verify your game session.' in archive.read('sanitized/cs2-console.log').decode()
             assert len(archive.read('vac/observations.json')) > 2
             main = archive.getinfo('sanitized/madeira-session.log')

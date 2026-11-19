@@ -79,7 +79,7 @@
        auto* T = Frame ? Frame->Thread : nullptr;
        LogMan::Msg::EFmt("[CB_SUMMARY] total={} real_compiles={} cache_hits={} "
 -                        "hit_rate={}%  hottest_rip≈0x{:x} repeats~{} "
-+                        "hit_rate={}%  candidate_rip≈0x{:x} candidate_balance={} sample_skips={} "
++                        "hit_rate={}%  candidate_rip=0x{:x} candidate_balance={} sample_skips={} "
                          "L1ptr=0x{:x} L1mask=0x{:x} cacheL1=0x{:x}",
                          total, reals,
                          total - reals,
