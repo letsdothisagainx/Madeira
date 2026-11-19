@@ -57,6 +57,13 @@ def build_actual_producer(directory):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     p = module.producer_parts(staged)
+    if os.environ.get('MADEIRA_POOL_PARTITION_ONLY') == 'reuse-baseline':
+        # Baseline control reverts only the new larger-class probe loop in
+        # the literal staged constructor; all native safety checks stay real.
+        ctor = p['ctor']
+        begin = ctor.index('#if defined(FEX_IOS_HOST) && defined(_WIN32)\n    if (!Ptr && GuardSize')
+        end = ctor.index('#endif', begin) + len('#endif')
+        p['ctor'] = ctor[:begin] + ctor[end:]
     source = r'''
 #include <algorithm>
 #include <atomic>
@@ -85,8 +92,9 @@ static void* VirtualAlloc2(void* process,void* base,size_t size,unsigned flags,u
                           MEM_EXTENDED_PARAMETER* parameters,unsigned count){
  assert(!process&&!base&&flags==(MEM_COMMIT|MEM_RESERVE)&&prot==PAGE_EXECUTE_READWRITE);
  assert(count==2&&parameters[0].Type==MemExtendedParameterAttributeFlags&&parameters[0].ULong64==MEM_EXTENDED_PARAMETER_EC_CODE);
- assert(parameters[1].Type==MADEIRA_FEX_CODE_PARAMETER_TYPE&&parameters[1].ULong64==MADEIRA_FEX_CODE_GUARD_ABI_V1);
- return madeira_test_fex_allocate(size,1);
+ assert(parameters[1].Type==MADEIRA_FEX_CODE_PARAMETER_TYPE);
+ assert(parameters[1].ULong64==MADEIRA_FEX_CODE_GUARD_ABI_V1||parameters[1].ULong64==MADEIRA_FEX_CODE_REUSE_ABI_V1);
+ return madeira_test_fex_allocate(size,parameters[1].ULong64==MADEIRA_FEX_CODE_REUSE_ABI_V1?2:1);
 }
 static int VirtualProtect(void* pointer,size_t size,unsigned prot,DWORD* old){
  assert(prot==PAGE_NOACCESS&&old);*old=PAGE_EXECUTE_READWRITE;return madeira_test_fex_guard(pointer,size);
@@ -135,6 +143,12 @@ extern "C" size_t madeira_test_fex_grow(void* pointer,uintptr_t* output){
  *output=(uintptr_t)h.held->Ptr;return h.held->AllocatedSize;
 }
 extern "C" void madeira_test_fex_manager_destroy(void* pointer){delete(ManagerHandle*)pointer;}
+extern "C" void* madeira_test_fex_construct(size_t requested,uintptr_t* pointer,size_t* actual){
+ auto* held=new std::shared_ptr<FEXCore::CPU::CodeBuffer>(std::make_shared<FEXCore::CPU::CodeBuffer>(requested));
+ *pointer=(uintptr_t)(*held)->Ptr;*actual=(*held)->AllocatedSize;return held;
+}
+extern "C" void madeira_test_fex_destroy_buffer(void* held){delete(std::shared_ptr<FEXCore::CPU::CodeBuffer>*)held;}
+
 '''
     unit, obj = directory / 'actual-producer.cpp', directory / 'actual-producer.o'
     unit.write_text(source)
@@ -2324,10 +2338,13 @@ extern void *madeira_test_fex_manager_create(void);
 extern size_t madeira_test_fex_latest(void *,uintptr_t *);
 extern size_t madeira_test_fex_grow(void *,uintptr_t *);
 extern void madeira_test_fex_manager_destroy(void *);
+extern void *madeira_test_fex_construct(size_t,uintptr_t *,size_t *);
+extern void madeira_test_fex_destroy_buffer(void *);
 void *madeira_test_fex_allocate(size_t size,int guarded)
 {
     CHECK(guarded&&ios_pool_code_guards&&madeira_fex_code_buffer_class_valid(size));
-    requested_allocation_attributes=IOS_FEX_CODE_GUARDED_ATTRIBUTE;
+    requested_allocation_attributes=IOS_FEX_CODE_GUARDED_ATTRIBUTE |
+        (guarded==2?IOS_FEX_CODE_REUSE_ONLY_ATTRIBUTE:0);
     void *result=NULL;size_t got=size;int status=allocate_code(&got,&result);
     requested_allocation_attributes=0;
     if(status!=STATUS_SUCCESS){CHECK(status==STATUS_NO_MEMORY&&!result);return NULL;}
@@ -2413,9 +2430,92 @@ static void partition_remaining_images(size_t *client,size_t *embree,size_t *men
     }
     CHECK(jit_pool_offset==0x2c408000);check_code_image_nonoverlap();
 }
+static void check_released_larger_class(const char *mode)
+{
+    reset_current_cs2_policy();
+    jit_pool_offset=ios_jit_tail_reserved=0;ios_pool_free_count=ios_pool_ledger_count=ios_tail_carve_n=0;
+    memset(ios_tail_carves,0,sizeof ios_tail_carves);
+    partition_actor(3);
+    /* No existing carve: a private probe may not use ample virgin tail, C,
+     * or reclaimed image capacity. Ordinary requests still use their routes. */
+    CHECK(!madeira_test_fex_allocate(64*MB,2));
+    CHECK(!ios_jit_tail_reserved&&!ios_tail_carve_n&&!ios_jit_low_reserved);
+    size_t image_limit=ios_pool_image_limit;
+    ios_pool_image_limit=0;ios_jit_low_size_global=128*MB;
+    CHECK(!madeira_test_fex_allocate(64*MB,2));
+    CHECK(!ios_jit_tail_reserved&&!ios_tail_carve_n&&!ios_jit_low_reserved);
+    ios_jit_low_size_global=0;
+    jit_pool_offset=ios_jit_pool_size_global;
+    ios_pool_freelist[0]=(struct ios_pool_free){0,128*MB,0,1,0};ios_pool_free_count=1;
+    CHECK(!madeira_test_fex_allocate(64*MB,2));
+    CHECK(!ios_jit_tail_reserved&&!ios_tail_carve_n&&ios_pool_free_count==1&&ios_pool_freelist[0].size==128*MB);
+    ios_pool_image_limit=image_limit;jit_pool_offset=0;ios_pool_free_count=0;
+    /* Exact Run8/9 reservation geometry. Owners are fixture identities, not
+     * reconstructed references: every carve below is genuinely allocated. */
+    static const size_t classes[]={128*MB,64*MB,32*MB,32*MB,32*MB,16*MB,16*MB,16*MB,16*MB};
+    void *carves[ARRAY_SIZE(classes)]={0};
+    for(unsigned i=0;i<ARRAY_SIZE(classes);i++)
+    {
+        partition_actor(i<3?0:3);carves[i]=madeira_test_fex_allocate(classes[i],1);CHECK(carves[i]);
+    }
+    for(unsigned i=0;i<7;i++)
+    {
+        size_t bytes=0x4000;void *dispatcher=NULL;
+        CHECK(allocate_code(&bytes,&dispatcher)==STATUS_SUCCESS&&bytes==0x4000);
+    }
+    CHECK(ios_jit_tail_reserved==0x1601c000);
+    CHECK(384*MB-ios_jit_tail_reserved==0x1fe4000); // 112KiB short of32MiB.
+    partition_actor(0);madeira_test_fex_free(carves[0],128*MB);
+    partition_actor(3);madeira_test_fex_free(carves[8],16*MB);
+    size_t tail=ios_jit_tail_reserved,head=jit_pool_offset,low=ios_jit_low_reserved;
+    unsigned count=ios_tail_carve_n;
+    uintptr_t pointer=0;size_t actual=0;
+    void *buffer=madeira_test_fex_construct(64*MB,&pointer,&actual);CHECK(buffer);
+    if(!strcmp(mode,"reuse-baseline"))
+    {
+        CHECK(actual==16*MB&&pointer==(uintptr_t)carves[8]);
+        puts("BASELINE reproduced: exact352.109375MiB shape leaves free128MiB unusable for ordinary64MiB; real producer degrades through failed32MiB to16MiB");
+    }
+    else
+    {
+        CHECK(actual==128*MB&&pointer==(uintptr_t)carves[0]);
+        CHECK(!ios_jit_code_guard_contains(pointer+64*MB-0x4000,0x4000));
+        CHECK(ios_tail_carves[find_carve(pointer-(uintptr_t)rx_memory)].size==128*MB);
+        puts("PASS exact352.109375MiB shape: real staged producer adopts released128MiB after64MiB failure without fresh reservation or interior guard");
+    }
+    check_partition_code(pointer,actual);
+    CHECK(ios_jit_tail_reserved==tail&&jit_pool_offset==head&&ios_jit_low_reserved==low&&ios_tail_carve_n==count);
+    madeira_test_fex_destroy_buffer(buffer);
+    unsigned large=find_carve((uintptr_t)carves[0]-(uintptr_t)rx_memory);
+    CHECK(ios_tail_carves[large].free&&ios_tail_carves[large].size==128*MB);
+    struct ios_tail_carve released=ios_tail_carves[large];
+    // All existing lease, retirement, grace, scan and mapping gates still bind.
+    ios_tail_carves[large].free=0;CHECK(!madeira_test_fex_allocate(128*MB,2));
+    ios_tail_carves[large]=released;ios_tail_carves[large].guarded=2;
+    CHECK(!madeira_test_fex_allocate(128*MB,2));
+    ios_tail_carves[large]=released;ios_tail_carves[large].retired=1;
+    ios_tail_carves[large].retired_lease=0;ios_tail_carves[large].freed_at=fake_now-10;
+    CHECK(!madeira_test_fex_allocate(128*MB,2));
+    ios_tail_carves[large].retired_lease=ios_tail_carves[large].allocation_lease;
+    ios_tail_carves[large].freed_at=fake_now;
+    unsigned sleeps=grace_sleep_count;CHECK(!madeira_test_fex_allocate(128*MB,2)&&grace_sleep_count==sleeps);
+    ios_tail_carves[large].freed_at=fake_now-10;scanned_pc=(uintptr_t)carves[0]+64;
+    CHECK(!madeira_test_fex_allocate(128*MB,2));scanned_pc=0;
+    ios_tail_carves[large]=released;ios_tail_carves[large].retired=1;
+    ios_tail_carves[large].retired_lease=ios_tail_carves[large].allocation_lease;
+    ios_tail_carves[large].freed_at=fake_now-10;state_query_fail=1;
+    CHECK(!madeira_test_fex_allocate(128*MB,2));state_query_fail=0;
+    ios_tail_carves[large]=released;region_query_fail=1;
+    CHECK(!madeira_test_fex_allocate(128*MB,2));region_query_fail=0;
+    CHECK(ios_tail_carves[large].guarded==2&&!ios_tail_carves[large].free);
+    CHECK(ios_jit_tail_reserved==tail&&jit_pool_offset==head&&ios_jit_low_reserved==low&&ios_tail_carve_n==count);
+    puts("PASS reuse-only actual native allocator: no fresh tail/C/reclaimed-image capacity; live, quarantined, unproved, recent, running/unknown-thread and invalid-mapping classes refuse; guard quarantine and reservation cursors remain correct");
+}
+
 static void check_current_partition_with_actual_producer(void)
 {
     const char *order=getenv("MADEIRA_POOL_PARTITION_ONLY");CHECK(order);
+    if(!strcmp(order,"reuse-only")||!strcmp(order,"reuse-baseline")){check_released_larger_class(order);return;}
     reset_current_cs2_policy();
     CHECK(ios_pool_image_limit==768*MB&&ios_pool_code_tail_limit==384*MB&&ios_pool_code_guards);
     jit_pool_offset=ios_jit_tail_reserved=0;ios_pool_free_count=ios_pool_ledger_count=ios_tail_carve_n=0;
@@ -2853,7 +2953,7 @@ if __name__ == '__main__':
                 ('current', {'MADEIRA_POOL_035900_ONLY': '1', 'MADEIRA_POOL_035900_EXPECT_BASELINE': '1'}),
                 ('current', {'MADEIRA_POOL_035900_ONLY': '1'}),
                 ('current', {'MADEIRA_POOL_051624_ONLY': '1'})]
-        runs += [('current', {'MADEIRA_POOL_PARTITION_ONLY': order}) for order in ('code-first','image-first','interleaved')]
+        runs += [('current', {'MADEIRA_POOL_PARTITION_ONLY': order}) for order in ('code-first','image-first','interleaved','reuse-baseline','reuse-only')]
         runs += [('current', {'MADEIRA_POOL_NOV10_ONLY': '1', 'MADEIRA_POOL_NOV10_CLOCK_SHIFT': str(shift)})
                  for shift in (0, -1, 1)]
         for selected, settings in runs:

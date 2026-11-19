@@ -33409,16 +33409,18 @@ static NTSTATUS get_extended_params( const MEM_EXTENDED_PARAMETER *parameters, U
 #ifdef WINE_IOS
             /* This bit is an internal result of the versioned private
              * parameter. AttributeFlags alone cannot forge a guard request. */
-            if (parameters[i].ULong64 & IOS_FEX_CODE_GUARDED_ATTRIBUTE) return STATUS_INVALID_PARAMETER;
+            if (parameters[i].ULong64 & (IOS_FEX_CODE_GUARDED_ATTRIBUTE | IOS_FEX_CODE_REUSE_ONLY_ATTRIBUTE))
+                return STATUS_INVALID_PARAMETER;
 #endif
             *attributes = parameters[i].ULong;
             break;
 
 #ifdef WINE_IOS
         case MADEIRA_FEX_CODE_PARAMETER_TYPE:
-            if (parameters[i].Reserved || parameters[i].ULong64 != MADEIRA_FEX_CODE_GUARD_ABI_V1)
-                return STATUS_INVALID_PARAMETER;
-            guarded_code = 1;
+            if (parameters[i].Reserved ||
+                (parameters[i].ULong64 != MADEIRA_FEX_CODE_GUARD_ABI_V1 &&
+                 parameters[i].ULong64 != MADEIRA_FEX_CODE_REUSE_ABI_V1)) return STATUS_INVALID_PARAMETER;
+            guarded_code = parameters[i].ULong64 == MADEIRA_FEX_CODE_REUSE_ABI_V1 ? 2 : 1;
             break;
 #endif
 
@@ -33439,6 +33441,7 @@ static NTSTATUS get_extended_params( const MEM_EXTENDED_PARAMETER *parameters, U
     }
 #ifdef WINE_IOS
     if (guarded_code) *attributes |= IOS_FEX_CODE_GUARDED_ATTRIBUTE;
+    if (guarded_code == 2) *attributes |= IOS_FEX_CODE_REUSE_ONLY_ATTRIBUTE;
 #endif
     return STATUS_SUCCESS;
 }
@@ -34001,11 +34004,16 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
 #ifdef WINE_IOS
     /* The private request is accepted only by the local, address-free,
      * executable CodeBuffer path. It must never become an ordinary mapping. */
-    if ((attributes & IOS_FEX_CODE_GUARDED_ATTRIBUTE) &&
-        (process != NtCurrentProcess() || attributes != (IOS_FEX_CODE_GUARDED_ATTRIBUTE | 0x40) ||
+    if ((attributes & (IOS_FEX_CODE_GUARDED_ATTRIBUTE | IOS_FEX_CODE_REUSE_ONLY_ATTRIBUTE)) &&
+        (process != NtCurrentProcess() ||
+         (attributes & ~IOS_FEX_CODE_REUSE_ONLY_ATTRIBUTE) != (IOS_FEX_CODE_GUARDED_ATTRIBUTE | 0x40) ||
          protect != PAGE_EXECUTE_READWRITE || *ret || !ios_pool_code_guards ||
          type != (MEM_COMMIT | MEM_RESERVE) || limit_low || limit_high || align || machine ||
          !madeira_fex_code_buffer_class_valid( *size_ptr ))) return STATUS_INVALID_PARAMETER;
+    /* A missing native pool must not turn the versioned probe into ordinary VM. */
+    if ((attributes & IOS_FEX_CODE_REUSE_ONLY_ATTRIBUTE) &&
+        (!ios_jit_rx_base_global || !ios_jit_rw_base_global || !ios_jit_pool_size_global))
+        return STATUS_NO_MEMORY;
     /* iOS-Madeira: For FEX-style EC_CODE RWX allocations, allocate from the
      * JIT pool RX range directly. This avoids the cross-region RIP-relative
      * addressing problem: when emit_VA == execute_VA (both are the JIT pool
@@ -34027,6 +34035,7 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
     {
         size_t alloc_size = (*size_ptr + 0x3FFF) & ~0x3FFFUL;
         int guarded = !!(attributes & IOS_FEX_CODE_GUARDED_ATTRIBUTE);
+        int reuse_only = !!(attributes & IOS_FEX_CODE_REUSE_ONLY_ATTRIBUTE);
         /* madeira-bcd pool-low: region C (ios_jit_low_rx_global) serves this carve
          * first when it still has room; the pool's budget cap below only applies to
          * what goes to the tail. Never for a WoW64 process: its FEX refuses an
@@ -34147,7 +34156,7 @@ retry_code_carve_reuse:
                     (low_ok || !ios_tail_carve_in_low( ios_tail_carves[i].off )) &&   /* madeira-bcd pool-low */
                     (best == ~0u || ios_pool_code_carve_better( &ios_tail_carves[i], &ios_tail_carves[best] )))
                     best = i;
-            if (best == ~0u && !low_ok && !retired_busy &&
+            if (best == ~0u && !reuse_only && !low_ok && !retired_busy &&
                 retired_waited < IOS_POOL_REUSE_GRACE_SEC * 10)
                 grace_wait = ios_pool_recent_retired_code_wait( ios_tail_carves, ios_tail_carve_n,
                                                                alloc_size, ios_jit_pool_size_global, now, guarded );
@@ -34247,6 +34256,10 @@ retry_code_carve_reuse:
             }
             pthread_mutex_unlock( &ios_tail_carve_lock );
         }
+        /* A private reuse probe may consume only an eligible existing whole
+         * class. Never reserve a tail byte, region-C byte or reclaimed image
+         * span, even if those fresh routes have ample capacity. */
+        if (reuse_only) return STATUS_NO_MEMORY;
         /* madeira-bcd: the cap was lifted for a dead process's buffer that a thread
          * still runs in, so the pool's budget applies again (FEX halves down) */
         if (retired_busy)

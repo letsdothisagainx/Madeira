@@ -55,6 +55,7 @@ typedef void *PVOID, *HANDLE;
 typedef int NTSTATUS;
 #define STATUS_SUCCESS 0
 #define STATUS_INVALID_PARAMETER -1
+#define STATUS_NO_MEMORY -2
 #define PAGE_EXECUTE_READWRITE 0x40
 #define MEM_COMMIT 0x1000
 #define MEM_RESERVE 0x2000
@@ -66,6 +67,8 @@ typedef int NTSTATUS;
 static const ULONG_PTR granularity_mask = 0xffff, page_mask = 0xfff;
 static void *user_space_limit = (void *)(UINT64_C(1) << 48);
 static int ios_wow_limit_by_window = 1, ios_pool_code_guards = 1;
+static void *ios_jit_rx_base_global=(void *)1,*ios_jit_rw_base_global=(void *)2;
+static size_t ios_jit_pool_size_global=1152u<<20;
 static uintptr_t ios_wow_base(void) { return 0; }
 static int is_wow64(void) { return 0; }
 static ULONG_PTR get_wow_user_space_limit(void) { return UINT64_C(1) << 32; }
@@ -125,11 +128,23 @@ int main(void)
     p[0].Type = MemExtendedParameterAttributeFlags; p[0].ULong64 = 0x40;
     p[1].Type = MADEIRA_FEX_CODE_PARAMETER_TYPE; p[1].ULong64 = MADEIRA_FEX_CODE_GUARD_ABI_V1;
     CHECK(parse(p,2,&attributes) == 0 && attributes == tagged);
+    p[1].ULong64 = MADEIRA_FEX_CODE_REUSE_ABI_V1;
+    CHECK(parse(p,2,&attributes) == 0 && attributes == (tagged|IOS_FEX_CODE_REUSE_ONLY_ATTRIBUTE));
+    CHECK(allocation_gate(local,&base,&size,type,PAGE_EXECUTE_READWRITE,attributes,0,0,0,0) == 0);
+    CHECK(map_gate(attributes) == STATUS_INVALID_PARAMETER);
+    ios_jit_rx_base_global=NULL;
+    CHECK(allocation_gate(local,&base,&size,type,PAGE_EXECUTE_READWRITE,tagged|IOS_FEX_CODE_REUSE_ONLY_ATTRIBUTE,0,0,0,0) == STATUS_NO_MEMORY);
+    ios_jit_rx_base_global=(void *)1;
+    p[0].ULong64 = 0x40|IOS_FEX_CODE_REUSE_ONLY_ATTRIBUTE;
+    CHECK(parse(p,1,&attributes) == STATUS_INVALID_PARAMETER);
+    p[0].ULong64 = 0x40;
+    p[1].ULong64 = MADEIRA_FEX_CODE_GUARD_ABI_V1;
     swapped[0] = p[1]; swapped[1] = p[0];
     CHECK(parse(swapped,2,&attributes) == 0 && attributes == tagged);
     CHECK(allocation_gate(local,&base,&size,type,PAGE_EXECUTE_READWRITE,tagged,0,0,0,0) == 0);
     CHECK(map_gate(tagged) == STATUS_INVALID_PARAMETER);
     CHECK(map_gate(0x40) == 0);
+    CHECK(allocation_gate(local,&base,&size,type,PAGE_EXECUTE_READWRITE,0x40|IOS_FEX_CODE_REUSE_ONLY_ATTRIBUTE,0,0,0,0) == STATUS_INVALID_PARAMETER);
     CHECK(parse(p,1,&attributes) == 0 && attributes == 0x40); /* ordinary legacy request */
     CHECK(parse(NULL,0,&attributes) == 0 && attributes == 0);
     CHECK(parse(NULL,1,&attributes) == STATUS_INVALID_PARAMETER);

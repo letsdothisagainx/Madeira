@@ -118,6 +118,7 @@ static unsigned long long ios_thread_process_lease(void*,int){return current_lea
 static unsigned char *rx,*rw;
 static void* reservations[2];
 static size_t next_offset=768*MB,per_request_limit=128*MB;
+static size_t last_named_size,last_freed_size;
 static std::vector<size_t> requests;
 static std::mutex vm_mutex;
 static constexpr unsigned MemExtendedParameterAttributeFlags=5;
@@ -128,9 +129,9 @@ static constexpr unsigned PAGE_READONLY=2,PAGE_READWRITE=4,PAGE_EXECUTE_READ=0x2
 using DWORD=uint32_t;
 struct MEM_EXTENDED_PARAMETER {uint64_t Type;union{uint64_t ULong64;uint32_t ULong;};};
 static_assert(sizeof(MEM_EXTENDED_PARAMETER)==16);
-static void* allocate_native(size_t size,bool guarded) {
+static void* allocate_native(size_t size,bool guarded,bool reuse_only=false) {
   std::lock_guard lock(vm_mutex);requests.push_back(size);
-  if(size>per_request_limit)return nullptr;
+  if(size>per_request_limit&&!reuse_only)return nullptr;
   for(unsigned i=0;i<ios_tail_carve_n;i++) {
     auto& c=ios_tail_carves[i];
     if(c.free&&c.guarded==(guarded?1u:0u)&&c.size==size) {
@@ -141,6 +142,7 @@ static void* allocate_native(size_t size,bool guarded) {
       ++allocations;return rx+c.off;
     }
   }
+  if(reuse_only)return nullptr; // Exact existing class only, never fresh capacity.
   if(size>ios_jit_pool_size_global-next_offset||ios_tail_carve_n==256)return nullptr;
   size_t off=next_offset;next_offset+=size;
   assert(!ios_jit_code_guard_contains((uintptr_t)rx+off,size));
@@ -160,9 +162,10 @@ static void* VirtualAlloc2(void* process,void* base,size_t size,unsigned flags,u
   assert(!process&&!base&&flags==(MEM_COMMIT|MEM_RESERVE)&&prot==PAGE_EXECUTE_READWRITE);
   assert(count==2&&parameters[0].Type==MemExtendedParameterAttributeFlags&&
          parameters[0].ULong64==MEM_EXTENDED_PARAMETER_EC_CODE&&
-         parameters[1].Type==MADEIRA_FEX_CODE_PARAMETER_TYPE&&
-         parameters[1].ULong64==MADEIRA_FEX_CODE_GUARD_ABI_V1);
-  return allocate_native(size,true);
+         parameters[1].Type==MADEIRA_FEX_CODE_PARAMETER_TYPE);
+  assert(parameters[1].ULong64==MADEIRA_FEX_CODE_GUARD_ABI_V1||
+         parameters[1].ULong64==MADEIRA_FEX_CODE_REUSE_ABI_V1);
+  return allocate_native(size,true,parameters[1].ULong64==MADEIRA_FEX_CODE_REUSE_ABI_V1);
 }
 static int VirtualProtect(void* pointer,size_t size,unsigned prot,DWORD* previous) {
   assert(previous&&prot==PAGE_NOACCESS);*previous=PAGE_EXECUTE_READWRITE;
@@ -196,11 +199,11 @@ static void* VirtualAlloc(size_t size,bool execute){assert(execute);++legacy_all
 static void VirtualFree(void* pointer,size_t size){
   std::lock_guard lock(vm_mutex);
   for(unsigned i=0;i<ios_tail_carve_n;i++){
-    auto& c=ios_tail_carves[i];if(rx+c.off==pointer){assert(!c.free&&c.size==size);c.free=1;++frees;return;}
+    auto& c=ios_tail_carves[i];if(rx+c.off==pointer){assert(!c.free&&c.size==size);last_freed_size=size;c.free=1;++frees;return;}
   }
   assert(false);
 }
-static void VirtualName(const char*,void*,size_t){}
+static void VirtualName(const char*,void*,size_t size){last_named_size=size;}
 static void VirtualTHPControl(void*,size_t,THPControl){}
 ''' + p['virtual_alloc'] + '\n' + p['virtual_protect'] + r'''
 }
@@ -307,6 +310,32 @@ static void guarded_growth(){
   puts("PASS actual staged producer:16→32→64, honest128/64/32 refusal→actual16→32; old references execute until released, exact-class reuse retains permanent RX/RW guards");
   // Destructors run before unmapping fixture backing.
 }
+static void larger_reuse(){
+  initialize();assert(!setenv(MADEIRA_FEX_CODE_GUARD_ENV,"1",1));
+  // A reuse-only probe cannot consume fresh capacity, even with 384MiB free.
+  size_t initial=next_offset;
+  assert(!FEXCore::Allocator::VirtualAllocCodeBuffer(128*MB,0x4000,true));
+  assert(next_offset==initial&&!ios_tail_carve_n);
+  auto large=std::make_shared<FEXCore::CPU::CodeBuffer>(128*MB);
+  auto* pointer=large->Ptr;check_buffer(large);large.reset();
+  assert(frees==1&&last_freed_size==128*MB);
+  size_t reserved=next_offset;unsigned carves=ios_tail_carve_n;
+  per_request_limit=32*MB;size_t before=requests.size();
+  auto adopted=std::make_shared<FEXCore::CPU::CodeBuffer>(64*MB);
+  assert((std::vector<size_t>(requests.begin()+before,requests.end())==std::vector<size_t>{64*MB,128*MB}));
+  assert(adopted->Ptr==pointer&&adopted->AllocatedSize==128*MB);
+  assert(last_named_size==128*MB&&next_offset==reserved&&ios_tail_carve_n==carves);
+  assert(!ios_jit_code_guard_contains((uintptr_t)pointer+64*MB-0x4000,0x4000));
+  check_buffer(adopted);adopted.reset();assert(last_freed_size==128*MB&&frees==2);
+  // A live allocation and an explicitly quarantined class cannot be adopted.
+  auto live=std::make_shared<FEXCore::CPU::CodeBuffer>(64*MB);
+  assert(live->AllocatedSize==128*MB);
+  assert(!FEXCore::Allocator::VirtualAllocCodeBuffer(128*MB,0x4000,true));
+  live.reset();ios_tail_carves[0].guarded=2;
+  assert(!FEXCore::Allocator::VirtualAllocCodeBuffer(128*MB,0x4000,true));
+  assert(next_offset==reserved&&ios_tail_carve_n==carves);
+  puts("PASS actual staged producer adopts a released128MiB class after ordinary64MiB failure: full usable/name/free size, terminal RX/RW guards, no interior guard, unchanged reservation; live/quarantined and fresh-only probes refuse");
+}
 static void legacy_mode(){
   initialize();assert(!setenv(MADEIRA_FEX_CODE_GUARD_ENV,"0",1));
   FEXCore::CPU::CodeBufferManager manager;auto first=manager.GetLatest();
@@ -400,7 +429,7 @@ static void case_run(void(*fn)()){
   pid_t p=fork();assert(p>=0);if(!p){fn();finish();fflush(stdout);_Exit(0);}
   int status;assert(waitpid(p,&status,0)==p&&WIFEXITED(status)&&WEXITSTATUS(status)==0);
 }
-int main(){case_run(guarded_growth);case_run(legacy_mode);case_run(partial_failure);case_run(warmer_race);}
+int main(){case_run(guarded_growth);case_run(larger_reuse);case_run(legacy_mode);case_run(partial_failure);case_run(warmer_race);}
 '''
         source = directory / 'producer.cpp'
         source.write_text(code)
