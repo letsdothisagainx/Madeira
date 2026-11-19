@@ -4,10 +4,13 @@
 This executes the extracted helper, not a replacement implementation. Darwin
 uses real Mach region queries and real file-backed mappings. Other hosts check
 the same byte/state semantics with their actual mapping protections, without
-claiming that this reproduces the iOS kernel retry. The fixture owns mappings
-for the entire call; concurrent unmapping is deliberately outside its scope.
+claiming that this reproduces the iOS kernel retry. A synchronized revoker also
+changes a destination after validation, comparing the exact prior helper with
+the checked production writes. Darwin executes the actual Mach write API;
+Linux uses checked kernel read delivery as an explicitly separate adapter.
 """
 import argparse
+import hashlib
 import os
 from pathlib import Path
 import platform
@@ -32,6 +35,9 @@ def function(source, signature):
 
 
 helper = function(signal, 'int ios_store_split_crossing( uint32_t insn,')
+baseline = (root / 'tests/host/fixtures/ios-crossing-store-before-checked-write.c').read_text()
+assert hashlib.sha256(baseline.encode()).hexdigest() == 'f21e9cd881f919d259a98bada2be3b5840d4a8f374e1b329364838e1145bfad8'
+baseline = baseline.replace('int ios_store_split_crossing(', 'int baseline_store_split_crossing(', 1)
 alias = function(signal, 'static uintptr_t ios_write_alias( uintptr_t addr )')
 trapped = function(signal, 'static int ios_alias_write_is_trapped( uintptr_t addr )')
 caller_start = server.index('        int r = ios_store_split_crossing( insn, &st,')
@@ -41,6 +47,7 @@ caller = server[caller_start:caller_end] + '        thread_resume( thread );\n'
 C = r'''
 #define _GNU_SOURCE
 #include <assert.h>
+#include <pthread.h>
 #include <setjmp.h>
 #include <signal.h>
 #include <stdint.h>
@@ -48,6 +55,7 @@ C = r'''
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #ifdef __APPLE__
 #include <sys/ucontext.h>
@@ -68,6 +76,7 @@ typedef struct { __uint128_t __v[32]; } arm_neon_state64_t;
 #endif
 #ifndef __APPLE__
 typedef uintptr_t mach_vm_address_t;
+typedef uintptr_t vm_offset_t;
 typedef size_t mach_vm_size_t;
 typedef unsigned mach_msg_type_number_t;
 typedef int mach_port_t;
@@ -102,6 +111,32 @@ static int mach_vm_region(int task, uintptr_t *address, size_t *size, int flavor
 }
 #endif
 
+/* This hook controls only test scheduling. The writes below still use real
+ * kernel permission/lifetime checks; no failed write is reported successful. */
+static void (*fixture_before_write)(uintptr_t);
+static int fixture_checked_write(mach_port_t task, mach_vm_address_t address,
+                                 vm_offset_t data, mach_msg_type_number_t count)
+{
+    if (fixture_before_write) fixture_before_write(address);
+#ifdef __APPLE__
+    return mach_vm_write(task, address, data, count);
+#else
+    (void)task;
+    /* process_vm_writev is absent in some hosted Linux kernels. Pipe delivery
+     * still asks the actual kernel to validate/copy into the destination and
+     * returns EFAULT for a revoked page. It models status/bytes only, not Mach
+     * operation performance or iOS implementation. The payload is <=32 bytes. */
+    int fds[2];
+    if (pipe(fds)) return 1;
+    ssize_t sent = write(fds[1], (void *)data, count);
+    close(fds[1]);
+    ssize_t copied = sent == (ssize_t)count ? read(fds[0], (void *)address, count) : -1;
+    close(fds[0]);
+    return copied == (ssize_t)count ? KERN_SUCCESS : 1;
+#endif
+}
+#define mach_vm_write fixture_checked_write
+
 enum { PAGE = 16384, SPAN = PAGE * 2 };
 void *ios_jit_rx_base_global, *ios_jit_rw_base_global;
 size_t ios_jit_pool_size_global;
@@ -126,6 +161,16 @@ uintptr_t ios_jit_anon_alias_lookup(uintptr_t address)
 void ios_jit_anon_alias_note_write(unsigned long long address) { (void)address; ++writes; }
 '''
 C += alias + trapped + helper
+C += r'''
+static void *baseline_memcpy(void *to, const void *from, size_t count)
+{
+    if (fixture_before_write) fixture_before_write((uintptr_t)to);
+    return memcpy(to, from, count);
+}
+#define memcpy baseline_memcpy
+'''
+C += baseline
+C += '\n#undef memcpy\n'
 C += r'''
 
 static int set_state_error, set_state_calls, resumes;
@@ -366,10 +411,109 @@ static void original_fault_then_refusal(int kind, unsigned split)
     destroy(&m);
 }
 #endif
+
+/* Force the demonstrated validation/write race without relying on a lucky
+ * scheduler. A different thread revokes exactly the fragment about to write. */
+static pthread_mutex_t race_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t race_cond = PTHREAD_COND_INITIALIZER;
+static uintptr_t race_address, race_page;
+static int race_requested, race_finished, race_operation;
+static void race_gate(uintptr_t address)
+{
+    if (address != race_address) return;
+    assert(!pthread_mutex_lock(&race_mutex));
+    race_requested = 1;
+    assert(!pthread_cond_broadcast(&race_cond));
+    while (!race_finished) assert(!pthread_cond_wait(&race_cond, &race_mutex));
+    assert(!pthread_mutex_unlock(&race_mutex));
+}
+static void *revoke_page(void *unused)
+{
+    (void)unused;
+    assert(!pthread_mutex_lock(&race_mutex));
+    while (!race_requested) assert(!pthread_cond_wait(&race_cond, &race_mutex));
+    if (race_operation == 2) assert(!munmap((void *)race_page, PAGE));
+    else assert(!mprotect((void *)race_page, PAGE, race_operation ? PROT_NONE : PROT_READ));
+    race_finished = 1;
+    assert(!pthread_cond_broadcast(&race_cond));
+    assert(!pthread_mutex_unlock(&race_mutex));
+    return NULL;
+}
+static void revocation_case(int old, int kind, unsigned fragment, int operation, int indexed)
+{
+    struct mapping m = mapping(kind);
+    const unsigned split = 6, bytes = indexed ? 32 : 16;
+    uintptr_t ea = (uintptr_t)m.p + PAGE - split;
+    arm_thread_state64_t state, before;
+    arm_neon_state64_t neon;
+    memset(&state, 0, sizeof(state)); memset(&neon, 0, sizeof(neon));
+    for (unsigned i = 0; i < bytes; ++i) ((unsigned char *)&neon.__v[0])[i] = 0xa0 + i;
+    uint32_t insn = indexed ? indexed_pair(indexed == 2) : 0x3d800500u;
+    state.__x[8] = indexed ? (indexed == 2 ? ea + 32 : ea) : ea - 16;
+    __darwin_arm_thread_state64_set_pc_fptr(state, (void *)(uintptr_t)0x1020);
+    before = state; kernel_state = state;
+    set_state_error = set_state_calls = resumes = writes = 0;
+    uintptr_t destination = kind == 3 ? (fragment ? alias_second : alias_first + PAGE - split)
+                                     : ea + (fragment ? split : 0);
+    race_address = destination;
+    race_page = destination & ~(uintptr_t)(PAGE - 1);
+    race_requested = race_finished = 0; race_operation = operation;
+    fixture_before_write = race_gate;
+    pthread_t revoker;
+    assert(!pthread_create(&revoker, NULL, revoke_page, NULL));
+    if (old)
+    {
+        /* Observe an actual child fault from the original direct memcpy.
+         * Leave the parent and the remaining regression cases alive. */
+        signal(SIGSEGV, SIG_DFL); signal(SIGBUS, SIG_DFL);
+        (void)baseline_store_split_crossing(insn, &state, &neon, 0, 0, 0);
+        _exit(17);
+    }
+    int result = actual_caller(insn, &state, &neon, 1);
+    assert(!pthread_join(revoker, NULL));
+    fixture_before_write = NULL;
+    assert(race_requested && race_finished);
+    assert(result == (fragment ? -2 - (int)split : -1));
+    assert(writes == fragment && !set_state_calls && resumes == 1);
+    assert(!memcmp(&state, &before, sizeof(state)));
+    assert(!memcmp(&kernel_state, &before, sizeof(state)));
+    /* Only the successful first fragment is claimed written. Failed Mach
+     * writes do not expose an output byte count; whole-store atomicity is not
+     * assumed. Restore the test page solely for inspection and cleanup. */
+    if (operation == 2)
+        assert(mmap((void *)race_page, PAGE, PROT_READ | PROT_WRITE,
+                    MAP_FIXED | MAP_PRIVATE | MAP_ANON, -1, 0) == (void *)race_page);
+    else assert(!mprotect((void *)race_page, PAGE, PROT_READ | PROT_WRITE));
+    unsigned char *first = kind == 3 ? (unsigned char *)(alias_first + PAGE - split) : (unsigned char *)ea;
+    if (fragment) assert(!memcmp(first, &neon.__v[0], split));
+    else if (operation != 2)
+        for (unsigned i = 0; i < split; ++i) assert(first[i] == 0x5a);
+    destroy(&m);
+}
+static void concurrent_revocation(void)
+{
+    unsigned old_faults = 0, checked_refusals = 0;
+    for (int kind = 0; kind <= 3; kind += 3)
+    for (unsigned fragment = 0; fragment < 2; ++fragment)
+    for (int operation = 0; operation < 3; ++operation)
+    {
+        pid_t child = fork(); assert(child >= 0);
+        if (!child) revocation_case(1, kind, fragment, operation, 0);
+        int status;
+        assert(waitpid(child, &status, 0) == child);
+        assert(WIFSIGNALED(status) && (WTERMSIG(status) == SIGSEGV || WTERMSIG(status) == SIGBUS));
+        ++old_faults;
+        for (int indexed = 0; indexed < 3; ++indexed)
+        { revocation_case(0, kind, fragment, operation, indexed); ++checked_refusals; }
+    }
+    printf("PASS concurrent revocation: original helper faults %u/%u; checked production helper refuses %u/%u; real kernel writes, confirmed prefixes, unchanged PC/base and balanced resume\n",
+           old_faults, old_faults, checked_refusals, checked_refusals);
+}
 int main(void)
 {
     long host_page = sysconf(_SC_PAGESIZE);
     assert(host_page > 0 && PAGE % host_page == 0);
+    concurrent_revocation();
 #ifdef NATIVE_ARM_STATE
     assert(*(const uint32_t *)&recovery_original_store_pc == 0x3d800500u);
     for (unsigned split = 4; split <= 6; split += 2)
@@ -401,7 +545,7 @@ with tempfile.TemporaryDirectory(prefix='madeira-cross-page-recovery-') as direc
     flags = ['-fsanitize=address,undefined', '-fno-sanitize-recover=undefined',
              '-fno-omit-frame-pointer'] if args.sanitize else []
     subprocess.run([os.environ.get('CC', 'clang'), '-std=gnu11', '-O2', '-Wall', '-Wextra', '-Werror',
-                    *flags, str(source), '-o', str(binary)], check=True)
+                    *flags, str(source), '-pthread', '-o', str(binary)], check=True)
     subprocess.run([str(binary)], check=True, timeout=60)
 print('PASS real Darwin Mach VM queries' if platform.system() == 'Darwin'
       else 'NOTE Linux permission/readback coverage only; Darwin/iOS validation remains separate')

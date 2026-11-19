@@ -10,6 +10,7 @@ on:
       - 'tests/host/check-cross-page-vector-store.py'
       - 'tests/host/check-sparse-cross-page-store.py'
       - 'tests/host/check-cross-page-store-recovery.py'
+      - 'tests/host/fixtures/ios-crossing-store-before-checked-write.c'
       - 'tests/host/check-stuck-store-history.py'
       - 'tests/host/check-stuck-store-scheduling.py'
       - '.github/workflows/cross-page-store.yml'
@@ -27,7 +28,7 @@ jobs:
         env:
           CC: clang
         run: python3 tests/host/check-cross-page-vector-store.py --require-arm64
-      - name: Verify production store completion and inaccessible-neighbor refusal
+      - name: Verify checked Mach writes, concurrent revocation and genuine store completion
         env:
           CC: clang
         run: python3 tests/host/check-cross-page-store-recovery.py --require-darwin --sanitize

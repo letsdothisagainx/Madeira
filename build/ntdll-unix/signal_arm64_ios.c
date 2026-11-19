@@ -2887,8 +2887,11 @@ static inline void ios_note_guest_delivery( uint64_t thread )
  * Store-release forms are left alone: a crossing STLR/STLUR is misaligned and
  * takes the alignment-fault path instead.
  *
- * Returns 1 (written), -1 (refused: a page of the store has no alias) or 0
+ * Returns 1 (written), -1 (not completed, no confirmed prefix) or 0
  * (not a crossing store this helper decodes; the per-encoding cases run).
+ * A value <= -3 reports a checked-write failure after -result-2 confirmed
+ * prefix bytes. The failed fragment's effect is unknown; the whole store is
+ * not atomic. No failure publishes base-register writeback or advances PC.
  * ml1292: also called by the thread sampler (server_ios.c) to complete a store
  * the kernel keeps faulting on, with the thread suspended. */
 int ios_store_split_crossing( uint32_t insn, arm_thread_state64_t *st,
@@ -3005,7 +3008,13 @@ int ios_store_split_crossing( uint32_t insn, arm_thread_state64_t *st,
     if (done != bytes) return -1;
     for (i = 0, done = 0; i < parts; done += part_len[i], i++)
     {
-        memcpy( (void *)part_rw[i], src + done, part_len[i] );
+        /* Mapping/protection validation cannot pin a destination against
+         * another thread's unmap or protection change. Let the kernel check
+         * each bounded fragment at the write, rather than faulting the Mach
+         * exception/recovery thread through a direct userspace memcpy. */
+        if (mach_vm_write( mach_task_self(), (mach_vm_address_t)part_rw[i],
+                           (vm_offset_t)(uintptr_t)(src + done), part_len[i] ) != KERN_SUCCESS)
+            return done ? -2 - (int)done : -1;
         ios_jit_anon_alias_note_write( (unsigned long long)(ea + done) );
     }
     if (wb)

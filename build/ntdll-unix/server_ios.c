@@ -3381,14 +3381,16 @@ static int ios_stuck_store_inspect( mach_port_t thread, uint64_t native_id,
         {
             ios_stuck_logs++;
             wine_log_write( "[stuck-store] ml1292 tid=%llu hits=%u pc=0x%llx insn=%08x ea=0x%llx len=%u "
-                            "sys+%llu ms in %llu ms: %s (%llu completed so far)",
+                            "sys+%llu ms in %llu ms: %s confirmed-prefix=%u (%llu completed so far)",
                             (unsigned long long)native_id, hits, (unsigned long long)pc, insn,
                             (unsigned long long)ea, len, (unsigned long long)dsys, (unsigned long long)dt,
                             r > 0 ? "completed, pc+4" : r == -2 ? "written, set_state FAILED"
-                            : r < 0 ? "refused (a page not writable)" : "not a store it decodes", ios_stuck_fixed );
+                            : r <= -3 ? "checked write failed; partial store, PC unchanged"
+                            : r < 0 ? "not completed (validation or checked write)" : "not a store it decodes",
+                            r > 0 || r == -2 ? len : r <= -3 ? (unsigned)(-r - 2) : 0, ios_stuck_fixed );
         }
         if (r > 0) { entry->pc = entry->ea = entry->hits = 0; return 1; }
-        return r == -2 ? -1 : 0;
+        return r <= -2 ? -1 : 0;
     }
     thread_resume( thread );
     entry->pc = cross ? pc : 0;
