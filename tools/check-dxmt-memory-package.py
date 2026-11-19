@@ -21,7 +21,8 @@ MANIFEST = 'arm64ec-windows/madeira-dxmt-memory.json'
 PE_MARKERS = (b'[dynamic-memory-pressure-v1]', b'policy=bounded-hot-v3', b'storage=owner-heap-v1',
               b'counter-storage=census-perf-heap-v1', b'scan=registered-cursor-v2',
               b'pe-command-state=dedup-hud-v1', b'scheduler=ready-work-v1', b'shader-create=singleflight-v1', b'[upload-memory-v1]',
-              b'texture-admission=physical-v1', b'texture-accounting=bc-blocks-v1', b'[initializer-failure-v1]')
+              b'texture-admission=physical-v1', b'texture-accounting=bc-blocks-v1', b'[initializer-failure-v1]',
+              b'[cpu-encode-memory-v1]')
 NATIVE_MARKERS = (*PE_MARKERS, b'[madeira-memory-pressure-v1]', b'[native-heap-relief-v1]',
                   b'[metal-resource-batch-v1]', b'release-probe=opt-in',
                   b'[texture-growth-budget-v1]', b'[metal-vertex-descriptor-owner-v1]',

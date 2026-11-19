@@ -135,6 +135,7 @@ commands = [
     ['python3', 'tests/host/check-metal-descriptor-lifetime.py'],
     ['python3', 'tests/host/check-dxmt-dynamic-memory.py'],
     ['python3', 'tests/host/check-dxmt-upload-memory.py'],
+    ['python3', 'tests/host/check-dxmt-cpu-encode-memory.py', '--sanitize'],
     ['python3', 'tests/host/check-native-heap-relief.py'],
     ['python3', 'tests/host/check-dxmt-memory-build.py'],
     ['python3', 'tests/host/check-dxmt-census-heap.py'],

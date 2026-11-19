@@ -15,7 +15,8 @@ import subprocess
 import sys
 
 UPLOAD = ('dxmt_ring_bump_allocator.hpp', 'dxmt_resource_initializer.hpp',
-          'dxmt_resource_initializer.cpp', 'dxmt_command_queue.cpp', 'dxmt_command_queue.hpp')
+          'dxmt_resource_initializer.cpp', 'dxmt_command_queue.cpp', 'dxmt_command_queue.hpp',
+          'dxmt_context.cpp', 'dxmt_context.hpp')
 DYNAMIC = ('src/dxmt/dxmt_dynamic.hpp', 'src/dxmt/dxmt_dynamic.cpp',
            'src/d3d11/d3d11_buffer.cpp', 'src/d3d11/d3d11_texture_dynamic.cpp',
            'src/dxmt/dxmt_buffer.cpp')

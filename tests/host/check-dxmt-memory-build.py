@@ -51,12 +51,14 @@ with tempfile.TemporaryDirectory(prefix='madeira-dxmt-transaction-') as director
     result = run(repo, 'apply', state)
     assert result.returncode == 0, result.stdout + result.stderr
     metadata = json.loads((state / 'state.json').read_text())
-    assert len(metadata['records']) == 20 and metadata['applied']
+    assert len(metadata['records']) == 22 and metadata['applied']
     for name, record in metadata['records'].items():
         assert hashlib.sha256((repo / 'dxmt' / name).read_bytes()).hexdigest() == record['staged']
     # Both PE and native compiler commands compile beside these exact headers.
     assert 'TrimCompletedForQueue' in (repo / 'dxmt/src/dxmt/dxmt_dynamic.hpp').read_text()
     assert '[upload-memory-v1]' in (repo / 'dxmt/src/dxmt/dxmt_resource_initializer.cpp').read_text()
+    assert '[cpu-encode-memory-v1]' in (repo / 'dxmt/src/dxmt/dxmt_context.cpp').read_text()
+    assert 'MemoryPressureController cpu_pressure_controller_;' in (repo / 'dxmt/src/dxmt/dxmt_context.hpp').read_text()
     assert '[dynamic-memory-pressure-v1]' in (repo / 'dxmt/src/dxmt/dxmt_dynamic.cpp').read_text()
     assert 'memCensusState().dynamic' in (repo / 'dxmt/src/dxmt/dxmt_dynamic.cpp').read_text()
     assert 'perfCounters().draws' in (repo / 'dxmt/src/d3d11/d3d11_context_impl.cpp').read_text()
@@ -69,7 +71,7 @@ with tempfile.TemporaryDirectory(prefix='madeira-dxmt-transaction-') as director
     assert not (repo / 'dxmt' / stage.HEADER).exists()
     assert unrelated.read_bytes() == b'preserve this unrelated file\n'
     assert run(repo, 'restore', state).returncode == 0, 'restore must be idempotent'
-    print('PASS actual production DXMT source staging composes all 20 owned files; restores byte-exact originals/new-header absence, preserves unrelated files and permits repeated cleanup')
+    print('PASS actual production DXMT source staging composes all 22 owned files; restores byte-exact originals/new-header absence, preserves unrelated files and permits repeated cleanup')
 
     # Emulate interruption halfway through application, before applied=true.
     half = Path(directory) / 'half'

@@ -391,12 +391,59 @@ private:
     return source
 
 
+def stage_encoding_context_header(source):
+    if 'cpu_pressure_controller_' in source or '#include "memory_pressure.hpp"' in source:
+        raise ValueError('DXMT CPU encoding context header is already staged')
+    source = replace_once(source, '#include "Metal.hpp"',
+                          '#include "Metal.hpp"\n#include "memory_pressure.hpp"')
+    return replace_once(source, '  std::vector<chunk> cpu_buffer_chunks_;', '''  // Only the encoding producer evaluates this history. Pressure sampling is
+  // thread-cached; scratch retirement never takes an initializer/queue lock.
+  MemoryPressureController cpu_pressure_controller_;
+  std::vector<chunk> cpu_buffer_chunks_;''')
+
+
+def stage_encoding_context(source):
+    source = replace_once(source, '  cpu_buffer_chunks_.emplace_back();', '''  cpu_buffer_chunks_.emplace_back();
+  Logger::info("[cpu-encode-memory-v1] pressure-only completed-encoding scratch trim; critical-warm-chunks=1");''')
+    before = '''  for (size_t i = cpu_buffer_chunks_.size() - 1; i > current_buffer_chunk_; i--) {
+    if (++cpu_buffer_chunks_[i].underused_times > kEncodingContextCPUHeapLifetime) {
+      cpu_buffer_chunks_.pop_back();
+    }
+  }'''
+    # This boundary follows every EncoderData destructor and the final native
+    # encoder call. These are CPU encoding scratch chunks, not Metal argument
+    # buffers, command-chunk closures, readback storage, or GPU allocations.
+    # No other thread is permitted to reclaim the encoder's active storage.
+    after = '''  const auto cpu_pressure = cpu_pressure_controller_.evaluate(memoryPressureSnapshot());
+  if (cpu_pressure.reclaim) {
+    // All CPU encoder commands have been consumed and their EncoderData
+    // destructors ran above. Native Metal encoding copied their arguments;
+    // real GPU buffers and allocation references still belong to the queue.
+    // Soft pressure drops old surplus without waiting 600 more flushes.
+    // Critical pressure also drops this submission's now-dead surplus before
+    // a loading/frame gap, keeping one bounded 1 MiB scratch chunk warm.
+    const size_t keep = cpu_pressure.critical ? 1 : size_t(current_buffer_chunk_) + 1;
+    while (cpu_buffer_chunks_.size() > keep)
+      cpu_buffer_chunks_.pop_back();
+    if (current_buffer_chunk_ >= keep) {
+      current_buffer_chunk_ = 0;
+      cpu_buffer_ = cpu_buffer_chunks_[0].ptr;
+      cpu_buffer_offset_ = 0;
+    }
+  } else {
+''' + '\n'.join('  ' + line for line in before.splitlines()) + '''
+  }'''
+    return replace_once(source, before, after)
+
+
 STAGES = {
     "dxmt_ring_bump_allocator.hpp": stage_ring,
     "dxmt_resource_initializer.hpp": stage_initializer_header,
     "dxmt_resource_initializer.cpp": stage_initializer,
     "dxmt_command_queue.cpp": stage_queue,
     "dxmt_command_queue.hpp": stage_queue_header,
+    "dxmt_context.cpp": stage_encoding_context,
+    "dxmt_context.hpp": stage_encoding_context_header,
 }
 
 
