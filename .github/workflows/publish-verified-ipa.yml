@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: publish-ipa-7ec4544e
+  group: publish-ipa-a99940fb
   cancel-in-progress: false
 
 jobs:
@@ -22,11 +22,11 @@ jobs:
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
-      SOURCE_REVISION: 7ec4544e7d679216e9c703f8c629747a98a9b25b
-      SOURCE_RUN: '44436752888'
-      SOURCE_ARTIFACT: '14490409484'
-      ARCHIVE_SHA256: a902924900dc39d1631433f46f13e969f465f93fc1dce0e70f416f9a4785ff22
-      RELEASE_TAG: ipa-7ec4544e
+      SOURCE_REVISION: a99940fb3384018fc6280efd7e0eae7eb08a819a
+      SOURCE_RUN: '44491209974'
+      SOURCE_ARTIFACT: '14514603017'
+      ARCHIVE_SHA256: b4cfff7ce76cfdc80d0970a08abfecbf42cdbf51832e5212bcc6f1239c4a0c02
+      RELEASE_TAG: ipa-a99940fb
     steps:
       - name: Require the exact successful build and artifact
         run: |
@@ -49,7 +49,7 @@ jobs:
           PY
       - uses: actions/checkout@v4
         with:
-          ref: 7ec4544e7d679216e9c703f8c629747a98a9b25b
+          ref: a99940fb3384018fc6280efd7e0eae7eb08a819a
           persist-credentials: false
       - name: Download and verify the already built IPA
         run: |
@@ -63,17 +63,17 @@ jobs:
       - name: Publish the same IPA as a stable prerelease asset
         run: |
           cat > "$RUNNER_TEMP/ipa-release-notes.txt" <<'NOTES'
-          Existing verified Madeira IPA from source 7ec4544e7d679216e9c703f8c629747a98a9b25b.
+          Existing verified Madeira IPA from source a99940fb3384018fc6280efd7e0eae7eb08a819a.
 
-          Build and downloaded-package verification passed in https://github.com/letsdothisagainx/Madeira/actions/runs/44436752888.
+          Build and downloaded-package verification passed in https://github.com/letsdothisagainx/Madeira/actions/runs/44491209974.
           This release republishes that exact IPA without recompilation or modification.
-          It contains the store-recovery scheduling and completed CPU encoding scratch corrections.
+          It contains continuing generation retirement, released larger-class reuse, checked recovery writes, and ASCII compilation summaries.
 
           Remote joining, responsive team selection, gameplay through a round, and a texture-correct return to the menu remain unverified on an iPhone for this candidate.
 
           Download Madeira.ipa directly from the assets below. SHA256SUMS records its checksum.
           NOTES
-          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --target "$SOURCE_REVISION" --title 'Madeira 7ec4544e' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --target "$SOURCE_REVISION" --title 'Madeira a99940fb' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
           gh release upload "$RELEASE_TAG" release-output/Madeira.ipa release-output/SHA256SUMS --repo "$GITHUB_REPOSITORY"
           gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
       - name: Verify the public download without authentication
