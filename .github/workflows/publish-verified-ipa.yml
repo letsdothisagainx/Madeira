@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: publish-ipa-a99940fb
+  group: publish-ipa-9214ad22
   cancel-in-progress: false
 
 jobs:
@@ -22,11 +22,11 @@ jobs:
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
-      SOURCE_REVISION: a99940fb3384018fc6280efd7e0eae7eb08a819a
-      SOURCE_RUN: '44491209974'
-      SOURCE_ARTIFACT: '14514603017'
-      ARCHIVE_SHA256: b4cfff7ce76cfdc80d0970a08abfecbf42cdbf51832e5212bcc6f1239c4a0c02
-      RELEASE_TAG: ipa-a99940fb
+      SOURCE_REVISION: 9214ad22806eb689790107d4fd7a610ef67373f5
+      SOURCE_RUN: '44604922432'
+      SOURCE_ARTIFACT: '14573586087'
+      ARCHIVE_SHA256: a858056d3f54abdf816d4ac11c6e189116eadb8caf566e0423b128c1876813fa
+      RELEASE_TAG: ipa-9214ad22
     steps:
       - name: Require the exact successful build and artifact
         run: |
@@ -51,7 +51,7 @@ jobs:
           PY
       - uses: actions/checkout@v4
         with:
-          ref: a99940fb3384018fc6280efd7e0eae7eb08a819a
+          ref: 9214ad22806eb689790107d4fd7a610ef67373f5
           persist-credentials: false
       - name: Download and verify the already built IPA
         run: |
@@ -65,17 +65,22 @@ jobs:
       - name: Publish the same IPA as a stable prerelease asset
         run: |
           cat > "$RUNNER_TEMP/ipa-release-notes.txt" <<'NOTES'
-          Existing verified Madeira IPA from source a99940fb3384018fc6280efd7e0eae7eb08a819a.
+          Verified Madeira IPA from source 9214ad22806eb689790107d4fd7a610ef67373f5.
 
-          Build and downloaded-package verification passed in https://github.com/letsdothisagainx/Madeira/actions/runs/44491209974.
+          Build and downloaded-package verification passed in https://github.com/letsdothisagainx/Madeira/actions/runs/44604922432.
           This release republishes that exact IPA without recompilation or modification.
-          It contains continuing generation retirement, released larger-class reuse, checked recovery writes, and ASCII compilation summaries.
+          It contains bounded completion-owned staging/copy/argument reuse and large-texture initialization with an enforced single-block upload-growth cap. The physical-memory reserve is unchanged. Existing generation retirement, released larger-class reuse and checked recovery writes are preserved.
+
+          All 267 required host checks passed. A controlled real-Metal replay reduced allocations from 300 to 30 with identical copied bytes and sampled additional process footprint from about 35 MiB to 11 MiB. These are host results, not measurements of remote CS2 gameplay on an iPhone.
+
+          Native image UUID: 3AA9E976-6707-34D3-90B1-06E8A6E5425B.
+          Detailed mechanisms and acceptance limits: https://github.com/letsdothisagainx/Madeira/blob/9214ad22806eb689790107d4fd7a610ef67373f5/docs/cs2-run10-upload-pressure-20261119.md
 
           Remote joining, responsive team selection, gameplay through a round, and a texture-correct return to the menu remain unverified on an iPhone for this candidate.
 
           Download Madeira.ipa directly from the assets below. SHA256SUMS records its checksum.
           NOTES
-          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title 'Madeira a99940fb' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title 'Madeira 9214ad22 — bounded upload memory' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
           gh release upload "$RELEASE_TAG" release-output/Madeira.ipa release-output/SHA256SUMS --repo "$GITHUB_REPOSITORY"
           gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
       - name: Verify the public download without authentication
