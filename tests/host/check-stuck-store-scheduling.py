@@ -234,7 +234,7 @@ typedef mach_port_t thread_t, thread_act_t, *thread_act_array_t;
 typedef uintptr_t vm_address_t;
 typedef void *thread_info_t;
 typedef struct { int seconds, microseconds; } time_value_t;
-typedef struct { time_value_t system_time; unsigned run_state; } thread_basic_info_data_t;
+typedef struct { time_value_t system_time, user_time; unsigned run_state; } thread_basic_info_data_t;
 typedef struct { uint64_t thread_id; } thread_identifier_info_data_t;
 #define THREAD_BASIC_INFO 1
 #define THREAD_IDENTIFIER_INFO 2
@@ -251,16 +251,17 @@ typedef struct { uint64_t thread_id; } thread_identifier_info_data_t;
 enum { THREADS = 16, OPERATIONS = 20 };
 static const uintptr_t store_pc = 0x7c30000000ull, frame_address = 0x10000;
 static uint64_t now_ms;
-static unsigned thread_count, full_scans, fast_state_reads, resumes, publications;
+static unsigned thread_count, full_scans, fast_state_reads, neon_state_reads, resumes, publications;
 static int holds[THREADS], rights[THREADS];
-static unsigned max_rights, mod_refs_calls, refuse_publication, refuse_retain;
+static unsigned max_rights, mod_refs_calls, refuse_publication, refuse_retain, refuse_neon;
 static unsigned delayed_basic_port, delayed_basic_ms;
 static uint64_t full_scan_at[256];
 static size_t fixture_vm_page_size = PAGE;
 #define vm_page_size fixture_vm_page_size
 struct target {
-    int alive, running, kernel_percent;
-    uint64_t identity, system_us;
+    int alive, running, kernel_percent, user_percent;
+    uint64_t identity, system_us, user_us;
+    uint32_t insn;
     unsigned completed, requested;
     unsigned char *mapping;
     arm_thread_state64_t state;
@@ -274,6 +275,10 @@ static void prepare_operation(unsigned id)
     memset(&t->state, 0, sizeof(t->state));
     t->state.__x[28] = frame_address;
     t->state.__x[8] = (uintptr_t)t->mapping + t->completed * SPAN + PAGE - 4 - 16;
+    uint64_t destination = (uintptr_t)t->mapping + t->completed * SPAN + PAGE - 4;
+    uint64_t value = UINT64_C(0x0101010101010101) * (id + t->completed + 1);
+    if (t->insn == 0xf8084379u) { t->state.__x[27] = destination - 132; t->state.__x[25] = value; }
+    if (t->insn == 0xf8008068u) { t->state.__x[3] = destination - 8; t->state.__x[8] = value; }
     __darwin_arm_thread_state64_set_pc_fptr(t->state, (void *)store_pc);
     memset(&t->neon, (int)(id + t->completed + 1), sizeof(t->neon));
 }
@@ -282,7 +287,10 @@ static void advance_time(uint64_t next)
     assert(next >= now_ms);
     for (unsigned id = 1; id <= thread_count; ++id)
         if (targets[id].alive && targets[id].completed < targets[id].requested)
+        {
             targets[id].system_us += (next - now_ms) * 10 * targets[id].kernel_percent;
+            targets[id].user_us += (next - now_ms) * 10 * targets[id].user_percent;
+        }
     now_ms = next;
 }
 static int fixture_clock_gettime(clockid_t clock, struct timespec *out)
@@ -313,6 +321,8 @@ static int fixture_thread_info(mach_port_t port, int flavor, void *out, unsigned
         memset(info, 0, sizeof(*info));
         info->system_time.seconds = targets[port].system_us / 1000000;
         info->system_time.microseconds = targets[port].system_us % 1000000;
+        info->user_time.seconds = targets[port].user_us / 1000000;
+        info->user_time.microseconds = targets[port].user_us % 1000000;
         info->run_state = targets[port].running ? TH_STATE_RUNNING : 0;
     }
     else if (flavor == THREAD_IDENTIFIER_INFO)
@@ -330,7 +340,12 @@ static int fixture_get_state(mach_port_t port, int flavor, void *out, unsigned *
 {
     (void)count; assert(holds[port] == 1); ++fast_state_reads;
     if (flavor == ARM_THREAD_STATE64) memcpy(out, &targets[port].state, sizeof(targets[port].state));
-    else if (flavor == ARM_NEON_STATE64) memcpy(out, &targets[port].neon, sizeof(targets[port].neon));
+    else if (flavor == ARM_NEON_STATE64)
+    {
+        ++neon_state_reads;
+        if (refuse_neon) return 1;
+        memcpy(out, &targets[port].neon, sizeof(targets[port].neon));
+    }
     else return 1;
     return KERN_SUCCESS;
 }
@@ -348,8 +363,9 @@ static int fixture_resume(mach_port_t port)
     if (arm_thread_state64_get_pc(t->state) == store_pc + 4)
     {
         unsigned char *destination = t->mapping + t->completed * SPAN + PAGE - 4;
-        for (unsigned i = 0; i < 16; ++i) assert(destination[i] == (unsigned char)(port + t->completed + 1));
-        assert(destination[-1] == 0x5a && destination[16] == 0x5a);
+        unsigned width = t->insn == 0x3d800500u ? 16 : 8;
+        for (unsigned i = 0; i < width; ++i) assert(destination[i] == (unsigned char)(port + t->completed + 1));
+        assert(destination[-1] == 0x5a && destination[width] == 0x5a);
         ++t->completed;
         if (t->completed < t->requested) prepare_operation(port);
         else t->running = 0;
@@ -371,7 +387,9 @@ static int fixture_vm_deallocate(mach_port_t task, vm_address_t address, size_t 
 static int ios_ts_read(uint64_t address, void *out, size_t size)
 {
     if (address == frame_address && size == 8) { *(uint64_t *)out = 0x20000; return 1; }
-    if (address == store_pc && size == 4) { *(uint32_t *)out = 0x3d800500; return 1; }
+    if (address == store_pc && size == 4)
+        for (unsigned id = 1; id <= thread_count; ++id)
+            if (holds[id]) { *(uint32_t *)out = targets[id].insn; return 1; }
     return 0;
 }
 static void wine_log_write(const char *format, ...) __attribute__((format(printf,1,2)));
@@ -440,6 +458,7 @@ static void initialise(unsigned count, unsigned operations)
     {
         struct target *t = targets + id;
         t->identity = 1000 + id; t->alive = t->running = 1; t->kernel_percent = 100;
+        t->insn = 0x3d800500u;
         t->requested = operations;
         unsigned char *raw = mmap(NULL, SPAN * OPERATIONS + PAGE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
         assert(raw != MAP_FAILED);
@@ -511,27 +530,48 @@ static void trace(int blocked_diagnostics)
            OPERATIONS, (unsigned long long)now_ms, full_scans, blocked_diagnostics);
     cleanup();
 }
+static void contended_stores(void)
+{
+    initialise(2, OPERATIONS);
+    targets[1].insn = 0xf8084379u; targets[2].insn = 0xf8008068u;
+    for (unsigned id = 1; id <= 2; ++id)
+    {
+        targets[id].kernel_percent = 50; /* Descheduled half the interval; all consumed CPU is system. */
+        prepare_operation(id);
+    }
+    ios_stuck_logs = 400; /* Logging exhaustion must never stop real completion. */
+    for (uint64_t time = 0; time <= 3000 && targets[1].completed < OPERATIONS; time += 5) tick(time);
+#if defined(BASELINE_SCHEDULE) || defined(WALL_GATE_SCHEDULE)
+    assert(!targets[1].completed && !targets[2].completed && !publications && !fast_state_reads);
+    puts("REPRO wall-time gate: f8084379/f8008068 each at50% wall system, zero user CPU, no capture/completion in3000 modeled ms");
+#else
+    assert(targets[1].completed == OPERATIONS && targets[2].completed == OPERATIONS);
+    assert(now_ms == 390 && !neon_state_reads && full_scans == 4);
+    puts("PASS contended exact f8084379/f8008068:40 real-byte stores in390 modeled ms, no NEON queries, logging budget exhausted");
+#endif
+    cleanup();
+}
 #ifndef BASELINE_SCHEDULE
 static void gates(void)
 {
     initialise(1, OPERATIONS); warm();
     assert(retained() == 1 && ios_stuck_store_recovery_delay() == 5000);
     unsigned reads = fast_state_reads, published = publications;
-    uint64_t sys = targets[1].system_us;
-    advance_time(205); targets[1].system_us = sys + 2999; tick(205);
+    uint64_t sys = targets[1].system_us, user = targets[1].user_us;
+    advance_time(205); targets[1].system_us = sys + 2999; targets[1].user_us = user + 2001; tick(205);
     assert(fast_state_reads == reads && publications == published); /* 59.98% declines */
-    sys = targets[1].system_us;
-    advance_time(210); targets[1].system_us = sys + 3000; tick(210);
+    sys = targets[1].system_us; user = targets[1].user_us;
+    advance_time(210); targets[1].system_us = sys + 3000; targets[1].user_us = user + 2000; tick(210);
     assert(publications == published); /* 60% first valid PC/EA observation */
-    sys = targets[1].system_us;
-    advance_time(215); targets[1].system_us = sys + 3000; tick(215);
+    sys = targets[1].system_us; user = targets[1].user_us;
+    advance_time(215); targets[1].system_us = sys + 3000; targets[1].user_us = user + 2000; tick(215);
     assert(publications == published + 1 && targets[1].completed == 2);
     reads = fast_state_reads; published = publications;
-    targets[1].kernel_percent = 0;
+    targets[1].kernel_percent = 0; targets[1].user_percent = 100;
     for (uint64_t time = 220; time <= 1220; time += 5) tick(time);
     assert(fast_state_reads == reads && publications == published);
     assert(!retained() && ios_stuck_store_recovery_delay() == 100000);
-    puts("PASS exact 2999/5000us refusal, 3000/5000us qualification, user-only no suspends, hot expiry");
+    puts("PASS consumed CPU:2999system/2001user refuses,3000/2000 qualifies; user-only no suspends, hot expiry");
     cleanup();
 }
 static void protected_neighbor(void)
@@ -580,7 +620,9 @@ static void bounded(void)
     tick(205); tick(210);
     for (unsigned id = 1; id <= 12; ++id) assert(targets[id].completed == (id <= 8 ? 2u : 1u));
     assert(full_scans == 3);
-    puts("PASS follow-up cap8: only retained ports at5ms, whole-task discovery remains100ms, every right balanced");
+    tick(300); tick(400);
+    for (unsigned id = 1; id <= 12; ++id) assert(targets[id].completed == 2);
+    puts("PASS follow-up cap8: retained ports at5ms; overflow threads complete through100ms discovery; every right balanced");
     cleanup();
 }
 static void acquisition_failure(void)
@@ -597,10 +639,106 @@ static void fresh_cpu_sample(void)
     initialise(2, OPERATIONS); warm(); assert(retained() == 2);
     unsigned reads = fast_state_reads, published = publications;
     targets[1].kernel_percent = targets[2].kernel_percent = 59;
+    targets[1].user_percent = targets[2].user_percent = 41;
     delayed_basic_port = 1; delayed_basic_ms = 20;
     tick(205);
     assert(now_ms == 225 && fast_state_reads == reads && publications == published);
-    puts("PASS delayed first native query: both targets use fresh clock/CPU pairs; 59% never becomes false 60% through scan latency");
+    puts("PASS delayed first native query: fresh user/system clock pairs preserve consumed CPU59% refusal");
+    cleanup();
+}
+static void no_cpu_progress(void)
+{
+    initialise(1, OPERATIONS); warm();
+    unsigned published = publications;
+    tick(205); /* First valid repeated-store observation. */
+    unsigned reads = fast_state_reads;
+    targets[1].kernel_percent = 0;
+    tick(210); tick(215);
+    assert(fast_state_reads == reads && publications == published);
+    targets[1].kernel_percent = 50;
+    tick(220); assert(publications == published); /* Zero-CPU interval cleared the earlier observation. */
+    tick(225); assert(publications == published + 1);
+    puts("PASS zero consumed CPU cannot capture/complete or preserve an earlier PC/EA observation");
+    cleanup();
+}
+static void cpu_counter_regression(int user)
+{
+    initialise(1, OPERATIONS); targets[1].user_us = 10000; warm();
+    unsigned published = publications;
+    tick(205); unsigned reads = fast_state_reads;
+    if (user) targets[1].user_us--;
+    else targets[1].system_us -= 10000;
+    tick(210);
+    assert(fast_state_reads == reads && publications == published);
+    tick(215); assert(publications == published);
+    tick(220); assert(publications == published + 1);
+    puts(user ? "PASS regressing user CPU clears prior PC/EA before two fresh captures" :
+                "PASS regressing system CPU clears prior PC/EA before two fresh captures");
+    cleanup();
+}
+static void moving_store(void)
+{
+    initialise(1, OPERATIONS); warm();
+    targets[1].insn = 0xf8084379u; prepare_operation(1);
+    unsigned published = publications, neon_reads = neon_state_reads;
+    targets[1].kernel_percent = 50;
+    for (unsigned i = 1; i <= 10; ++i)
+    {
+        targets[1].state.__x[27] = (uintptr_t)targets[1].mapping + i * SPAN + PAGE - 4 - 132;
+        tick(200 + i * 5);
+    }
+    assert(publications == published && neon_state_reads == neon_reads);
+    /* A changed PC also clears a stationary address; it cannot inherit the
+     * preceding instruction's observation when it returns. */
+    __darwin_arm_thread_state64_set_pc_fptr(targets[1].state, (void *)(store_pc + 8));
+    tick(255); __darwin_arm_thread_state64_set_pc_fptr(targets[1].state, (void *)store_pc);
+    tick(260); assert(publications == published);
+    puts("PASS healthy advancing EA and changed PC never publish a store; GPR observations make no NEON queries");
+    cleanup();
+}
+static void missing_vector_state(void)
+{
+    initialise(1, OPERATIONS); warm(); refuse_neon = 1;
+    unsigned published = publications, reads = neon_state_reads;
+    tick(205); assert(neon_state_reads == reads); /* No vector capture on the first observation. */
+    tick(210);
+    assert(neon_state_reads == reads + 1 && publications == published && targets[1].completed == 1);
+    unsigned char *destination = targets[1].mapping + SPAN + PAGE - 4;
+    for (unsigned i = 0; i < 16; ++i) assert(destination[i] == 0x5a);
+    puts("PASS lazy vector capture failure refuses real bytes and PC publication");
+    cleanup();
+}
+static void discovery_counter_regression(void)
+{
+    initialise(1, OPERATIONS); refuse_retain = 1; targets[1].user_us = 10000; warm();
+    assert(!retained());
+    unsigned published = publications;
+    tick(300); unsigned reads = fast_state_reads;
+    targets[1].user_us--;
+    tick(400); assert(fast_state_reads == reads && publications == published);
+    tick(500); assert(publications == published);
+    tick(600); assert(publications == published + 1);
+    puts("PASS discovery user counter regression clears history before two fresh PC/EA captures");
+    cleanup();
+}
+static void discovery_cpu_precision(void)
+{
+    initialise(1, OPERATIONS); refuse_retain = 1; targets[1].system_us = 950; warm();
+    targets[1].kernel_percent = 0;
+    unsigned reads = fast_state_reads, published = publications;
+    for (uint64_t time = 300; time <= 400; time += 100)
+    {
+        targets[1].system_us += 600; targets[1].user_us += 450;
+        tick(time);
+    }
+    assert(fast_state_reads == reads && publications == published);
+    for (uint64_t time = 500; time <= 600; time += 100)
+    {
+        targets[1].system_us += 600; targets[1].user_us += 400;
+        tick(time);
+    }
+    assert(publications == published + 1);
+    puts("PASS low-share discovery CPU precision:600system/450user us refuses;600/400 accepts without millisecond rounding");
     cleanup();
 }
 #endif
@@ -608,6 +746,7 @@ int main(int argc, char **argv)
 {
     assert(argc == 2);
     if (!strcmp(argv[1], "trace")) trace(0);
+    else if (!strcmp(argv[1], "contended")) contended_stores();
     else if (!strcmp(argv[1], "blocked")) trace(1);
 #ifndef BASELINE_SCHEDULE
     else if (!strcmp(argv[1], "gates")) gates();
@@ -619,6 +758,13 @@ int main(int argc, char **argv)
     else if (!strcmp(argv[1], "acquisition")) acquisition_failure();
     else if (!strcmp(argv[1], "startup")) startup_cases();
     else if (!strcmp(argv[1], "fresh-clock")) fresh_cpu_sample();
+    else if (!strcmp(argv[1], "no-cpu")) no_cpu_progress();
+    else if (!strcmp(argv[1], "user-regression")) cpu_counter_regression(1);
+    else if (!strcmp(argv[1], "system-regression")) cpu_counter_regression(0);
+    else if (!strcmp(argv[1], "moving")) moving_store();
+    else if (!strcmp(argv[1], "neon-failure")) missing_vector_state();
+    else if (!strcmp(argv[1], "discovery-regression")) discovery_counter_regression();
+    else if (!strcmp(argv[1], "discovery-precision")) discovery_cpu_precision();
 #endif
     else assert(!"unknown scenario");
     return 0;
@@ -627,16 +773,26 @@ int main(int argc, char **argv)
 
 with tempfile.TemporaryDirectory(prefix='madeira-stuck-scheduling-') as directory:
     flags = ['-fsanitize=address,undefined', '-fno-sanitize-recover=all', '-fno-omit-frame-pointer'] if args.sanitize else []
-    for label, implementation in [('baseline', BASELINE_PRODUCTION), ('candidate', production)]:
+    # Hold worker scheduling constant and restore only the old eligibility
+    # expression. This isolates the wall-time false negative from the older
+    # diagnostic-owned baseline above. Discovery now retains microseconds.
+    assert production.count('!ios_stuck_kernel_bound( duser, dsys )') == 2
+    wall_control = production.replace('!user_valid || !ios_stuck_kernel_bound( duser, dsys )',
+                                     '!user_valid || ((void)duser, dsys * 10 < dt * 6000)')
+    wall_control = wall_control.replace('!ios_stuck_kernel_bound( duser, dsys )',
+                                       '((void)duser, dsys * 10 < dt * 6)')
+    assert wall_control != production and '!ios_stuck_kernel_bound( duser, dsys )' not in wall_control
+    for label, implementation in [('baseline', BASELINE_PRODUCTION), ('wall-gate-control', wall_control), ('candidate', production)]:
         source, binary = Path(directory) / (label + '.c'), Path(directory) / label
-        startup_code = STARTUP_FIXTURE if label == 'candidate' else ''
+        startup_code = STARTUP_FIXTURE if label != 'baseline' else ''
         source.write_text(prefix + helper + ADAPTERS + implementation + startup_code + SUFFIX)
-        define = ['-DBASELINE_SCHEDULE'] if label == 'baseline' else []
+        define = ['-DBASELINE_SCHEDULE'] if label == 'baseline' else ['-DWALL_GATE_SCHEDULE'] if label == 'wall-gate-control' else []
         subprocess.run([os.environ.get('CC', 'cc'), '-std=gnu11', '-O2', '-Wall', '-Wextra', '-Werror',
                         '-Wno-unused-function', '-Wno-unused-variable', *define, *flags,
                         '-I' + str(root / 'build/ntdll-unix'), str(source), '-o', str(binary)], check=True, timeout=60)
-        cases = ['trace', 'blocked']
-        if label == 'candidate': cases += ['gates', 'protected', 'death', 'churn', 'publication', 'bounded', 'acquisition', 'startup', 'fresh-clock']
+        cases = ['trace', 'blocked', 'contended']
+        if label == 'wall-gate-control': cases = ['contended']
+        if label == 'candidate': cases += ['gates', 'protected', 'death', 'churn', 'publication', 'bounded', 'acquisition', 'startup', 'fresh-clock', 'no-cpu', 'user-regression', 'system-regression', 'moving', 'neon-failure', 'discovery-regression', 'discovery-precision']
         for case in cases:
             subprocess.run([str(binary), case], check=True, timeout=60)
 print('NOTE deterministic scheduling/CPU adapters; no iPhone kernel-stall or multiplayer performance claim')

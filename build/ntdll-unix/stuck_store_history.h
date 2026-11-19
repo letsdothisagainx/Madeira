@@ -23,7 +23,7 @@
 
 struct ios_stuck_entry
 {
-    uint64_t tid, pc, ea, seen_ms, sys_ms;
+    uint64_t tid, pc, ea, seen_ms, sys_us, user_us;
     unsigned hits;
 };
 struct ios_stuck_table
@@ -100,7 +100,9 @@ static int ios_stuck_history_begin(struct ios_stuck_history *history, size_t thr
     return 1;
 }
 
-/* Return this pass's owned entry and its valid elapsed counters. A new native
+/* Wall timestamps are milliseconds; CPU counters/deltas are microseconds.
+ * The caller pairs user_us with the same native CPU sample as sys_us.
+ * Return this pass's owned entry and its valid elapsed counters. A new native
  * identity, duplicate enumeration, zero interval or regressing counter cannot
  * qualify a store. The caller keeps the existing CPU gate and PC/EA checks. */
 static struct ios_stuck_entry *ios_stuck_history_observe(struct ios_stuck_history *history,
@@ -121,14 +123,14 @@ static struct ios_stuck_entry *ios_stuck_history_observe(struct ios_stuck_histor
     else *entry = (struct ios_stuck_entry){0};
     entry->tid = tid;
     ++next->count;
-    if (old && now > old->seen_ms && sys >= old->sys_ms)
+    if (old && now > old->seen_ms && sys >= old->sys_us)
     {
         *dt = now - old->seen_ms;
-        *dsys = sys - old->sys_ms;
+        *dsys = sys - old->sys_us;
     }
     else entry->pc = entry->ea = entry->hits = 0;
     entry->seen_ms = now;
-    entry->sys_ms = sys;
+    entry->sys_us = sys;
     return entry;
 }
 

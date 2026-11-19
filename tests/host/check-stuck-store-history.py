@@ -181,7 +181,7 @@ typedef size_t mach_vm_size_t;
 typedef unsigned *thread_act_array_t;
 typedef void *thread_info_t,*thread_state_t;
 typedef struct {int seconds,microseconds;} time_value;
-typedef struct {time_value system_time;unsigned run_state;} thread_basic_info_data_t;
+typedef struct {time_value system_time,user_time;unsigned run_state;} thread_basic_info_data_t;
 typedef struct {uint64_t thread_id;} thread_identifier_info_data_t;
 typedef struct {uint64_t __x[29],__sp,__lr,__fp,__pc;} arm_thread_state64_t;
 typedef struct {unsigned char x[512];} arm_neon_state64_t;
@@ -209,7 +209,7 @@ static int fixture_set_qos(unsigned c,int r){(void)c;(void)r;return 0;}
 #define __darwin_arm_thread_state64_set_pc_fptr(s,p) ((s).__pc=(uintptr_t)(p))
 static unsigned thread_n,generation,ids[8192],native_ids[8192],helper_calls[8192],suspends[8192],current_port;
 static int allocation_failure;
-static unsigned fixture_system_ms=100,fixture_run_state=TH_STATE_RUNNING,fixture_state_sets;
+static unsigned fixture_system_ms=100,fixture_user_ms,fixture_run_state=TH_STATE_RUNNING,fixture_state_sets;
 static unsigned fail_suspend_generation,fail_state_generation,fail_fex_generation;
 static void *history_calloc(size_t n,size_t z){if(allocation_failure)return NULL;return calloc(n,z);}
 #define IOS_STUCK_HISTORY_CALLOC history_calloc
@@ -224,7 +224,7 @@ static mach_port_t pthread_mach_thread_np(pthread_t t){(void)t;return 0;}
 static mach_port_t mach_task_self(void){return 1;}
 static int task_threads(unsigned t,thread_act_array_t *out,unsigned *n){(void)t;*out=ids;*n=thread_n;return 0;}
 static int thread_info(unsigned t,unsigned flavor,void *out,unsigned *n){(void)n;
- if(flavor==THREAD_BASIC_INFO){thread_basic_info_data_t *p=out;p->system_time.seconds=0;p->system_time.microseconds=generation*fixture_system_ms*1000;p->run_state=fixture_run_state;}
+ if(flavor==THREAD_BASIC_INFO){thread_basic_info_data_t *p=out;p->system_time.seconds=0;p->system_time.microseconds=generation*fixture_system_ms*1000;p->user_time.seconds=0;p->user_time.microseconds=generation*fixture_user_ms*1000;p->run_state=fixture_run_state;}
  else ((thread_identifier_info_data_t*)out)->thread_id=native_ids[t]?native_ids[t]:t;
  return 0;}
 static int thread_suspend(unsigned t){suspends[t]++;current_port=t;if(t==1&&generation==fail_suspend_generation)return 1;return 0;}
@@ -255,7 +255,7 @@ static void reset(unsigned n)
 #else
  ios_stuck_history_destroy(&ios_stuck);
 #endif
- thread_n=n;generation=0;allocation_failure=0;fixture_system_ms=100;fixture_run_state=TH_STATE_RUNNING;fixture_state_sets=0;fail_suspend_generation=fail_state_generation=fail_fex_generation=0;
+ thread_n=n;generation=0;allocation_failure=0;fixture_system_ms=100;fixture_user_ms=0;fixture_run_state=TH_STATE_RUNNING;fixture_state_sets=0;fail_suspend_generation=fail_state_generation=fail_fex_generation=0;
  memset(suspends,0,sizeof(suspends));memset(helper_calls,0,sizeof(helper_calls));memset(native_ids,0,sizeof(native_ids));
  for(unsigned i=0;i<n;i++)ids[i]=i+1;
 }
@@ -316,17 +316,17 @@ static void cpu_gates(void)
 {
  for(unsigned mode=0;mode<3;mode++){
   reset(200);
-  if(mode==0)fixture_system_ms=0;
-  if(mode==1)fixture_system_ms=59;
+  if(mode==0){fixture_system_ms=0;fixture_user_ms=100;}
+  if(mode==1){fixture_system_ms=59;fixture_user_ms=41;}
   if(mode==2)fixture_run_state=2;
   for(unsigned i=0;i<5;i++)pass();
   for(unsigned i=1;i<=200;i++)assert(!suspends[i]&&!helper_calls[i]);
   assert(!fixture_state_sets);
  }
- reset(200);fixture_system_ms=60;for(unsigned i=0;i<5;i++)pass();
+ reset(200);fixture_system_ms=60;fixture_user_ms=40;for(unsigned i=0;i<5;i++)pass();
  for(unsigned i=1;i<=200;i++)assert(helper_calls[i]==3&&suspends[i]==4);
  assert(!fixture_state_sets); /* Refusal adapter never completes a store. */
- puts("PASS unchanged RUNNING/60% system gate: user-only/59%/waiting threads never suspended or advanced");
+ puts("PASS RUNNING/60% consumed CPU gate: user-only/59%/waiting threads never suspended or advanced");
 }
 static void counters(void)
 {

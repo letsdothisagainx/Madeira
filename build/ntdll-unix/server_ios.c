@@ -3177,7 +3177,9 @@ static int ios_lean_diag;
  * without another completion. A dedicated worker owns the state independently
  * of diagnostic sampling; creation failure retains the 100 ms fallback.
  * Only a RUNNING thread that
- * spent at least 60% of the interval in the kernel is suspended and read. If
+ * spent at least 60% of its consumed CPU time in the kernel is suspended and
+ * read. A thread's share of wall time can fall below 60% under contention even
+ * while every scheduled cycle retries the same access. If
  * it is a guest thread (x28 points at a FEX frame) at a store that crosses a
  * page, at the same pc and address as at the previous check, it is stuck: the
  * store is completed from here a page at a time (ios_store_split_crossing,
@@ -3248,7 +3250,7 @@ int ios_store_split_crossing( uint32_t insn, arm_thread_state64_t *st, const arm
 static struct ios_stuck_hot_entry
 {
     mach_port_t port;
-    uint64_t native_id, expires_ms, seen_us, sys_us;
+    uint64_t native_id, expires_ms, seen_us, sys_us, user_us;
     struct ios_stuck_entry state;
 } ios_stuck_hot[IOS_STUCK_HOT_SLOTS];
 static uint64_t ios_stuck_discovery_due;
@@ -3297,6 +3299,7 @@ static void ios_stuck_hot_enroll( mach_port_t port, const struct ios_stuck_entry
         idi.thread_id != entry->tid ||
         thread_info( port, THREAD_BASIC_INFO, (thread_info_t)&bi, &bic ) != KERN_SUCCESS ||
         bi.system_time.seconds < 0 || bi.system_time.microseconds < 0 ||
+        bi.user_time.seconds < 0 || bi.user_time.microseconds < 0 ||
         !ios_stuck_clock_us( &now_us )) return;
     for (i = 0; i < IOS_STUCK_HOT_SLOTS; ++i)
     {
@@ -3310,8 +3313,17 @@ static void ios_stuck_hot_enroll( mach_port_t port, const struct ios_stuck_entry
         ios_stuck_hot[i].expires_ms = now_us / 1000 + IOS_STUCK_HOT_TTL_MS;
         ios_stuck_hot[i].seen_us = now_us;
         ios_stuck_hot[i].sys_us = (uint64_t)bi.system_time.seconds * 1000000 + bi.system_time.microseconds;
+        ios_stuck_hot[i].user_us = (uint64_t)bi.user_time.seconds * 1000000 + bi.user_time.microseconds;
         return;
     }
+}
+
+/* Kernel fraction of CPU actually consumed, independent of scheduling share.
+ * 3 * user <= 2 * system is the inclusive 60% boundary. Divide before
+ * multiplying so even large cumulative-counter deltas cannot overflow. */
+static int ios_stuck_kernel_bound( uint64_t duser, uint64_t dsys )
+{
+    return dsys && duser <= dsys / 3 * 2 + dsys % 3 * 2 / 3;
 }
 
 /* A successful return means the full store was written and the new PC was
@@ -3329,7 +3341,7 @@ static int ios_stuck_store_inspect( mach_port_t thread, uint64_t native_id,
     uint64_t pc, bb = 0, ea = 0;
     uint32_t insn = 0;
     unsigned len = 0;
-    int got, have_neon, cross;
+    int got, have_neon = 0, cross;
 
     if (thread_suspend( thread ) != KERN_SUCCESS)
     {
@@ -3337,7 +3349,6 @@ static int ios_stuck_store_inspect( mach_port_t thread, uint64_t native_id,
         return -1;
     }
     got = thread_get_state( thread, ARM_THREAD_STATE64, (thread_state_t)&st, &cnt ) == KERN_SUCCESS;
-    have_neon = thread_get_state( thread, ARM_NEON_STATE64, (thread_state_t)&neon, &nc ) == KERN_SUCCESS;
     if (!got || !ios_ts_read( st.__x[28], &bb, 8 ) || bb <= 0x10000)
     {
         entry->pc = entry->ea = entry->hits = 0;
@@ -3350,6 +3361,10 @@ static int ios_stuck_store_inspect( mach_port_t thread, uint64_t native_id,
     if (cross && entry->pc == pc && entry->ea == ea)
     {
         unsigned hits = ++entry->hits;
+        /* General-register stores never read vector state. Capture it only
+         * for an actual repeated SIMD candidate, while still suspended. */
+        if (insn & (1u << 26))
+            have_neon = thread_get_state( thread, ARM_NEON_STATE64, (thread_state_t)&neon, &nc ) == KERN_SUCCESS;
         int r = ios_store_split_crossing( insn, &st, have_neon ? &neon : NULL,
                                           (uintptr_t)ios_jit_rx_base_global, (uintptr_t)ios_jit_rw_base_global,
                                           ios_jit_pool_size_global );
@@ -3409,16 +3424,22 @@ static void ios_stuck_store_check( void )
         thread_basic_info_data_t bi;
         thread_identifier_info_data_t idi;
         mach_msg_type_number_t bic = THREAD_BASIC_INFO_COUNT, idc = THREAD_IDENTIFIER_INFO_COUNT;
-        uint64_t dt, sys, dsys;
+        uint64_t dt, sys, dsys, user, duser;
         struct ios_stuck_entry *entry;
+        int user_valid;
 
         if (tl[k] == self_port) continue;
         if (thread_info( tl[k], THREAD_BASIC_INFO, (thread_info_t)&bi, &bic ) != KERN_SUCCESS) continue;
         if (thread_info( tl[k], THREAD_IDENTIFIER_INFO, (thread_info_t)&idi, &idc ) != KERN_SUCCESS) continue;
-        if (bi.system_time.seconds < 0 || bi.system_time.microseconds < 0) continue;
-        sys = (uint64_t)bi.system_time.seconds * 1000 + bi.system_time.microseconds / 1000;
+        if (bi.system_time.seconds < 0 || bi.system_time.microseconds < 0 ||
+            bi.user_time.seconds < 0 || bi.user_time.microseconds < 0) continue;
+        sys = (uint64_t)bi.system_time.seconds * 1000000 + bi.system_time.microseconds;
+        user = (uint64_t)bi.user_time.seconds * 1000000 + bi.user_time.microseconds;
         entry = ios_stuck_history_observe( &ios_stuck, idi.thread_id, now, sys, &dt, &dsys );
         if (!entry) continue;
+        user_valid = user >= entry->user_us;
+        duser = user_valid ? user - entry->user_us : 0;
+        entry->user_us = user;
         if (ios_stuck_hot_contains( idi.thread_id ))
         {
             /* The same owner handles these through the retained native port.
@@ -3426,12 +3447,12 @@ static void ios_stuck_store_check( void )
             entry->pc = entry->ea = entry->hits = 0;
             continue;
         }
-        if (bi.run_state != TH_STATE_RUNNING || !dt || dsys * 10 < dt * 6)
+        if (bi.run_state != TH_STATE_RUNNING || !dt || !user_valid || !ios_stuck_kernel_bound( duser, dsys ))
         {
             entry->pc = entry->ea = entry->hits = 0;
             continue;
         }
-        if (ios_stuck_store_inspect( tl[k], idi.thread_id, entry, dt, dsys ) > 0)
+        if (ios_stuck_store_inspect( tl[k], idi.thread_id, entry, dt, dsys / 1000 ) > 0)
             ios_stuck_hot_enroll( tl[k], entry );
     }
     ios_stuck_history_end( &ios_stuck );
@@ -3450,24 +3471,28 @@ static void ios_stuck_store_hot_check( uint64_t now_us )
         thread_basic_info_data_t bi;
         thread_identifier_info_data_t idi;
         mach_msg_type_number_t bic = THREAD_BASIC_INFO_COUNT, idc = THREAD_IDENTIFIER_INFO_COUNT;
-        uint64_t dt, sys, dsys, sampled_us;
+        uint64_t dt, sys, dsys, user, duser, sampled_us;
         if (!hot->port) continue;
         if (thread_info( hot->port, THREAD_IDENTIFIER_INFO, (thread_info_t)&idi, &idc ) != KERN_SUCCESS ||
             idi.thread_id != hot->native_id ||
             thread_info( hot->port, THREAD_BASIC_INFO, (thread_info_t)&bi, &bic ) != KERN_SUCCESS ||
             bi.system_time.seconds < 0 || bi.system_time.microseconds < 0 ||
+            bi.user_time.seconds < 0 || bi.user_time.microseconds < 0 ||
             !ios_stuck_clock_us( &sampled_us ) || sampled_us / 1000 >= hot->expires_ms || sampled_us < hot->seen_us)
         {
             ios_stuck_hot_drop( i );
             continue;
         }
         sys = (uint64_t)bi.system_time.seconds * 1000000 + bi.system_time.microseconds;
+        user = (uint64_t)bi.user_time.seconds * 1000000 + bi.user_time.microseconds;
         dt = sampled_us > hot->seen_us ? sampled_us - hot->seen_us : 0;
         dsys = sys >= hot->sys_us ? sys - hot->sys_us : 0;
-        if (sys < hot->sys_us) dt = 0;
+        duser = user >= hot->user_us ? user - hot->user_us : 0;
+        if (sys < hot->sys_us || user < hot->user_us) dt = 0;
         hot->seen_us = sampled_us;
         hot->sys_us = sys;
-        if (bi.run_state != TH_STATE_RUNNING || !dt || dsys * 10 < dt * 6)
+        hot->user_us = user;
+        if (bi.run_state != TH_STATE_RUNNING || !dt || !ios_stuck_kernel_bound( duser, dsys ))
         {
             hot->state.pc = hot->state.ea = hot->state.hits = 0;
             continue;
