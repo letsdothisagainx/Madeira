@@ -45,6 +45,8 @@ jobs:
           assert str(artifact['workflow_run']['id']) == os.environ['SOURCE_RUN']
           assert artifact['workflow_run']['head_sha'] == os.environ['SOURCE_REVISION']
           assert artifact['digest'] == 'sha256:' + os.environ['ARCHIVE_SHA256']
+          tag = api('/git/ref/tags/' + os.environ['RELEASE_TAG'])
+          assert tag['object']['type'] == 'commit' and tag['object']['sha'] == os.environ['SOURCE_REVISION']
           print('PASS exact successful build, source revision and immutable artifact identity')
           PY
       - uses: actions/checkout@v4
@@ -73,7 +75,7 @@ jobs:
 
           Download Madeira.ipa directly from the assets below. SHA256SUMS records its checksum.
           NOTES
-          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --target "$SOURCE_REVISION" --title 'Madeira a99940fb' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title 'Madeira a99940fb' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
           gh release upload "$RELEASE_TAG" release-output/Madeira.ipa release-output/SHA256SUMS --repo "$GITHUB_REPOSITORY"
           gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
       - name: Verify the public download without authentication
