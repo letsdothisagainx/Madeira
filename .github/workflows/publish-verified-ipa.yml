@@ -1,0 +1,86 @@
+name: Publish verified IPA download
+
+on:
+  push:
+    branches: [codex/cs2-live-memory-upload-reuse-20261116]
+    paths: [.github/workflows/publish-verified-ipa.yml]
+  workflow_dispatch:
+
+# Delivery only: publish the exact successful candidate, never rebuild it or
+# change the app revision. Keep write permission out of the compiler workflows.
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: publish-ipa-7ec4544e
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_REVISION: 7ec4544e7d679216e9c703f8c629747a98a9b25b
+      SOURCE_RUN: '44436752888'
+      SOURCE_ARTIFACT: '14490409484'
+      ARCHIVE_SHA256: a902924900dc39d1631433f46f13e969f465f93fc1dce0e70f416f9a4785ff22
+      RELEASE_TAG: ipa-7ec4544e
+    steps:
+      - name: Require the exact successful build and artifact
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+          repo = os.environ['GITHUB_REPOSITORY']
+          def api(path):
+              return json.loads(subprocess.check_output(['gh', 'api', 'repos/' + repo + path]))
+          run = api('/actions/runs/' + os.environ['SOURCE_RUN'])
+          assert run['status'] == 'completed' and run['conclusion'] == 'success'
+          assert run['head_sha'] == os.environ['SOURCE_REVISION']
+          assert run['head_repository']['full_name'].lower() == repo.lower()
+          assert run['path'] == '.github/workflows/build.yml'
+          artifact = api('/actions/artifacts/' + os.environ['SOURCE_ARTIFACT'])
+          assert artifact['name'] == 'Madeira-ipa' and not artifact['expired']
+          assert str(artifact['workflow_run']['id']) == os.environ['SOURCE_RUN']
+          assert artifact['workflow_run']['head_sha'] == os.environ['SOURCE_REVISION']
+          assert artifact['digest'] == 'sha256:' + os.environ['ARCHIVE_SHA256']
+          print('PASS exact successful build, source revision and immutable artifact identity')
+          PY
+      - uses: actions/checkout@v4
+        with:
+          ref: 7ec4544e7d679216e9c703f8c629747a98a9b25b
+          persist-credentials: false
+      - name: Download and verify the already built IPA
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$SOURCE_ARTIFACT/zip" > "$RUNNER_TEMP/Madeira-ipa.zip"
+          printf '%s  %s\n' "$ARCHIVE_SHA256" "$RUNNER_TEMP/Madeira-ipa.zip" | sha256sum --check --strict
+          mkdir release-output
+          unzip -q "$RUNNER_TEMP/Madeira-ipa.zip" -d release-output
+          test -s release-output/Madeira.ipa
+          python3 tools/build/native-provenance.py check --root "$GITHUB_WORKSPACE" --revision "$SOURCE_REVISION" --ipa release-output/Madeira.ipa
+          (cd release-output && sha256sum Madeira.ipa > SHA256SUMS)
+      - name: Publish the same IPA as a stable prerelease asset
+        run: |
+          cat > "$RUNNER_TEMP/ipa-release-notes.txt" <<'NOTES'
+          Existing verified Madeira IPA from source 7ec4544e7d679216e9c703f8c629747a98a9b25b.
+
+          Build and downloaded-package verification passed in https://github.com/letsdothisagainx/Madeira/actions/runs/44436752888.
+          This release republishes that exact IPA without recompilation or modification.
+          It contains the store-recovery scheduling and completed CPU encoding scratch corrections.
+
+          Remote joining, responsive team selection, gameplay through a round, and a texture-correct return to the menu remain unverified on an iPhone for this candidate.
+
+          Download Madeira.ipa directly from the assets below. SHA256SUMS records its checksum.
+          NOTES
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --target "$SOURCE_REVISION" --title 'Madeira 7ec4544e' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
+          gh release upload "$RELEASE_TAG" release-output/Madeira.ipa release-output/SHA256SUMS --repo "$GITHUB_REPOSITORY"
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
+      - name: Verify the public download without authentication
+        run: |
+          public_url="https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/Madeira.ipa"
+          curl --fail --location --retry 4 --retry-all-errors --retry-delay 2 "$public_url" --output "$RUNNER_TEMP/public-Madeira.ipa"
+          cmp release-output/Madeira.ipa "$RUNNER_TEMP/public-Madeira.ipa"
+          printf 'Verified public IPA: %s\n' "$public_url"
+          printf '## Stable IPA download\n\n[%s](%s)\n\nSource: `%s`\n\n' Madeira.ipa "$public_url" "$SOURCE_REVISION" >> "$GITHUB_STEP_SUMMARY"
+          cat release-output/SHA256SUMS >> "$GITHUB_STEP_SUMMARY"
