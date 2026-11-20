@@ -442,6 +442,58 @@ ResourceInitializer::reset() {""")
 
 
 def stage_queue(source):
+    source = replace_once(source,
+        '  cpu_command_allocator.free_blocks(cpu_coherent.signaledValue());',
+        '  maintainCompletedCommandData(cpu_coherent.signaledValue());')
+    source = replace_once(source, 'void\nCommandQueue::CommitChunkInternal(', '''uint64_t
+CommandQueue::maintainCompletedCommandData(uint64_t completed) {
+  static const volatile char contract[] = "[cpu-command-cache-v1]";
+  (void)contract[0];
+  // This ring intentionally uses null_mutex: only the serialized command
+  // producer can maintain it. Finishing/denial threads may publish a request,
+  // never touch its FIFO. The frontier is signalled only AFTER chunk.reset()
+  // destroys CPU closures and the real GPU submission has completed.
+  const bool forced = cpu_command_release_requested_.exchange(false, std::memory_order_acq_rel);
+  const auto snapshot = memoryPressureSnapshot();
+  const auto pressure = cpu_command_pressure_controller_.evaluate(snapshot);
+  uint64_t released = 0;
+  if (forced) {
+    // The request can race the caller's earlier frontier sample. Acquire the
+    // publication first, then refresh the genuine monotonic completion value;
+    // otherwise consuming a new request with an old value loses its drain.
+    completed = std::max(completed, cpu_coherent.signaledValue());
+    released = cpu_command_allocator.trim_completed_budget(completed, 0);
+  } else if (pressure.valid && pressure.reclaim) {
+    // Completed command bytes are dead; keep at most one natural 4 MiB block
+    // warm rather than the 300-submission high-water history. A genuine zero
+    // headroom reading drains even that spare. Pending/current closures stay
+    // owned, and no freed-capacity count is reported as physical reclamation.
+    const size_t warm = std::min<uint64_t>(
+        std::min<size_t>(cpu_command_allocator.ring_block_size(), size_t{4} << 20),
+        std::min(snapshot.reserve / 64, snapshot.available / 16));
+    released = cpu_command_allocator.trim_completed_budget(completed, warm);
+  } else {
+    cpu_command_allocator.free_blocks(completed);
+    return 0;
+  }
+  if (released && cpu_command_pressure_reports_ < 8) {
+    ++cpu_command_pressure_reports_;
+    const auto after = memoryPressureSnapshot(true);
+    const bool measured = snapshot.valid && after.valid;
+    Logger::info("[cpu-command-cache-v1] event=trim domain=", memoryDomain(), " completed=", completed,
+        " forced=", forced, " released-capacity=", released,
+        " fp-before=", snapshot.footprint,
+        " before-sampled-ns=", snapshot.sampled_ns,
+        " fp-after=", after.footprint, " avail-after=", after.available,
+        " delta-valid=", measured,
+        " observed-drop=", measured && snapshot.footprint > after.footprint ? snapshot.footprint - after.footprint : 0,
+        " physical-attribution=concurrent-observation coverage=first8-releases");
+  }
+  return released;
+}
+
+void
+CommandQueue::CommitChunkInternal(''')
     source = replace_once(source, '#include "dxmt_command_queue.hpp"',
                           '#include "dxmt_command_queue.hpp"\n#include "dxmt_dynamic.hpp"\n#include "memory_pressure.hpp"')
     source = replace_once(source, """    staging_allocator.free_blocks(internal_seq);
@@ -498,6 +550,11 @@ private:
   std::atomic<bool> allocation_recovery_latched_{false};
   std::atomic<uint64_t> allocation_transient_frontier_{UINT64_MAX};
   std::atomic<size_t> transient_ring_minimum_{0};
+  // Producer-owned history; other threads only publish the atomic request.
+  MemoryPressureController cpu_command_pressure_controller_;
+  std::atomic<bool> cpu_command_release_requested_{false};
+  unsigned cpu_command_pressure_reports_ = 0;
+  uint64_t maintainCompletedCommandData(uint64_t completed);
 
   static size_t TransientRingWarmBudget(const MemoryPressureSnapshot &snapshot,
                                        const MemoryPressureDecision &pressure) {
@@ -519,8 +576,9 @@ private:
     source = replace_once(source, '  uint64_t memoryDomain() const { return memory_domain_; }', '''  uint64_t memoryDomain() const { return memory_domain_; }
 
   // Final allocation-failure recovery drops only this queue's GPU-completed
-  // transient blocks. The ring mutexes serialize their producers; the CPU
-  // command heap is deliberately excluded. No live texture is evicted.
+  // transient blocks. The ring mutexes serialize their producers. The CPU
+  // command heap can only be drained later by its serialized producer; this
+  // call publishes that request and never accesses its null-mutex FIFO.
   uint64_t trimCompletedTransientMemory() {
     const uint64_t completed = CoherentSeqId();
     auto previous = allocation_transient_frontier_.load(std::memory_order_acquire);
@@ -529,6 +587,7 @@ private:
       if (allocation_transient_frontier_.compare_exchange_weak(
           previous, completed, std::memory_order_acq_rel, std::memory_order_acquire)) break;
     }
+    cpu_command_release_requested_.store(true, std::memory_order_release);
     return staging_allocator.trim_completed(completed, false) +
            copy_temp_allocator.trim_completed(completed, false) +
            argbuf_allocator.trim_completed(completed, false);

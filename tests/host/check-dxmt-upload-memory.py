@@ -997,11 +997,17 @@ def main():
     assert "waitUntilSignaledValue(submitted, 50)" in init
     assert "trim && idle() && cached_coherent_seq_id >= current_seq_id_ - 1" in init
     assert queue.index("chunk.reset();\n    cpu_coherent.signal") < queue.index("staging_allocator.trim_completed_budget")
-    assert "cpu_command_allocator.trim_completed" not in queue
+    # CPU command-data retirement is now producer-owned. The GPU finisher
+    # still must never touch that null-mutex ring; its own rings retain
+    # their existing completion-owned policy and workload assertions.
+    finish_start = queue.index("CommandQueue::WaitForFinishThread()")
+    finish_end = queue.index("\n}\n", finish_start) + 3
+    assert "cpu_command_allocator" not in queue[finish_start:finish_end]
+    assert "maintainCompletedCommandData(cpu_coherent.signaledValue())" in queue
     assert "DynamicBuffer::TrimCompletedForQueue(memoryDomain(), internal_seq, false)" in queue
     queue_header = STAGE.stage_queue_header((SOURCE / 'dxmt_command_queue.hpp').read_text())
     assert queue_header.count('transient_ring_minimum_.load(std::memory_order_acquire)') == 5
-    assert 'cpu_command_allocator.trim_completed_budget' not in queue
+    assert 'cpu_command_allocator.trim_completed_budget' not in queue[finish_start:finish_end]
     for name, transform in STAGE.STAGES.items():
         first = transform((SOURCE / name).read_text())
         try:

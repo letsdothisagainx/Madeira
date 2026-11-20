@@ -142,6 +142,8 @@ commands = [
     ['python3', 'tests/host/check-dxmt-upload-memory.py'],
     ['python3', 'tests/host/check-dxmt-transient-metal-pressure.py', '--require-darwin', '--require-metal'],
     ['python3', 'tests/host/check-dxmt-cpu-encode-memory.py', '--sanitize'],
+    ['python3', 'tests/host/check-dxmt-cpu-command-memory.py'],
+    ['python3', 'tests/host/check-dxmt-cpu-command-native.py', '--require-darwin'],
     ['python3', 'tests/host/check-native-heap-relief.py'],
     ['python3', 'tests/host/check-dxmt-memory-build.py'],
     ['python3', 'tests/host/check-dxmt-census-heap.py'],
