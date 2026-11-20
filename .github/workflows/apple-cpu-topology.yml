@@ -3,7 +3,7 @@ name: Verify Apple CPU topology
 on:
   workflow_dispatch:
   push:
-    branches: [main, 'codex/pr-build-*']
+    branches: [main, 'codex/pr-build-*', codex/cs2-live-memory-upload-reuse-20261116]
     paths:
       - 'tools/build/stage-apple-cpu-topology.py'
       - 'build/ntdll-unix/build.sh'
