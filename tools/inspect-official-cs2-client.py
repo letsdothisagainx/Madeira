@@ -16,12 +16,12 @@ import capstone as cs
 import pefile
 import xxhash
 
-APP, DEPOT, MANIFEST = 730, 2347771, 6054210037651104742
+APP, DEPOT, MANIFEST = 730, 2347771, 4200138934793327916
 FILE = 'game/csgo/bin/win64/client.dll'
 TIER0 = 'game/bin/win64/tier0.dll'
 TIER0_ID = '8f2d32d37c93635a'
 EXPECTED_BYTES = 39120536
-EXPECTED_ID = 'eb5eed5d42f84131'
+EXPECTED_ID = 'eb5edd5d42fad2d2'
 TOOL_URL = ('https://github.com/SteamRE/DepotDownloader/releases/download/'
             'DepotDownloader_3.4.0/DepotDownloader-linux-x64.zip')
 TOOL_SHA256 = 'a999dec66b4850fc961bd50366696d23c2d0fad7b18790e6a5647b2f19097a53'
@@ -104,7 +104,7 @@ def inspect_tier0(path):
             pointer = struct.unpack_from('<Q', raw)[0]
             if base <= pointer < base + pe.OPTIONAL_HEADER.SizeOfImage:
                 print(f'TIER0_GLOBAL_OBJECT rva={pointer-base:#x} raw={pe.get_data(pointer-base, 128).hex()}')
-        elif any(t in name for t in ('CreateThreadPool', 'ThreadPool@@', 'AddJob')):
+        elif any(t in name for t in ('CreateThreadPool', 'ThreadPool@@', 'AddJob', 'CPUInformation')):
             show_function(rva, name)
     # Match x64 MSVC type descriptor -> complete object locator -> vftable.
     # Report only a true signature/self-RVA locator, not arbitrary text bytes.
@@ -146,7 +146,7 @@ def inspect_tier0(path):
                             target = entries[16] - base
                             if 0 <= target < pe.OPTIONAL_HEADER.SizeOfImage:
                                 show_function(target, f'vtable{table:#x}+0x80')
-    for target in (0xa4190, 0xa7490, 0xa5cf0, 0xa5f80, 0xa5780, 0xa7520, 0xa7680):
+    for target in (0xa4190, 0xa7490, 0xa5b40, 0xa5cf0, 0xa5f80, 0xa5780, 0xa7520, 0xa7680):
         show_function(target, 'exact-pool-start-queue-stop-suspend-path')
     field_writers = set()
     for record in functions:
@@ -164,6 +164,22 @@ def inspect_tier0(path):
     assert len(field_writers) <= 16, 'pool field writer bound exceeded'
     for target in sorted(field_writers):
         show_function(target, 'observed-pool-field-writer')
+    cpu_slots = {slot: name for slot, name in imports.items() if any(term in name for term in (
+        'LogicalProcessor', 'ActiveProcessor', 'SystemInfo', 'Affinity', 'ProcessorNumber'))}
+    print(f'TIER0_CPU_IMPORTS {cpu_slots!r}')
+    for low, high, _ in functions:
+        raw = pe.get_data(low, high - low)
+        if not any(op in raw for op in (b'\xff\x15', b'\xff\x25')):
+            continue
+        for ins in md.disasm(raw, low):
+            if not (ins.group(cs.CS_GRP_CALL) or ins.group(cs.CS_GRP_JUMP)):
+                continue
+            for operand in ins.operands:
+                if operand.type == cs.x86.X86_OP_MEM and operand.mem.base == cs.x86.X86_REG_RIP:
+                    slot = ins.address + ins.size + operand.mem.disp
+                    if slot in cpu_slots:
+                        print(f'TIER0_CPU_IMPORT_XREF instruction={ins.address:#x} root={chain_root((low, high, _)):#x} name={cpu_slots[slot]}')
+                        show_function(low, 'actual-cpu-topology-api-consumer')
     print(f'TIER0_SUMMARY threadpool-types={type_count} vtables={table_count}')
 
 
