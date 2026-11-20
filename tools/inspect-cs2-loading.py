@@ -17,7 +17,6 @@ import capstone
 import pefile
 import xxhash
 
-MANIFEST = '6054210037651104742'
 TOOL_URL = ('https://github.com/SteamRE/DepotDownloader/releases/download/'
             'DepotDownloader_3.4.0/DepotDownloader-linux-x64.zip')
 TOOL_SHA = 'a999dec66b4850fc961bd50366696d23c2d0fad7b18790e6a5647b2f19097a53'
@@ -97,7 +96,10 @@ def main():
         listing.write_text(''.join('game/bin/win64/' + name + '\n' for name in QUERIES))
         log = args.scratch / 'download.log'
         with log.open('w') as out:
-            result = subprocess.run([str(tool), '-app', '730', '-depot', '2347771', '-manifest', MANIFEST,
+            # The earlier manifest is no longer available anonymously. Fetch
+            # the current public manifest, but accept each image only if its
+            # independently recorded runtime identity matches this capture.
+            result = subprocess.run([str(tool), '-app', '730', '-depot', '2347771',
                                      '-filelist', str(listing), '-dir', str(args.scratch / 'images'),
                                      '-max-downloads', '2'], stdout=out, stderr=subprocess.STDOUT, timeout=150)
         for line in log.read_text(errors='replace').splitlines()[-30:]:
