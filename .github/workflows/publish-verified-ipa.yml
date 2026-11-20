@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: publish-ipa-48a4fef1
+  group: publish-ipa-08c333ba
   cancel-in-progress: false
 
 jobs:
@@ -22,16 +22,14 @@ jobs:
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
-      SOURCE_REVISION: 48a4fef1f1a82a508597ce033d6ad740f1847f8b
-      SOURCE_RUN: '44680005845'
-      SOURCE_ARTIFACT: '14605278975'
-      ARCHIVE_SHA256: c4941755ad9469fdc2098c48f1092df371ea3655890866c5a0eafe1548abc793
-      RELEASE_TAG: ipa-48a4fef1
+      SOURCE_REVISION: 08c333bae081862256d73d0d4b388ceea9fa1db7
+      SOURCE_RUN: '44815121124'
+      RELEASE_TAG: ipa-08c333ba
     steps:
       - name: Require the exact successful build and artifact
         run: |
           python3 - <<'PY'
-          import json, os, subprocess
+          import json, os, re, subprocess
           repo = os.environ['GITHUB_REPOSITORY']
           def api(path):
               return json.loads(subprocess.check_output(['gh', 'api', 'repos/' + repo + path]))
@@ -40,18 +38,28 @@ jobs:
           assert run['head_sha'] == os.environ['SOURCE_REVISION']
           assert run['head_repository']['full_name'].lower() == repo.lower()
           assert run['path'] == '.github/workflows/build.yml'
-          artifact = api('/actions/artifacts/' + os.environ['SOURCE_ARTIFACT'])
+          artifacts = api('/actions/runs/' + os.environ['SOURCE_RUN'] + '/artifacts?name=Madeira-ipa')['artifacts']
+          assert len(artifacts) == 1
+          artifact = artifacts[0]
           assert artifact['name'] == 'Madeira-ipa' and not artifact['expired']
           assert str(artifact['workflow_run']['id']) == os.environ['SOURCE_RUN']
           assert artifact['workflow_run']['head_sha'] == os.environ['SOURCE_REVISION']
-          assert artifact['digest'] == 'sha256:' + os.environ['ARCHIVE_SHA256']
+          assert re.fullmatch(r'sha256:[0-9a-f]{64}', artifact['digest'])
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write('SOURCE_ARTIFACT=' + str(artifact['id']) + '\n')
+              env.write('ARCHIVE_SHA256=' + artifact['digest'].split(':', 1)[1] + '\n')
           tag = api('/git/ref/tags/' + os.environ['RELEASE_TAG'])
           assert tag['object']['type'] == 'commit' and tag['object']['sha'] == os.environ['SOURCE_REVISION']
           print('PASS exact successful build, source revision and immutable artifact identity')
           PY
       - uses: actions/checkout@v4
         with:
-          ref: 48a4fef1f1a82a508597ce033d6ad740f1847f8b
+          ref: 08c333bae081862256d73d0d4b388ceea9fa1db7
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: delivery-tools
           persist-credentials: false
       - name: Download and verify the already built IPA
         run: |
@@ -61,32 +69,38 @@ jobs:
           unzip -q "$RUNNER_TEMP/Madeira-ipa.zip" -d release-output
           test -s release-output/Madeira.ipa
           python3 tools/build/native-provenance.py check --root "$GITHUB_WORKSPACE" --revision "$SOURCE_REVISION" --ipa release-output/Madeira.ipa
+          python3 delivery-tools/tests/host/check-store-recovery-package-inspector.py
+          python3 delivery-tools/tools/check-store-recovery-package.py --ipa release-output/Madeira.ipa --revision "$SOURCE_REVISION" > release-output/recovery-package.json
+          cat release-output/recovery-package.json
           (cd release-output && sha256sum Madeira.ipa > SHA256SUMS)
       - name: Publish the same IPA as a stable prerelease asset
         run: |
           cat > "$RUNNER_TEMP/ipa-release-notes.txt" <<'NOTES'
-          Verified Madeira IPA from source 48a4fef1f1a82a508597ce033d6ad740f1847f8b.
+          Madeira IPA from source 08c333bae081862256d73d0d4b388ceea9fa1db7.
 
-          The complete IPA workflow passed at https://github.com/letsdothisagainx/Madeira/actions/runs/44680005845.
-          This release publishes that exact artifact without recompilation or modification.
+          IPA build: https://github.com/letsdothisagainx/Madeira/actions/runs/44815121124
+          Focused Linux/macOS checks: https://github.com/letsdothisagainx/Madeira/actions/runs/44815126723
 
-          The production correction covers a missed CPU command-data cache. Previously completed normal blocks could retain their loading high-water mark for 300 later submissions or maintenance calls. Pressure maintenance now retains at most one bounded completed block at the serialized producer's existing safe point; pending data remains owned until real GPU completion and command reset. Dedicated writable VM backing returns completed pages instead of leaving freed capacity retained in the general allocator. It does not change live textures, guest memory, executable JIT pages, or the texture-admission reserve.
+          This candidate corrects a source-confirmed scheduling defect in the existing checked-store recovery worker. A long full-task discovery scan could consume its entire 100-ms period, become immediately overdue again, and delay follow-up of already watched copy threads. Discovery now services those targets between native queries and schedules the next full scan from a fresh completion timestamp. The existing eligibility checks, two-observation confirmation, checked fragment writes, PC publication, native identity ownership, eight-slot bound and suspension balancing remain active.
 
-          All 272 required host checks passed. Focused Linux/macOS ownership, failure, page geometry, race and completion tests passed at https://github.com/letsdothisagainx/Madeira/actions/runs/44680001282. An identical 55,578,624-byte native command workload measured a footprint drop from 51,463,360 to 4,260,992 bytes after maintenance; malloc variants showed no drop. Initial burst capacity was unchanged. This is a controlled host result, not a measured iPhone loading speedup.
+          A normal-success replay of the actual production bodies completes 19 additional real-byte stores by 500 modeled ms, compared with 2,910 ms before; maximum target capture gap is 25 rather than 145 ms. All native APIs succeed and all destinations are writable. This is a controlled scheduler result, not a measured iPhone map-loading speedup. No deliberate crash, protected-neighbor, revocation or fault-injection experiment was run for this candidate.
 
-          The attached Run12 contains worker-driven main-thread context captures followed by continuing execution, rather than the older quoted self-suspension. SuspendThread/ResumeThread behavior is unchanged.
+          The IPA workflow selects the explicit recovery-normal validation profile to honor that constraint. Its six targeted host checks and normal native/source/ABI/topology/package verification run; the full historical fault-testing suite is not claimed. Complete IPA reuse is separated by validation profile.
 
-          Native image UUID: ADAB4FE6-A5F5-3B52-8F07-4682B764F17F.
-          Detailed evidence, changes and validation limits: https://github.com/letsdothisagainx/Madeira/blob/${{ github.sha }}/docs/cs2-run12-cpu-command-pressure-20261120.md
+          Bounded observations cover the actual accepted CS2 main native thread and at most two already observed copy workers. They retain current host execution, wait/CPU state and recovery results where Run13 lacked continuous attribution. No Valve binary, game protocol, authentication, memory reserve, JIT partition or renderer policy is patched.
 
-          Existing installation, bundle identity, configuration, Steam authentication, networking, 1152 MiB JIT pool, renderer, upload bounds and dynamic-buffer reuse are preserved. No game files or proprietary binaries are modified.
+          The full 1,152 MiB JIT pool, larger code-buffer reuse, checked-store protections, topology, GPU resource ownership, installation bundle identity, Steam setup, Wine prefix and user configuration are preserved.
 
-          Responsive remote team selection, gameplay through a round, lower loading times, complete texture success and safe iPhone headroom remain unverified. The current full working-set owner distribution was not established by the exported capacity counters. This release fixes a source-confirmed reclamation defect without claiming that every Run12 failure is solved.
+          recovery-package.json records the packaged native UUID and read-only inspection of the compiled discovery-to-hot-service path and post-discovery clock call. The source/provenance and immutable Actions artifact digest are verified before publication. This release uploads the same built IPA without recompilation.
 
-          Download Madeira.ipa from the assets below. SHA256SUMS records its checksum.
+          The contribution of this scheduler defect to Run13's 103-second activation and later timeout is not independently measured. Responsive team selection, continuing remote gameplay through a round, and intact rendering after return/changelevel still require an iPhone session. A passing build or menu FPS is not device acceptance.
+
+          Detailed analysis: https://github.com/letsdothisagainx/Madeira/blob/08c333bae081862256d73d0d4b388ceea9fa1db7/docs/cs2-run13-critical-path-20261120.md
+
+          Download Madeira.ipa below. SHA256SUMS verifies its bytes.
           NOTES
-          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title 'Madeira 48a4fef1 - completed CPU command memory' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
-          gh release upload "$RELEASE_TAG" release-output/Madeira.ipa release-output/SHA256SUMS --repo "$GITHUB_REPOSITORY"
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title 'Madeira 08c333ba - store recovery scheduling' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
+          gh release upload "$RELEASE_TAG" release-output/Madeira.ipa release-output/SHA256SUMS release-output/recovery-package.json --repo "$GITHUB_REPOSITORY"
           gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
       - name: Verify the public download without authentication
         run: |
