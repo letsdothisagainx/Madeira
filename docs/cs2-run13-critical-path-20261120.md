@@ -199,9 +199,13 @@ decode, balanced normal capture, and passive recovery-result recording.
 The 4,212 component-cache invalidation checks passed. The new headers invalidate
 the IPA inputs without rebuilding unrelated FEX/DXMT components.
 
-Local Swift execution was unavailable; the dedicated read-only CI job requires
-Swift on macOS to test the actual sanitizer with the emitted rows and retained
-privacy filtering. No crash, page-revocation or protected-memory experiment was
+Local Swift execution was unavailable. The dedicated read-only CI run
+<https://github.com/letsdothisagainx/Madeira/actions/runs/44706349406> passed
+Linux and macOS normal-snapshot checks, the actual Swift sanitizer with both
+emitted rows/privacy filtering, and reinspection of all four SHA-pinned images.
+The existing touched native-observation and recovery fixtures also compiled
+locally with `--compile-only`; none of their executables was run. This checks
+fixture integration, not an iOS app build. No crash, page-revocation or protected-memory experiment was
 run. Existing fault-injection workflows are intentionally not dispatched for
 this request. The commit uses `[skip ci]` to prevent their automatic push runs;
 only the explicitly selected normal-input/read-only workflow is dispatched.

@@ -17,6 +17,7 @@ import tempfile
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--sanitize', action='store_true')
 parser.add_argument('--require-darwin', action='store_true')
+parser.add_argument('--compile-only', action='store_true', help='build fixtures without executing any store/fault experiment')
 args = parser.parse_args()
 if args.require_darwin and platform.system() != 'Darwin':
     raise SystemExit('FAIL: Darwin is required')
@@ -803,9 +804,12 @@ with tempfile.TemporaryDirectory(prefix='madeira-stuck-scheduling-') as director
         subprocess.run([os.environ.get('CC', 'cc'), '-std=gnu11', '-O2', '-Wall', '-Wextra', '-Werror',
                         '-Wno-unused-function', '-Wno-unused-variable', *define, *flags,
                         '-I' + str(root / 'build/ntdll-unix'), str(source), '-o', str(binary)], check=True, timeout=60)
+        if args.compile_only:
+            continue
         cases = ['trace', 'blocked', 'contended']
         if label == 'wall-gate-control': cases = ['contended']
         if label == 'candidate': cases += ['gates', 'protected', 'death', 'churn', 'publication', 'bounded', 'acquisition', 'startup', 'fresh-clock', 'no-cpu', 'user-regression', 'system-regression', 'moving', 'neon-failure', 'discovery-regression', 'discovery-precision']
         for case in cases:
             subprocess.run([str(binary), case], check=True, timeout=60)
-print('NOTE deterministic scheduling/CPU adapters; no iPhone kernel-stall or multiplayer performance claim')
+print('COMPILE ONLY: recovery fixtures built; no test executable was run' if args.compile_only else
+      'NOTE deterministic scheduling/CPU adapters; no iPhone kernel-stall or multiplayer performance claim')

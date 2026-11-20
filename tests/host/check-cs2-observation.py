@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Compile and execute the owned production native observation bodies."""
 import os
+import argparse
 from pathlib import Path
 import re
 import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--compile-only', action='store_true', help='compile native observation fixtures without executing protected-page tests')
+args = parser.parse_args()
 thread = (ROOT / 'build/ntdll-unix/thread_ios.c').read_text()
 def body(source, mark):
     start = source.index(mark)
@@ -44,7 +48,8 @@ static _Thread_local void *ios_retired_thread_owner;
         subprocess.run([os.environ.get('CC', 'cc'), '-std=c11', '-Wall', '-Wextra', '-Werror',
             '-O2', '-pthread', '-I' + str(ROOT / 'build/ntdll-unix'), '-I' + str(temp),
             str(ROOT / 'tests/host' / source), '-o', str(binary)], check=True)
-        subprocess.run([str(binary)], check=True)
+        if not args.compile_only:
+            subprocess.run([str(binary)], check=True)
 
 # Boundary regressions: no failed-map callback, no registry/VM lock held while
 # observing, and startup uses accepted identity rather than a command token.
@@ -70,4 +75,5 @@ assert child.index('teb->Peb = child_peb;') < child.index('pthread_setspecific( 
 assert child.count('ios_cs2_observe_current_start(') == 2
 env = body((ROOT / 'build/ntdll-unix/env_ios.c').read_text(), 'static void init_peb(')
 assert env.index('PEB *peb = NtCurrentTeb()->Peb;') < env.index('peb->ProcessParameters          = params;')
-print('CS2 passive accepted-boundary observations: PASS')
+print('CS2 observation fixtures: COMPILE ONLY; static accepted-boundary checks: PASS' if args.compile_only else
+      'CS2 passive accepted-boundary observations: PASS')
