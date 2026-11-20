@@ -103,6 +103,7 @@ public:
 class CommandQueue {
   std::atomic<bool> allocation_recovery_latched_{false};
   std::atomic<uint64_t> allocation_transient_frontier_{UINT64_MAX};
+  std::atomic<bool> cpu_command_release_requested_{false};
   static uint64_t NextMemoryDomain() {
     static std::atomic<uint64_t> next{1};
     return next.fetch_add(1);

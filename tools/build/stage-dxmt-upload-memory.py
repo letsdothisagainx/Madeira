@@ -12,8 +12,138 @@ def replace_once(source, before, after):
     return source.replace(before, after, 1)
 
 
+CPU_COMMAND_ALLOCATOR = r'''// Dedicated backing for the queue's private CPU command bytes. These are
+// never guest-visible D3D11 resources or executable/FEX storage. Returning a
+// completed block must return its pages, rather than retain malloc's high-water
+// region in the native allocator. Other host/ref-tracker allocators are unchanged.
+class CpuCommandBlockAllocator {
+public:
+  enum class Backend : uint8_t { None, Windows, Posix };
+  struct ReleaseReports { std::atomic<unsigned> failures{0}; };
+
+  class Block {
+  public:
+    void *ptr = nullptr;
+    size_t allocation_size = 0;
+    Backend backend = Backend::None;
+    std::shared_ptr<ReleaseReports> reports;
+
+    Block() = default;
+    Block(const Block &) = delete;
+    Block &operator=(const Block &) = delete;
+    Block &operator=(Block &&) = delete;
+    Block(Block &&other) noexcept : ptr(other.ptr), allocation_size(other.allocation_size), backend(other.backend), reports(std::move(other.reports)) {
+      other.ptr = nullptr;
+      other.allocation_size = 0;
+      other.backend = Backend::None;
+    }
+
+    bool try_release() noexcept {
+      if (!ptr) return true;
+      bool released = false;
+#if defined(_WIN32)
+      const DWORD saved_error = GetLastError();
+      if (backend == Backend::Windows)
+        released = VirtualFree(ptr, 0, MEM_RELEASE) != 0;
+      const unsigned long error = released ? 0 : GetLastError();
+#else
+      const int saved_error = errno;
+      if (backend == Backend::Posix)
+        released = munmap(ptr, allocation_size) == 0;
+      const unsigned long error = released ? 0 : errno;
+#endif
+      // A failed OS operation retains the ownership metadata. It must never
+      // masquerade as a successful physical release or unmap someone else's
+      // pages through a fallback backend.
+      if (!released && reports && reports->failures.fetch_add(1, std::memory_order_relaxed) < 8)
+        std::fprintf(stderr, "[cpu-command-vm-v1] event=release-failed ptr=%p bytes=%zu backend=%u error=%lu physical-freed=unmeasured\n", ptr, allocation_size, unsigned(backend), error);
+#if defined(_WIN32)
+      SetLastError(saved_error);
+#else
+      errno = saved_error;
+#endif
+      if (!released) return false;
+      ptr = nullptr;
+      allocation_size = 0;
+      backend = Backend::None;
+      return true;
+    }
+
+    ~Block() noexcept { (void)try_release(); }
+  };
+
+  static size_t rounded_size(size_t bytes, size_t page_size) {
+    if (!bytes || !page_size || (page_size & (page_size - 1)) ||
+        bytes > std::numeric_limits<size_t>::max() - (page_size - 1))
+      return 0;
+    return (bytes + page_size - 1) & ~(page_size - 1);
+  }
+
+  Block allocate(size_t bytes) {
+    static const volatile char contract[] = "[cpu-command-vm-v1]";
+    (void)contract[0];
+    size_t page_size = 0;
+#if defined(_WIN32)
+    SYSTEM_INFO info{};
+    GetSystemInfo(&info);
+    page_size = info.dwPageSize;
+#else
+    const long native_page_size = sysconf(_SC_PAGESIZE);
+    if (native_page_size > 0) page_size = size_t(native_page_size);
+#endif
+    const size_t actual = rounded_size(bytes, page_size);
+    if (!actual) throw std::bad_alloc();
+    Block block;
+    block.reports = reports_;
+#if defined(_WIN32)
+    block.ptr = VirtualAlloc(nullptr, actual, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (!block.ptr) throw std::bad_alloc();
+    block.backend = Backend::Windows;
+#else
+    void *mapping = mmap(nullptr, actual, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (mapping == MAP_FAILED) throw std::bad_alloc();
+    block.ptr = mapping;
+    block.backend = Backend::Posix;
+#endif
+    block.allocation_size = actual;
+    return block;
+  }
+private:
+  // Shared heap-owned reporting state survives the allocator member itself:
+  // FIFO blocks may be destroyed later by RingBumpState member destruction.
+  std::shared_ptr<ReleaseReports> reports_ = std::make_shared<ReleaseReports>();
+};
+
+'''
+
+
 def stage_ring(source):
     source = replace_once(source, '#include <queue>', '#include <queue>\n#include <optional>')
+    source = replace_once(source, '#include <optional>', '''#include <optional>
+#include <exception>
+#include <atomic>
+#include <cerrno>
+#include <cstdio>
+#include <limits>
+#include <memory>
+#include <new>
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#include <unistd.h>
+#endif''')
+    source = replace_once(source, 'class HostBufferBlockAllocator {', CPU_COMMAND_ALLOCATOR + 'class HostBufferBlockAllocator {')
+    # The VM-backed CPU allocator reports allocation failure by exception.
+    # Commit the reuse count only after backing and FIFO ownership succeed.
+    source = replace_once(source, '  if (reusable_oversize) ++reusable_oversize_blocks_;\n  fifo.push({',
+        '  fifo.push({')
+    source = replace_once(source, '''      .block = allocator_.allocate(block_size),
+  });
+  return fifo.back();''', '''      .block = allocator_.allocate(block_size),
+  });
+  if (reusable_oversize) ++reusable_oversize_blocks_;
+  return fifo.back();''')
     # Optional pressure sizing changes only new block growth. Existing blocks
     # retain their completion ownership and every healthy caller uses zero.
     source = replace_once(source,
@@ -536,6 +666,9 @@ CommandQueue::CommitChunkInternal(''')
 def stage_queue_header(source):
     if "const uint64_t memory_domain_" in source:
         raise ValueError("DXMT command queue header is already staged")
+    source = replace_once(source,
+        'RingBumpState<HostBufferBlockAllocator, kCommandChunkCPUHeapSize, dxmt::null_mutex> cpu_command_allocator;',
+        'RingBumpState<CpuCommandBlockAllocator, kCommandChunkCPUHeapSize, dxmt::null_mutex> cpu_command_allocator;')
     source = replace_once(source, "class CommandQueue {\n\nprivate:", """class CommandQueue {
 
 private:

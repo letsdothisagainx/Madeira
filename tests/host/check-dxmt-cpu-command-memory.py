@@ -61,6 +61,9 @@ def fragments():
     assert 'MemoryPressureController cpu_command_pressure_controller_;' in header
     assert 'unsigned cpu_command_pressure_reports_ = 0;' in header
     host = braced((src / 'dxmt_ring_bump_allocator.hpp').read_text(), 'class HostBufferBlockAllocator {') + ';'
+    vm = braced(ring, 'class CpuCommandBlockAllocator {') + ';'
+    assert 'RingBumpState<CpuCommandBlockAllocator, kCommandChunkCPUHeapSize, dxmt::null_mutex> cpu_command_allocator;' in header
+    assert 'RingBumpState<HostBufferBlockAllocator, 0x1000' in header
     pressure = (ROOT / 'build/dxmt-ios/memory_pressure.hpp').read_text()
     pressure = pressure[pressure.index('struct MemoryPressureSnapshot'):pressure.index('\nnamespace memory_pressure_detail')]
     return locals()
@@ -72,12 +75,15 @@ PREFIX = r'''
 #include <atomic>
 #include <cassert>
 #include <chrono>
+#include <cerrno>
+#include <cstdio>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <new>
 #include <mutex>
 #include <optional>
 #include <queue>
@@ -85,12 +91,15 @@ PREFIX = r'''
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#include <sys/mman.h>
+#include <unistd.h>
 #define WARN(...) ((void)0)
 using clock_type = std::chrono::steady_clock;
 void require(bool yes,const char *message){if(!yes){std::cerr<<message<<'\n';std::abort();}}
 static std::thread::id producer;
 static std::unordered_map<void *,size_t> backing;
 static size_t owned=0,owned_peak=0,allocations=0,frees=0,logs=0,fresh_queries=0;
+static bool fail_vm_allocation=false,fail_vm_release=false,oversize_reuse=false;
 void *tracked_malloc(size_t bytes){
  require(std::this_thread::get_id()==producer,"CPU backing allocated by a foreign thread");
  void *p=std::malloc(bytes);require(p,"real malloc failed");backing.emplace(p,bytes);
@@ -101,6 +110,21 @@ void tracked_free(void *p){
  if(!p)return;auto i=backing.find(p);require(i!=backing.end(),"unowned/double free");
  owned-=i->second;backing.erase(i);++frees;std::free(p);
 }
+void *tracked_mmap(void *hint,size_t bytes,int protection,int flags,int fd,off_t offset){
+ require(std::this_thread::get_id()==producer,"VM allocation by a foreign producer");
+ require(!hint&&protection==(PROT_READ|PROT_WRITE)&&fd==-1&&!offset,"incorrect/non-data VM request");
+ require((flags&MAP_PRIVATE)&&(flags&MAP_ANON),"incorrect anonymous VM ownership");
+ if(fail_vm_allocation){fail_vm_allocation=false;errno=ENOMEM;return MAP_FAILED;}
+ void *p=::mmap(hint,bytes,protection,flags,fd,offset);if(p==MAP_FAILED)return p;
+ require(backing.emplace(p,bytes).second,"duplicate VM ownership");owned+=bytes;owned_peak=std::max(owned_peak,owned);++allocations;return p;
+}
+int tracked_munmap(void *p,size_t bytes){
+ require(std::this_thread::get_id()==producer,"VM release by a foreign producer");
+ auto i=backing.find(p);require(i!=backing.end()&&i->second==bytes,"wrong VM release range");
+ if(fail_vm_release){errno=EBUSY;return -1;}
+ const int result=::munmap(p,bytes);if(result)return result;
+ owned-=bytes;backing.erase(i);++frees;return 0;
+}
 namespace dxmt {
 using mutex=std::mutex;
 struct null_mutex{void lock(){}void unlock(){}};
@@ -109,7 +133,7 @@ template<typename T>void *ptr_add(void *p,T n){return static_cast<char *>(p)+n;}
 constexpr size_t kStagingBlockSize=32ull<<20,kStagingBlockLifetime=300,kCommandChunkCPUHeapSize=4ull<<20;
 constexpr size_t kCommandChunkCount=32;
 size_t madeiraRingBlockSize(size_t natural){return natural;}
-bool ringOversizeReuseEnabled(){return false;}
+bool ringOversizeReuseEnabled(){return oversize_reuse;}
 struct Logger{template<class...T>static void info(T&&...){++logs;}};
 // ACTUAL_PRESSURE
 static MemoryPressureSnapshot reading;
@@ -152,7 +176,7 @@ public:
  std::atomic<uint64_t>ready_for_encode{1},chunk_ongoing{0};
  Fence cpu_coherent;std::array<CommandChunk,kCommandChunkCount>chunks;
  uint64_t frame_count=0,next_event=0;Initializer initializer;Statistics stats;
- RingBumpState<HostBufferBlockAllocator,kCommandChunkCPUHeapSize,null_mutex>cpu_command_allocator{HostBufferBlockAllocator{}};
+ RingBumpState<COMMAND_ALLOCATOR,kCommandChunkCPUHeapSize,null_mutex>cpu_command_allocator{COMMAND_ALLOCATOR{}};
  MemoryPressureController cpu_command_pressure_controller_;
  std::atomic<bool>cpu_command_release_requested_{false};
  unsigned cpu_command_pressure_reports_=0;
@@ -309,16 +333,114 @@ def generated_sources():
   cpu_command_allocator.free_blocks(completed);return 0;
 }'''
         backend = backend.replace('// ACTUAL_MAINTENANCE', helper)
-        host = '\nnamespace dxmt {\n#define malloc tracked_malloc\n#define free tracked_free\n' + f['host'] + '\n#undef malloc\n#undef free\n}\n'
+        host = '\nnamespace dxmt {\n#define malloc tracked_malloc\n#define free tracked_free\n' + f['host'] + '\n#undef malloc\n#undef free\n'
+        host += '#define mmap tracked_mmap\n#define munmap tracked_munmap\n' + f['vm'] + '\n#undef mmap\n#undef munmap\n}\n'
+        backend = backend.replace('COMMAND_ALLOCATOR', 'CpuCommandBlockAllocator' if candidate else 'HostBufferBlockAllocator')
         result[name] = PREFIX.replace('// ACTUAL_PRESSURE', f['pressure']) + UPLOAD_TEST.ring_code(f['ring']) + host + backend + MAIN.replace('CANDIDATE', '1' if candidate else '0')
     return result
+
+
+WINDOWS_VM_ADAPTER = r'''
+#define VM_WINDOWS_TEST 1
+// Compile the actual Windows branch with a bounded host adapter. Its calls,
+// flags, release extent and failure results are checked; this is not Wine.
+using DWORD=unsigned long;
+struct SYSTEM_INFO{DWORD dwPageSize;};
+constexpr DWORD MEM_RESERVE=0x2000,MEM_COMMIT=0x1000,MEM_RELEASE=0x8000,PAGE_READWRITE=4;
+static DWORD win_error=0;
+DWORD GetLastError(){return win_error;}
+void SetLastError(DWORD e){win_error=e;}
+void GetSystemInfo(SYSTEM_INFO *info){info->dwPageSize=4096;}
+void *VirtualAlloc(void *hint,size_t bytes,DWORD flags,DWORD protection){
+ require(!hint&&flags==(MEM_RESERVE|MEM_COMMIT)&&protection==PAGE_READWRITE,"incorrect Windows VM creation flags");
+ void *p=tracked_mmap(hint,bytes,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANON,-1,0);
+ if(p==MAP_FAILED){win_error=8;return nullptr;}return p;
+}
+int VirtualFree(void *ptr,size_t bytes,DWORD operation){
+ require(!bytes&&operation==MEM_RELEASE,"Windows VM must release exact reservation with size zero");
+ const int result=tracked_munmap(ptr,backing.at(ptr));if(result)win_error=487;return result==0;
+}
+'''
+
+ALLOCATOR_MAIN = r'''
+int main(){
+ producer=std::this_thread::get_id();using Allocator=dxmt::CpuCommandBlockAllocator;
+ require(Allocator::rounded_size(1,4096)==4096&&Allocator::rounded_size(4096,4096)==4096&&
+         Allocator::rounded_size(4097,4096)==8192,"page rounding is incorrect");
+ require(!Allocator::rounded_size(0,4096)&&!Allocator::rounded_size(1,0)&&
+         !Allocator::rounded_size(1,123)&&!Allocator::rounded_size(SIZE_MAX,4096),"invalid size accepted");
+ Allocator allocator;
+ {
+  auto first=allocator.allocate(4097);void *ptr=first.ptr;size_t bytes=first.allocation_size;
+  require(bytes>=4097&&bytes%size_t(sysconf(_SC_PAGESIZE))==0,"actual allocation extent is wrong");
+  std::memset(ptr,0x73,4097);
+  auto moved=std::move(first);
+  require(!first.ptr&&!first.allocation_size&&first.backend==Allocator::Backend::None,"move retained ownership");
+  require(moved.ptr==ptr&&moved.allocation_size==bytes&&((char*)ptr)[4096]==0x73,"move lost backing or payload");
+  auto state=moved.reports;
+  fail_vm_release=true;
+  errno=ERANGE;
+#if defined(VM_WINDOWS_TEST)
+  SetLastError(123);
+#endif
+  for(unsigned i=0;i<12;i++)require(!moved.try_release(),"failed OS release fabricated success");
+#if defined(VM_WINDOWS_TEST)
+  require(GetLastError()==123,"release logging changed Windows caller error");
+#else
+  require(errno==ERANGE,"release logging changed POSIX caller error");
+#endif
+  require(moved.ptr==ptr&&moved.allocation_size==bytes&&backing.count(ptr)&&state->failures==12,"release failure lost ownership or report budget");
+  fail_vm_release=false;require(moved.try_release()&&!moved.ptr&&!moved.allocation_size,"OS retry did not release owned extent");
+ }
+ void *leaked=nullptr;size_t leaked_bytes=0;
+ {
+  Allocator separate;auto block=separate.allocate(1);leaked=block.ptr;leaked_bytes=block.allocation_size;
+  fail_vm_release=true; // destructor must not terminate or pretend it returned pages.
+ }
+ require(backing.count(leaked),"failed destructor reported released storage");
+ fail_vm_release=false;require(!tracked_munmap(leaked,leaked_bytes),"fixture could not clean injected OS failure");
+ for(size_t bytes:{size_t(0),SIZE_MAX}){
+  bool threw=false;try{auto block=allocator.allocate(bytes);(void)block;}catch(const std::bad_alloc&){threw=true;}
+  require(threw,"invalid allocation did not fail honestly");
+ }
+ fail_vm_allocation=true;bool threw=false;
+ try{auto block=allocator.allocate(8192);(void)block;}catch(const std::bad_alloc&){threw=true;}
+ require(threw&&!owned,"VM allocation failure fabricated backing");
+ {
+  // Test-only visibility exposes actual FIFO/accounting; no production hook.
+  dxmt::RingBumpState<Allocator,4ull<<20,dxmt::null_mutex> ring{Allocator{}};
+  oversize_reuse=true;fail_vm_allocation=true;threw=false;
+  try{ring.allocate(1,0,8ull<<20,16);}catch(const std::bad_alloc&){threw=true;}
+  require(threw&&ring.fifo.empty()&&!ring.reusable_oversize_blocks_&&!owned,"failed oversized allocation mutated ring publication/accounting");
+  auto value=ring.allocate(1,0,8ull<<20,16);
+  require(value.first.ptr&&ring.fifo.size()==1&&ring.reusable_oversize_blocks_==1,"post-failure ring cannot publish correct backing");
+  ring.trim_completed_budget(1,0);
+  require(ring.fifo.empty()&&!ring.reusable_oversize_blocks_&&!owned,"oversized VM retirement is unbalanced");
+ }
+ require(!owned&&backing.empty()&&allocations==frees,"VM ownership not balanced");
+ std::cout<<"PASS actual VM allocator: rounding, RW backing, move, OS failures, release retry, bounded errors, destructor safety, ring exception publication\n";
+}
+'''
+
+
+def allocator_sources():
+    f = fragments()
+    # All standard headers are already included before exposing ring internals
+    # for exception-publication assertions. The allocator itself is unchanged.
+    ring = UPLOAD_TEST.ring_code(f['ring']).replace('private:', 'public:')
+    prefix = PREFIX.replace('// ACTUAL_PRESSURE', f['pressure'])
+    posix = '#define mmap tracked_mmap\n#define munmap tracked_munmap\n'
+    native = '\nnamespace dxmt {\n' + posix + f['vm'] + '\n#undef mmap\n#undef munmap\n}\n'
+    windows = WINDOWS_VM_ADAPTER + '\n#define _WIN32 1\nnamespace dxmt {\n' + f['vm'] + '\n}\n#undef _WIN32\n'
+    return {'allocator-posix': prefix + ring + native + ALLOCATOR_MAIN,
+            'allocator-windows': prefix + ring + windows + ALLOCATOR_MAIN}
 
 
 def main():
     compiler = os.environ.get('CXX', 'c++')
     with tempfile.TemporaryDirectory(prefix='dxmt-cpu-command-') as directory:
         directory = Path(directory)
-        for name, source in generated_sources().items():
+        for name, source in {**generated_sources(), **allocator_sources()}.items():
             cpp, binary = directory / (name + '.cpp'), directory / name
             cpp.write_text(source)
             subprocess.run([compiler, '-std=c++20', '-O1', '-g', '-pthread', '-fsanitize=address,undefined',
@@ -326,6 +448,9 @@ def main():
             run = subprocess.run([str(binary)], text=True, capture_output=True, timeout=120)
             print(run.stdout, end='')
             assert run.returncode == 0, run.stderr
+            if name.startswith('allocator-'):
+                assert run.stderr.count('event=release-failed') == 9, run.stderr
+                assert ('error=487' if name.endswith('windows') else 'error=16') in run.stderr, run.stderr
     print('PASS source frontier ordering, no finisher/denial CPU-ring access, unchanged healthy production path; device performance unmeasured')
 
 

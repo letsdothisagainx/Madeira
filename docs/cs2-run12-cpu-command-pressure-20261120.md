@@ -92,6 +92,17 @@ before/after process footprint, with the before timestamp. Concurrent activity
 means an observed process-footprint change is not an exact causal attribution.
 No extra per-allocation/frame profiler or guest-memory eviction is introduced.
 
+The first native replay demonstrated an additional limit: releasing the blocks
+through malloc/free reduced ring ownership but did not reduce measured host
+physical footprint. A bounded-malloc variant is retained in the comparison so
+this is not hidden by capacity counters. The queue's private CPU blocks now own
+their VM backing directly: VirtualAlloc/VirtualFree on Windows, mmap/munmap on
+the native platform. Other host, reference-tracker and deferred allocators remain
+unchanged. Sizes are checked and page-rounded, move ownership includes the exact
+release length, and failed allocation cannot publish a nonexistent block. No
+arbitrary malloc pages are advised or unmapped. Release errors are reported
+honestly; they are not converted into a successful physical-reclamation claim.
+
 ## Validation boundary
 
 Focused fixtures exercise the actual staged producer/ring and original host
@@ -102,7 +113,7 @@ used command payloads; unused allocation tails are not touched to inflate RSS.
 Capacity, cumulative traffic, initial burst peaks and measured retained physical
 memory are reported separately in the delivery results.
 
-Package gates require the compiled CPU-command-cache producer in native and all
+Package gates require the compiled CPU-command-cache and owned-VM producers in native and all
 three Windows DXMT variants. Source hashes invalidate the affected component
 caches. Existing topology, code-buffer reuse, checked stores, upload bounds,
 texture admission, input, Steam, networking, installation and configuration are

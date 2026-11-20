@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Replay actual command-data maintenance with native malloc and task footprint.
+"""Replay command-data retirement and owned VM backing with task footprint.
 
 The baseline is the exact tested CommitCurrentChunk retention call. Both cases
-execute the staged ring, HostBufferBlockAllocator, AllocateCommandData and full
-CommitCurrentChunk. Command execution and its genuine-completion frontier are
+execute the staged ring, their actual backing allocator, AllocateCommandData
+and full CommitCurrentChunk. Command execution and its completion frontier are
 controlled adapters; only consumed/reset command storage is declared complete.
-On Darwin backing allocations and task phys_footprint measurements are real.
+On Darwin malloc/mmap/munmap and task phys_footprint measurements are real.
+The middle case applies bounded retention with malloc, preserving evidence that
+freeing capacity alone need not return pages from the native allocator.
 
 Every written byte belongs to an identical used command payload. Unused block
 tails are never touched to manufacture RSS. Owned capacity, cumulative traffic
@@ -49,6 +51,7 @@ PRELUDE = r'''
 #include <atomic>
 #include <cassert>
 #include <chrono>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -58,15 +61,19 @@ PRELUDE = r'''
 #include <map>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <queue>
 #include <thread>
 #include <utility>
 #include <vector>
+#include <sys/mman.h>
+#include <unistd.h>
 #if defined(__APPLE__)
 #include <mach/mach.h>
 #endif
 #define ASYNC_ENCODING 1
+#define DXMT_NATIVE 1
 #define WARN(...) ((void)0)
 static uint64_t physical_footprint() {
 #if defined(__APPLE__)
@@ -80,7 +87,7 @@ static uint64_t physical_footprint() {
 #endif
 }
 struct HostStats {
-  struct Entry { size_t size; uint64_t last_use = 0; };
+  struct Entry { size_t size; uint64_t last_use = 0; bool vm = false; };
   std::map<uintptr_t, Entry> blocks;
   const std::thread::id producer = std::this_thread::get_id();
   uint64_t completed = 0, allocations = 0, frees = 0, traffic = 0;
@@ -98,6 +105,8 @@ struct HostStats {
     it->second.last_use = std::max(it->second.last_use, seq);
   }
 } stats;
+static bool fail_next_vm_allocation = false;
+static bool fail_next_vm_release = false;
 static void *tracked_malloc(size_t bytes) {
   stats.producerOnly();
   void *result = std::malloc(bytes); assert(result);
@@ -111,9 +120,35 @@ static void tracked_free(void *pointer) {
   if (!pointer) return;
   stats.producerOnly();
   auto it = stats.blocks.find(reinterpret_cast<uintptr_t>(pointer));
-  assert(it != stats.blocks.end() && it->second.last_use <= stats.completed);
+  assert(it != stats.blocks.end() && !it->second.vm && it->second.last_use <= stats.completed);
   stats.owned -= it->second.size; stats.blocks.erase(it); ++stats.frees;
   std::free(pointer); stats.sample();
+}
+static void *tracked_mmap(void *hint, size_t bytes, int protection, int flags, int fd, off_t offset) {
+  stats.producerOnly();
+  assert(hint == nullptr && protection == (PROT_READ | PROT_WRITE) && fd == -1 && !offset);
+  assert((flags & MAP_PRIVATE) && (flags & MAP_ANON));
+  if (fail_next_vm_allocation) {
+    fail_next_vm_allocation = false; errno = ENOMEM; return MAP_FAILED;
+  }
+  void *result = ::mmap(hint, bytes, protection, flags, fd, offset);
+  if (result == MAP_FAILED) return result;
+  assert(stats.blocks.emplace(reinterpret_cast<uintptr_t>(result), HostStats::Entry{bytes, 0, true}).second);
+  ++stats.allocations; stats.traffic += bytes; stats.owned += bytes;
+  stats.owned_peak = std::max(stats.owned_peak, stats.owned); stats.sample();
+  return result;
+}
+static int tracked_munmap(void *pointer, size_t bytes) {
+  stats.producerOnly();
+  auto it = stats.blocks.find(reinterpret_cast<uintptr_t>(pointer));
+  assert(it != stats.blocks.end() && it->second.vm && it->second.size == bytes && it->second.last_use <= stats.completed);
+  if (fail_next_vm_release) {
+    fail_next_vm_release = false; errno = EBUSY; return -1;
+  }
+  const int result = ::munmap(pointer, bytes);
+  assert(result == 0);
+  stats.owned -= it->second.size; stats.blocks.erase(it); ++stats.frees; stats.sample();
+  return result;
 }
 static void *ptr_add(void *pointer, size_t offset) { return static_cast<char *>(pointer) + offset; }
 namespace dxmt {
@@ -200,7 +235,7 @@ public:
     clock::duration commit_interval{};
   } frame_statistics;
   struct { uint64_t flushToWait() { return 0; } } initializer;
-  RingBumpState<HostBufferBlockAllocator, kCommandChunkCPUHeapSize, null_mutex> cpu_command_allocator{{}};
+  RingBumpState<CPU_BACKING_ALLOCATOR, kCommandChunkCPUHeapSize, null_mutex> cpu_command_allocator{{}};
   MemoryPressureController cpu_command_pressure_controller_;
   std::atomic<bool> cpu_command_release_requested_{false};
   unsigned cpu_command_pressure_reports_ = 0;
@@ -266,7 +301,47 @@ public:
 
 
 MAIN = r'''
-int main() {
+static int backendSelfTest() {
+  using namespace dxmt;
+  const size_t payload = size_t(sysconf(_SC_PAGESIZE)) + 7;
+  const auto native_page = size_t(sysconf(_SC_PAGESIZE));
+  CpuCommandBlockAllocator allocator;
+  {
+    auto original = allocator.allocate(payload);
+    assert(original.ptr && original.allocation_size == CpuCommandBlockAllocator::rounded_size(payload, native_page));
+    assert(stats.owned == original.allocation_size && original.backend == CpuCommandBlockAllocator::Backend::Posix);
+    auto *pointer = original.ptr;
+    const auto extent = original.allocation_size;
+    memset(pointer, 0x59, payload);
+    CpuCommandBlockAllocator::Block moved(std::move(original));
+    assert(!original.ptr && original.allocation_size == 0 && original.backend == CpuCommandBlockAllocator::Backend::None);
+    assert(moved.ptr == pointer && moved.allocation_size == extent && moved.backend == CpuCommandBlockAllocator::Backend::Posix);
+    for (size_t i = 0; i < payload; ++i) assert(static_cast<unsigned char *>(moved.ptr)[i] == 0x59);
+    const auto frees_before = stats.frees;
+    fail_next_vm_release = true;
+    assert(!moved.try_release() && !fail_next_vm_release);
+    assert(moved.ptr == pointer && moved.allocation_size == extent && stats.owned == extent && stats.frees == frees_before);
+    assert(moved.try_release() && !moved.ptr && !moved.allocation_size);
+    assert(moved.backend == CpuCommandBlockAllocator::Backend::None);
+  }
+  assert(!stats.owned && stats.blocks.empty() && stats.allocations == stats.frees);
+  fail_next_vm_allocation = true;
+  bool failed = false;
+  try { auto block = allocator.allocate(payload); failed = !block.ptr; }
+  catch (const std::bad_alloc &) { failed = true; }
+  assert(failed && !fail_next_vm_allocation && !stats.owned && stats.blocks.empty());
+  for (size_t invalid : {size_t{0}, std::numeric_limits<size_t>::max()}) {
+    failed = false;
+    try { auto block = allocator.allocate(invalid); failed = !block.ptr; }
+    catch (const std::bad_alloc &) { failed = true; }
+    assert(failed && !stats.owned && stats.blocks.empty());
+  }
+  puts("PASS actual owned-VM backend: native mmap/munmap, rounded extent, move ownership, failed-release ownership/retry, controlled MAP_FAILED, zero/overflow refusal and balanced exact release");
+  return 0;
+}
+int main(int argc, char **argv) {
+  if (argc == 2 && !strcmp(argv[1], "--backend-test")) return backendSelfTest();
+  assert(argc == 1);
   using namespace dxmt;
   stats.begin();
   const auto started = clock::now();
@@ -346,8 +421,10 @@ def generated_sources():
     end = ring.index('\nclass GpuPrivateBufferBlockAllocator', start)
     methods = ring.index('template <typename Allocator, size_t BlockSize, class mutex>\nstd::pair', end)
     allocator = function(ring, 'class HostBufferBlockAllocator {') + ';'
+    vm_allocator = function(ring, 'class CpuCommandBlockAllocator {') + ';'
     actual_ring = 'namespace dxmt {\n' + ring[start:end] + '\n#define malloc tracked_malloc\n#define free tracked_free\n'
-    actual_ring += allocator + '\n#undef free\n#undef malloc\n' + ring[methods:]
+    actual_ring += allocator + '\n#undef free\n#undef malloc\n#define mmap tracked_mmap\n#define munmap tracked_munmap\n'
+    actual_ring += vm_allocator + '\n#undef munmap\n#undef mmap\n' + ring[methods:]
     original = (DXMT / 'dxmt_command_queue.cpp').read_text()
     baseline_commit = function(original, 'void\nCommandQueue::CommitCurrentChunk()')
     assert hashlib.sha256((baseline_commit + '\n').encode()).hexdigest() == BASELINE_COMMIT_SHA256, 'frozen tested baseline CommitCurrentChunk changed'
@@ -357,6 +434,7 @@ def generated_sources():
     assert 'cpu_command_allocator.free_blocks(cpu_coherent.signaledValue());' in baseline_commit
     assert 'maintainCompletedCommandData(cpu_coherent.signaledValue());' in candidate_commit
     header = stage.stage_queue_header((DXMT / 'dxmt_command_queue.hpp').read_text())
+    assert 'RingBumpState<CpuCommandBlockAllocator, kCommandChunkCPUHeapSize, dxmt::null_mutex> cpu_command_allocator;' in header
     original_header = (DXMT / 'dxmt_command_queue.hpp').read_text()
     reset = function(original_header, '  void\n  reset() noexcept')
     finish = function(original, 'uint32_t\nCommandQueue::WaitForFinishThread()')
@@ -371,9 +449,10 @@ def generated_sources():
     body = body.replace('/* ACTUAL_CHUNK_RESET */', reset).replace('/* ACTUAL_FINISH_PUBLICATION */', publication)
     body = body.replace('/* ACTUAL_ALLOCATE */', function(header, '  void *\n  AllocateCommandData('))
     result = {}
-    for name, candidate in (('baseline', False), ('bounded-completed', True)):
+    for name, candidate, vm_backing in (('baseline', False, False), ('bounded-malloc', True, False), ('bounded-vm', True, True)):
         selected = body.replace('/* ACTUAL_MAINTENANCE */', maintenance if candidate else '')
         selected = selected.replace('/* ACTUAL_COMMIT */', candidate_commit if candidate else baseline_commit)
+        selected = selected.replace('CPU_BACKING_ALLOCATOR', 'CpuCommandBlockAllocator' if vm_backing else 'HostBufferBlockAllocator')
         main = MAIN.replace('POLICY_NAME', name).replace('PHYSICAL_SOURCE', 'task-phys-footprint' if sys.platform == 'darwin' else 'unavailable-nondarwin')
         result[name] = '#define CANDIDATE ' + str(int(candidate)) + '\n' + PRELUDE.replace('/* ACTUAL_PRESSURE_TYPES */', pressure) + actual_ring + selected + main
     return result
@@ -386,7 +465,7 @@ def main():
     args = parser.parse_args()
     sources = generated_sources()
     if args.emit_source:
-        args.emit_source.write_text(sources['bounded-completed'])
+        args.emit_source.write_text(sources['bounded-vm'])
         print('EMIT only: actual CPU-command fixture; no native physical result')
         return
     if sys.platform != 'darwin':
@@ -404,22 +483,29 @@ def main():
             path, binary = temporary / (name + '.cpp'), temporary / name
             path.write_text(source)
             subprocess.run([compiler, '-std=c++20', '-O2', '-pthread', '-Wall', '-Wextra', '-Werror', str(path), '-o', str(binary)], check=True)
+            if name == 'bounded-vm':
+                backend = subprocess.run([str(binary), '--backend-test'], text=True, capture_output=True, check=True, timeout=30)
+                print(backend.stdout, end='')
             completed = subprocess.run([str(binary)], text=True, capture_output=True, check=True, timeout=120)
             print(completed.stdout, end='')
             rows = [json.loads(line.removeprefix('CPU_COMMAND_NATIVE_RESULT ')) for line in completed.stdout.splitlines() if line.startswith('CPU_COMMAND_NATIVE_RESULT ')]
             assert len(rows) == 1 and rows[0]['policy'] == name and rows[0]['physical_source'] == 'task-phys-footprint'
             results[name] = rows[0]
-    old, new = results['baseline'], results['bounded-completed']
+    old, middle, new = results['baseline'], results['bounded-malloc'], results['bounded-vm']
     assert old['checksum'] == new['checksum'] and old['payload_bytes'] == new['payload_bytes']
+    assert old['checksum'] == middle['checksum'] and old['payload_bytes'] == middle['payload_bytes']
     assert old['submissions'] == new['submissions'] == 25
+    assert middle['submissions'] == 25
     assert old['owned_after_pressure_bytes'] == 64 << 20 and new['owned_after_pressure_bytes'] <= 4 << 20
+    assert middle['owned_after_pressure_bytes'] <= 4 << 20
     assert old['owned_after_zero_bytes'] == 64 << 20 and new['owned_after_zero_bytes'] == 0
-    print('PASS actual CPU-command/ring/HostBuffer allocator: identical used bytes, pending protection, completed-only retention, zero-headroom drain, healthy recovery and balanced destruction')
+    print('PASS actual CPU-command/ring/owned backing: identical used bytes, pending protection, completed-only retention, zero-headroom drain, healthy recovery and balanced destruction')
     print('NOTE both cases perform the same initial command burst; its capacity peak is unchanged. The following physical samples test completed retention, not a guaranteed lower workload peak.')
-    print('OBSERVED actual task footprint after completed pressure maintenance: baseline=' + str(old['footprint_after_pressure_bytes']) + ' bounded-completed=' + str(new['footprint_after_pressure_bytes']) + ' bytes; separate fresh processes, controlled completion/pressure, not iPhone acceptance')
+    print('OBSERVED actual task footprint after completed pressure maintenance: baseline=' + str(old['footprint_after_pressure_bytes']) + ' bounded-malloc=' + str(middle['footprint_after_pressure_bytes']) + ' bounded-vm=' + str(new['footprint_after_pressure_bytes']) + ' bytes; separate fresh processes, controlled completion/pressure, not iPhone acceptance')
     old_drop = old['footprint_before_pressure_bytes'] - old['footprint_after_pressure_bytes']
     new_drop = new['footprint_before_pressure_bytes'] - new['footprint_after_pressure_bytes']
-    print(f'OBSERVED within-process footprint drops at maintenance: baseline={old_drop} bounded-completed={new_drop} bytes; no capacity-to-physical equivalence assumed')
+    middle_drop = middle['footprint_before_pressure_bytes'] - middle['footprint_after_pressure_bytes']
+    print(f'OBSERVED within-process footprint drops at maintenance: baseline={old_drop} bounded-malloc={middle_drop} bounded-vm={new_drop} bytes; no capacity-to-physical equivalence assumed')
     if new['footprint_after_pressure_bytes'] >= old['footprint_after_pressure_bytes']:
         print('NOTE host allocator retention/noise did not yield a lower measured footprint; no physical-improvement claim')
 
