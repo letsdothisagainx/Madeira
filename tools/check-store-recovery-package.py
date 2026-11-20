@@ -94,10 +94,29 @@ def inspect(data):
             calls.append((address + i, names.get(destination, hex(destination))))
         functions[name] = calls
     check = functions.get('_ios_stuck_store_check')
-    if check is None:
-        raise ValueError('discovery function symbols unavailable; inspection not established')
     hot = '_ios_stuck_store_hot_check'
     checkpoint = '_ios_stuck_store_discovery_checkpoint'
+    if check is None:
+        # Clang can inline the single-use discovery body into its recovery
+        # owner. Require its actual scan -> hot service -> list release ->
+        # fresh clock call path in that same owner, not just a build string.
+        for name, calls in functions.items():
+            if not name.startswith('_ios_stuck_store_recovery_'):
+                continue
+            for begin, target in calls:
+                if target != '_task_threads':
+                    continue
+                serviced = [(pc, callee) for pc, callee in calls if pc > begin and
+                    (callee == hot or callee == checkpoint and any(
+                        nested == hot for _, nested in functions.get(checkpoint, [])))]
+                released = [pc for pc, callee in calls if callee in ('_vm_deallocate', '_mach_vm_deallocate') and
+                            any(begin < service < pc for service, _ in serviced)]
+                if released and any(pc > released[-1] and callee in ('_clock_gettime', '_ios_stuck_clock_us')
+                                    for pc, callee in calls):
+                    return dict(interleavedDiscovery=True, discoveryFunction=name, discoveryInlined=True,
+                        postDiscoveryClockFunctions=[name],
+                        discoveryCalls=[dict(pc=hex(pc), target=callee) for pc, callee in serviced])
+        raise ValueError('inlined discovery call path not established: ' + json.dumps(functions))
     interleaved = any(target == hot or target == checkpoint and
                       any(callee == hot for _, callee in functions.get(checkpoint, [])) for _, target in check)
     if not interleaved:
@@ -112,7 +131,8 @@ def inspect(data):
                 deadline.append(name)
     if not deadline:
         raise ValueError('post-discovery clock call not established in compiled recovery')
-    return dict(interleavedDiscovery=True, postDiscoveryClockFunctions=sorted(deadline),
+    return dict(interleavedDiscovery=True, discoveryFunction='_ios_stuck_store_check', discoveryInlined=False,
+                postDiscoveryClockFunctions=sorted(deadline),
                 discoveryCalls=[dict(pc=hex(pc), target=name) for pc, name in check
                                 if name in (hot, checkpoint)])
 

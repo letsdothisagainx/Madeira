@@ -10,10 +10,10 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 
-def image(interleaved=True, completion_clock=True):
+def image(interleaved=True, completion_clock=True, inlined=False):
     vm = 0x100000000
-    names = ['_ios_stuck_store_check', '_ios_stuck_store_hot_check',
-             '_ios_stuck_store_recovery_poll', '_clock_gettime']
+    names = ['_ios_stuck_store_recovery_main' if inlined else '_ios_stuck_store_check', '_ios_stuck_store_hot_check',
+             '_ios_stuck_store_recovery_poll', '_clock_gettime', '_task_threads', '_vm_deallocate']
     strings = bytearray(b'\0')
     offsets = []
     for name in names:
@@ -21,31 +21,42 @@ def image(interleaved=True, completion_clock=True):
     section = lambda name, addr, size, offset, flags=0, r1=0, r2=0: struct.pack(
         '<16s16sQQIIIIIIII', name, b'__TEXT', addr, size, offset, 2, 0, 0, flags, r1, r2, 0)
     segment = struct.pack('<II16sQQQQIIII', 0x19, 232, b'__TEXT', vm, 0x200, 0, 0x400, 5, 5, 2, 0)
-    segment += section(b'__text', vm, 0x30, 0x200)
-    segment += section(b'__stubs', vm + 0x100, 12, 0x300, 8, 0, 12)
-    symtab = struct.pack('<6I', 2, 24, 0x400, 4, 0x440, len(strings))
+    segment += section(b'__text', vm, 0x60, 0x200)
+    segment += section(b'__stubs', vm + 0x100, 36, 0x300, 8, 0, 12)
+    symtab = struct.pack('<6I', 2, 24, 0x400, 6, 0x480, len(strings))
     dysymtab = [0] * 20
-    dysymtab[0:2] = [0xb, 80]; dysymtab[14:16] = [0x500, 1]
+    dysymtab[0:2] = [0xb, 80]; dysymtab[14:16] = [0x600, 3]
     commands = segment + symtab + struct.pack('<20I', *dysymtab)
-    data = bytearray(0x504)
+    data = bytearray(0x60c)
     data[:32] = struct.pack('<8I', 0xfeedfacf, 0x100000c, 0, 6, 3, len(commands), 0, 0)
     data[32:32 + len(commands)] = commands
-    for i in range(0, 0x30, 4): struct.pack_into('<I', data, 0x200 + i, 0xd503201f)
+    for i in range(0, 0x60, 4): struct.pack_into('<I', data, 0x200 + i, 0xd503201f)
     def call(at, target): struct.pack_into('<I', data, 0x200 + at, 0x94000000 | (((target - at) // 4) & 0x3ffffff))
-    if interleaved: call(0, 0x10)
-    if completion_clock: call(0x20, 0); call(0x24, 0x100)
-    else: call(0x20, 0x100); call(0x24, 0)
-    for i, at in enumerate((0, 0x10, 0x20, None)):
+    if inlined:
+        if completion_clock:
+            call(0, 0x10c)
+            if interleaved: call(4, 0x40)
+            call(8, 0x118); call(12, 0x100)
+        else:
+            call(0, 0x100); call(4, 0x10c)
+            if interleaved: call(8, 0x40)
+            call(12, 0x118)
+    else:
+        if interleaved: call(0, 0x40)
+        if completion_clock: call(0x50, 0); call(0x54, 0x100)
+        else: call(0x50, 0x100); call(0x54, 0)
+    for i, at in enumerate((0, 0x40, 0x50, None, None, None)):
         struct.pack_into('<IBBHQ', data, 0x400 + i * 16, offsets[i], 0xe if at is not None else 1,
                          1 if at is not None else 0, 0, vm + at if at is not None else 0)
-    data[0x440:0x440 + len(strings)] = strings
-    struct.pack_into('<I', data, 0x500, 3)
+    data[0x480:0x480 + len(strings)] = strings
+    struct.pack_into('<3I', data, 0x600, 3, 4, 5)
     return bytes(data)
 
 
 result = module.inspect(image())
 assert result['interleavedDiscovery'] and result['postDiscoveryClockFunctions'] == ['_ios_stuck_store_recovery_poll']
-for arguments in ((False, True), (True, False)):
+assert module.inspect(image(inlined=True))['discoveryInlined']
+for arguments in ((False, True, False), (True, False, False), (False, True, True), (True, False, True)):
     try:
         module.inspect(image(*arguments))
     except ValueError:
