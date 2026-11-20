@@ -187,7 +187,7 @@ def inspect_tier0(path):
                     if len(table) != 64:
                         continue
                     entries = struct.unpack('<8Q', table)
-                    if not all(any(lo <= value - base < hi for lo, hi, _ in functions) for value in entries):
+                    if not all(any(section.Characteristics & 0x20000000 and section.VirtualAddress <= value - base < section.VirtualAddress + section.Misc_VirtualSize for section in pe.sections) for value in entries):
                         continue
                     if slot in cpu_tables:
                         continue
@@ -195,7 +195,13 @@ def inspect_tier0(path):
                     assert len(cpu_tables) <= 16, 'CPU vtable inspection exceeds bound'
                     print(f'TIER0_CPU_VTABLE constructor={target:#x} instruction={ins.address:#x} table={slot:#x} entries={[hex(value-base) for value in entries]}')
                     for index in (1, 3, 5, 7):
-                        show_function(entries[index] - base, f'actual-cpu-vtable{slot:#x}+{index*8:#x}')
+                        address = entries[index] - base
+                        show_function(address, f'actual-cpu-vtable{slot:#x}+{index*8:#x}')
+                        if not any(low <= address < high for low, high, _ in functions):
+                            for leaf in md.disasm(pe.get_data(address, 64), address):
+                                print(f'TIER0_CPU_LEAF {leaf.address:#x}: {leaf.bytes.hex()} {leaf.mnemonic} {leaf.op_str}')
+                                if leaf.group(cs.CS_GRP_RET) or leaf.group(cs.CS_GRP_JUMP):
+                                    break
     cpu_slots = {slot: name for slot, name in imports.items() if any(term in name for term in (
         'LogicalProcessor', 'ActiveProcessor', 'SystemInfo', 'Affinity', 'ProcessorNumber'))}
     print(f'TIER0_CPU_IMPORTS {cpu_slots!r}')
