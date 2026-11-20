@@ -123,6 +123,22 @@ not the unavoidable simultaneous peak of that workload. Separate-process
 baselines include small runtime variation. These are host measurements, not
 Run 12 owner attribution or an iPhone map-loading result.
 
+The next native replay, `ac1eb00fb9f9d3947aab5eb4d1449831acbe9019`, passes
+[focused Linux/macOS CI](https://github.com/letsdothisagainx/Madeira/actions/runs/44676231865).
+Its repeated native measurement is original malloc 51,676,160 to 51,676,160 B,
+bounded malloc 51,676,160 to 51,676,160 B, and bounded VM 51,397,632 to 4,195,264 B.
+The within-process VM drop is again 47,202,368 B. The zero-headroom drain reaches
+1,049,472 B. The Windows adapter tests 4/16/64 KiB page geometry independently
+of the Darwin host. Production allocator code is identical to the first native
+replay; the follow-up corrects that test adapter's host-page assumption.
+
+The full IPA compilation subsequently caught a report-interface error: the
+Windows logger requires one string. The production report now calls
+`Logger::info(str::format(...))`; fixtures compile the actual pinned formatter
+and enforce the exact single-string logger signature. A negative compile
+restores the erroneous multi-argument call and verifies that it fails. The
+physical owner, pressure policy and completion ordering are unchanged.
+
 ## Validation boundary
 
 Focused fixtures exercise the actual staged producer/ring and original host

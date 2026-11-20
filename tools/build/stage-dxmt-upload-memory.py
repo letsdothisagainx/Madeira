@@ -610,14 +610,14 @@ CommandQueue::maintainCompletedCommandData(uint64_t completed) {
     ++cpu_command_pressure_reports_;
     const auto after = memoryPressureSnapshot(true);
     const bool measured = snapshot.valid && after.valid;
-    Logger::info("[cpu-command-cache-v1] event=trim domain=", memoryDomain(), " completed=", completed,
+    Logger::info(str::format("[cpu-command-cache-v1] event=trim domain=", memoryDomain(), " completed=", completed,
         " forced=", forced, " released-capacity=", released,
         " fp-before=", snapshot.footprint,
         " before-sampled-ns=", snapshot.sampled_ns,
         " fp-after=", after.footprint, " avail-after=", after.available,
         " delta-valid=", measured,
         " observed-drop=", measured && snapshot.footprint > after.footprint ? snapshot.footprint - after.footprint : 0,
-        " physical-attribution=concurrent-observation coverage=first8-releases");
+        " physical-attribution=concurrent-observation coverage=first8-releases"));
   }
   return released;
 }

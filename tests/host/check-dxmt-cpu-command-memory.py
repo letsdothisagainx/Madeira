@@ -62,6 +62,12 @@ def fragments():
     assert 'unsigned cpu_command_pressure_reports_ = 0;' in header
     host = braced((src / 'dxmt_ring_bump_allocator.hpp').read_text(), 'class HostBufferBlockAllocator {') + ';'
     vm = braced(ring, 'class CpuCommandBlockAllocator {') + ';'
+    util = (ROOT / 'dxmt/src/util/util_string.hpp').read_text()
+    formatter = ('namespace dxmt::str {\nusing WCHAR=wchar_t;\nstd::string fromws(const WCHAR*);\n' +
+                 util[util.index('inline void format1(std::stringstream &)'):util.index('inline void strlcpy(')] + '}\n')
+    logger = (ROOT / 'dxmt/src/util/log/log.hpp').read_text()
+    assert 'static void info(const std::string &message);' in logger
+    assert 'Logger::info(str::format(' in helper
     assert 'RingBumpState<CpuCommandBlockAllocator, kCommandChunkCPUHeapSize, dxmt::null_mutex> cpu_command_allocator;' in header
     assert 'RingBumpState<HostBufferBlockAllocator, 0x1000' in header
     pressure = (ROOT / 'build/dxmt-ios/memory_pressure.hpp').read_text()
@@ -87,6 +93,7 @@ PREFIX = r'''
 #include <mutex>
 #include <optional>
 #include <queue>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -134,7 +141,7 @@ constexpr size_t kStagingBlockSize=32ull<<20,kStagingBlockLifetime=300,kCommandC
 constexpr size_t kCommandChunkCount=32;
 size_t madeiraRingBlockSize(size_t natural){return natural;}
 bool ringOversizeReuseEnabled(){return oversize_reuse;}
-struct Logger{template<class...T>static void info(T&&...){++logs;}};
+struct Logger{static void info(const std::string &message){require(!message.empty(),"empty production message");++logs;}};
 // ACTUAL_PRESSURE
 static MemoryPressureSnapshot reading;
 MemoryPressureSnapshot memoryPressureSnapshot(bool fresh=false){if(fresh)++fresh_queries;return reading;}
@@ -336,7 +343,7 @@ def generated_sources():
         host = '\nnamespace dxmt {\n#define malloc tracked_malloc\n#define free tracked_free\n' + f['host'] + '\n#undef malloc\n#undef free\n'
         host += '#define mmap tracked_mmap\n#define munmap tracked_munmap\n' + f['vm'] + '\n#undef mmap\n#undef munmap\n}\n'
         backend = backend.replace('COMMAND_ALLOCATOR', 'CpuCommandBlockAllocator' if candidate else 'HostBufferBlockAllocator')
-        result[name] = PREFIX.replace('// ACTUAL_PRESSURE', f['pressure']) + UPLOAD_TEST.ring_code(f['ring']) + host + backend + MAIN.replace('CANDIDATE', '1' if candidate else '0')
+        result[name] = PREFIX.replace('// ACTUAL_PRESSURE', f['pressure']) + f['formatter'] + UPLOAD_TEST.ring_code(f['ring']) + host + backend + MAIN.replace('CANDIDATE', '1' if candidate else '0')
     return result
 
 
@@ -443,7 +450,7 @@ def allocator_sources():
     # All standard headers are already included before exposing ring internals
     # for exception-publication assertions. The allocator itself is unchanged.
     ring = UPLOAD_TEST.ring_code(f['ring']).replace('private:', 'public:')
-    prefix = PREFIX.replace('// ACTUAL_PRESSURE', f['pressure'])
+    prefix = PREFIX.replace('// ACTUAL_PRESSURE', f['pressure']) + f['formatter']
     posix = '#define mmap tracked_mmap\n#define munmap tracked_munmap\n'
     native = '\nnamespace dxmt {\n' + posix + f['vm'] + '\n#undef mmap\n#undef munmap\n}\n'
     windows = WINDOWS_VM_ADAPTER + '\n#define _WIN32 1\nnamespace dxmt {\n' + f['vm'] + '\n}\n#undef _WIN32\n'
@@ -455,7 +462,18 @@ def main():
     compiler = os.environ.get('CXX', 'c++')
     with tempfile.TemporaryDirectory(prefix='dxmt-cpu-command-') as directory:
         directory = Path(directory)
-        for name, source in {**generated_sources(), **allocator_sources()}.items():
+        sources = {**generated_sources(), **allocator_sources()}
+        actual = fragments()['helper']
+        legacy = actual.replace('Logger::info(str::format(', 'Logger::info(').replace(
+            'coverage=first8-releases"));', 'coverage=first8-releases");')
+        assert legacy != actual and 'Logger::info(str::format(' not in legacy
+        failed_cpp = directory / 'legacy-logger.cpp'
+        failed_cpp.write_text(sources['bounded'].replace(actual, legacy))
+        failed = subprocess.run([compiler, '-std=c++20', '-pthread', '-fsyntax-only', str(failed_cpp)],
+                                text=True, capture_output=True, timeout=60)
+        assert failed.returncode and 'info' in failed.stderr, failed.stderr
+        print('BASELINE direct21argument Logger call fails the real one-string PE signature; corrected helper uses actual str::format')
+        for name, source in sources.items():
             cpp, binary = directory / (name + '.cpp'), directory / name
             cpp.write_text(source)
             subprocess.run([compiler, '-std=c++20', '-O1', '-g', '-pthread', '-fsanitize=address,undefined',

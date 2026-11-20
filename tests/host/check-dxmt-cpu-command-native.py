@@ -64,6 +64,8 @@ PRELUDE = r'''
 #include <new>
 #include <optional>
 #include <queue>
+#include <sstream>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -172,8 +174,12 @@ template<class T> void atomic_notify_one(std::atomic<T> &value) { value.notify_o
 template<class T> void atomic_wait(std::atomic<T> &value, T old, std::memory_order order) {
   value.wait(old, order);
 }
+/* ACTUAL_FORMATTER */
 struct Logger {
-  template<class... T> static void info(T&&...) { ++stats.logs; }
+  static void info(const std::string &message) {
+    assert(message.starts_with("[cpu-command-cache-v1] event=trim domain="));
+    ++stats.logs;
+  }
 };
 /* ACTUAL_PRESSURE_TYPES */
 MemoryPressureSnapshot fixture_pressure;
@@ -445,6 +451,14 @@ def generated_sources():
     assert finish.index('chunk.attached_cmdbuf.waitUntilCompleted();') < finish.index('chunk.reset();')
     pressure = (ROOT / 'build/dxmt-ios/memory_pressure.hpp').read_text()
     pressure = pressure[pressure.index('struct MemoryPressureSnapshot {'):pressure.index('namespace memory_pressure_detail {')]
+    # Preserve the production one-string Logger ABI. The real formatter's
+    # platform-independent definitions are extracted verbatim; only the unused
+    # Windows wide-string type/function declarations are adapted for this host.
+    logger = (ROOT / 'dxmt/src/util/log/log.hpp').read_text()
+    assert 'static void info(const std::string &message);' in logger
+    strings = (ROOT / 'dxmt/src/util/util_string.hpp').read_text()
+    formatter = strings[strings.index('inline void format1(std::stringstream &) {}'):strings.index('\ninline void strlcpy(')]
+    formatter = 'namespace str {\nusing WCHAR = wchar_t;\nstd::string fromws(const WCHAR *);\n' + formatter + '\n}\n'
     body = QUEUE.replace('/* ACTUAL_CURRENT_CHUNK */', function(header, '  CommandChunk *\n  CurrentChunk()').replace('CommandChunk *', 'Chunk *', 1))
     body = body.replace('/* ACTUAL_CHUNK_RESET */', reset).replace('/* ACTUAL_FINISH_PUBLICATION */', publication)
     body = body.replace('/* ACTUAL_ALLOCATE */', function(header, '  void *\n  AllocateCommandData('))
@@ -454,7 +468,8 @@ def generated_sources():
         selected = selected.replace('/* ACTUAL_COMMIT */', candidate_commit if candidate else baseline_commit)
         selected = selected.replace('CPU_BACKING_ALLOCATOR', 'CpuCommandBlockAllocator' if vm_backing else 'HostBufferBlockAllocator')
         main = MAIN.replace('POLICY_NAME', name).replace('PHYSICAL_SOURCE', 'task-phys-footprint' if sys.platform == 'darwin' else 'unavailable-nondarwin')
-        result[name] = '#define CANDIDATE ' + str(int(candidate)) + '\n' + PRELUDE.replace('/* ACTUAL_PRESSURE_TYPES */', pressure) + actual_ring + selected + main
+        prefix = PRELUDE.replace('/* ACTUAL_PRESSURE_TYPES */', pressure).replace('/* ACTUAL_FORMATTER */', formatter)
+        result[name] = '#define CANDIDATE ' + str(int(candidate)) + '\n' + prefix + actual_ring + selected + main
     return result
 
 
