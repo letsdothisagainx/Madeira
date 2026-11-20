@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: publish-ipa-9214ad22
+  group: publish-ipa-0267de5f
   cancel-in-progress: false
 
 jobs:
@@ -22,11 +22,11 @@ jobs:
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
-      SOURCE_REVISION: 9214ad22806eb689790107d4fd7a610ef67373f5
-      SOURCE_RUN: '44604922432'
-      SOURCE_ARTIFACT: '14573586087'
-      ARCHIVE_SHA256: a858056d3f54abdf816d4ac11c6e189116eadb8caf566e0423b128c1876813fa
-      RELEASE_TAG: ipa-9214ad22
+      SOURCE_REVISION: 0267de5f5c6dc91b13e38c2324e02fe77e930765
+      SOURCE_RUN: '44656026017'
+      SOURCE_ARTIFACT: '14596005699'
+      ARCHIVE_SHA256: 90b484e0f8f219aa2ec99fc43be5d1fd1635e6ad268b19d347c28e3d72a97369
+      RELEASE_TAG: ipa-0267de5f
     steps:
       - name: Require the exact successful build and artifact
         run: |
@@ -51,7 +51,7 @@ jobs:
           PY
       - uses: actions/checkout@v4
         with:
-          ref: 9214ad22806eb689790107d4fd7a610ef67373f5
+          ref: 0267de5f5c6dc91b13e38c2324e02fe77e930765
           persist-credentials: false
       - name: Download and verify the already built IPA
         run: |
@@ -65,22 +65,26 @@ jobs:
       - name: Publish the same IPA as a stable prerelease asset
         run: |
           cat > "$RUNNER_TEMP/ipa-release-notes.txt" <<'NOTES'
-          Verified Madeira IPA from source 9214ad22806eb689790107d4fd7a610ef67373f5.
+          Verified Madeira IPA from source 0267de5f5c6dc91b13e38c2324e02fe77e930765.
 
-          Build and downloaded-package verification passed in https://github.com/letsdothisagainx/Madeira/actions/runs/44604922432.
+          Build and downloaded-package verification passed in https://github.com/letsdothisagainx/Madeira/actions/runs/44656026017.
           This release republishes that exact IPA without recompilation or modification.
-          It contains bounded completion-owned staging/copy/argument reuse and large-texture initialization with an enforced single-block upload-growth cap. The physical-memory reserve is unchanged. Existing generation retirement, released larger-class reuse and checked recovery writes are preserved.
+          It corrects Wine's Apple CPU topology when the exposed logical count is smaller than the host core count. The old four/six builder emits zero processor masks; the correction emits coherent 0xf relationships while preserving the configured CPU count. Matching current Tier0 disassembly shows how zero masks can become zero default workers and inline diagnostic execution.
 
-          All 267 required host checks passed. A controlled real-Metal replay reduced allocations from 300 to 30 with identical copied bytes and sampled additional process footprint from about 35 MiB to 11 MiB. These are host results, not measurements of remote CS2 gameplay on an iPhone.
+          The actual Run 11 pool startup options and dispatch state were not captured. A minimal read-only, version-checked self-suspend observation now records the derived caller/job/pool state if that event recurs. Suspension and resume semantics are unchanged.
 
-          Native image UUID: 3AA9E976-6707-34D3-90B1-06E8A6E5425B.
-          Detailed mechanisms and acceptance limits: https://github.com/letsdothisagainx/Madeira/blob/9214ad22806eb689790107d4fd7a610ef67373f5/docs/cs2-run10-upload-pressure-20261119.md
+          All 270 required host checks passed, including 3,600 topology variants and 2,143 bounded dispatch-observer cases. Focused Linux/Mac suspend and topology workflows passed. These are implementation and packaging results, not an iPhone gameplay pass.
+
+          Native image UUID: 19FCEF3E-3292-328D-9528-AC618ED50C61.
+          Detailed mechanisms and acceptance limits: https://github.com/letsdothisagainx/Madeira/blob/${{ github.sha }}/docs/cs2-run11-dispatch-topology-20261120.md
+
+          Required texture allocation still suffers genuine exhausted headroom in Run 11. No safe additional owner-release defect was established, and the memory reserve is unchanged. Existing upload bounds/reuse, generation retirement, larger-class code reuse, checked writes, Steam, JIT and user configuration are preserved.
 
           Remote joining, responsive team selection, gameplay through a round, and a texture-correct return to the menu remain unverified on an iPhone for this candidate.
 
           Download Madeira.ipa directly from the assets below. SHA256SUMS records its checksum.
           NOTES
-          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title 'Madeira 9214ad22 — bounded upload memory' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title 'Madeira 0267de5f - CPU topology compatibility' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
           gh release upload "$RELEASE_TAG" release-output/Madeira.ipa release-output/SHA256SUMS --repo "$GITHUB_REPOSITORY"
           gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
       - name: Verify the public download without authentication

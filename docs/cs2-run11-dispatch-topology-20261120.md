@@ -51,13 +51,24 @@ zero while active processor count is four and get_system_affinity_mask returns
 host-online six; the raw hw.physicalcpu response and returned topology were not
 logged. The reproduction establishes the source defect, not a measured pool value.
 
+There is additional source-guided runtime corroboration: six early PID 0024
+get_core_id_regs_arm64 stub rows follow the four-CPU override and precede hardware
+registry publication. That stub is called only once per derived SMBIOS thread;
+SMBIOS size probing caches its generated table before the copy query, and this
+native logger writes one line rather than forwarding duplicate UI/stderr rows.
+No additional guest thread exists in that interval. Under the shipped builder,
+four or fewer physical cores could produce at most four such calls. Six visible
+calls therefore corroborate the zero-mask branch, without measuring the raw
+sysctl value or the CS2 pool fields directly.
+
 The owned stage-apple-cpu-topology.py transform clips core/package relationships
 to the visible CPU set and partitions nonmultiple counts into complete, disjoint
 masks. Cache masks cover the same visible set, including partial final groups;
 cache capacities/types/line sizes are preserved. Zero/short host sharing answers
 get a nonzero fallback. Allocation failures return honest errors. Native build.sh
 compiles this staged system.c and fails closed. Pinned Wine and the configured
-CPU count remain unchanged. The native marker reports the actual host and visible
+CPU count remain unchanged. The native marker reports the builder's effective
+host-core input (including its existing query-failure fallback) and visible
 counts, rather than assuming the response on the phone.
 
 The actual old/new builder, Wine relationship helpers, CPU-set derivation and
