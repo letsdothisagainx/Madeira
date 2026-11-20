@@ -1,0 +1,23 @@
+name: Inspect matching CS2 loading instructions
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/cs2-live-memory-upload-reuse-20261116]
+    paths:
+      - tools/inspect-cs2-loading.py
+      - .github/workflows/cs2-loading-inspect.yml
+permissions:
+  contents: read
+jobs:
+  official-images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Read matching official images without execution or fault tests
+        run: |
+          python3 -m venv "$RUNNER_TEMP/cs2-inspect-env"
+          "$RUNNER_TEMP/cs2-inspect-env/bin/pip" install pefile capstone xxhash
+          "$RUNNER_TEMP/cs2-inspect-env/bin/python" tools/inspect-cs2-loading.py --scratch "$RUNNER_TEMP/cs2-loading-images"
