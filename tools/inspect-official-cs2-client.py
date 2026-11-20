@@ -164,6 +164,38 @@ def inspect_tier0(path):
     assert len(field_writers) <= 16, 'pool field writer bound exceeded'
     for target in sorted(field_writers):
         show_function(target, 'observed-pool-field-writer')
+    cpu_constructors = (0x65430, 0x65f40, 0x62d20, 0x63420, 0x63610)
+    for target in cpu_constructors:
+        show_function(target, 'exact-cpu-topology-constructor-or-derived-info')
+    cpu_tables = set()
+    for target in cpu_constructors:
+        records = [record for record in functions if record[0] <= target < record[1]]
+        if not records:
+            continue
+        root = chain_root(records[0])
+        for low, high, _ in functions:
+            if chain_root((low, high, _)) != root:
+                continue
+            for ins in md.disasm(pe.get_data(low, high - low), low):
+                if ins.mnemonic != 'lea':
+                    continue
+                for operand in ins.operands:
+                    if operand.type != cs.x86.X86_OP_MEM or operand.mem.base != cs.x86.X86_REG_RIP:
+                        continue
+                    slot = ins.address + ins.size + operand.mem.disp
+                    table = pe.get_data(slot, 64)
+                    if len(table) != 64:
+                        continue
+                    entries = struct.unpack('<8Q', table)
+                    if not all(any(lo <= value - base < hi for lo, hi, _ in functions) for value in entries):
+                        continue
+                    if slot in cpu_tables:
+                        continue
+                    cpu_tables.add(slot)
+                    assert len(cpu_tables) <= 16, 'CPU vtable inspection exceeds bound'
+                    print(f'TIER0_CPU_VTABLE constructor={target:#x} instruction={ins.address:#x} table={slot:#x} entries={[hex(value-base) for value in entries]}')
+                    for index in (1, 3, 5, 7):
+                        show_function(entries[index] - base, f'actual-cpu-vtable{slot:#x}+{index*8:#x}')
     cpu_slots = {slot: name for slot, name in imports.items() if any(term in name for term in (
         'LogicalProcessor', 'ActiveProcessor', 'SystemInfo', 'Affinity', 'ProcessorNumber'))}
     print(f'TIER0_CPU_IMPORTS {cpu_slots!r}')
