@@ -139,6 +139,15 @@ and enforce the exact single-string logger signature. A negative compile
 restores the erroneous multi-argument call and verifies that it fails. The
 physical owner, pressure policy and completion ordering are unchanged.
 
+Final source `48a4fef1f1a82a508597ce033d6ad740f1847f8b` passes
+[the corrected focused workflow on Linux and macOS](https://github.com/letsdothisagainx/Madeira/actions/runs/44680001282).
+With the actual formatter and one-string logger contract, the native replay
+measures original malloc 51,709,120 to 51,709,120 B, bounded malloc 51,741,888
+to 51,741,888 B, and bounded VM 51,463,360 to 4,260,992 B. The VM drop remains
+47,202,368 B; zero-headroom drain reaches 1,115,200 B. Payload bytes, checksum
+and 25 submissions agree across the three processes. Native release/ownership,
+POSIX and adapted-Windows page geometry, and completion-frontier tests pass.
+
 ## Validation boundary
 
 Focused fixtures exercise the actual staged producer/ring and original host
@@ -161,3 +170,50 @@ This correction does not establish that the whole working set fits or that the
 remote gameplay, correct map/menu textures, physical headroom and connection
 stability still require the iPhone run. Host tests and a built IPA are not those
 acceptance outcomes.
+
+## Candidate build and files
+
+App source: `48a4fef1f1a82a508597ce033d6ad740f1847f8b`.
+Native image: `ADAB4FE6-A5F5-3B52-8F07-4682B764F17F`.
+[Complete IPA workflow](https://github.com/letsdothisagainx/Madeira/actions/runs/44680005845)
+passed, including all 272 required host checks, compiled native/ARM64EC/AArch64/
+i386 DXMT component gates, final FEX lock-alias checks and the downstream SCM/RPC
+ABI check. The packaged native source expectations retain the 768 MiB image
+and 384 MiB code arenas.
+
+Actions artifact `14605278975`, `Madeira-ipa`, is 185,393,608 archive bytes.
+Archive SHA-256:
+`c4941755ad9469fdc2098c48f1092df371ea3655890866c5a0eafe1548abc793`.
+The stable delivery workflow checks that exact successful source/run/artifact,
+verifies linked native provenance again after downloading it, and publishes
+without changing or recompiling the IPA. It then requires an unauthenticated
+public download to compare byte for byte with the original artifact's IPA.
+
+Stable candidate URL:
+https://github.com/letsdothisagainx/Madeira/releases/download/ipa-48a4fef1/Madeira.ipa
+
+Production staging is in `tools/build/stage-dxmt-upload-memory.py`:
+
+- `stage_ring()` injects `CpuCommandBlockAllocator` and commits oversize reuse
+  accounting only after successful allocation/FIFO publication.
+- `stage_queue()` replaces the existing CPU-ring maintenance call with
+  `CommandQueue::maintainCompletedCommandData()` at the serialized producer.
+- `stage_queue_header()` selects the dedicated allocator, owns pressure history,
+  and publishes explicit drain requests without foreign-thread FIFO access.
+
+Focused coverage is in `tests/host/check-dxmt-cpu-command-memory.py` and
+`tests/host/check-dxmt-cpu-command-native.py`. The existing upload/recovery
+fixtures retain pending GPU protections. `tools/check-dxmt-memory-package.py`
+and its build/packaging regressions require both compiled CPU-cache and VM
+markers. CI and the required-check harness register the new fixtures.
+`publish-verified-ipa.yml` changes delivery metadata only. No pinned component
+submodule, installation/configuration, game binary, Steam authentication,
+networking or JIT implementation is changed by this correction.
+
+No on-device execution of this candidate has been performed here. In particular,
+responsive T/CT selection, a playable remote round, absence of texture OOM,
+correct map/menu rendering, lower connection-to-activation time and sustained
+safe physical headroom remain unverified. The exported counters do not establish
+this cache's share of Run12's complete working set or the exact cause of every
+loading stall. The candidate fixes a demonstrated ownership/reclamation gap;
+build success is not remote-gameplay acceptance.

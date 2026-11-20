@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: publish-ipa-0267de5f
+  group: publish-ipa-48a4fef1
   cancel-in-progress: false
 
 jobs:
@@ -22,11 +22,11 @@ jobs:
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
-      SOURCE_REVISION: 0267de5f5c6dc91b13e38c2324e02fe77e930765
-      SOURCE_RUN: '44656026017'
-      SOURCE_ARTIFACT: '14596005699'
-      ARCHIVE_SHA256: 90b484e0f8f219aa2ec99fc43be5d1fd1635e6ad268b19d347c28e3d72a97369
-      RELEASE_TAG: ipa-0267de5f
+      SOURCE_REVISION: 48a4fef1f1a82a508597ce033d6ad740f1847f8b
+      SOURCE_RUN: '44680005845'
+      SOURCE_ARTIFACT: '14605278975'
+      ARCHIVE_SHA256: c4941755ad9469fdc2098c48f1092df371ea3655890866c5a0eafe1548abc793
+      RELEASE_TAG: ipa-48a4fef1
     steps:
       - name: Require the exact successful build and artifact
         run: |
@@ -51,7 +51,7 @@ jobs:
           PY
       - uses: actions/checkout@v4
         with:
-          ref: 0267de5f5c6dc91b13e38c2324e02fe77e930765
+          ref: 48a4fef1f1a82a508597ce033d6ad740f1847f8b
           persist-credentials: false
       - name: Download and verify the already built IPA
         run: |
@@ -65,26 +65,27 @@ jobs:
       - name: Publish the same IPA as a stable prerelease asset
         run: |
           cat > "$RUNNER_TEMP/ipa-release-notes.txt" <<'NOTES'
-          Verified Madeira IPA from source 0267de5f5c6dc91b13e38c2324e02fe77e930765.
+          Verified Madeira IPA from source 48a4fef1f1a82a508597ce033d6ad740f1847f8b.
 
-          Build and downloaded-package verification passed in https://github.com/letsdothisagainx/Madeira/actions/runs/44656026017.
-          This release republishes that exact IPA without recompilation or modification.
-          It corrects Wine's Apple CPU topology when the exposed logical count is smaller than the host core count. The old four/six builder emits zero processor masks; the correction emits coherent 0xf relationships while preserving the configured CPU count. Matching current Tier0 disassembly shows how zero masks can become zero default workers and inline diagnostic execution.
+          The complete IPA workflow passed at https://github.com/letsdothisagainx/Madeira/actions/runs/44680005845.
+          This release publishes that exact artifact without recompilation or modification.
 
-          The actual Run 11 pool startup options and dispatch state were not captured. A minimal read-only, version-checked self-suspend observation now records the derived caller/job/pool state if that event recurs. Suspension and resume semantics are unchanged.
+          The production correction covers a missed CPU command-data cache. Previously completed normal blocks could retain their loading high-water mark for 300 later submissions or maintenance calls. Pressure maintenance now retains at most one bounded completed block at the serialized producer's existing safe point; pending data remains owned until real GPU completion and command reset. Dedicated writable VM backing returns completed pages instead of leaving freed capacity retained in the general allocator. It does not change live textures, guest memory, executable JIT pages, or the texture-admission reserve.
 
-          All 270 required host checks passed, including 3,600 topology variants and 2,143 bounded dispatch-observer cases. Focused Linux/Mac suspend and topology workflows passed. These are implementation and packaging results, not an iPhone gameplay pass.
+          All 272 required host checks passed. Focused Linux/macOS ownership, failure, page geometry, race and completion tests passed at https://github.com/letsdothisagainx/Madeira/actions/runs/44680001282. An identical 55,578,624-byte native command workload measured a footprint drop from 51,463,360 to 4,260,992 bytes after maintenance; malloc variants showed no drop. Initial burst capacity was unchanged. This is a controlled host result, not a measured iPhone loading speedup.
 
-          Native image UUID: 19FCEF3E-3292-328D-9528-AC618ED50C61.
-          Detailed mechanisms and acceptance limits: https://github.com/letsdothisagainx/Madeira/blob/${{ github.sha }}/docs/cs2-run11-dispatch-topology-20261120.md
+          The attached Run12 contains worker-driven main-thread context captures followed by continuing execution, rather than the older quoted self-suspension. SuspendThread/ResumeThread behavior is unchanged.
 
-          Required texture allocation still suffers genuine exhausted headroom in Run 11. No safe additional owner-release defect was established, and the memory reserve is unchanged. Existing upload bounds/reuse, generation retirement, larger-class code reuse, checked writes, Steam, JIT and user configuration are preserved.
+          Native image UUID: ADAB4FE6-A5F5-3B52-8F07-4682B764F17F.
+          Detailed evidence, changes and validation limits: https://github.com/letsdothisagainx/Madeira/blob/${{ github.sha }}/docs/cs2-run12-cpu-command-pressure-20261120.md
 
-          Remote joining, responsive team selection, gameplay through a round, and a texture-correct return to the menu remain unverified on an iPhone for this candidate.
+          Existing installation, bundle identity, configuration, Steam authentication, networking, 1152 MiB JIT pool, renderer, upload bounds and dynamic-buffer reuse are preserved. No game files or proprietary binaries are modified.
 
-          Download Madeira.ipa directly from the assets below. SHA256SUMS records its checksum.
+          Responsive remote team selection, gameplay through a round, lower loading times, complete texture success and safe iPhone headroom remain unverified. The current full working-set owner distribution was not established by the exported capacity counters. This release fixes a source-confirmed reclamation defect without claiming that every Run12 failure is solved.
+
+          Download Madeira.ipa from the assets below. SHA256SUMS records its checksum.
           NOTES
-          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title 'Madeira 0267de5f - CPU topology compatibility' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title 'Madeira 48a4fef1 - completed CPU command memory' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
           gh release upload "$RELEASE_TAG" release-output/Madeira.ipa release-output/SHA256SUMS --repo "$GITHUB_REPOSITORY"
           gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
       - name: Verify the public download without authentication
