@@ -3435,13 +3435,28 @@ static int ios_stuck_store_inspect( mach_port_t thread, uint64_t native_id,
     return 0;
 }
 
+static void ios_stuck_store_hot_check(uint64_t now_us);
+
+/* Discovery can itself outlast the hot polling period under loading pressure.
+ * Service already-owned targets between native queries, never while holding a
+ * target suspended. Hot state/rights and the active discovery history are
+ * disjoint; both are owned by this same recovery thread. */
+static void ios_stuck_store_discovery_checkpoint(uint64_t *due_us)
+{
+    uint64_t now_us;
+    if (!ios_stuck_clock_us(&now_us) || now_us < *due_us) return;
+    ios_stuck_store_hot_check(now_us);
+    if (!ios_stuck_clock_us(&now_us)) return;
+    *due_us = now_us <= UINT64_MAX - 5000 ? now_us + 5000 : UINT64_MAX;
+}
+
 static void ios_stuck_store_check( void )
 {
     mach_port_t self_port = pthread_mach_thread_np( pthread_self() );
     thread_act_array_t tl;
     mach_msg_type_number_t tc;
     struct timespec ts;
-    uint64_t now, now_us;
+    uint64_t now, now_us, hot_due_us;
     unsigned k;
 
     if (clock_gettime( CLOCK_MONOTONIC, &ts ))
@@ -3452,6 +3467,7 @@ static void ios_stuck_store_check( void )
     }
     now_us = (uint64_t)ts.tv_sec * 1000000 + (uint64_t)ts.tv_nsec / 1000;
     now = now_us / 1000;
+    hot_due_us = now_us <= UINT64_MAX - 5000 ? now_us + 5000 : UINT64_MAX;
     if (task_threads( mach_task_self(), &tl, &tc ) != KERN_SUCCESS)
     {
         ios_stuck_history_reset( &ios_stuck );
@@ -3467,6 +3483,7 @@ static void ios_stuck_store_check( void )
         struct ios_stuck_entry *entry;
         int user_valid;
 
+        ios_stuck_store_discovery_checkpoint(&hot_due_us);
         if (tl[k] == self_port) continue;
         if (thread_info( tl[k], THREAD_BASIC_INFO, (thread_info_t)&bi, &bic ) != KERN_SUCCESS) continue;
         if (thread_info( tl[k], THREAD_IDENTIFIER_INFO, (thread_info_t)&idi, &idc ) != KERN_SUCCESS) continue;
@@ -3558,8 +3575,13 @@ static void ios_stuck_store_recovery_tick( uint64_t now_us )
     ios_stuck_store_hot_check( now_us );
     if (now >= ios_stuck_discovery_due)
     {
+        uint64_t finished_us;
         ios_stuck_store_check();
-        ios_stuck_discovery_due = now + 100;
+        /* Rate-limit from completion, not a timestamp preceding a potentially
+         * long task scan. Otherwise a >100 ms discovery is immediately due
+         * again, monopolizing this worker and starving its hot follow-ups. */
+        if (ios_stuck_clock_us(&finished_us) && finished_us >= now_us) now = finished_us / 1000;
+        ios_stuck_discovery_due = now <= UINT64_MAX - 100 ? now + 100 : UINT64_MAX;
     }
 }
 

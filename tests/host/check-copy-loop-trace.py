@@ -292,6 +292,13 @@ int main(void)
     return 0;
 }
 '''
+FORMAT_ADAPTERS += r'''
+static unsigned long long ios_thread_process_try_observation_lease(void *owner, unsigned pid)
+{ assert(owner && pid); return 1; }
+static void ios_cs2_stall_register_worker(uint64_t owner, unsigned pid, uint64_t lease,
+                                        unsigned tid, uint64_t teb, uint64_t native)
+{ (void)owner; (void)pid; (void)lease; (void)tid; (void)teb; (void)native; }
+'''
 with tempfile.TemporaryDirectory(prefix='madeira-copy-format-') as work:
     source = Path(work) / 'formatter.c'
     binary = Path(work) / 'formatter'

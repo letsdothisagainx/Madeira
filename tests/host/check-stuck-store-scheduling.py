@@ -18,6 +18,7 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--sanitize', action='store_true')
 parser.add_argument('--require-darwin', action='store_true')
 parser.add_argument('--compile-only', action='store_true', help='build fixtures without executing any store/fault experiment')
+parser.add_argument('--discovery-normal-only', action='store_true', help='replay only successful writes/queries and slow discovery work; no protected pages or injected failures')
 args = parser.parse_args()
 if args.require_darwin and platform.system() != 'Darwin':
     raise SystemExit('FAIL: Darwin is required')
@@ -269,6 +270,9 @@ static unsigned thread_count, full_scans, fast_state_reads, neon_state_reads, re
 static int holds[THREADS], rights[THREADS];
 static unsigned max_rights, mod_refs_calls, refuse_publication, refuse_retain, refuse_neon;
 static unsigned delayed_basic_port, delayed_basic_ms;
+static unsigned ordinary_query_cost_ms;
+static uint64_t main_capture_at[4096], main_completed_at;
+static unsigned main_capture_count;
 static uint64_t full_scan_at[256];
 static size_t fixture_vm_page_size = PAGE;
 #define vm_page_size fixture_vm_page_size
@@ -326,6 +330,8 @@ static int fixture_thread_info(mach_port_t port, int flavor, void *out, unsigned
     if (!port || (unsigned)port > thread_count || !targets[port].alive) return 1;
     if (flavor == THREAD_BASIC_INFO)
     {
+        /* Normal successful metadata work, not an API-error/fault adapter. */
+        if (port > 1 && ordinary_query_cost_ms) advance_time(now_ms + ordinary_query_cost_ms);
         if ((unsigned)port == delayed_basic_port && delayed_basic_ms)
         {
             unsigned delay = delayed_basic_ms; delayed_basic_ms = 0;
@@ -353,6 +359,8 @@ static int fixture_suspend(mach_port_t port)
 static int fixture_get_state(mach_port_t port, int flavor, void *out, unsigned *count)
 {
     (void)count; assert(holds[port] == 1); ++fast_state_reads;
+    if (port == 1 && flavor == ARM_THREAD_STATE64)
+    { assert(main_capture_count < 4096); main_capture_at[main_capture_count++] = now_ms; }
     if (flavor == ARM_THREAD_STATE64) memcpy(out, &targets[port].state, sizeof(targets[port].state));
     else if (flavor == ARM_NEON_STATE64)
     {
@@ -381,6 +389,7 @@ static int fixture_resume(mach_port_t port)
         for (unsigned i = 0; i < width; ++i) assert(destination[i] == (unsigned char)(port + t->completed + 1));
         assert(destination[-1] == 0x5a && destination[width] == 0x5a);
         ++t->completed;
+        if (port == 1 && t->completed == t->requested) main_completed_at = now_ms;
         if (t->completed < t->requested) prepare_operation(port);
         else t->running = 0;
     }
@@ -566,6 +575,41 @@ static void contended_stores(void)
     cleanup();
 }
 #ifndef BASELINE_SCHEDULE
+static void discovery_workload(void)
+{
+    initialise(8, OPERATIONS);
+    /* One active crossing-store trace; seven ordinary idle native threads.
+     * Every destination is writable and every native API succeeds. */
+    for (unsigned id = 2; id <= thread_count; ++id)
+    { targets[id].running = 0; targets[id].requested = 0; }
+    warm();
+    assert(retained() == 1);
+    main_capture_count = 0;
+    ordinary_query_cost_ms = 20; /* 7 successful metadata queries = 140 ms/scan. */
+    while (targets[1].completed < OPERATIONS && now_ms < 10000) tick(now_ms + 5);
+    assert(targets[1].completed == OPERATIONS && main_capture_count > 2);
+    uint64_t max_gap = 0;
+    for (unsigned i = 1; i < main_capture_count; ++i)
+        if (main_capture_at[i] - main_capture_at[i-1] > max_gap)
+            max_gap = main_capture_at[i] - main_capture_at[i-1];
+    fprintf(stderr, "discovery replay metrics: completed-at=%llu max-gap=%llu scans=%u\n",
+        (unsigned long long)main_completed_at, (unsigned long long)max_gap, full_scans);
+#ifdef RUN13_OLD_DISCOVERY
+    assert(max_gap >= 140 && main_completed_at >= 2000);
+#else
+    /* A checkpoint cannot preempt an in-flight native query; the following
+     * worker sleep adds at most its normal 5 ms follow-up interval. */
+    assert(max_gap <= ordinary_query_cost_ms + ios_stuck_store_recovery_delay() / 1000 && main_completed_at < 1200);
+#endif
+    printf("%s successful-query workload: 19 additional real-byte stores completed by %llu modeled ms; max target capture gap=%llu ms; full scans=%u; all APIs successful\n",
+#ifdef RUN13_OLD_DISCOVERY
+           "REPRO old discovery scheduling",
+#else
+           "PASS corrected discovery scheduling",
+#endif
+           (unsigned long long)main_completed_at, (unsigned long long)max_gap, full_scans);
+    cleanup();
+}
 static void gates(void)
 {
     initialise(1, OPERATIONS); warm();
@@ -763,6 +807,7 @@ int main(int argc, char **argv)
     else if (!strcmp(argv[1], "contended")) contended_stores();
     else if (!strcmp(argv[1], "blocked")) trace(1);
 #ifndef BASELINE_SCHEDULE
+    else if (!strcmp(argv[1], "discovery-normal")) discovery_workload();
     else if (!strcmp(argv[1], "gates")) gates();
     else if (!strcmp(argv[1], "protected")) protected_neighbor();
     else if (!strcmp(argv[1], "death")) native_lifetime(1);
@@ -796,11 +841,22 @@ with tempfile.TemporaryDirectory(prefix='madeira-stuck-scheduling-') as director
     wall_control = wall_control.replace('!ios_stuck_kernel_bound( duser, dsys )',
                                        '((void)duser, dsys * 10 < dt * 6)')
     assert wall_control != production and '!ios_stuck_kernel_bound( duser, dsys )' not in wall_control
-    for label, implementation in [('baseline', BASELINE_PRODUCTION), ('wall-gate-control', wall_control), ('candidate', production)]:
+    variants = [('baseline', BASELINE_PRODUCTION), ('wall-gate-control', wall_control), ('candidate', production)]
+    if args.discovery_normal_only:
+        old = (root / 'tests/host/fixtures/run13-recovery-discovery-before.c').read_text()
+        assert __import__('hashlib').sha256(old.encode()).hexdigest() == 'a5977b2b02e1ce0c27d421de3b794a5062d3b9d5561b0f33b8c3341e5c17ca77'
+        previous = production
+        for signature in ('static void ios_stuck_store_check( void )',
+                          'static void ios_stuck_store_recovery_tick( uint64_t now_us )'):
+            previous = previous.replace(function(production, signature), function(old, signature), 1)
+        assert previous != production
+        variants = [('discovery-before', previous), ('candidate', production)]
+    for label, implementation in variants:
         source, binary = Path(directory) / (label + '.c'), Path(directory) / label
         startup_code = STARTUP_FIXTURE if label != 'baseline' else ''
         source.write_text(prefix + helper + ADAPTERS + implementation + startup_code + SUFFIX)
         define = ['-DBASELINE_SCHEDULE'] if label == 'baseline' else ['-DWALL_GATE_SCHEDULE'] if label == 'wall-gate-control' else []
+        if label == 'discovery-before': define = ['-DRUN13_OLD_DISCOVERY']
         subprocess.run([os.environ.get('CC', 'cc'), '-std=gnu11', '-O2', '-Wall', '-Wextra', '-Werror',
                         '-Wno-unused-function', '-Wno-unused-variable', *define, *flags,
                         '-I' + str(root / 'build/ntdll-unix'), str(source), '-o', str(binary)], check=True, timeout=60)
@@ -809,6 +865,9 @@ with tempfile.TemporaryDirectory(prefix='madeira-stuck-scheduling-') as director
         cases = ['trace', 'blocked', 'contended']
         if label == 'wall-gate-control': cases = ['contended']
         if label == 'candidate': cases += ['gates', 'protected', 'death', 'churn', 'publication', 'bounded', 'acquisition', 'startup', 'fresh-clock', 'no-cpu', 'user-regression', 'system-regression', 'moving', 'neon-failure', 'discovery-regression', 'discovery-precision']
+        if args.discovery_normal_only:
+            cases = ['discovery-normal']
+            if label == 'candidate': cases += ['trace', 'contended', 'gates', 'bounded', 'no-cpu', 'moving']
         for case in cases:
             subprocess.run([str(binary), case], check=True, timeout=60)
 print('COMPILE ONLY: recovery fixtures built; no test executable was run' if args.compile_only else

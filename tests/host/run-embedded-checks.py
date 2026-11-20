@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Expose failing host-check output in Actions annotations as well as logs."""
 import os
+import argparse
 import subprocess
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[2]
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--profile', choices=('full', 'recovery-normal'), default='full')
+args = parser.parse_args()
 commands = [
     ['python3', 'tests/host/check-jit-full-pool-placement.py', '--require-swift', '--require-native-mach'],
     ['python3', 'tests/host/check-jit-full-pool-protocol.py'],
@@ -279,6 +283,21 @@ commands = [
     ['python3', 'tests/host/check-dock-packaging.py'],
     ['bash', 'madeira-dock/tools/check.sh'],
 ]
+if args.profile == 'recovery-normal':
+    # Explicit user constraint for Run13: no deliberate crash/fault experiments.
+    # Exercise the changed scheduler with successful APIs and writable pages;
+    # compile the touched legacy fixtures without running their fault cases.
+    # Final native-image, topology, ABI, source and packaging checks still run
+    # in the normal IPA workflow. This is not reported as the full host suite.
+    commands = [
+        ['python3', 'tests/host/check-cs2-stall-watch.py', '--require-swift'],
+        ['python3', 'tests/host/check-stuck-store-scheduling.py', '--discovery-normal-only'],
+        ['python3', 'tests/host/check-cs2-observation.py', '--compile-only'],
+        ['python3', 'tests/host/check-stuck-store-scheduling.py', '--compile-only'],
+        ['python3', 'tests/host/check-copy-loop-trace.py'],
+        ['python3', 'tests/host/check-ci-component-keys.py'],
+    ]
+    print('Selected recovery-normal profile: no deliberate fault cases; full historical suite not executed', flush=True)
 # These kernel/protocol checks are mandatory preflight for this placement
 # change. A failure must stop before packaging; once they pass, the entire
 # historical suite still runs and keeps its existing aggregate annotations.
@@ -309,4 +328,4 @@ for command in commands:
 if failed_checks:
     print('Failed host checks: ' + ', '.join(name for name, _ in failed_checks), flush=True)
     raise SystemExit(failed_checks[0][1])
-print(f'PASS all {len(commands)} required host checks', flush=True)
+print(f'PASS {len(commands)} host checks in {args.profile} profile', flush=True)

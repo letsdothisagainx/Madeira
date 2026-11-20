@@ -23,6 +23,8 @@ jobs:
         run: |
           python3 tests/host/check-cs2-observation.py --compile-only
           python3 tests/host/check-stuck-store-scheduling.py --compile-only
+      - name: Replay successful copy progress during ordinary discovery work
+        run: python3 tests/host/check-stuck-store-scheduling.py --discovery-normal-only
   official-images:
     runs-on: ubuntu-latest
     timeout-minutes: 7

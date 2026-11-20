@@ -1,10 +1,11 @@
 # Run13: matched instruction analysis and the remaining attribution gap
 
-This investigation does **not** establish a gameplay fix. No replacement IPA
-is presented as a correction. The runtime changes in this investigation are
-bounded observations explicitly permitted by the request, with no change to
-copy completion, memory permissions, suspension semantics, scheduling policy,
-rendering, socket transport, topology, or code-buffer allocation.
+This investigation does **not** establish a gameplay pass. The first commits
+added only the bounded observations explicitly permitted by the request. The
+subsequent production correction fixes self-starvation in the existing native
+store-recovery scheduler, as reproduced below. Copy completion, memory
+permissions, suspension semantics, rendering, socket transport, topology and
+code-buffer allocation retain their existing implementations.
 
 ## Evidence identity
 
@@ -210,6 +211,75 @@ run. Existing fault-injection workflows are intentionally not dispatched for
 this request. The commit uses `[skip ci]` to prevent their automatic push runs;
 only the explicitly selected normal-input/read-only workflow is dispatched.
 
-No new IPA, device pass, faster remote load, corrected timeout, or playable
-remote round has been verified. Existing working subsystems are not reverted.
-An IPA build would validate packaging, not fill the runtime attribution gap.
+## Subsequent production correction: discovery starves follow-up
+
+Further source inspection established a separate scheduling defect in this
+same copy-recovery path. `ios_stuck_store_recovery_tick` sampled `now` before
+the full task scan, then assigned `discovery_due = now + 100`. When discovery
+took at least 100 ms, discovery was overdue again on return. The worker then
+repeated expensive full scans, and already-enrolled store writers could be
+inspected only between whole scans despite their 5-ms follow-up policy.
+`ios_stuck_store_check` also offered no hot-thread service inside a long scan.
+
+The correction is restricted to the recovery owner's schedule:
+
+1. `ios_stuck_store_discovery_checkpoint` services existing hot targets between
+   native discovery queries after the follow-up interval has elapsed. No target
+   is suspended at that checkpoint. Hot state is separate from discovery's
+   active history table, and their existing retained native rights are reused.
+2. The next full discovery is due 100 ms after scan completion, measured with
+   a fresh monotonic clock. A slow scan cannot immediately make itself due
+   again and monopolize its worker.
+
+The checkpoint cannot preempt a single in-flight native API call. This is a
+bounded interleaving correction, not a guarantee of 5-ms wall-clock service on
+iOS. The existing two-observation PC/EA check, consumed-kernel-CPU gate, checked
+fragment writes, PC publication, hot-slot cap, TTL, and balanced suspension are
+unchanged. There is no priority boost, forced resume, or new recovery thread.
+
+### Focused normal-success replay
+
+`check-stuck-store-scheduling.py --discovery-normal-only` compiles the actual
+production function bodies. The before variant substitutes the two exact
+pre-correction bodies from source `f0fb85f7`; the fixture is SHA-256 pinned.
+All destinations are ordinary writable mappings. Every native query/write
+succeeds. No protected neighbor, revocation, API failure, deliberate crash or
+fault-injection case is executed.
+
+After normal enrollment, one active writer has 19 remaining 16-byte stores;
+seven idle threads require successful metadata queries. Each ordinary query
+accounts for 20 ms in the deterministic scheduler adapter, yielding 140 ms of
+discovery work. The real helper writes are checked byte-for-byte, including
+unchanged neighboring bytes, and all native rights/suspensions are balanced.
+
+| Actual scheduler bodies | Final store completed at modeled ms | Largest target capture gap | Full scans |
+| --- | ---: | ---: | ---: |
+| Before | 2,910 | 145 ms | 22 |
+| Corrected | 500 | 25 ms | 4 |
+
+The candidate gap includes one non-preemptible 20-ms metadata operation plus
+the normal 5-ms polling sleep. Additional normal-only checks pass for advancing
+EA/PC, zero consumed CPU, the exact earlier scalar-store opcodes, the inclusive
+60% eligibility boundary, eight-slot overflow, and native ownership. The old
+wall-time eligibility bug is not reintroduced or re-fixed.
+
+These values measure the controlled adapter workload, not an iPhone speedup.
+The correction removes a source-proven obstruction to timely copy recovery.
+Run13 does not measure full-scan durations after the old 400-row output cap,
+so its exact contribution to the 103-second load and later timeout remains
+unproven. The scoped records in this candidate retain that attribution gap
+instead of claiming every sampled store was stalled.
+
+The candidate is to be built and published through the established IPA
+workflow. A successful build will establish packaging only. Responsive remote
+team selection, gameplay through a round and a correct return/changelevel
+still require a real iPhone session.
+
+The IPA dispatch explicitly selects `normal_recovery_checks=true` to honor the
+request not to run deliberate crash/fault-injection experiments. The default
+full historical test profile remains available and unchanged. This dispatch
+runs the normal-success recovery replay and observation/decoder checks, and
+compiles the touched legacy fixtures without executing their fault cases.
+The normal IPA native/source/ABI/topology/packaging validation remains active.
+Complete IPA cache keys include the validation profile, so a normal-only build
+cannot be reused as though the full historical suite had passed.
