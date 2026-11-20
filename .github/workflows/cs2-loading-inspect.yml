@@ -9,6 +9,16 @@ on:
 permissions:
   contents: read
 jobs:
+  normal-snapshots:
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04, xcode-27]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check exact-thread bounds without fault experiments
+        run: python3 tests/host/check-cs2-stall-watch.py ${{ runner.os == 'macOS' && '--require-swift' || '' }}
   official-images:
     runs-on: ubuntu-latest
     timeout-minutes: 7

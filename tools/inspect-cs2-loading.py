@@ -26,6 +26,12 @@ QUERIES = {
     'networksystem.dll': ('942d2ad34c245d8a', [0x1c5429, 0x1c5430]),
     'soundsystem.dll': ('d33a17eb78d1efeb', [0x33c9fe, 0x33dd44, 0x33dd16]),
 }
+IMAGE_SHA256 = {
+    'tier0.dll': '0bcd160dfa72d9f97fbf85095d59baad18fca61f20d840e83a5bd9f7635d5c32',
+    'embree3.dll': '903b3c680ffbf2965d7988f0a42d902c5e198cab15c435ddea79852573be3620',
+    'networksystem.dll': '00e7ec56f9ef163f6c5e19329b8dae24d60610308ee84780320775f7d7fff984',
+    'soundsystem.dll': '645260089eb32075efdd18e4217e7f71a1df5f79396c89a06431cb5b247a1851',
+}
 
 
 def inspect(path, expected, queries):
@@ -39,6 +45,7 @@ def inspect(path, expected, queries):
           f'identity={identity:016x} timestamp={pe.FILE_HEADER.TimeDateStamp:#x} '
           f'image-size={pe.OPTIONAL_HEADER.SizeOfImage:#x}', flush=True)
     assert pe.FILE_HEADER.Machine == 0x8664 and f'{identity:016x}' == expected, 'runtime image identity mismatch'
+    assert hashlib.sha256(image).hexdigest() == IMAGE_SHA256[path.name], 'previously inspected image bytes changed'
     exports = {s.address: (s.name or b'').decode(errors='replace')
                for s in getattr(getattr(pe, 'DIRECTORY_ENTRY_EXPORT', None), 'symbols', [])}
     imports = {i.address - base: d.dll.decode() + '!' + (i.name.decode() if i.name else str(i.ordinal))

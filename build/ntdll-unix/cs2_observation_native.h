@@ -4,6 +4,7 @@
 #ifndef MADEIRA_CS2_OBSERVATION_NATIVE_H
 #define MADEIRA_CS2_OBSERVATION_NATIVE_H
 extern unsigned long long ios_thread_process_try_observation_lease(void *, unsigned);
+extern void ios_cs2_stall_observe_start(void *, unsigned, unsigned, unsigned long long);
 
 static int ios_cs2_copy(const void *source, void *target, size_t size)
 {
@@ -115,6 +116,7 @@ static __attribute__((noinline)) void ios_cs2_start_with_context(const struct io
     size_t length = ios_cs2_copy_string(&context->command, command, IOS_CS2_COMMAND);
     ios_cs2_record_start(context->owner, context->pid, context->tid, context->lease,
         context->image, context->image_length, command, length, getenv("WINEDLLPATH"));
+    ios_cs2_stall_observe_start(context->owner, context->pid, context->tid, context->lease);
     ios_cs2_record_map(context->owner, context->pid, context->tid, context->lease,
         context->image, context->image_length, context->image, context->image_length, machine, -1, -1, 1);
 }

@@ -67,6 +67,8 @@ static int native_read(const void *source, void *target, size_t size)
     return 1;
 }
 #define MADEIRA_CS2_READ(source, target, size) native_read(source, target, size)
+void ios_cs2_stall_observe_start(void *owner, unsigned pid, unsigned tid, unsigned long long lease)
+{ assert(owner && pid && tid && lease); }
 #include "cs2_observation_native.h"
 
 /* The runner supplies the actual production try-snapshot body, unmodified. */

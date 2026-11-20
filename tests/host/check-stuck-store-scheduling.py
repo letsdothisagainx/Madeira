@@ -43,6 +43,19 @@ helper = ''.join(function(signal, name) for name in (
 start = server.index('#include "stuck_store_history.h"')
 end = server.index('static void *ios_stuck_store_recovery_main', start)
 production = server[start:end]
+# Passive observation is independently covered without fault experiments. The
+# recovery fixture measures the existing scheduling/completion algorithm; its
+# adapter takes no suspension or recovery action.
+prefix += r'''
+static void ios_cs2_stall_recovery_note(uint64_t id, int inspected,
+    uint64_t dt, uint64_t user, uint64_t system, int state, int eligible,
+    uint64_t pc, uint64_t ea, uint32_t insn, unsigned bytes, int result)
+{
+    (void)id; (void)inspected; (void)dt; (void)user; (void)system;
+    (void)state; (void)eligible; (void)pc; (void)ea; (void)insn;
+    (void)bytes; (void)result;
+}
+'''
 worker = function(server, 'static void *ios_stuck_store_recovery_main')
 sampler = function(server, 'static void ios_thread_sampler_main')
 assert 'ios_stuck_store_recovery_poll' in worker

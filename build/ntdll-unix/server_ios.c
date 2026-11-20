@@ -143,6 +143,23 @@ static void wine_log_write(const char *fmt, ...)
 #include "ios_wow.h"
 #include "steam_startup_timeline.h"
 #include "cs2_observation.h"
+#ifdef WINE_IOS
+#include "cs2_stall_watch.h"
+extern unsigned long long ios_thread_process_try_observation_lease(void *, unsigned);
+static void ios_cs2_stall_main_sample(mach_port_t, uint64_t);
+
+/* Called from the already validated cs2.exe initial-thread observation. It
+ * never guesses the main TID from PID arithmetic or thread creation order. */
+void ios_cs2_stall_observe_start(void *owner, unsigned pid, unsigned tid, unsigned long long lease)
+{
+    thread_identifier_info_data_t id;
+    mach_msg_type_number_t count = THREAD_IDENTIFIER_INFO_COUNT;
+    if (thread_info(pthread_mach_thread_np(pthread_self()), THREAD_IDENTIFIER_INFO,
+                    (thread_info_t)&id, &count) == KERN_SUCCESS)
+        ios_cs2_stall_register_main((uintptr_t)owner, pid, lease, tid,
+                                    (uintptr_t)NtCurrentTeb(), id.thread_id);
+}
+#endif
 #include "ddk/wdm.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(server);
@@ -1011,7 +1028,7 @@ struct ios_ts_copy_capture
 {
     struct ios_copy_loop_sample loop;
     struct ios_copy_trace_progress progress;
-    uint64_t pid, tid, teb, owner, block, frame, rip, pc, lr;
+    uint64_t pid, tid, teb, owner, block, frame, rip, pc, lr, native_id;
     unsigned have_code, captured;
     unsigned char code[64];
 };
@@ -1061,6 +1078,9 @@ static void ios_ts_print_copy(struct ios_ts_copy_capture *copy, uint64_t mapped_
     if (!ios_copy_trace_note(&ios_ts_copy_ledger, identity.owner, identity.tid, copy->teb,
                              copy->block, &copy->loop, &copy->progress)) return;
     copy->pid = identity.pid; copy->tid = identity.tid; copy->owner = identity.owner;
+    ios_cs2_stall_register_worker(identity.owner, identity.pid,
+        ios_thread_process_try_observation_lease((void *)(uintptr_t)identity.owner, identity.pid),
+        identity.tid, copy->teb, copy->native_id);
     copy->rip = mapped_rip; /* Reuse the sampler's already-resolved block map. */
     if (copy->rip && copy->progress.sample == 1)
         copy->have_code = ios_ts_read(copy->rip, copy->code, sizeof(copy->code));
@@ -1102,9 +1122,13 @@ static void ios_thread_sampler_pass(int burst)
         struct ios_ts_hot_context hot = {0};
         struct ios_ts_copy_capture copy = {0};
         int capture_hot;
+        thread_identifier_info_data_t id;
+        mach_msg_type_number_t idc = THREAD_IDENTIFIER_INFO_COUNT;
         const char *why = "";
         if (tlist[k] == self_port) continue;
         if (thread_info(tlist[k], THREAD_BASIC_INFO, (thread_info_t)&bi, &bic) != KERN_SUCCESS) continue;
+        if (thread_info(tlist[k], THREAD_IDENTIFIER_INFO, (thread_info_t)&id, &idc) == KERN_SUCCESS)
+            copy.native_id = id.thread_id;
         pt = pthread_from_mach_thread_np(tlist[k]);
         if (pt) pthread_getname_np(pt, tname, sizeof(tname));
         running = bi.run_state == TH_STATE_RUNNING;
@@ -2855,6 +2879,9 @@ static void ios_xprobe_main( void )
                 struct ios_xp_prev *pv = NULL;
                 if (thread_info( th[k], THREAD_IDENTIFIER_INFO, (thread_info_t)&idi, &cnt ) == KERN_SUCCESS)
                 {
+                    /* Main-thread wait coverage must not depend on top-CPU
+                     * ranking, a native pthread name, or plausible saved RIP. */
+                    ios_cs2_stall_main_sample(th[k], idi.thread_id);
                     memset( &tc, 0, sizeof(tc) );
                     got = proc_pidinfo( getpid(), 34 /* PROC_PIDTHREADCOUNTS */, idi.thread_id, &tc, sizeof(tc) );
                     if (got > 0 && tc.len >= 1)
@@ -3187,6 +3214,9 @@ static int ios_lean_diag;
  * serves normally), the base register written back for the indexed forms, pc
  * moved past it, and the thread resumed. `[stuck-store]` lines report each
  * episode. MADEIRA_STUCK_CHECK=0 turns the check off. */
+static int ios_stuck_clock_us(uint64_t *);
+static int ios_ldst_ea(uint32_t, const arm_thread_state64_t *, uint64_t *, unsigned *);
+#include "cs2_stall_watch_native.h"
 #include "stuck_store_history.h"
 static struct ios_stuck_history ios_stuck;
 static int ios_stuck_logs;
@@ -3338,11 +3368,12 @@ static int ios_stuck_store_inspect( mach_port_t thread, uint64_t native_id,
     arm_thread_state64_t st;
     arm_neon_state64_t neon;
     mach_msg_type_number_t cnt = ARM_THREAD_STATE64_COUNT, nc = ARM_NEON_STATE64_COUNT;
-    uint64_t pc, bb = 0, ea = 0;
+    uint64_t pc, bb = 0, ea = 0, held_start = 0, held_end = 0;
     uint32_t insn = 0;
     unsigned len = 0;
     int got, have_neon = 0, cross;
 
+    ios_stuck_clock_us(&held_start);
     if (thread_suspend( thread ) != KERN_SUCCESS)
     {
         entry->pc = entry->ea = entry->hits = 0;
@@ -3377,6 +3408,9 @@ static int ios_stuck_store_inspect( mach_port_t thread, uint64_t native_id,
                 ios_stuck_fixed++;
         }
         thread_resume( thread );
+        ios_stuck_clock_us(&held_end);
+        ios_cs2_stall_recovery_note(native_id, 1, held_end >= held_start ? held_end - held_start : 0,
+            0, 0, 0, 0, pc, ea, insn, len, r);
         if (ios_stuck_logs < 400 && (r > 0 || hits <= 3 || hits % 10 == 0))
         {
             ios_stuck_logs++;
@@ -3393,6 +3427,9 @@ static int ios_stuck_store_inspect( mach_port_t thread, uint64_t native_id,
         return r <= -2 ? -1 : 0;
     }
     thread_resume( thread );
+    ios_stuck_clock_us(&held_end);
+    ios_cs2_stall_recovery_note(native_id, 1, held_end >= held_start ? held_end - held_start : 0,
+        0, 0, 0, 0, pc, ea, insn, len, 2 /* observed; no completion attempted */);
     entry->pc = cross ? pc : 0;
     entry->ea = cross ? ea : 0;
     return 0;
@@ -3449,6 +3486,9 @@ static void ios_stuck_store_check( void )
             entry->pc = entry->ea = entry->hits = 0;
             continue;
         }
+        ios_cs2_stall_recovery_note(idi.thread_id, 0, dt * 1000, duser, dsys, bi.run_state,
+            bi.run_state == TH_STATE_RUNNING && dt && user_valid && ios_stuck_kernel_bound(duser, dsys),
+            0, 0, 0, 0, 0);
         if (bi.run_state != TH_STATE_RUNNING || !dt || !user_valid || !ios_stuck_kernel_bound( duser, dsys ))
         {
             entry->pc = entry->ea = entry->hits = 0;
@@ -3494,6 +3534,9 @@ static void ios_stuck_store_hot_check( uint64_t now_us )
         hot->seen_us = sampled_us;
         hot->sys_us = sys;
         hot->user_us = user;
+        ios_cs2_stall_recovery_note(hot->native_id, 0, dt, duser, dsys, bi.run_state,
+            bi.run_state == TH_STATE_RUNNING && dt && ios_stuck_kernel_bound(duser, dsys),
+            0, 0, 0, 0, 0);
         if (bi.run_state != TH_STATE_RUNNING || !dt || !ios_stuck_kernel_bound( duser, dsys ))
         {
             hot->state.pc = hot->state.ea = hot->state.hits = 0;
