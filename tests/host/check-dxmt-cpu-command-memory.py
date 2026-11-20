@@ -348,9 +348,10 @@ using DWORD=unsigned long;
 struct SYSTEM_INFO{DWORD dwPageSize;};
 constexpr DWORD MEM_RESERVE=0x2000,MEM_COMMIT=0x1000,MEM_RELEASE=0x8000,PAGE_READWRITE=4;
 static DWORD win_error=0;
+static DWORD win_page_size=4096;
 DWORD GetLastError(){return win_error;}
 void SetLastError(DWORD e){win_error=e;}
-void GetSystemInfo(SYSTEM_INFO *info){info->dwPageSize=4096;}
+void GetSystemInfo(SYSTEM_INFO *info){info->dwPageSize=win_page_size;}
 void *VirtualAlloc(void *hint,size_t bytes,DWORD flags,DWORD protection){
  require(!hint&&flags==(MEM_RESERVE|MEM_COMMIT)&&protection==PAGE_READWRITE,"incorrect Windows VM creation flags");
  void *p=tracked_mmap(hint,bytes,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANON,-1,0);
@@ -372,7 +373,12 @@ int main(){
  Allocator allocator;
  {
   auto first=allocator.allocate(4097);void *ptr=first.ptr;size_t bytes=first.allocation_size;
-  require(bytes>=4097&&bytes%size_t(sysconf(_SC_PAGESIZE))==0,"actual allocation extent is wrong");
+#if defined(VM_WINDOWS_TEST)
+  const size_t expected_page=win_page_size;
+#else
+  const size_t expected_page=size_t(sysconf(_SC_PAGESIZE));
+#endif
+  require(bytes==Allocator::rounded_size(4097,expected_page),"actual allocation extent is wrong");
   std::memset(ptr,0x73,4097);
   auto moved=std::move(first);
   require(!first.ptr&&!first.allocation_size&&first.backend==Allocator::Backend::None,"move retained ownership");
@@ -399,6 +405,15 @@ int main(){
  }
  require(backing.count(leaked),"failed destructor reported released storage");
  fail_vm_release=false;require(!tracked_munmap(leaked,leaked_bytes),"fixture could not clean injected OS failure");
+#if defined(VM_WINDOWS_TEST)
+ // The adapted Windows page size is independent of the test host's Darwin
+ // 16 KiB (or Linux 4 KiB) pages. Check all supported adapter configurations.
+ for(DWORD page:{DWORD(4096),DWORD(16384),DWORD(65536)}){
+  win_page_size=page;auto block=allocator.allocate(4097);
+  require(block.allocation_size==Allocator::rounded_size(4097,page),"Windows allocation used host page geometry");
+ }
+ win_page_size=4096;
+#endif
  for(size_t bytes:{size_t(0),SIZE_MAX}){
   bool threw=false;try{auto block=allocator.allocate(bytes);(void)block;}catch(const std::bad_alloc&){threw=true;}
   require(threw,"invalid allocation did not fail honestly");

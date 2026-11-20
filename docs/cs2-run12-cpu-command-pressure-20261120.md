@@ -103,6 +103,26 @@ release length, and failed allocation cannot publish a nonexistent block. No
 arbitrary malloc pages are advised or unmapped. Release errors are reported
 honestly; they are not converted into a successful physical-reclamation claim.
 
+## Controlled native physical result
+
+The macOS replay at source `e21d249dc1437797b6ffc21f58a5a627a0ba2138`
+uses fresh processes for each policy and identical 55,578,624 used payload bytes
+(checksum 1,760,505,856). GPU completion is controlled; the real staged reset,
+producer, allocator and task physical-footprint query execute.
+
+| Policy | Completed owned capacity | Footprint before maintenance | After maintenance |
+| --- | ---: | ---: | ---: |
+| Original malloc retention | 64 MiB | 51,627,072 B | 51,627,072 B |
+| Bounded malloc | 4 MiB | 51,594,240 B | 51,594,240 B |
+| Bounded owned VM | 4 MiB | 51,364,928 B | 4,162,560 B |
+
+The VM variant's within-process observed drop is 47,202,368 bytes, about 45 MiB.
+A later zero-headroom drain measures 1,016,768 bytes. Initial command-burst
+owned capacity is 64 MiB for every policy: this fixes retained completed pages,
+not the unavoidable simultaneous peak of that workload. Separate-process
+baselines include small runtime variation. These are host measurements, not
+Run 12 owner attribution or an iPhone map-loading result.
+
 ## Validation boundary
 
 Focused fixtures exercise the actual staged producer/ring and original host
