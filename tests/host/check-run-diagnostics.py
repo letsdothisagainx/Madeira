@@ -92,6 +92,11 @@ import Glibc
         assert(RunDiagnostics.sanitize(cbSummary) == cbSummary, "ASCII production summary lost useful counters")
         assert(RunDiagnostics.sanitize(cbSummary + " Cookie: PRIVATE_COOKIE") == nil)
         assert(RunDiagnostics.sanitize(cbSummary + " access_token=PRIVATE_TOKEN") == nil)
+        let dispatch = "[self-suspend-dispatch-v1] result=captured pid=03c0 tid=03c4 dispatch=inline-submit-validated creator-tid=03c4 creator-is-current=1 job=0x7100123400 pool=0x7100234500 job-u8-15=2 pool-u32-130=0 pool-u8-159=0 pool-u8-15a=0 pool-u64-138=0x7100345600 pool-u64-140=0x7100345600 state-time=after-suspend historical-state=unmeasured frames=matched-run11-contract"
+        assert(RunDiagnostics.sanitize(dispatch) == dispatch, "bounded dispatch state lost from export")
+        assert(RunDiagnostics.sanitize(dispatch + " Cookie: PRIVATE_COOKIE") == nil)
+        assert(RunDiagnostics.sanitize(dispatch + " access_token=PRIVATE_TOKEN") == nil)
+        assert(RunDiagnostics.sanitize(dispatch + " UNKNOWN_OPAQUE_DISPATCH_PAYLOAD_1234")!.hasSuffix("[redacted-opaque-value]"))
         let provenance = "[native-build-provenance-v1] package-source=\(revision) native-uuid=\(compactUUID) packaged-uuid=\(nativeUUID) uuid-status=match virtual-source=\(virtualHash) expected-virtual=\(virtualHash) virtual-build=\(revision) virtual-status=match jit-source=\(jitHash) expected-jit=\(jitHash) jit-build=\(revision) jit-status=match compiled-code-tail-mb=512 expected-code-tail-mb=512 policy-status=match"
         let faultPrefix = "[fault-site-v1] family=exclusive tracked-rank=1 hits=42 pc=0x7c01234560 code-pe=0x71c0000000 code-rva=123456 "
         let faultRows = ["unchanged", "changed", "unverifiable"].map { faultPrefix + "cookies=" + $0 + " metadata=first-event" }

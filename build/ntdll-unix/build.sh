@@ -64,14 +64,14 @@ compile_one() {
         FAILED=$((FAILED + 1))
         FAILED_FILES="$FAILED_FILES $name"
         case "$name" in
-            io_status_abi|file|socket|loader|server|thread|process|virtual|signal_arm64|nsi_ip)
+            io_status_abi|file|socket|loader|server|thread|process|virtual|signal_arm64|nsi_ip|system)
                 python3 - "$OBJ_DIR/$name.err" <<'PYCODE'
 import sys
 from pathlib import Path
 for line in [s for s in Path(sys.argv[1]).read_text(errors='replace').splitlines() if 'error:' in s][:8]:
     print('::error::' + line.replace('%', '%25').replace('\r', '%0D'))
 PYCODE
-                echo "Required IOSB ABI consumer failed: $name; refusing a stale object" >&2
+                echo "Required native component failed: $name; refusing a stale object" >&2
                 exit 1
                 ;;
         esac
@@ -293,6 +293,13 @@ for src in $WINE_SRC/dlls/ntdll/unix/*.c; do
             ;;
         thread)
             compile_one "$BUILD_DIR/thread_ios.c" "thread"
+            ;;
+        system)
+            # CPU-count overrides must agree with every topology/affinity view.
+            # Stage only the Apple relationship builder; keep pinned Wine clean.
+            python3 "$REPO_ROOT/tools/build/stage-apple-cpu-topology.py" \
+                --source "$src" --output "$OBJ_DIR/system_ios.c"
+            compile_one "$OBJ_DIR/system_ios.c" "system"
             ;;
         file|socket)
             # Observe the real IOSB publication in both producers. Only the

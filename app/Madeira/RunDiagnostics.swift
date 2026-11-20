@@ -91,7 +91,7 @@ enum RunDiagnostics {
                 let hash = [32, 40, 64].contains(word.utf8.count) && hex(word.utf8) && hashKey.contains(key)
                 let tag = range.lowerBound > line.startIndex && line[line.index(before: range.lowerBound)] == "[" &&
                     range.upperBound < line.endIndex && line[range.upperBound] == "]" &&
-                    ["native-build-provenance-v1", "cs2-user-marker-v1", "steam-content-audit-v1", "startup-timeline-v1", "fex-code-buffer-guard-v1", "dynamic-memory-pressure-v1"].contains(word)
+                    ["native-build-provenance-v1", "cs2-user-marker-v1", "steam-content-audit-v1", "startup-timeline-v1", "fex-code-buffer-guard-v1", "dynamic-memory-pressure-v1", "self-suspend-dispatch-v1"].contains(word)
                 let field = range.upperBound < line.endIndex && line[range.upperBound] == "=" &&
                     ["compiled-hard-image-arena-mb", "expected-hard-image-arena-mb"].contains(word)
                 let policy = ["WINE_IOS_JIT_CODE_TAIL_LIMIT_MB", "WINE_IOS_JIT_HEAD_RESERVE_MB", "MADEIRA_POOL_HEAD_RESERVE_MB",

@@ -8,6 +8,7 @@ import tempfile
 import textwrap
 import zipfile
 import shutil
+import struct
 from itertools import product
 
 root = Path(__file__).resolve().parents[2]
@@ -159,15 +160,24 @@ with tempfile.TemporaryDirectory(prefix='madeira-build-inputs-') as folder:
     bridge=htmlipc.fixture();bridge_manifest=htmlipc.manifest(bridge)
     (folder/'tools').mkdir(exist_ok=True)
     (folder/'tools/check-htmlipc-image.py').write_text((root/'tools/check-htmlipc-image.py').read_text())
+    (folder/'tools/check-apple-cpu-topology-package.py').write_text((root/'tools/check-apple-cpu-topology-package.py').read_text())
     abi=folder/'build/scm-rpc/htmlipc_ready_abi.h';abi.parent.mkdir(parents=True,exist_ok=True);abi.write_bytes(htmlipc.ABI.read_bytes())
     def valid_ipa():
         return subprocess.run(['bash', '-euo', 'pipefail', '-c', validation], cwd=folder,
                               capture_output=True).returncode == 0
-    with zipfile.ZipFile(ipa, 'w') as archive:
-        archive.writestr('Payload/Madeira.app/Madeira', b'fixture')
-        archive.writestr('Payload/Madeira.app/arm64ec-windows/madeira-htmlipc-bridge.dll',bridge)
-        archive.writestr('Payload/Madeira.app/arm64ec-windows/madeira-htmlipc-bridge.manifest.json',htmlipc.json.dumps(bridge_manifest))
+    # This native marker fixture is deliberately not executable. The cached
+    # validation step must reject stale topology even beside a valid bridge.
+    native_fixture = struct.pack('<II', 0xfeedfacf, 0x100000c) + b'non-executable-fixture[apple-cpu-topology-v1]'
+    def make_cached_ipa(native):
+        with zipfile.ZipFile(ipa, 'w') as archive:
+            archive.writestr('Payload/Madeira.app/Madeira', b'fixture')
+            archive.writestr('Payload/Madeira.app/Madeira.debug.dylib', native)
+            archive.writestr('Payload/Madeira.app/arm64ec-windows/madeira-htmlipc-bridge.dll',bridge)
+            archive.writestr('Payload/Madeira.app/arm64ec-windows/madeira-htmlipc-bridge.manifest.json',htmlipc.json.dumps(bridge_manifest))
+    make_cached_ipa(native_fixture)
     assert valid_ipa()
+    make_cached_ipa(native_fixture.replace(b'[apple-cpu-topology-v1]', b'old-topology'))
+    assert not valid_ipa(), 'cached IPA with a stale native topology must not be reused'
     with zipfile.ZipFile(ipa, 'w') as archive:
         archive.writestr('wrong-layout/Madeira', b'fixture')
     assert not valid_ipa(), 'a ZIP with the wrong bundle layout must not be reused'

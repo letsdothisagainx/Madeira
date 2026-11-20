@@ -1,0 +1,60 @@
+name: Verify Apple CPU topology
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'codex/pr-build-*']
+    paths:
+      - 'tools/build/stage-apple-cpu-topology.py'
+      - 'build/ntdll-unix/build.sh'
+      - 'tools/check-apple-cpu-topology-package.py'
+      - 'tools/build/package-ipa.sh'
+      - 'tests/host/check-apple-cpu-topology*.py'
+      - 'tests/host/check-ci-component-keys.py'
+      - 'tests/host/check-build-inputs.py'
+      - 'tests/host/check-dock-packaging.py'
+      - '.github/workflows/apple-cpu-topology.yml'
+      - '.github/workflows/build.yml'
+  pull_request:
+    paths:
+      - 'tools/build/stage-apple-cpu-topology.py'
+      - 'build/ntdll-unix/build.sh'
+      - 'tools/check-apple-cpu-topology-package.py'
+      - 'tools/build/package-ipa.sh'
+      - 'tests/host/check-apple-cpu-topology*.py'
+      - 'tests/host/check-ci-component-keys.py'
+      - 'tests/host/check-build-inputs.py'
+      - 'tests/host/check-dock-packaging.py'
+      - '.github/workflows/apple-cpu-topology.yml'
+      - '.github/workflows/build.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apple-cpu-topology-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  production-topology:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, xcode-27]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: git submodule update --init --depth 1 wine dxmt
+      - name: Exercise actual topology builder and package gates
+        env:
+          CC: clang
+          CXX: clang++
+        run: |
+          python3 tests/host/check-apple-cpu-topology.py
+          python3 tests/host/check-apple-cpu-topology-package.py
+          python3 tests/host/check-ci-component-keys.py
+          python3 tests/host/check-build-inputs.py
+          python3 tests/host/check-dock-packaging.py

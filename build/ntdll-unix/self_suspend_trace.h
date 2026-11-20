@@ -138,6 +138,8 @@ static void ios_self_suspend_pc( const char *kind, unsigned index, uint64_t raw 
                  (void *)(uintptr_t)base, (unsigned long long)(pe - base) );
 }
 
+#include "self_suspend_dispatch.h"
+
 static unsigned ios_self_suspend_client_begin( const struct madeira_suspend_identity_reply *identity,
         uintptr_t handle, unsigned status, unsigned old_count,
         const struct ios_self_suspend_snapshot *snapshot, unsigned receipt_valid )
@@ -166,6 +168,8 @@ static unsigned ios_self_suspend_client_begin( const struct madeira_suspend_iden
     if (!snapshot->valid) goto done;
     ios_self_suspend_pc( "syscall-pc", 0, snapshot->pc );
     ios_self_suspend_pc( "syscall-lr", 0, snapshot->lr );
+    ios_self_suspend_dispatch_observe( snapshot, (uintptr_t)NtCurrentTeb()->Tib.StackLimit,
+        (uintptr_t)NtCurrentTeb()->Tib.StackBase, identity->pid, identity->tid );
     /* Bounded address candidates, not an asserted unwind. Only values resolved
      * by the PE code map are emitted; no strings or arbitrary stack contents. */
     for (i = 0; i < 64 && hits < 8 && snapshot->sp <= UINTPTR_MAX - i * 8; ++i)

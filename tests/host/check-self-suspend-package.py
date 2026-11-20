@@ -77,6 +77,8 @@ with tempfile.TemporaryDirectory(prefix='madeira-self-suspend-package-') as temp
     boundary.extend(package.MARKERS[0])
     boundary.extend(b'y' * (2 * package.BLOCK - 5 - len(boundary)))
     boundary.extend(package.MARKERS[1])
+    for marker in package.MARKERS[2:]:
+        boundary.extend(marker)
     measured = package.scan(BoundedReader(boundary))
     assert measured[0] == len(boundary)
     native.write_bytes(boundary)

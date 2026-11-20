@@ -82,6 +82,7 @@ jobs:
     if: needs.plan.outputs.reuse == 'true'
     runs-on: xcode-27
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/cache/restore@v4
         with:
           key: ${{ needs.plan.outputs.ipa }}
@@ -97,6 +98,7 @@ jobs:
           unzip -p dist/Madeira.ipa Payload/Madeira.app/arm64ec-windows/madeira-htmlipc-bridge.dll > "$htmlipc_cache/madeira-htmlipc-bridge.dll"
           unzip -p dist/Madeira.ipa Payload/Madeira.app/arm64ec-windows/madeira-htmlipc-bridge.manifest.json > "$htmlipc_cache/madeira-htmlipc-bridge.manifest.json"
           python3 tools/check-htmlipc-image.py --staged "$htmlipc_cache/madeira-htmlipc-bridge.dll" --manifest "$htmlipc_cache/madeira-htmlipc-bridge.manifest.json" --abi-header build/scm-rpc/htmlipc_ready_abi.h --ipa dist/Madeira.ipa
+          python3 tools/check-apple-cpu-topology-package.py --ipa dist/Madeira.ipa
       - uses: actions/upload-artifact@v4
         with:
           name: Madeira-ipa
@@ -462,6 +464,7 @@ jobs:
         run: |
           python3 tools/build/native-provenance.py check --root "$GITHUB_WORKSPACE" --revision "$GITHUB_SHA" --ipa scm-ipa/Madeira.ipa
           python3 tools/check-self-suspend-package.py --ipa scm-ipa/Madeira.ipa
+          python3 tools/check-apple-cpu-topology-package.py --ipa scm-ipa/Madeira.ipa
           python3 -m venv "$RUNNER_TEMP/scm-abi-tools"
           "$RUNNER_TEMP/scm-abi-tools/bin/pip" install -r build/scm-rpc/test-requirements.txt
           unzip -q scm-ipa/Madeira.ipa 'Payload/Madeira.app/arm64ec-windows/*' -d scm-ipa

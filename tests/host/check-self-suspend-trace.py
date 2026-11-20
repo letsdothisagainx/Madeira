@@ -31,6 +31,7 @@ typedef uint64_t mach_vm_size_t;
 typedef uintptr_t mach_vm_address_t;
 #define KERN_SUCCESS 0
 struct fixture_teb_type {
+    struct { void *StackBase, *StackLimit; } Tib;
     void *Peb;
     struct { void *UniqueProcess, *UniqueThread; } ClientId;
 };

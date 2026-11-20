@@ -10,7 +10,7 @@ from pathlib import Path
 import struct
 import zipfile
 
-MARKERS = (b'[self-suspend-identity-v1]', b'[self-suspend-flow-v1]')
+MARKERS = (b'[self-suspend-identity-v1]', b'[self-suspend-flow-v1]', b'[self-suspend-dispatch-v1]')
 ENTRY = 'Payload/Madeira.app/Madeira.debug.dylib'
 BLOCK = 1 << 20
 MAX_IMAGE = 2 << 30
