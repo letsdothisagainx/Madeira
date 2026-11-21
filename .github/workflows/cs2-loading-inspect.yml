@@ -1,6 +1,15 @@
 name: Inspect matching CS2 loading instructions
 on:
   workflow_dispatch:
+    inputs:
+      inspect_official_images:
+        description: Read the matching official game images
+        type: boolean
+        default: true
+      inspect_run14_native:
+        description: Resolve Run14 native continuations in the exact tested IPA
+        type: boolean
+        default: false
   push:
     branches: [codex/cs2-live-memory-upload-reuse-20261116]
     paths:
@@ -8,6 +17,7 @@ on:
       - .github/workflows/cs2-loading-inspect.yml
 permissions:
   contents: read
+  actions: read
 jobs:
   normal-snapshots:
     strategy:
@@ -17,6 +27,13 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+      - name: Fetch matching headers without executing vendor binaries
+        run: git submodule update --init --depth 1 dxmt
+      - name: Normal Run14 pressure metadata and measured-budget inputs only
+        run: |
+          python3 tests/host/check-pressure-boundary-observation.py ${{ runner.os == 'macOS' && '--require-swift' || '' }}
+          python3 tests/host/check-dxmt-resource-budget.py --run14-normal-only
+          python3 tests/host/check-ci-component-keys.py
       - name: Check exact-thread bounds without fault experiments
         run: python3 tests/host/check-cs2-stall-watch.py ${{ runner.os == 'macOS' && '--require-swift' || '' }}
       - name: Compile existing touched fixtures without executing fault scenarios
@@ -26,6 +43,7 @@ jobs:
       - name: Replay successful copy progress during ordinary discovery work
         run: python3 tests/host/check-stuck-store-scheduling.py --discovery-normal-only
   official-images:
+    if: github.event_name != 'workflow_dispatch' || inputs.inspect_official_images
     runs-on: ubuntu-latest
     timeout-minutes: 7
     steps:
@@ -37,3 +55,19 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/cs2-inspect-env"
           "$RUNNER_TEMP/cs2-inspect-env/bin/pip" install pefile capstone xxhash
           "$RUNNER_TEMP/cs2-inspect-env/bin/python" tools/inspect-cs2-loading.py --scratch "$RUNNER_TEMP/cs2-loading-images"
+  tested-native:
+    if: github.event_name == 'workflow_dispatch' && inputs.inspect_run14_native
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: Madeira-ipa
+          run-id: 44815121124
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/run14-tested
+      - name: Read tested provenance and actual native continuation symbols
+        run: |
+          python3 tools/check-store-recovery-package.py --ipa "$RUNNER_TEMP/run14-tested/Madeira.ipa" --revision 08c333bae081862256d73d0d4b388ceea9fa1db7
+          python3 tools/inspect-run14-native.py --ipa "$RUNNER_TEMP/run14-tested/Madeira.ipa"
