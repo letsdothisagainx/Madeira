@@ -1213,6 +1213,16 @@ static int ios_pressure_boundary_take(struct ios_pressure_boundary_request *out)
         out->charged, out->floor, current == out->lease && threads && !exiting && !reclaimed ? "queued" : "canceled-stale");
     return current == out->lease && threads && !exiting && !reclaimed;
 }
+
+static int ios_pressure_boundary_allow_query(unsigned queries, const struct timespec *start)
+{
+    struct timespec now;
+    if (queries >= 100000) return 0;
+    if (!(queries % 64) && !clock_gettime(CLOCK_MONOTONIC, &now) &&
+        (now.tv_sec - start->tv_sec) * 1000000000LL + now.tv_nsec - start->tv_nsec >= 250000000LL)
+        return 0;
+    return 1;
+}
 /* madeira-pressure-boundary end */
 
 static void *ios_pool_warmer_thread( void *arg )
@@ -1618,11 +1628,7 @@ static void *ios_pool_warmer_thread( void *arg )
                      * preemptible here), plus a hard query-count bound. */
                     if (pressure_sweep)
                     {
-                        struct timespec boundary_now;
-                        if (pressure_queries >= 100000 ||
-                            (!(pressure_queries % 64) && !clock_gettime(CLOCK_MONOTONIC, &boundary_now) &&
-                             (boundary_now.tv_sec - pm_t0.tv_sec) * 1000000000LL +
-                              boundary_now.tv_nsec - pm_t0.tv_nsec >= 250000000LL))
+                        if (!ios_pressure_boundary_allow_query(pressure_queries, &pm_t0))
                         { pressure_limited = 1; break; }
                         pressure_queries++;
                     }

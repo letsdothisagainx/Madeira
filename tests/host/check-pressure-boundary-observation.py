@@ -36,7 +36,8 @@ assert 'available <= floor || bytes > available - floor' in acquire
 assert source.count('ios_pressure_boundary_take(&pressure_boundary)') == 1
 assert source.index('ios_pressure_boundary_take(&pressure_boundary)') > source.index('last_full = now_ts;')
 assert 'if (pressure_sweep || cycle == 2 || (cycle % ios_warmer_sweep_cycles()) == 0)' in source
-assert 'pressure_queries >= 100000' in source and '>= 250000000LL' in source
+assert 'queries >= 100000' in queue and '>= 250000000LL' in queue
+assert 'ios_pressure_boundary_allow_query(pressure_queries, &pm_t0)' in source
 assert '(pressure_sweep && (b == B_GUEST || b == B_FEX))' in source
 for forbidden in ('malloc(', 'calloc(', 'mach_vm_', 'thread_suspend(', 'thread_resume(', 'mprotect(',
                   'munmap(', 'delete_view(', 'ios_thread_process_lease('):
@@ -54,6 +55,7 @@ code = r'''
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #define ARRAY_SIZE(a) (sizeof(a)/sizeof(*(a)))
 static char last[1800];
 static unsigned logs;
@@ -106,6 +108,11 @@ static void *writer(void *arg) {
 }
 int main(void) {
  struct ios_pressure_boundary_request out={0};
+ struct timespec now; assert(!clock_gettime(CLOCK_MONOTONIC,&now));
+ assert(ios_pressure_boundary_allow_query(0,&now));
+ assert(ios_pressure_boundary_allow_query(99999,&now));
+ assert(!ios_pressure_boundary_allow_query(100000,&now));
+ now.tv_sec--; assert(!ios_pressure_boundary_allow_query(64,&now));
  void *owner=(void*)0x10000;
  ios_thread_groups[0]=(struct group){owner,4,0,0,1};
  pthread_t writers[8];
