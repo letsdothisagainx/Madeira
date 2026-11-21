@@ -1150,6 +1150,71 @@ static void ios_native_memory_pressure_sample( uint64_t footprint )
     errno = saved_errno;
 }
 
+/* madeira-pressure-boundary begin
+ * Run14's address-band/capacity totals do not identify an allocation owner.
+ * Queue one existing VM census per refusing process lease, at most four for
+ * the entire host session. No allocation, guest read, wait, or VM/pool lock on
+ * the admission thread. This is observation, never reclaim permission. */
+struct ios_pressure_boundary_request
+{
+    void *owner;
+    unsigned long long lease, footprint, available, charged, floor;
+    unsigned state; /* 0 unused, 1 pending, 2 consumed; identities never recycled */
+};
+static struct ios_pressure_boundary_request ios_pressure_boundaries[4];
+static pthread_mutex_t ios_pressure_boundary_mutex = PTHREAD_MUTEX_INITIALIZER;
+extern unsigned long long ios_thread_process_snapshot(void *, unsigned *, int *, int *);
+static void ios_pressure_boundary_range(unsigned long long, unsigned long long,
+                                       unsigned long long, unsigned);
+
+__attribute__((visibility("default")))
+void madeira_pressure_boundary_request(void *owner, unsigned long long lease, uint64_t footprint,
+                                      uint64_t available, uint64_t charged, uint64_t floor)
+{
+    unsigned i, empty = ARRAY_SIZE(ios_pressure_boundaries);
+    int saved_errno = errno;
+    if (!owner || !lease || !footprint || !charged ||
+        pthread_mutex_trylock(&ios_pressure_boundary_mutex)) goto done;
+    for (i = 0; i < ARRAY_SIZE(ios_pressure_boundaries); i++)
+    {
+        if (ios_pressure_boundaries[i].owner == owner && ios_pressure_boundaries[i].lease == lease) goto unlock;
+        if (!ios_pressure_boundaries[i].state && empty == ARRAY_SIZE(ios_pressure_boundaries)) empty = i;
+    }
+    if (empty != ARRAY_SIZE(ios_pressure_boundaries))
+        ios_pressure_boundaries[empty] = (struct ios_pressure_boundary_request)
+            {owner, lease, footprint, available, charged, floor, 1};
+unlock:
+    pthread_mutex_unlock(&ios_pressure_boundary_mutex);
+done:
+    errno = saved_errno;
+}
+
+static int ios_pressure_boundary_take(struct ios_pressure_boundary_request *out)
+{
+    unsigned i, threads = 0;
+    int exiting = 0, reclaimed = 0, got = 0;
+    unsigned long long current;
+    if (pthread_mutex_trylock(&ios_pressure_boundary_mutex)) return 0;
+    for (i = 0; i < ARRAY_SIZE(ios_pressure_boundaries); i++)
+        if (ios_pressure_boundaries[i].state == 1)
+        {
+            *out = ios_pressure_boundaries[i];
+            ios_pressure_boundaries[i].state = 2;
+            got = 1;
+            break;
+        }
+    pthread_mutex_unlock(&ios_pressure_boundary_mutex);
+    if (!got) return 0;
+    current = ios_thread_process_snapshot(out->owner, &threads, &exiting, &reclaimed);
+    dprintf(2, "[pressure-boundary-v1] owner=%p lease=%llu current-lease=%llu native-threads=%u "
+        "exiting=%d reclaimed=%d request-footprint=%llu request-available=%llu charged=%llu floor=%llu "
+        "capture=%s source=first-physical-refusal aliases=nonadditive counters=not-physical-ownership\n",
+        out->owner, out->lease, current, threads, exiting, reclaimed, out->footprint, out->available,
+        out->charged, out->floor, current == out->lease && threads && !exiting && !reclaimed ? "queued" : "canceled-stale");
+    return current == out->lease && threads && !exiting && !reclaimed;
+}
+/* madeira-pressure-boundary end */
+
 static void *ios_pool_warmer_thread( void *arg )
 {
     unsigned cycle = 0;
@@ -1202,6 +1267,8 @@ static void *ios_pool_warmer_thread( void *arg )
             }
             last_full = now_ts;
         }
+        struct ios_pressure_boundary_request pressure_boundary = {0};
+        int pressure_sweep = ios_pressure_boundary_take(&pressure_boundary);
         volatile const char *rw = (volatile const char *)ios_jit_rw_base_global;
         /* ml121: warm the RX ALIAS TOO. The warmer only ever touched the RW
          * alias, but execution faults on the RX one -- they are two separate
@@ -1483,7 +1550,7 @@ static void *ios_pool_warmer_thread( void *arg )
              * addresses identify the owner offline (pool = RX base, FEX bands,
              * PA pools, guest heap). Every 5th cycle plus cycle 2, because the
              * walk is tens of thousands of kernel calls. */
-            if (cycle == 2 || (cycle % ios_warmer_sweep_cycles()) == 0)
+            if (pressure_sweep || cycle == 2 || (cycle % ios_warmer_sweep_cycles()) == 0)
             {
                 struct { unsigned long long base, size, dirty, res, swap; unsigned tag; } top[12];
                 unsigned long long dirty_by_tag[256];
@@ -1519,7 +1586,7 @@ static void *ios_pool_warmer_thread( void *arg )
                 mach_vm_address_t raddr = 0;
                 mach_vm_size_t rsize = 0;
                 natural_t rdepth = 0;
-                unsigned regions = 0, ti, tj;
+                unsigned regions = 0, ti, tj, pressure_limited = 0, pressure_queries = 0;
                 unsigned long long total_dirty = 0;
                 /* ml894: HOLE CENSUS below 64GB. CoreAnimation's presentation-
                  * modifier shmem (what SwiftUI's async renderer allocates on
@@ -1539,13 +1606,26 @@ static void *ios_pool_warmer_thread( void *arg )
                 memset( swap_by_tag, 0, sizeof(swap_by_tag) );
                 memset( band_dirty, 0, sizeof(band_dirty) );
                 memset( band_res, 0, sizeof(band_res) );
-                struct timespec pm_t0, pm_t1;   /* madeira-bcd: what the walk costs */
+                struct timespec pm_t0 = {0}, pm_t1 = {0};   /* madeira-bcd: what the walk costs */
                 clock_gettime( CLOCK_MONOTONIC, &pm_t0 );
                 for (;;)
                 {
                     vm_region_submap_info_data_64_t info;
                     mach_msg_type_number_t icnt = VM_REGION_SUBMAP_INFO_COUNT_64;
                     unsigned long long d;
+                    /* One extra existing walk, not a new profiler. Soft time
+                     * bound between queries (one kernel query is not
+                     * preemptible here), plus a hard query-count bound. */
+                    if (pressure_sweep)
+                    {
+                        struct timespec boundary_now;
+                        if (pressure_queries >= 100000 ||
+                            (!(pressure_queries % 64) && !clock_gettime(CLOCK_MONOTONIC, &boundary_now) &&
+                             (boundary_now.tv_sec - pm_t0.tv_sec) * 1000000000LL +
+                              boundary_now.tv_nsec - pm_t0.tv_nsec >= 250000000LL))
+                        { pressure_limited = 1; break; }
+                        pressure_queries++;
+                    }
                     if (mach_vm_region_recurse( mach_task_self(), &raddr, &rsize, &rdepth,
                                                 (vm_region_recurse_info_t)&info, &icnt ) != KERN_SUCCESS)
                         break;
@@ -1573,7 +1653,8 @@ static void *ios_pool_warmer_thread( void *arg )
                         else b = B_OTHER;
                         band_dirty[b] += d;
                         band_res[b] += (unsigned long long)info.pages_resident << 14;
-                        if (b == B_HOST_LOW || b == B_PA)
+                        if (b == B_HOST_LOW || b == B_PA ||
+                            (pressure_sweep && (b == B_GUEST || b == B_FEX)))
                         {
                             int w = 0, q;
                             for (q = 1; q < 4; q++) if (btop[b][q].dirty < btop[b][w].dirty) w = q;
@@ -1671,6 +1752,23 @@ static void *ios_pool_warmer_thread( void *arg )
                     dprintf(2, " %s=%llu/%llu", band_name[ti],
                             band_dirty[ti] >> 20, band_res[ti] >> 20);
                 dprintf(2, "\n");
+                if (pressure_sweep)
+                {
+                    unsigned remaining;
+                    int exited, reaped;
+                    unsigned long long current = ios_thread_process_snapshot(pressure_boundary.owner, &remaining, &exited, &reaped);
+                    dprintf(2, "[pressure-boundary-v1] owner=%p lease=%llu current-lease=%llu owner-still-live=%u "
+                        "cycle=%u regions=%u queries=%u limited=%u walk-ms=%ld sample=top-four-per-nonpool-band "
+                        "owner-metadata=post-walk dirty-is-not-footprint=1\n",
+                        pressure_boundary.owner, pressure_boundary.lease, current,
+                        current == pressure_boundary.lease && remaining && !exited && !reaped,
+                        cycle, regions, pressure_queries, pressure_limited,
+                        (pm_t1.tv_sec - pm_t0.tv_sec) * 1000L + (pm_t1.tv_nsec - pm_t0.tv_nsec) / 1000000L);
+                    for (ti = 0; ti < B_MAX; ti++)
+                        for (unsigned q = 0; q < 4; q++) if (btop[ti][q].dirty)
+                            ios_pressure_boundary_range(btop[ti][q].base, btop[ti][q].size,
+                                                        btop[ti][q].dirty, ti);
+                }
                 for (ti = 0; ti < B_MAX; ti++)
                 {
                     int q;
@@ -15308,6 +15406,60 @@ static struct file_view *find_view( const void *addr, size_t size )
         else return view;
     }
     return NULL;
+}
+
+/* Read-only metadata for at most sixteen selected non-pool regions. The Mach
+ * census and these later registry snapshots are NOT atomic. In particular a
+ * window owner is not a proven owner of every byte of a shared section, and
+ * dirty/swapped counters are not that owner's charged physical footprint.
+ * Unknown/busy/stale stays explicit; nothing here authorizes reclamation. */
+static void ios_pressure_boundary_range(unsigned long long base, unsigned long long size,
+                                       unsigned long long dirty, unsigned band)
+{
+    void *owner = NULL, *view_base = NULL;
+    size_t view_size = 0;
+    unsigned long long lease = 0, current = 0;
+    unsigned flags = 0, protection = 0, generation = 0, threads = 0;
+    int vad = -1, exiting = 0, reclaimed = 0;
+    const char *origin = "unattributed", *kind = "unknown";
+    int saved_errno = errno;
+    if (!base || !size || base > UINTPTR_MAX || size > SIZE_MAX || size > UINTPTR_MAX-base) goto done;
+    if (!pthread_mutex_trylock(&virtual_mutex))
+    {
+        struct file_view *view = find_view((void *)(uintptr_t)base, (size_t)size);
+        vad = view != NULL;
+        if (view)
+        {
+            view_base = view->base; view_size = view->size;
+            flags = view->ios_flags; protection = view->protect;
+            kind = view->protect & SEC_IMAGE ? "image" : view->protect & SEC_FILE ? "section" : "virtual";
+            if (view->ios_fex_owner && view->ios_fex_lease)
+            { owner = view->ios_fex_owner; lease = view->ios_fex_lease; origin = "fex-view-lease"; }
+            else if (view->ios_cef_owner && view->ios_cef_lease)
+            { owner = view->ios_cef_owner; lease = view->ios_cef_lease; origin = "cef-image-lease"; }
+        }
+        pthread_mutex_unlock(&virtual_mutex);
+    }
+    /* Never nest the window, VM and process-registry locks. Do not dereference
+     * a PEB or a view after dropping its registry lock. */
+    if (!owner && vad == 1 && !pthread_mutex_trylock(&ios_wow_mutex))
+    {
+        struct ios_wow_window *slot = ios_wow_live_slot_for_addr((void *)(uintptr_t)base);
+        if (slot && size <= IOS_WOW_WINDOW_SIZE - ((uintptr_t)base - slot->base))
+        { owner = slot->peb; generation = slot->generation; origin = "wow-window-snapshot"; }
+        pthread_mutex_unlock(&ios_wow_mutex);
+    }
+    if (owner) current = ios_thread_process_snapshot(owner, &threads, &exiting, &reclaimed);
+    dprintf(2, "[pressure-owner-v1] band=%u region=%#llx+%#llx dirty-swapped-estimate=%llu "
+        "vad=%d view=%p+%#lx kind=%s protect=%#x quarantine=%u origin=%s owner=%p "
+        "recorded-lease=%llu current-lease=%llu lease-match=%u window-generation=%u "
+        "native-threads=%u exiting=%d reclaimed=%d snapshot=post-walk "
+        "charged-physical=unknown reclaim-permission=0\n",
+        band, base, size, dirty, vad, view_base, (unsigned long)view_size, kind, protection,
+        !!(flags & IOS_VIEW_QUARANTINED), origin, owner, lease, current,
+        lease && current == lease, generation, threads, exiting, reclaimed);
+done:
+    errno = saved_errno;
 }
 
 

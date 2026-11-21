@@ -32,6 +32,7 @@ commands = [
     ['python3', 'tests/host/check-apple-cpu-topology.py'],
     ['python3', 'tests/host/check-apple-cpu-topology-package.py'],
     ['python3', 'tests/host/check-copy-loop-trace.py'],
+    ['python3', 'tests/host/check-pressure-boundary-observation.py', '--require-swift'],
     ['python3', 'tests/host/check-stuck-store-history.py', '--sanitize'],
     ['python3', 'tests/host/check-stuck-store-scheduling.py', '--sanitize'],
     ['python3', 'tests/host/check-cross-page-store-recovery.py', '--require-darwin', '--sanitize'],
@@ -296,6 +297,8 @@ if args.profile == 'recovery-normal':
         ['python3', 'tests/host/check-stuck-store-scheduling.py', '--compile-only'],
         ['python3', 'tests/host/check-copy-loop-trace.py'],
         ['python3', 'tests/host/check-ci-component-keys.py'],
+        ['python3', 'tests/host/check-pressure-boundary-observation.py', '--require-swift'],
+        ['python3', 'tests/host/check-dxmt-resource-budget.py', '--run14-normal-only'],
     ]
     print('Selected recovery-normal profile: no deliberate fault cases; full historical suite not executed', flush=True)
 # These kernel/protocol checks are mandatory preflight for this placement

@@ -18,6 +18,11 @@ static const volatile char md_memory_pressure_contract[] = "[madeira-memory-pres
 extern "C" {
 #endif
 void madeira_native_memory_relief_request(uint64_t, uint64_t);
+/* Optional, read-only pressure-boundary observation. The native Wine worker
+ * owns the bounded capture; a rejected creator must never walk VM or wait for
+ * it while holding the creation-receipt mutex. */
+void madeira_pressure_boundary_request(void *, unsigned long long, uint64_t, uint64_t,
+                                      uint64_t, uint64_t) __attribute__((weak));
 #ifdef __cplusplus
 }
 #endif
@@ -240,6 +245,7 @@ static inline void md_resource_growth_acquire(struct madeira_ctl_args *args) {
   struct madeira_ctl_args measurement = {0, 0, 0, 0, {0}};
   uint64_t available, reserve, floor, effective, recovery, now, deadline = 0;
   uint64_t lease = 0, current_lease = 0;
+  uint64_t observe_footprint = 0, observe_available = 0, observe_floor = 0;
   void *owner = NULL, *current_owner = NULL;
   int identity, wait_status, cancel_state;
   uint64_t cookies[MD_RESOURCE_GROWTH_RECEIPTS];
@@ -297,6 +303,9 @@ static inline void md_resource_growth_acquire(struct madeira_ctl_args *args) {
   if (available <= floor || bytes > available - floor) {
     md_resource_growth_pressure = 1;
     md_resource_growth_diagnostics(args, measurement.ptr, md_resource_growth_held, floor, 1);
+    observe_footprint = measurement.ptr;
+    observe_available = available;
+    observe_floor = floor;
     args->ret = 3; goto unlock;
   }
   if (effective <= floor || bytes > effective - floor || slot == MD_RESOURCE_GROWTH_RECEIPTS) {
@@ -360,6 +369,8 @@ static inline void md_resource_growth_acquire(struct madeira_ctl_args *args) {
                occupied + 1 >= MD_RESOURCE_GROWTH_RECEIPTS / 2) ? 2 : 1;
 unlock:
   pthread_mutex_unlock(&md_resource_growth_mutex);
+  if (observe_footprint && madeira_pressure_boundary_request)
+    madeira_pressure_boundary_request(owner, lease, observe_footprint, observe_available, bytes, observe_floor);
   pthread_setcancelstate(cancel_state, NULL);
 done:
   errno = saved_errno;

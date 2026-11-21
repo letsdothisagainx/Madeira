@@ -7,11 +7,16 @@ parallel admission, foreign release and interrupted-creator retirement.
 """
 from pathlib import Path
 import os
+import argparse
 import subprocess
 import sys
 import tempfile
 
 ROOT=Path(__file__).resolve().parents[2]
+parser=argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--run14-normal-only', action='store_true',
+                    help='Replay the eight valid Run14 pressure inputs and ordinary admission/release only')
+args=parser.parse_args()
 
 def function(source, signature):
     begin=source.index(signature)
@@ -351,6 +356,51 @@ int main(){
  std::puts("PASS production fresh-live budget and native ownership/wait paths; controlled host measurements/events are not iPhone memory or rendering results");
 }
 '''
+if args.run14_normal_only:
+ code=code[:code.index('int main()')]+r'''
+static unsigned pressure_observations;
+extern "C" void fixture_pressure_observed(void *owner,unsigned long long lease,uint64_t f,uint64_t a,uint64_t n,uint64_t floor) {
+ assert(owner==caller && lease==1 && f==footprint && a==available && n>0 && floor>0);
+ assert(!pthread_mutex_trylock(&md_resource_growth_mutex));
+ pthread_mutex_unlock(&md_resource_growth_mutex);
+ ++pressure_observations;
+}
+int main() {
+ struct Case {uint64_t footprint,available,charged,floor;};
+ const Case cases[] = {
+  {6238714392ull,203736552,2798672,201326592},
+  {6238616088ull,203834856,2798672,201326592},
+  {6229129752ull,213321192,16777472,201326592},
+  {6232586776ull,209864168,33554688,201326592},
+  {6253017624ull,189433320,2097408,201326592},
+  {6262798872ull,179619304,2798672,201325568},
+  {6264437272ull,177980904,2097408,201325568},
+  {6265715224ull,176702952,2097408,201325568},
+ };
+ for (const auto& c:cases) {
+  footprint=c.footprint; available=c.available;
+  const auto before=md_resource_growth_next;
+  auto a=acquire(c.charged);
+  assert(a.ret==3 && !a.ptr && a.len==c.available);
+  assert(detail(a,0)==c.footprint && !detail(a,1));
+  assert(detail(a,2)==c.floor && detail(a,3)==1);
+  assert(!md_resource_growth_held && md_resource_growth_next==before);
+ }
+ assert(pressure_observations==8); // Observer invoked only after unlocking the real receipt mutex.
+ sample(1024*MiB); auto a=acquire(2798672);
+ assert(a.ptr && a.ret==1 && md_resource_growth_held==2798672);
+ assert(release(a.ptr) && !md_resource_growth_held);
+ // Ordinary parallel creators, no injected native errors or inaccessible pages.
+ std::vector<std::thread> workers;
+ for(unsigned i=0;i<4;++i) workers.emplace_back([]{
+  for(unsigned n=0;n<100;++n) {auto a=acquire(65536); assert(a.ptr); assert(release(a.ptr));}
+ });
+ for(auto& t:workers)t.join();
+ assert(!md_resource_growth_held && !md_resource_growth_waiters);
+ std::puts("PASS Run14 normal-only: actual native predicate reproduces all eight budget refusals; healthy admission/release and 400 parallel receipts remain balanced. Controlled measurements, no physical-memory savings asserted.");
+}
+'''
+
 abi=(ROOT/'dxmt/src/winemetal/winemetal.h').read_text()
 abi=abi[abi.index('struct madeira_ctl_args {'):abi.index('WINEMETAL_API void MadeiraCtl')]
 with tempfile.TemporaryDirectory(prefix='madeira-growth-budget-') as directory:
@@ -391,10 +441,21 @@ int ios_thread_process_finalize_native(void*,unsigned long long);
 void wine_log_write(const char*,...);
 '''+retire+'\nextern "C" void fixture_finish_process_memory(void* owner) { ios_finish_process_memory(owner); }\n'
  src=p/'test.cpp';server_src=p/'server.cpp';binary=p/'test';src.write_text(code);server_src.write_text(server_code)
- for model in ([False] if sys.platform == 'darwin' else [False, True]):
+ extra_sources=[]
+ if args.run14_normal_only:
+  observer=p/'observer.cpp'
+  observer.write_text('''#include <stdint.h>
+extern "C" void fixture_pressure_observed(void*,unsigned long long,uint64_t,uint64_t,uint64_t,uint64_t);
+extern "C" void madeira_pressure_boundary_request(void* o,unsigned long long l,uint64_t f,uint64_t a,uint64_t n,uint64_t s) {
+ fixture_pressure_observed(o,l,f,a,n,s);
+}
+''')
+  extra_sources=[str(observer)]
+ for model in ([False] if args.run14_normal_only or sys.platform == 'darwin' else [False, True]):
   flags = ['-DMODEL_DARWIN_NONCANCEL_WAIT'] if model else []
+  if args.run14_normal_only: flags += ['-Wno-unused-function', '-Wno-unused-variable']
   subprocess.run([os.environ.get('CXX','c++'),'-std=c++17','-O1','-Wall','-Wextra','-Werror','-pthread',
    '-fsanitize=address,undefined','-fno-omit-frame-pointer','-fno-sanitize-recover=all',*flags,
-   '-I',str(p),'-I',str(ROOT/'build/dxmt-ios'),str(src),str(server_src),'-o',str(binary)],check=True)
+   '-I',str(p),'-I',str(ROOT/'build/dxmt-ios'),str(src),str(server_src),*extra_sources,'-o',str(binary)],check=True)
   subprocess.run([str(binary)],check=True,timeout=40)
   if model: print('PASS Darwin NOCANCEL relative-wait model: deferred cancellation executes real native cleanup with no stranded waiter or mutex')
