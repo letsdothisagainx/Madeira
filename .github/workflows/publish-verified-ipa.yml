@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: publish-ipa-08c333ba
+  group: publish-ipa-9ba172ee
   cancel-in-progress: false
 
 jobs:
@@ -22,9 +22,9 @@ jobs:
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
-      SOURCE_REVISION: 08c333bae081862256d73d0d4b388ceea9fa1db7
-      SOURCE_RUN: '44815121124'
-      RELEASE_TAG: ipa-08c333ba
+      SOURCE_REVISION: 9ba172ee9ff3d093b0681ea3867ffcb237e0b55e
+      SOURCE_RUN: '45077310645'
+      RELEASE_TAG: ipa-9ba172ee
     steps:
       - name: Require the exact successful build and artifact
         run: |
@@ -54,7 +54,7 @@ jobs:
           PY
       - uses: actions/checkout@v4
         with:
-          ref: 08c333bae081862256d73d0d4b388ceea9fa1db7
+          ref: 9ba172ee9ff3d093b0681ea3867ffcb237e0b55e
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
@@ -70,37 +70,39 @@ jobs:
           test -s release-output/Madeira.ipa
           python3 tools/build/native-provenance.py check --root "$GITHUB_WORKSPACE" --revision "$SOURCE_REVISION" --ipa release-output/Madeira.ipa
           python3 delivery-tools/tests/host/check-store-recovery-package-inspector.py
-          python3 delivery-tools/tools/check-store-recovery-package.py --ipa release-output/Madeira.ipa --revision "$SOURCE_REVISION" > release-output/recovery-package.json
+          python3 delivery-tools/tools/check-store-recovery-package.py --ipa release-output/Madeira.ipa --revision "$SOURCE_REVISION" --require-pressure-boundary > release-output/recovery-package.json
           cat release-output/recovery-package.json
           (cd release-output && sha256sum Madeira.ipa > SHA256SUMS)
       - name: Publish the same IPA as a stable prerelease asset
         run: |
           cat > "$RUNNER_TEMP/ipa-release-notes.txt" <<'NOTES'
-          Madeira IPA from source 08c333bae081862256d73d0d4b388ceea9fa1db7.
+          Installable Madeira candidate from source 9ba172ee9ff3d093b0681ea3867ffcb237e0b55e.
 
-          IPA build: https://github.com/letsdothisagainx/Madeira/actions/runs/44815121124
-          Focused Linux/macOS checks: https://github.com/letsdothisagainx/Madeira/actions/runs/44815126723
+          IPA build: https://github.com/letsdothisagainx/Madeira/actions/runs/45077310645
+          Focused Linux/macOS checks: https://github.com/letsdothisagainx/Madeira/actions/runs/44885207359
 
-          This candidate corrects a source-confirmed scheduling defect in the existing checked-store recovery worker. A long full-task discovery scan could consume its entire 100-ms period, become immediately overdue again, and delay follow-up of already watched copy threads. Discovery now services those targets between native queries and schedules the next full scan from a fresh completion timestamp. The existing eligibility checks, two-observation confirmation, checked fragment writes, PC publication, native identity ownership, eight-slot bound and suspension balancing remain active.
+          This packages the existing Run14 pressure-boundary changes for installation on iPhone. It is not a demonstrated texture-memory or playable-multiplayer fix. The remaining reclaimable memory owner and the loading/renderer failure still require attribution; no on-device pass or memory saving is claimed.
 
-          A normal-success replay of the actual production bodies completes 19 additional real-byte stores by 500 modeled ms, compared with 2,910 ms before; maximum target capture gap is 25 rather than 145 ms. All native APIs succeed and all destinations are writable. This is a controlled scheduler result, not a measured iPhone map-loading speedup. No deliberate crash, protected-neighbor, revocation or fault-injection experiment was run for this candidate.
+          The first physical-budget refusal queues one bounded ownership observation per process lease (four maximum per host session). The existing worker records selected non-pool VM regions and their recorded FEX/CEF/window ownership and generation metadata. Unknown/stale ownership remains explicit and never permits reclamation. The native request occurs after releasing the creation-receipt mutex. No texture success is fabricated, and no live or quarantined storage is forcibly freed.
 
-          The IPA workflow selects the explicit recovery-normal validation profile to honor that constraint. Its six targeted host checks and normal native/source/ABI/topology/package verification run; the full historical fault-testing suite is not claimed. Complete IPA reuse is separated by validation profile.
+          Normal-input checks reproduce all eight recorded admission decisions against the actual native predicate, exercise 400 parallel receipt acquisitions/releases and 80,000 coalesced observation requests, preserve privacy filtering, and retain the existing checked-store discovery tests. The build selects the recovery-normal profile; no deliberate crash, protected-memory, page-revocation or fault-injection experiment is requested. The full historical host suite is not claimed.
 
-          Bounded observations cover the actual accepted CS2 main native thread and at most two already observed copy workers. They retain current host execution, wait/CPU state and recovery results where Run13 lacked continuous attribution. No Valve binary, game protocol, authentication, memory reserve, JIT partition or renderer policy is patched.
+          The full 1,152 MiB JIT pool and 768/384 MiB partition, code-buffer reuse, checked-store recovery, physical safety reserve, GPU completion/resource lifetimes, Steam authentication, networking and existing input behavior are preserved. The existing bundle identifier, Wine prefix, game files, Steam setup and user configuration are retained. Install over the existing app with the same signing identity; do not uninstall or delete its data.
 
-          The full 1,152 MiB JIT pool, larger code-buffer reuse, checked-store protections, topology, GPU resource ownership, installation bundle identity, Steam setup, Wine prefix and user configuration are preserved.
+          The artifact's source revision, native provenance and immutable archive digest are checked before publication. recovery-package.json verifies the compiled recovery path, Run14 native producer markers, and the defined pressure callback. Publication copies the built IPA without rebuilding it, then compares an unauthenticated public download byte for byte.
 
-          recovery-package.json records the packaged native UUID and read-only inspection of the compiled discovery-to-hot-service path and post-discovery clock call. The source/provenance and immutable Actions artifact digest are verified before publication. This release uploads the same built IPA without recompilation.
+          Device acceptance remains responsive remote team selection, sustained gameplay through a round and a clean menu/map transition without failed required textures. Build and host checks do not establish those outcomes.
 
-          The contribution of this scheduler defect to Run13's 103-second activation and later timeout is not independently measured. Responsive team selection, continuing remote gameplay through a round, and intact rendering after return/changelevel still require an iPhone session. A passing build or menu FPS is not device acceptance.
-
-          Detailed analysis: https://github.com/letsdothisagainx/Madeira/blob/08c333bae081862256d73d0d4b388ceea9fa1db7/docs/cs2-run13-critical-path-20261120.md
+          Detailed analysis: https://github.com/letsdothisagainx/Madeira/blob/9ba172ee9ff3d093b0681ea3867ffcb237e0b55e/docs/cs2-run14-pressure-attribution-20261121.md
 
           Download Madeira.ipa below. SHA256SUMS verifies its bytes.
           NOTES
-          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title 'Madeira 08c333ba - store recovery scheduling' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
-          gh release upload "$RELEASE_TAG" release-output/Madeira.ipa release-output/SHA256SUMS release-output/recovery-package.json --repo "$GITHUB_REPOSITORY"
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title 'Madeira 9ba172ee - Run14 installable candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt"
+          else
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title 'Madeira 9ba172ee - Run14 installable candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
+          fi
+          gh release upload "$RELEASE_TAG" release-output/Madeira.ipa release-output/SHA256SUMS release-output/recovery-package.json --repo "$GITHUB_REPOSITORY" --clobber
           gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
       - name: Verify the public download without authentication
         run: |

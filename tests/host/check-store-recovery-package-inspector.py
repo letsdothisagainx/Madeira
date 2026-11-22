@@ -56,6 +56,17 @@ def image(interleaved=True, completion_clock=True, inlined=False):
 result = module.inspect(image())
 assert result['interleavedDiscovery'] and result['postDiscoveryClockFunctions'] == ['_ios_stuck_store_recovery_poll']
 assert module.inspect(image(inlined=True))['discoveryInlined']
+# Normal non-executable metadata for the newly packaged Run14 callback. The
+# inspector proves linkage/markers, not a live pressure event or memory saving.
+pressure = bytearray(image(inlined=True))
+stroff, strlen = 0x480, struct.unpack_from('<I', pressure, 32 + 232 + 20)[0]
+callback = b'_madeira_pressure_boundary_request\0'
+struct.pack_into('<I', pressure, 32 + 232 + 12, 7)
+struct.pack_into('<I', pressure, 32 + 232 + 20, strlen + len(callback))
+struct.pack_into('<IBBHQ', pressure, 0x460, strlen, 0xf, 1, 0, 0x10000005c)
+pressure[stroff + strlen:stroff + strlen + len(callback)] = callback
+pressure.extend(b'[pressure-boundary-v1]\0[pressure-owner-v1]\0')
+assert module.inspect(bytes(pressure), require_pressure_boundary=True)['pressureBoundaryRequired']
 for arguments in ((False, True, False), (True, False, False), (False, True, True), (True, False, True)):
     try:
         module.inspect(image(*arguments))
