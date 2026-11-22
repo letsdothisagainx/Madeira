@@ -72,6 +72,13 @@ jobs:
           python3 delivery-tools/tests/host/check-store-recovery-package-inspector.py
           python3 delivery-tools/tools/check-store-recovery-package.py --ipa release-output/Madeira.ipa --revision "$SOURCE_REVISION" --require-pressure-boundary > release-output/recovery-package.json
           cat release-output/recovery-package.json
+          python3 - <<'PY'
+          import json
+          package = json.load(open('release-output/recovery-package.json'))
+          assert package['bundleIdentifier'] == 'com.willfaust.madeora', 'installation identity changed'
+          assert package['pressureBoundaryRequired'] is True
+          print('PASS existing installation identity and compiled Run14 pressure producer')
+          PY
           (cd release-output && sha256sum Madeira.ipa > SHA256SUMS)
       - name: Publish the same IPA as a stable prerelease asset
         run: |
