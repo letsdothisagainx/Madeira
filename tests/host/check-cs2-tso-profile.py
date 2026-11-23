@@ -22,6 +22,8 @@ with tempfile.TemporaryDirectory(prefix='madeira-cs2-tso-') as directory:
     module=(stage/'Source/Windows/ARM64EC/Module.cpp').read_text()
     init=function(module,'NTSTATUS ProcessInit()')
     assert init.index('LoadConfig(')<init.index('ReloadMetaLayer(')<init.index('Logging::Init()')<init.index('MadeiraConfigureCS2TSO(')<init.index('CPUFeatures::FetchHostFeatures(')<init.index('CreateNewContext(')
+    owned_name = next(line.strip() for line in init.splitlines() if 'const fextl::string ExecutableName {' in line)
+    basename = function((ROOT/'FEX/Source/Windows/Common/Module.h').read_text(),'inline std::string_view BaseName(')
     profile=function(module,'static bool MadeiraConfigureCS2TSO(')
     assert 'setenv' not in profile and 'putenv' not in profile and 'ReloadMetaLayer' not in profile
     selected=function(module,'    if (MadeiraCS2TSO)')
@@ -134,7 +136,19 @@ static void run(const char* ExecutableName, uint64_t mask, bool expected) {
  assert(HostFeatures.SupportsTSOImm9==!expected);
  check_emission(HostFeatures);
 }
+namespace FEX::Windows {
+@BASENAME@
+inline fextl::string GetExecutableFilePath(){return "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Counter-Strike Global Offensive\\game\\bin\\win64\\cs2.exe";}
+}
+static void check_owned_name() {
+ @OWNED@
+ static_assert(std::is_same_v<decltype(ExecutableName),const fextl::string>);
+ std::vector<std::string> ordinary_allocations(128,std::string(128,'x'));
+ assert(ExecutableName=="cs2.exe" && ordinary_allocations.size()==128);
+ puts("PASS actual initializer owns its executable basename across config allocations (no borrowed view)");
+}
 int main() {
+ check_owned_name();
  // Fixture-owned environment only. Production profile never changes it.
  assert(!setenv("FEX_MADEIRA_HOSTPROBE","AFP=1,FLAGM=1,RCPC=1,LRCPC2=1,ATOMICS=1",1));
  assert(!setenv("FEX_HOSTFEATURES","enableafp,disableavx",1));
@@ -148,7 +162,7 @@ int main() {
  puts("PASS staged CS2-only profile merges flags, preserves TSO/halfbar and parent environment; real pinned CPUFeatures and StoreMemTSO/CodeEmitter emit STLR fallback with unchanged NOP slots; other guests retain STLUR");
 }
 '''
-    for key,value in {'BITS':bits,'PROFILE':profile,'CPU':cpu,'STORE':scalar,'SELECTED':selected}.items():code=code.replace('@'+key+'@',value)
+    for key,value in {'BITS':bits,'PROFILE':profile,'CPU':cpu,'STORE':scalar,'SELECTED':selected,'OWNED':owned_name,'BASENAME':basename}.items():code=code.replace('@'+key+'@',value)
     source=work/'tso.cpp';binary=work/'tso';source.write_text(code)
     subprocess.run([os.environ.get('CXX','c++'),'-std=c++20','-O2','-Wall','-Wextra','-Werror','-Wno-unused-parameter',
       '-I'+str(stub),'-I'+str(ROOT/'FEX/FEXCore/include'),'-I'+str(ROOT/'FEX/CodeEmitter'),'-I'+str(ROOT/'FEX/FEXHeaderUtils'),str(source),'-o',str(binary)],check=True)

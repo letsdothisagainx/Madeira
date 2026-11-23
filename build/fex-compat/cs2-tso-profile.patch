@@ -28,17 +28,23 @@
  NTSTATUS ProcessInit() {
    /* The loader serializes first process initialization. A repeated call
     * must not replace CTX or the published tracker while readers use it. */
-@@ -1023,6 +1044,9 @@
+@@ -1019,10 +1040,14 @@
+   InitSyscalls();
+ 
+   FEX::Windows::InitCRTProcess();
+-  const auto ExecutableName = FEX::Windows::BaseName(FEX::Windows::GetExecutableFilePath());
++  // BaseName returns a view; own the name before its temporary path dies.
++  const fextl::string ExecutableName {FEX::Windows::BaseName(FEX::Windows::GetExecutableFilePath())};
    FEX::Config::LoadConfig(fextl::string {ExecutableName}, _environ, FEX::ReadPortabilityInformation());
    FEXCore::Config::ReloadMetaLayer();
    FEX::Windows::Logging::Init();
 +#ifdef FEX_IOS_HOST
-+  const bool MadeiraCS2TSO = MadeiraConfigureCS2TSO(fextl::string {ExecutableName});
++  const bool MadeiraCS2TSO = MadeiraConfigureCS2TSO(ExecutableName);
 +#endif
  
  #ifdef FEX_IOS_HOST
    /* Recorder emitted only for this executable, before CTX/JIT creation. */
-@@ -1136,6 +1160,16 @@
+@@ -1136,6 +1161,16 @@
  
    {
      auto HostFeatures = FEX::Windows::CPUFeatures::FetchHostFeatures(IsWine, FEXCore::HostFeatures::HostTypeEnum::Arm64ec);

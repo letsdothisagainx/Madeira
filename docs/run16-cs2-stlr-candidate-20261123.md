@@ -28,6 +28,11 @@ stager only to ARM64EC Module.cpp. The FEX submodule stays pinned and untouched.
 `ProcessInit` already obtains the executable basename, loads configuration and
 reloads its meta layer. The new function runs after that initialization and
 before `CPUFeatures::FetchHostFeatures`, `CreateNewContext` and any JIT creation.
+Source inspection also found that BaseName returns a string_view into a temporary
+path string in the existing initializer. The overlay makes ExecutableName an
+owned string within that same full expression, keeping identification valid
+through configuration allocations and feature selection. The normal test compiles
+the actual owned declaration and basename helper; no dangling access is executed.
 
 For exactly `cs2.exe` (case insensitive), it merges DISABLELRCPC2 into the current
 HOSTFEATURES value and removes only the conflicting ENABLELRCPC2 bit. Other
