@@ -67,7 +67,11 @@ def inspect(data, require_pressure_boundary=False, require_recovery_scope=False)
                    kind & 0xe == 0xe and not kind & 0xe0 and section and address
                    for name, kind, section, address in symbols):
             raise ValueError('timed checked-write producer is not defined in linked image')
-    names = {address: name for name, kind, _, address in symbols if address and kind & 0xe == 0xe}
+    # N_BNSYM/N_ENSYM debug records can share a function address with an
+    # empty name, and their type bits also contain N_SECT. Only real defined
+    # section symbols may identify a call target; STAB metadata is not code.
+    names = {address: name for name, kind, section, address in symbols
+             if name and address and section and kind & 0xe == 0xe and not kind & 0xe0}
     if indirect:
         offset, count = indirect
         if offset + count * 4 > len(data):

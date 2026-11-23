@@ -10,7 +10,7 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 
-def image(interleaved=True, completion_clock=True, inlined=False):
+def image(interleaved=True, completion_clock=True, inlined=False, debug_alias=False):
     vm = 0x100000000
     names = ['_ios_stuck_store_recovery_main' if inlined else '_ios_stuck_store_check', '_ios_stuck_store_hot_check',
              '_ios_stuck_store_recovery_poll', '_clock_gettime', '_task_threads', '_vm_deallocate']
@@ -50,12 +50,29 @@ def image(interleaved=True, completion_clock=True, inlined=False):
                          1 if at is not None else 0, 0, vm + at if at is not None else 0)
     data[0x480:0x480 + len(strings)] = strings
     struct.pack_into('<3I', data, 0x600, 3, 4, 5)
+    if debug_alias:
+        # N_BNSYM/STAB line-table record sharing an actual function address.
+        # Its empty name must never replace the defined text symbol.
+        struct.pack_into('<I', data, 32 + 232 + 12, 7)
+        struct.pack_into('<IBBHQ', data, 0x460, 0, 0x2e, 1, 0, vm + 0x40)
     return bytes(data)
 
 
 result = module.inspect(image())
 assert result['interleavedDiscovery'] and result['postDiscoveryClockFunctions'] == ['_ios_stuck_store_recovery_poll']
 assert module.inspect(image(inlined=True))['discoveryInlined']
+assert module.inspect(image(inlined=True, debug_alias=True))['discoveryInlined']
+# A debug symbol alone cannot establish the required hot-service call.
+debug_only = bytearray(image(inlined=True, debug_alias=True))
+hot_name = struct.unpack_from('<I', debug_only, 0x410)[0]
+struct.pack_into('<IBBHQ', debug_only, 0x410, hot_name, 1, 0, 0, 0)
+struct.pack_into('<IBBHQ', debug_only, 0x460, hot_name, 0x2e, 1, 0, 0x100000040)
+try:
+    module.inspect(bytes(debug_only))
+except ValueError:
+    pass
+else:
+    raise AssertionError('debug-only call target accepted as production code')
 # Normal non-executable metadata for the newly packaged Run14 callback. The
 # inspector proves linkage/markers, not a live pressure event or memory saving.
 pressure = bytearray(image(inlined=True))
