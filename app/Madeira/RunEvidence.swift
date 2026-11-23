@@ -6,6 +6,7 @@ import Glibc
 #endif
 #if os(iOS)
 import UIKit
+import os
 import MetricKit
 @_silgen_name("madeira_evidence_poll") private func nativeEvidencePoll(_ out: UnsafeMutablePointer<UInt64>, _ count: UInt32, _ stats: UnsafeMutablePointer<UInt64>) -> UInt32
 @_silgen_name("madeira_evidence_frame") private func nativeEvidenceFrame(_ out: UnsafeMutablePointer<UInt64>)
@@ -306,7 +307,8 @@ final class RunEvidenceRecorder {
         let keys:Set<String>=["event","request","completed","code"]
         var values=RunEvidenceSchema.fields(text,keys:keys)
         for name in ["requested","archive-created","share-presented","share-finished","failed"] where text.contains("event="+name) {values["event"]=name}
-        shared.queue.async {shared.store.record("timeline",["event":"export-presentation","fields":values,"source":"existing-share-coordinator"])}
+        let immutableValues=values
+        shared.queue.async {shared.store.record("timeline",["event":"export-presentation","fields":immutableValues,"source":"existing-share-coordinator"])}
     }
     let queue=DispatchQueue(label:"com.madeira.run-evidence",qos:.utility)
     let store: RunEvidenceStore
@@ -318,6 +320,7 @@ final class RunEvidenceRecorder {
     private var maxTickNS:UInt64=0, overruns:UInt64=0
     private var previousIO:[UInt64]?
     private var previous:String?
+    private var phase="startup"
     private var connectSecond:Int?, mainUserUS:UInt64=0, mainKernelUS:UInt64=0, maxGapNS:UInt64=0, peakFootprint:UInt64=0
     private var pendingTextureAPI:String?, consoleLineNumber:UInt64=0, pendingTextureLine:UInt64=0
     private var nativeSourceRead:UInt64=0, consoleSourceRead:UInt64=0
@@ -363,7 +366,7 @@ final class RunEvidenceRecorder {
         t.setEventHandler { [weak self] in self?.tick() }; t.resume(); timer=t
     }
     private func stamp(_ r:[String:Any]) -> [String:Any] {
-        var row=r; row["processLifetimeID"]=process as Any? ?? NSNull(); row["attemptID"]=attempt>0 ? "\(process ?? "unknown")-\(attempt)" : NSNull(); row["attemptKind"]=attemptKind
+        var row=r; row["processLifetimeID"]=process as Any? ?? NSNull(); row["attemptID"]=attempt>0 ? "\(process ?? "unknown")-\(attempt)" : NSNull(); row["attemptKind"]=attemptKind;row["phase"]=phase;row["phaseConfidence"]="observed-message-arrival; not-packet-or-playability-state"
         return row
     }
     private func tick() {
@@ -376,7 +379,7 @@ final class RunEvidenceRecorder {
             for i in 0..<n {
                 guard let (channel,r)=RunEvidenceSchema.native(Array(words[i*48..<(i+1)*48])) else { continue }
                 if r["event"] as? String == "cs2-start-observed" {
-                    process="\(r["owner"] ?? "unknown")-\(r["lease"] ?? "unknown")"; attempt=0; activated=false
+                    process="\(r["owner"] ?? "unknown")-\(r["lease"] ?? "unknown")"; attempt=0; activated=false;phase="CS2-started-unclassified"
                 }
                 if r["event"] as? String == "executable-copy-mapping-load" {
                     var entry:[String:String]=[:];for (key,value) in r {if let s=value as? String {entry[key]=s}}
@@ -508,14 +511,15 @@ final class RunEvidenceRecorder {
             let stampSeconds=Self.consoleStamp(line).flatMap { t -> Int? in
                 let p=t.split(separator:":").compactMap { Int($0) };return p.count==3 ? p[0]*3600+p[1]*60+p[2] : nil
             }
-            if event == "remote-connected" { connectSecond=stampSeconds }
+            if event == "remote-connected" { connectSecond=stampSeconds;phase="remote-loading" }
+            if event == "loopback-connected" {phase="local-loopback"}
             if event == "remote-activated" {
-                activated=true
+                activated=true;phase="remote-activated-not-playability"
                 if let start=connectSecond,let end=stampSeconds,end>=start {
                     store.fact("lastRemoteConnectionToActivation",["seconds":end-start,"clock":"same-console-wall-second; no-packet-arrival-inference","uncertainty":"at-least-timestamp-granularity; console-buffering-unmeasured"])
                 }
             }
-            if event.hasPrefix("disconnect") { store.fact("lastObservedDisconnect",event) }
+            if event.hasPrefix("disconnect") { store.fact("lastObservedDisconnect",event);activated=false;phase="after-disconnect" }
             let timestamp=Self.consoleStamp(line)
             store.record("timeline",stamp(["event":event,"source":"CS2-console-line","confidence":"observed-message; not-playability-or-packet-arrival","consoleTimestamp":timestamp as Any? ?? NSNull(),"consoleClock":"original-console-wall; year-and-timezone-unverified","consoleArrival":"this-read-tick; not-original-packet-time"]))
             if event.hasPrefix("disconnect") || event == "texture-allocation-failed" { incident(event) }
@@ -550,8 +554,15 @@ final class RunEvidenceRecorder {
         } else if line.contains("[cs2-store-progress-v1]") {
             let f=RunEvidenceSchema.fields(line,keys:["pid","tid","native","slot","sample","interval-us","user-us","kernel-us","captures","completed","unhandled","refused","partial","publication-failed","last-held-us","last-age-us","last-pc","last-ea","last-insn","last-bytes","last-result","phase-capture-us","phase-validation-us","phase-write0-us","phase-write1-us","phase-publication-us","phase-resume-us","recovery-worker","base-qos","held-qos","qos-changed"])
             store.record("thread-frame-memory",stamp(["event":"existing-recovery-progress","fields":f,"source":"existing-native-log; received-time-not-capture-time"]))
-        } else if line.contains("[PRESENT_GAP]") || line.contains("[frame]") || line.contains("[gpu]") || line.contains("[mem-census]") {
-            let f=RunEvidenceSchema.fields(line,keys:["frames","gap_max","gap_max_ms","inside_avg","inside_max","currentAllocatedSize","LIVE","gpu_ms","encoding_ms","submit_ms","readback-waits"])
+        } else if line.contains("[gpu-perf]") {
+            let pattern="([0-9]+) frames in ([0-9]+) ms.*GPU busy ([0-9]+) ms = ([0-9]+)%"
+            if let regex=try? NSRegularExpression(pattern:pattern),let m=regex.firstMatch(in:line,range:NSRange(line.startIndex...,in:line)) {
+                var f:[String:Any]=["event":"completed-frame-batch","source":"existing-DXMT-gpu-perf","scope":"DXMT-batch-not-steady-gameplay-or-single-frame"]
+                for (i,k) in [(1,"frameCount"),(2,"wallMS"),(3,"GPUExecutionMS"),(4,"reportedGPUBusyPercent")] { if let range=Range(m.range(at:i),in:line),let n=UInt64(line[range]) {f[k]=n} }
+                store.record("thread-frame-memory",stamp(f))
+            }
+        } else if line.contains("[PRESENT_GAP]") || line.contains("[FRAME_STATS]") || line.contains("[frame]") || line.contains("[gpu]") || line.contains("[mem-census]") {
+            let f=RunEvidenceSchema.fields(line,keys:["frames","gap_max","gap_max_ms","inside_avg","inside_max","currentAllocatedSize","LIVE","gpu_ms","encoding_ms","submit_ms","readback-waits","commit_avg","sync_cnt","sync_avg","event_stall_max","latency_avg","enc_prep","enc_flush","drawable_block","cmdbufs"])
             if !f.isEmpty { store.record("thread-frame-memory",stamp(["event":"existing-render-counters","fields":f,"source":"native-log","scope":"DXMT-accounting-not-additive-with-footprint"])) }
         } else if line.contains("[process-retire]") || line.contains("[process-quarantine]") || line.contains("NtTerminateProcess") {
             let f=RunEvidenceSchema.fields(line,keys:["pid","owner","lease","status","exit","threads","native","ready","reclaimed"])

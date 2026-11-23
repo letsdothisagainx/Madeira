@@ -11,8 +11,10 @@
 #include <unistd.h>
 #include "run_evidence.h"
 #ifdef __APPLE__
+#define host_page_size sdk_host_page_size
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
+#undef host_page_size
 #else
 typedef uint64_t mach_vm_address_t;typedef uint64_t mach_vm_size_t;typedef unsigned natural_t,mach_msg_type_number_t;typedef int kern_return_t;typedef void *vm_region_recurse_info_t;
 typedef struct {unsigned is_submap,protection,max_protection,share_mode,external_pager,pages_resident,pages_swapped_out,pages_dirtied;uint64_t offset;} vm_region_submap_info_data_64_t;
