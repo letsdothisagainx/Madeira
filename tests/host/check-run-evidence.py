@@ -44,6 +44,8 @@ func verify(_ ok:@autoclosure ()->Bool,_ file:StaticString=#file,_ line:Int=#lin
   try verify(RunEvidenceRecorder.consoleEvent("11/23 09:17:02 NetChan Setting Timeout to 30.00") == "timeout-configured")
   try verify(RunEvidenceRecorder.consoleEvent("chat: NETWORK_DISCONNECT_TIMEDOUT SECRET") == nil)
   try verify(RunEvidenceRecorder.consoleStamp("11/23 09:19:43 [Client]") == "09:19:43")
+  let installed=RunEvidenceRecorder.installedBuildFields("\"AppState\" { \"buildid\" \"1234567\" \"LastUpdated\" \"12345\" \"username\" \"PRIVATE\" }")
+  try verify(installed["buildid"]=="1234567" && installed["LastUpdated"]=="12345" && installed["username"]==nil)
   store.setConfig("effective",technical)
   store.graphic(["API":"CreateTexture2D","HRESULT":"E_OUTOFMEMORY"],category:"allocation")
   store.graphic(["API":"CreateTexture2D","HRESULT":"E_OUTOFMEMORY"],category:"allocation")

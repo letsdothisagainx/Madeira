@@ -39465,6 +39465,7 @@ void madeira_evidence_backing(void)
     if (pthread_mutex_trylock(&virtual_mutex)) { r.w[9]=1; ios_evidence_emit(&r); errno=saved; return; }
     r.w[9]=2; r.w[10]=ios_swap_bytes; r.w[11]=ios_swap_n; r.w[12]=ios_swap_nfree;
     r.w[13]=ios_swap_bump; r.w[14]=ios_swap_cap; r.w[15]=ios_swap_refused;
+    r.w[22]=ios_swap_min;r.w[23]=ios_swap_resv_max;r.w[24]=ios_swap_broad ? 3 : ios_swap_wide ? 2 : ios_swap_v2 ? 1 : 0;r.w[25]=ios_swap_fd>=0;
     r.w[16]=ios_swap_punch_leaks; r.w[17]=ios_ev_vm_generation; r.w[18]=host_page_size;
     if (!pthread_mutex_trylock(&ios_swap_pq_lock))
     { r.w[19]=1; r.w[20]=ios_swap_pq_n; pthread_mutex_unlock(&ios_swap_pq_lock); }

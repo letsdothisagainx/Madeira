@@ -142,6 +142,7 @@ enum RunEvidenceSchema {
         case 6:
             r["event"] = "backing-progress"; r["scope"] = "host-app-Madeira-backing-ledger"
             r["status"] = w[9] == 1 ? "VM-lock-busy" : "sampled"
+            r["initialized"] = w[9] == 2 && w[25] == 1
             if w[9] == 2 {
                 for (i,k) in [(10,"liveBytes"),(11,"extentCount"),(12,"freeRangeCount"),(13,"fileBumpBytes"),(14,"fileCapBytes"),(15,"refusals"),(16,"quarantinedPunchFailures"),(17,"vmEpoch"),(18,"hostPageBytes"),(21,"freeBytes")] { r[k] = w[i] }
                 r["punchQueueDepth"] = w[19] == 1 ? w[20] : NSNull()
@@ -345,7 +346,9 @@ final class RunEvidenceRecorder {
             ((try? $0.resourceValues(forKeys:[.contentModificationDateKey]).contentModificationDate) ?? .distantPast) > ((try? $1.resourceValues(forKeys:[.contentModificationDateKey]).contentModificationDate) ?? .distantPast)
         }
         previous=valid.first?.lastPathComponent
-        for old in valid.dropFirst() { try? FileManager.default.removeItem(at:old) }
+        let retained=valid.first(where:{FileManager.default.fileExists(atPath:$0.appendingPathComponent("incident.jsonl").path)}) ?? valid.first
+        previous=retained?.lastPathComponent
+        for old in valid where old.lastPathComponent != previous { try? FileManager.default.removeItem(at:old) }
         store=try RunEvidenceStore(root:root)
         var provenance:[String:String]=[:]
         for key in ["CFBundleIdentifier","CFBundleShortVersionString","CFBundleVersion","MadeiraSourceRevision","MadeiraNativeUUID","MadeiraVirtualSourceSHA256","MadeiraJITSourceSHA256"] {
@@ -397,6 +400,10 @@ final class RunEvidenceRecorder {
                     mainUserUS += r["userCPUUS"] as? UInt64 ?? 0; mainKernelUS += r["kernelCPUUS"] as? UInt64 ?? 0
                     store.fact("postActivationSampledMainCPUUS",["user":mainUserUS,"kernel":mainKernelUS,"scope":"sampled-intervals-for-current-CS2-lifetime; not-total-loading-or-kernel-stack"])
                 }
+                if r["event"] as? String == "backing-progress",let initialized=r["initialized"] as? Bool,initialized {
+                    let base=i*48
+                    store.setConfig("effective-native-backing",["capBytes":String(words[base+14]),"minBytes":String(words[base+22]),"reservationMaxBytes":String(words[base+23]),"coverage":["classic","blocks","wide","broad"][min(3,Int(words[base+24]))]])
+                }
                 store.record(channel,stamp(r))
             }
             if n<64 { break }
@@ -438,6 +445,14 @@ final class RunEvidenceRecorder {
         let elapsed=RunEvidenceSchema.mono()-begin; maxTickNS=max(maxTickNS,elapsed); if elapsed>250_000_000 { overruns+=1 }
         store.record("thread-frame-memory",["event":"recorder-cost","elapsedNS":elapsed,"maxNS":maxTickNS,"over250ms":overruns,"inputBytesSkipped":fileDroppedBytes,"scope":"recorder-utility-queue-wall-time; includes-flush-and-checkpoint; excludes-this-cost-row-write","allocatorOverhead":"unmeasured"])
     }
+    static func installedBuildFields(_ text:String) -> [String:String] {
+        var fields:[String:String]=[:]
+        for key in ["buildid","LastUpdated","StateFlags"] {
+            let pattern="\""+key+"\"\\s+\"([0-9]{1,20})\""
+            if let regex=try? NSRegularExpression(pattern:pattern),let match=regex.firstMatch(in:text,range:NSRange(text.startIndex...,in:text)),let range=Range(match.range(at:1),in:text) {fields[key]=String(text[range])}
+        }
+        return fields
+    }
     private func installedBuild() {
         let fd=open(documents.path,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);guard fd>=0 else {return};defer{close(fd)}
         for install in ["Program Files (x86)/Steam","Program Files/Steam"] {
@@ -446,14 +461,7 @@ final class RunEvidenceRecorder {
             var bytes=[UInt8](repeating:0,count:32<<10)
             let n=bytes.withUnsafeMutableBytes{read(input,$0.baseAddress,$0.count)}
             guard n>0,let text=String(bytes:bytes.prefix(n),encoding:.utf8) else {continue}
-            var values:[String:String]=[:]
-            for key in ["buildid","LastUpdated","StateFlags"] {
-                let regex="\""+key+"\"\\s+\"([0-9]{1,20})\""
-                if let r=text.range(of:regex,options:.regularExpression) {
-                    let digits=text[r].split(separator:"\"").last(where:{$0.allSatisfy(\.isNumber) && !$0.isEmpty})
-                    if let digits {values[key]=String(digits)}
-                }
-            }
+            let values=Self.installedBuildFields(text)
             if !values.isEmpty {store.setConfig("installed-CS2-manifest",values)}
         }
         // Crash dump payloads may contain account/guest memory. Preserve only
@@ -537,7 +545,7 @@ final class RunEvidenceRecorder {
         if line.contains("[cs2-tso-profile-v1]") {
             store.setConfig("effective-cs2-FEX",RunEvidenceSchema.fields(line,keys:["LRCPC2","tso","halfbar","host-features","code-cache","context","policy"]))
         } else if line.contains("[native-build-provenance-v1]") {
-            store.setConfig("loaded-native-provenance",RunEvidenceSchema.fields(line,keys:["component","source-sha256","build-revision","native-uuid","expected-sha256","match","source","uuid","virtual","jit"]))
+            store.setConfig("loaded-native-provenance",RunEvidenceSchema.fields(line,keys:["package-source","native-uuid","packaged-uuid","uuid-status","virtual-source","expected-virtual","virtual-build","virtual-status","jit-source","expected-jit","jit-build","jit-status","compiled-code-tail-mb","expected-code-tail-mb","policy-status","compiled-hard-image-arena-mb","expected-hard-image-arena-mb","image-policy-status"]))
         } else if line.contains("[cs2-runtime-settings-v1]") {
             store.setConfig("initialized-runtime-settings",RunEvidenceSchema.fields(line,keys:["width","height","resolution","memory-limit","swap-mode","swap-min","swap-cap","recovery","diagnostic-mode"]))
         } else if line.contains("[texture-admission-v1]") {
