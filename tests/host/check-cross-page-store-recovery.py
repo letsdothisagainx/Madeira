@@ -169,6 +169,11 @@ static void *baseline_memcpy(void *to, const void *from, size_t count)
     if (fixture_before_write) fixture_before_write((uintptr_t)to);
     return memcpy(to, from, count);
 }
+/* Apple fortify headers can already define memcpy. This hook belongs only
+ * to the pinned historical helper below, never the production helper. */
+#ifdef memcpy
+#undef memcpy
+#endif
 #define memcpy baseline_memcpy
 '''
 C += baseline
