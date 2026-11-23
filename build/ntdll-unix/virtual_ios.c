@@ -39443,7 +39443,8 @@ void ios_evidence_access(struct ios_evidence_record *r)
     kr=mach_vm_region_recurse(mach_task_self(),&address,&length,&depth,
                              (vm_region_recurse_info_t)&info,&count);
     r->w[36]=kr;
-    if (kr==KERN_SUCCESS && address<=ea && ea-address<length && !info.is_submap)
+    if (kr==KERN_SUCCESS) r->w[43]=info.is_submap ? 2 : address>ea || ea-address>=length ? 3 : 1;
+    if (r->w[43]==1)
     {
         r->w[26]=address; r->w[27]=length; r->w[28]=info.protection; r->w[29]=info.max_protection;
         r->w[30]=info.share_mode; r->w[31]=info.external_pager; r->w[32]=info.pages_resident;

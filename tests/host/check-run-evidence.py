@@ -42,8 +42,10 @@ func verify(_ ok:@autoclosure ()->Bool,_ file:StaticString=#file,_ line:Int=#lin
   store.calibration("fixture")
   var w=[UInt64](repeating:0,count:48);w[0]=1;w[1]=3;w[2]=19;w[3]=100;w[4]=0x100;w[5]=34;w[9]=80;w[10]=0x7c3531d840;w[11]=0xc89ffcd3;w[12]=0x7a58142b58;w[13]=8;w[35]=1;w[37]=90;w[38]=3
   let (channel,busy)=RunEvidenceSchema.native(w)!;try verify(channel=="memory-access");try verify(busy["hostProtection"] is NSNull && busy["allocationBytes"] is NSNull && busy["allocationGeneration"] is NSNull);try verify(busy["bookkeepingResult"] as? String == "VM-lock-busy")
-  w[35]=3;w[17]=1;w[18]=2;w[39]=2;w[43]=1;w[28]=3;w[29]=7
+  w[35]=3;w[17]=1;w[18]=2;w[39]=2;w[43]=1;w[28]=3;w[29]=7;w[44]=123456
   let (_,changed)=RunEvidenceSchema.native(w)!;try verify(changed["metadataConsistency"] as? String == "VM-changed-during-query");try verify(changed["instruction"] as? String == "0xc89ffcd3")
+  try verify(changed["machRegionObjectOffsetBytes"] as? String == "123456" && changed["accessType"] as? String == "store-release")
+  try verify(RunEvidenceSchema.accessType(0x889fff56)=="store-release" && RunEvidenceSchema.accessType(0x99000356)=="store-release" && RunEvidenceSchema.accessType(0x3d800500)=="store")
   store.record(channel,changed)
   var operation=[UInt64](repeating:0,count:48);operation[0]=1;operation[1]=4;operation[8]=123
   let (_,op)=RunEvidenceSchema.native(operation)!

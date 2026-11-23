@@ -47,6 +47,20 @@ enum RunEvidenceSchema {
         }
         return result
     }
+    /// Classify only existing decoded instructions; never execute or replace
+    /// them. Unsupported atomic families remain explicit rather than guessed.
+    static func accessType(_ insn:UInt64) -> String {
+        if insn & 0x3ffffc00 == 0x089ffc00 {return "store-release"}
+        if insn & 0x3ffffc00 == 0x08dffc00 {return "load-acquire"}
+        let opc=(insn>>22)&3,vector=(insn>>26)&1
+        if insn & 0x3f200c00 == 0x19000000 {return opc==0 ? "store-release" : "load-acquire-family"}
+        if insn & 0x3b000000 == 0x39000000 || insn & 0x3b200c00 == 0x38200800 || insn & 0x3b200000 == 0x38000000 {
+            if vector==0 && insn>>30==3 && opc==2 {return "prefetch-or-load"}
+            return (vector==1 ? opc&1 != 0 : opc != 0) ? "load" : "store"
+        }
+        if insn & 0x3a000000 == 0x28000000 {return insn & (1<<22) != 0 ? "load-pair" : "store-pair"}
+        return "unclassified-memory-family; consult-encoding"
+    }
     static func native(_ w: [UInt64]) -> (String, [String: Any])? {
         guard w.count == 48, w[0] == 1 else { return nil }
         var r: [String: Any] = ["nativeSequence": String(w[2]), "nativeMonotonicNS": String(w[3]), "nativeClock": "CLOCK_MONOTONIC",
@@ -84,7 +98,7 @@ enum RunEvidenceSchema {
             r["instruction"] = hex(w[11])
             r["effectiveAddress"] = hex(w[12])
             r["widthBytes"] = w[13]
-            r["accessType"] = "decoded-load-or-store; consult-instruction"
+            r["accessType"] = accessType(w[11])
             r["alignmentRemainder"] = w[41]
             r["crossesHostPage"] = w[42] == 1
             r["metadataQueryNS"] = String(w[37])
@@ -97,6 +111,7 @@ enum RunEvidenceSchema {
             r["recordedAllocationOwner"] = w[35]==3 && w[22]>0 ? hex(w[22]) : NSNull()
             r["allocationOwnerLease"] = NSNull()
             r["allocationOwnerLeaseStatus"] = "not-recorded-at-allocation; sampling-owner-lease-is-separate"
+            r["recordedOwnerStatus"] = "creation-context-only; inheritance-and-transfers-not-tracked; no-reclaim-permission"
             r["vmEpochBefore"] = w[35] != 1 ? String(w[17]) : NSNull()
             r["vmEpochAfter"] = w[35] != 1 ? String(w[18]) : NSNull()
             r["metadataConsistency"] = w[39] == 1 ? "epoch-unchanged; not-atomic-with-registers" : w[39] == 2 ? "VM-changed-during-query" : "unavailable"
@@ -116,7 +131,11 @@ enum RunEvidenceSchema {
             r["regionResidentPages"] = w[43] == 1 ? w[32] : NSNull()
             r["regionSwappedPages"] = w[43] == 1 ? w[33] : NSNull()
             r["regionDirtyPages"] = w[43] == 1 ? w[34] : NSNull()
-            r["dispositionScope"] = "Mach-region-not-individual-page; submaps-unsupported; no-payload-read"
+            r["dispositionScope"] = "Mach-region-not-individual-page; no-payload-read"
+            r["machRegionQueryStatus"] = w[35]==1 ? "not-attempted-VM-lock-busy" : w[43]==1 ? "resolved-containing-region" : w[43]==2 ? "submap-not-walked" : w[43]==3 ? "returned-region-does-not-contain-EA" : "query-failed"
+            r["machRegionObjectOffsetBytes"] = w[43]==1 ? String(w[44]) : NSNull()
+            r["objectOffsetMeaning"] = "raw-Mach-memory-object-offset; not-proof-of-vnode-identity"
+            r["queryExecutionScope"] = "existing-sampler-after-target-resume; elapsed-is-not-target-CPU"
             r["hostPageBytes"] = w[45]
             r["guestPageBytes"] = w[46]
             r["samplingLeaseRecheck"] = w[47] == 1 ? "matched" : w[47] == 2 ? "changed" : "busy-or-unavailable"
