@@ -41,6 +41,7 @@ prefix = next(ast.literal_eval(node.value) for node in fixture.body
 helper = ''.join(function(signal, name) for name in (
     'static uintptr_t ios_write_alias( uintptr_t addr )',
     'static int ios_alias_write_is_trapped( uintptr_t addr )',
+    'int ios_store_split_crossing_timed( uint32_t insn,',
     'int ios_store_split_crossing( uint32_t insn,'))
 start = server.index('#include "stuck_store_history.h"')
 end = server.index('static void *ios_stuck_store_recovery_main', start)
@@ -57,6 +58,12 @@ static void ios_cs2_stall_recovery_note(uint64_t id, int inspected,
     (void)state; (void)eligible; (void)pc; (void)ea; (void)insn;
     (void)bytes; (void)result;
 }
+'''
+prefix += '\n#include "store_recovery_phases.h"\n'
+prefix += '''
+static void ios_stuck_store_qos_begin(struct ios_store_recovery_phases *phase) { (void)phase; }
+static void ios_stuck_store_qos_end(struct ios_store_recovery_phases *phase) { (void)phase; }
+static void ios_cs2_stall_recovery_phases_note(uint64_t id, const struct ios_store_recovery_phases *phase) { (void)id; (void)phase; }
 '''
 worker = function(server, 'static void *ios_stuck_store_recovery_main')
 sampler = function(server, 'static void ios_thread_sampler_main')
@@ -356,9 +363,10 @@ static int fixture_suspend(mach_port_t port)
     if (!targets[port].alive) return 1;
     assert(!holds[port]); ++holds[port]; return KERN_SUCCESS;
 }
+static mach_port_t last_state_port;
 static int fixture_get_state(mach_port_t port, int flavor, void *out, unsigned *count)
 {
-    (void)count; assert(holds[port] == 1); ++fast_state_reads;
+    (void)count; assert(holds[port] <= 1); last_state_port = port; ++fast_state_reads;
     if (port == 1 && flavor == ARM_THREAD_STATE64)
     { assert(main_capture_count < 4096); main_capture_at[main_capture_count++] = now_ms; }
     if (flavor == ARM_THREAD_STATE64) memcpy(out, &targets[port].state, sizeof(targets[port].state));
@@ -412,7 +420,7 @@ static int ios_ts_read(uint64_t address, void *out, size_t size)
     if (address == frame_address && size == 8) { *(uint64_t *)out = 0x20000; return 1; }
     if (address == store_pc && size == 4)
         for (unsigned id = 1; id <= thread_count; ++id)
-            if (holds[id]) { *(uint32_t *)out = targets[id].insn; return 1; }
+            if ((mach_port_t)id == last_state_port) { *(uint32_t *)out = targets[id].insn; return 1; }
     return 0;
 }
 static void wine_log_write(const char *format, ...) __attribute__((format(printf,1,2)));

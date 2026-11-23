@@ -20,6 +20,7 @@ import tempfile
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--require-darwin', action='store_true')
 parser.add_argument('--sanitize', action='store_true')
+parser.add_argument('--compile-only', action='store_true', help='Build historical fixtures without running fault cases')
 args = parser.parse_args()
 if args.require_darwin and platform.system() != 'Darwin':
     raise SystemExit('FAIL: real Darwin VM queries are required')
@@ -34,15 +35,15 @@ def function(source, signature):
     return source[start:source.index('\n}', start) + 2] + '\n'
 
 
-helper = function(signal, 'int ios_store_split_crossing( uint32_t insn,')
+helper = '#include "store_recovery_phases.h"\n' + function(signal, 'int ios_store_split_crossing_timed( uint32_t insn,') + function(signal, 'int ios_store_split_crossing( uint32_t insn,')
 baseline = (root / 'tests/host/fixtures/ios-crossing-store-before-checked-write.c').read_text()
 assert hashlib.sha256(baseline.encode()).hexdigest() == 'f21e9cd881f919d259a98bada2be3b5840d4a8f374e1b329364838e1145bfad8'
 baseline = baseline.replace('int ios_store_split_crossing(', 'int baseline_store_split_crossing(', 1)
 alias = function(signal, 'static uintptr_t ios_write_alias( uintptr_t addr )')
 trapped = function(signal, 'static int ios_alias_write_is_trapped( uintptr_t addr )')
-caller_start = server.index('        int r = ios_store_split_crossing( insn, &st,')
-caller_end = server.index('        thread_resume( thread );', caller_start)
-caller = server[caller_start:caller_end] + '        thread_resume( thread );\n'
+caller_start = server.index('    if (r > 0)\n    {', server.index('static int ios_stuck_store_inspect('))
+caller_end = server.index('        phase.publication_us', caller_start)
+caller = ('        int r = ios_store_split_crossing(insn, &st, have_neon ? &neon : NULL, (uintptr_t)ios_jit_rx_base_global, (uintptr_t)ios_jit_rw_base_global, ios_jit_pool_size_global);\n' + server[caller_start:caller_end].replace('        started = ios_store_phase_clock();\n', '') + '    }\n        thread_resume(thread);\n')
 
 C = r'''
 #define _GNU_SOURCE
@@ -82,6 +83,7 @@ typedef unsigned mach_msg_type_number_t;
 typedef int mach_port_t;
 typedef int *vm_region_info_t;
 typedef uint32_t *thread_state_t;
+typedef int kern_return_t;
 typedef struct { int protection; } vm_region_basic_info_data_64_t;
 #define VM_REGION_BASIC_INFO_COUNT_64 1
 #define VM_REGION_BASIC_INFO_64 1
@@ -545,7 +547,10 @@ with tempfile.TemporaryDirectory(prefix='madeira-cross-page-recovery-') as direc
     flags = ['-fsanitize=address,undefined', '-fno-sanitize-recover=undefined',
              '-fno-omit-frame-pointer'] if args.sanitize else []
     subprocess.run([os.environ.get('CC', 'clang'), '-std=gnu11', '-O2', '-Wall', '-Wextra', '-Werror',
-                    *flags, str(source), '-pthread', '-o', str(binary)], check=True)
-    subprocess.run([str(binary)], check=True, timeout=60)
+                    *flags, '-I'+str(root/'build/ntdll-unix'), str(source), '-pthread', '-o', str(binary)], check=True)
+    if not args.compile_only:
+        subprocess.run([str(binary)], check=True, timeout=60)
+    else:
+        print('PASS historical checked-write fixture compiles; no runtime cases executed')
 print('PASS real Darwin Mach VM queries' if platform.system() == 'Darwin'
       else 'NOTE Linux permission/readback coverage only; Darwin/iOS validation remains separate')

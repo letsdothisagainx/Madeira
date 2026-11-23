@@ -14,7 +14,7 @@ import struct
 import zipfile
 
 
-def inspect(data, require_pressure_boundary=False):
+def inspect(data, require_pressure_boundary=False, require_recovery_scope=False):
     if struct.unpack_from('<II', data) != (0xfeedfacf, 0x100000c):
         raise ValueError('expected thin ARM64 Mach-O native image')
     sections, symtab, indirect = [], None, None
@@ -57,6 +57,16 @@ def inspect(data, require_pressure_boundary=False):
                    kind & 0xe == 0xe and not kind & 0xe0 and section and address
                    for name, kind, section, address in symbols):
             raise ValueError('Run14 native pressure request is not defined in the linked image')
+    if require_recovery_scope:
+        for marker in (b'[store-recovery-scope-v1]', b'advisory=unheld commit=fresh-held',
+                       b'held-qos=user-interactive', b'write0-us=', b'write1-us=',
+                       b'prepare-read-us=', b'suspend-us=', b'recovery-worker='):
+            if marker not in data:
+                raise ValueError('missing compiled recovery scope: ' + marker.decode())
+        if not any(name == '_ios_store_split_crossing_timed' and
+                   kind & 0xe == 0xe and not kind & 0xe0 and section and address
+                   for name, kind, section, address in symbols):
+            raise ValueError('timed checked-write producer is not defined in linked image')
     names = {address: name for name, kind, _, address in symbols if address and kind & 0xe == 0xe}
     if indirect:
         offset, count = indirect
@@ -122,7 +132,7 @@ def inspect(data, require_pressure_boundary=False):
                 if released and any(pc > released[-1] and callee in ('_clock_gettime', '_ios_stuck_clock_us')
                                     for pc, callee in calls):
                     return dict(interleavedDiscovery=True, discoveryFunction=name, discoveryInlined=True,
-                        pressureBoundaryRequired=require_pressure_boundary,
+                        pressureBoundaryRequired=require_pressure_boundary, recoveryScopeRequired=require_recovery_scope,
                         postDiscoveryClockFunctions=[name],
                         discoveryCalls=[dict(pc=hex(pc), target=callee) for pc, callee in serviced])
         raise ValueError('inlined discovery call path not established: ' + json.dumps(functions))
@@ -141,7 +151,7 @@ def inspect(data, require_pressure_boundary=False):
     if not deadline:
         raise ValueError('post-discovery clock call not established in compiled recovery')
     return dict(interleavedDiscovery=True, discoveryFunction='_ios_stuck_store_check', discoveryInlined=False,
-                pressureBoundaryRequired=require_pressure_boundary,
+                pressureBoundaryRequired=require_pressure_boundary, recoveryScopeRequired=require_recovery_scope,
                 postDiscoveryClockFunctions=sorted(deadline),
                 discoveryCalls=[dict(pc=hex(pc), target=name) for pc, name in check
                                 if name in (hot, checkpoint)])
@@ -153,12 +163,14 @@ def main():
     parser.add_argument('--revision', required=True)
     parser.add_argument('--require-pressure-boundary', action='store_true',
                         help='Require the linked Run14 producer markers and defined native callback')
+    parser.add_argument('--require-recovery-scope', action='store_true',
+                        help='Require linked advisory/held-scope producer and phase record')
     args = parser.parse_args()
     with zipfile.ZipFile(args.ipa) as ipa:
         info = plistlib.loads(ipa.read('Payload/Madeira.app/Info.plist'))
         if info.get('MadeiraNativeBuildProvenance', {}).get('packageSourceRevision') != args.revision:
             raise ValueError('package source revision mismatch')
-        result = inspect(ipa.read('Payload/Madeira.app/Madeira.debug.dylib'), args.require_pressure_boundary)
+        result = inspect(ipa.read('Payload/Madeira.app/Madeira.debug.dylib'), args.require_pressure_boundary, args.require_recovery_scope)
         result.update(source=args.revision, bundleIdentifier=info['CFBundleIdentifier'],
                       nativeUUID=info['MadeiraNativeBuildProvenance']['nativeImageUUID'])
     print(json.dumps(result, indent=2))

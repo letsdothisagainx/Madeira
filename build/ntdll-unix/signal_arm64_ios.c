@@ -25,6 +25,7 @@
 #ifdef __aarch64__
 
 #include "config.h"
+#include "store_recovery_phases.h"
 
 #include <assert.h>
 #include <pthread.h>
@@ -2894,15 +2895,18 @@ static inline void ios_note_guest_delivery( uint64_t thread )
  * not atomic. No failure publishes base-register writeback or advances PC.
  * ml1292: also called by the thread sampler (server_ios.c) to complete a store
  * the kernel keeps faulting on, with the thread suspended. */
-int ios_store_split_crossing( uint32_t insn, arm_thread_state64_t *st,
+int ios_store_split_crossing_timed( uint32_t insn, arm_thread_state64_t *st,
                                      const arm_neon_state64_t *neon,
-                                     uintptr_t rx, uintptr_t rw, size_t sz )
+                                     uintptr_t rx, uintptr_t rw, size_t sz,
+                                     struct ios_store_recovery_phases *phases )
 {
     extern uintptr_t ios_jit_anon_alias_lookup( uintptr_t fault_addr );
     extern void ios_jit_anon_alias_note_write( unsigned long long );
     const unsigned rt = insn & 31, rn = (insn >> 5) & 31, size = insn >> 30, v = (insn >> 26) & 1;
     const unsigned opc = (insn >> 22) & 3;
     const uint64_t base = rn == 31 ? st->__sp : rn == 30 ? st->__lr : rn == 29 ? st->__fp : st->__x[rn];
+    const uint64_t validation_started = phases ? ios_store_phase_clock() : 0;
+    int result = 0, validation_done = 0;
     const int honor_guest_prot = !ios_jit_pool_pc_is_fex( arm_thread_state64_get_pc( *st ) );
     uint8_t src[32];
     uint64_t ea, a, x0, x1;
@@ -2914,10 +2918,10 @@ int ios_store_split_crossing( uint32_t insn, arm_thread_state64_t *st,
     if ((insn & 0x3a000000u) == 0x28000000u)                    /* STP/STNP and SIMD&FP pairs */
     {
         const unsigned mode = (insn >> 23) & 3;              /* 0 stnp, 1 post, 2 offset, 3 pre */
-        if ((insn >> 22) & 1) return 0;                      /* loads */
+        if ((insn >> 22) & 1) { result = 0; goto finish; }                      /* loads */
         if (v) elem = size == 3 ? 0 : 4u << size;            /* S, D, Q */
         else   elem = size == 0 ? 4 : size == 2 ? 8 : 0;     /* W, X (01 is STGP) */
-        if (!elem) return 0;
+        if (!elem) { result = 0; goto finish; }
         imm = ((int64_t)((insn >> 15) & 0x7f) - ((insn & (1u << 21)) ? 128 : 0)) * (int64_t)elem;
         ea = mode == 1 ? base : base + (uint64_t)imm;
         wb = mode == 1 || mode == 3;
@@ -2927,16 +2931,16 @@ int ios_store_split_crossing( uint32_t insn, arm_thread_state64_t *st,
     else if ((insn & 0x3b000000u) == 0x38000000u || (insn & 0x3b000000u) == 0x39000000u)
     {
         /* single-register LDR/STR families: a store has opc 00 (GPR) or opc<0> = 0 (SIMD&FP) */
-        if (v ? (opc & 1) : opc != 0) return 0;
+        if (v ? (opc & 1) : opc != 0) { result = 0; goto finish; }
         elem = v && (opc & 2) ? (size == 0 ? 16u : 0u) : 1u << size;
-        if (!elem) return 0;
+        if (!elem) { result = 0; goto finish; }
         if ((insn & 0x3b000000u) == 0x39000000u)                 /* unsigned offset */
             ea = base + ((uint64_t)((insn >> 10) & 0xfff) * elem);
         else if ((insn & 0x00200c00u) == 0x00200800u)            /* register offset */
         {
             const unsigned option = (insn >> 13) & 7, rm = (insn >> 16) & 31;
             uint64_t off = rm == 31 ? 0 : rm == 30 ? st->__lr : rm == 29 ? st->__fp : st->__x[rm];
-            if (!(option & 2)) return 0;
+            if (!(option & 2)) { result = 0; goto finish; }
             if (option == 2) off = (uint32_t)off;
             else if (option == 6) off = (uint64_t)(int64_t)(int32_t)off;
             if (insn & 0x1000) off *= elem;
@@ -2945,20 +2949,20 @@ int ios_store_split_crossing( uint32_t insn, arm_thread_state64_t *st,
         else if (!(insn & 0x00200000u))                          /* unscaled, post, pre */
         {
             const unsigned idx = (insn >> 10) & 3;
-            if (idx == 2) return 0;                                /* unprivileged */
+            if (idx == 2) { result = 0; goto finish; }                                /* unprivileged */
             imm = (int64_t)((insn >> 12) & 0x1ff) - ((insn & (1u << 20)) ? 512 : 0);
             ea = idx == 1 ? base : base + (uint64_t)imm;
             wb = idx == 1 || idx == 3;
         }
-        else return 0;
+        else { result = 0; goto finish; }
         bytes = elem;
     }
-    else return 0;
+    else { result = 0; goto finish; }
 
-    if (ea > UINTPTR_MAX - (bytes - 1)) return -1;
-    if (ios_jit_code_guard_contains( (uintptr_t)ea, bytes )) return -1;
-    if (((ea ^ (ea + bytes - 1)) & ~(uint64_t)0x3fff) == 0) return 0;   /* within one page */
-    if (v && !neon) return 0;
+    if (ea > UINTPTR_MAX - (bytes - 1)) { result = -1; goto finish; }
+    if (ios_jit_code_guard_contains( (uintptr_t)ea, bytes )) { result = -1; goto finish; }
+    if (((ea ^ (ea + bytes - 1)) & ~(uint64_t)0x3fff) == 0) { result = 0; goto finish; }   /* within one page */
+    if (v && !neon) { result = 0; goto finish; }
 
     if (v)
     {
@@ -2982,7 +2986,7 @@ int ios_store_split_crossing( uint32_t insn, arm_thread_state64_t *st,
                          ? rw + (a - rx) : ios_write_alias( (uintptr_t)a );
         if (part_rw[parts] && (ios_write_alias( a + len - 1 ) != part_rw[parts] + len - 1 ||
             (honor_guest_prot && (ios_alias_write_is_trapped( a ) || ios_alias_write_is_trapped( a + len - 1 )))))
-            return -1;
+            { result = -1; goto finish; }
         if (!part_rw[parts])
         {
             /* A page with no alias that is plain writable memory (the aliased page is
@@ -3005,17 +3009,23 @@ int ios_store_split_crossing( uint32_t insn, arm_thread_state64_t *st,
     /* The recovery caller can hold the writer suspended here. Formatting can
      * acquire a libc allocator/stdio lock owned by that writer; report the
      * returned status only after the caller balances its suspension. */
-    if (done != bytes) return -1;
+    if (done != bytes) { result = -1; goto finish; }
+    if (phases) phases->validation_us = ios_store_phase_elapsed(validation_started);
+    validation_done = 1;
     for (i = 0, done = 0; i < parts; done += part_len[i], i++)
     {
         /* Mapping/protection validation cannot pin a destination against
          * another thread's unmap or protection change. Let the kernel check
          * each bounded fragment at the write, rather than faulting the Mach
          * exception/recovery thread through a direct userspace memcpy. */
-        if (mach_vm_write( mach_task_self(), (mach_vm_address_t)part_rw[i],
-                           (vm_offset_t)(uintptr_t)(src + done), part_len[i] ) != KERN_SUCCESS)
-            return done ? -2 - (int)done : -1;
+        uint64_t started = phases ? ios_store_phase_clock() : 0;
+        kern_return_t written = mach_vm_write( mach_task_self(), (mach_vm_address_t)part_rw[i],
+                                               (vm_offset_t)(uintptr_t)(src + done), part_len[i] );
+        if (phases) phases->write_us[i] = ios_store_phase_elapsed(started);
+        if (written != KERN_SUCCESS) { result = done ? -2 - (int)done : -1; goto finish; }
+        started = phases ? ios_store_phase_clock() : 0;
         ios_jit_anon_alias_note_write( (unsigned long long)(ea + done) );
+        if (phases) phases->note_us += ios_store_phase_elapsed(started);
     }
     if (wb)
     {
@@ -3024,7 +3034,17 @@ int ios_store_split_crossing( uint32_t insn, arm_thread_state64_t *st,
         else if (rn == 29) st->__fp = base + (uint64_t)imm;
         else st->__x[rn] = base + (uint64_t)imm;
     }
-    return 1;
+    { result = 1; goto finish; }
+finish:
+    if (phases && !validation_done) phases->validation_us = ios_store_phase_elapsed(validation_started);
+    return result;
+}
+
+/* The exception path retains its original ABI and incurs no phase clocks. */
+int ios_store_split_crossing( uint32_t insn, arm_thread_state64_t *st,
+                            const arm_neon_state64_t *neon, uintptr_t rx, uintptr_t rw, size_t sz )
+{
+    return ios_store_split_crossing_timed(insn, st, neon, rx, rw, sz, NULL);
 }
 
 /* Reads for the exception thread's diagnostics. A fault on this thread can

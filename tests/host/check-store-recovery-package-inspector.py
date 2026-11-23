@@ -67,6 +67,19 @@ struct.pack_into('<IBBHQ', pressure, 0x460, strlen, 0xf, 1, 0, 0x10000005c)
 pressure[stroff + strlen:stroff + strlen + len(callback)] = callback
 pressure.extend(b'[pressure-boundary-v1]\0[pressure-owner-v1]\0')
 assert module.inspect(bytes(pressure), require_pressure_boundary=True)['pressureBoundaryRequired']
+# Non-executable metadata also requires the new linked helper and phase markers.
+scoped = bytearray(pressure)
+name = b'_ios_store_split_crossing_timed\0'
+scoped[stroff + strlen:stroff + strlen + len(callback)] = name.ljust(len(callback), b'\0')
+scoped.extend(b'[store-recovery-scope-v1] advisory=unheld commit=fresh-held held-qos=user-interactive '
+              b'write0-us= write1-us= prepare-read-us= suspend-us= recovery-worker=')
+assert module.inspect(bytes(scoped), require_recovery_scope=True)['recoveryScopeRequired']
+try:
+    module.inspect(image(), require_recovery_scope=True)
+except ValueError:
+    pass
+else:
+    raise AssertionError('missing scope producer accepted')
 for arguments in ((False, True, False), (True, False, False), (False, True, True), (True, False, True)):
     try:
         module.inspect(image(*arguments))

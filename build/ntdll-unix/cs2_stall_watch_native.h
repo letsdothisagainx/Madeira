@@ -70,6 +70,18 @@ static void ios_cs2_stall_main_sample(mach_port_t port, uint64_t native_id)
         insn, decoded, (unsigned long long)ea, length);
 }
 
+/* Last fixed-size phase capture for the existing three watched timelines.
+ * Published by the recovery worker after its matching resume; no new sampler,
+ * suspension, allocation or unbounded event stream. Wall time includes scheduling. */
+#include "store_recovery_phases.h"
+static struct ios_store_recovery_phases ios_cs2_recovery_phase[IOS_CS2_STALL_PROCESSES * 3];
+static void ios_cs2_stall_recovery_phases_note(uint64_t native_id,
+                                              const struct ios_store_recovery_phases *phase)
+{
+    unsigned slot;
+    if (ios_cs2_stall_for_native(native_id, 0, &slot)) ios_cs2_recovery_phase[slot] = *phase;
+}
+
 /* Reuse the recovery owner's existing captures. No extra thread suspension or
  * task scan, and the 400-line historical completion cap cannot hide these
  * three scoped timelines. Counters are cumulative; a last-PC record explicitly
@@ -88,6 +100,7 @@ static void ios_cs2_stall_recovery_note(uint64_t native_id, int inspected,
     } state[IOS_CS2_STALL_PROCESSES * 3];
     struct ios_cs2_stall_watch *watch;
     const struct ios_cs2_stall_target *target;
+    const struct ios_store_recovery_phases *phase;
     uint64_t now;
     unsigned slot;
     watch = ios_cs2_stall_for_native(native_id, 0, &slot);
@@ -108,8 +121,9 @@ static void ios_cs2_stall_recovery_note(uint64_t native_id, int inspected,
     }
     if (!ios_cs2_stall_due(&state[slot].rate, now) ||
         ios_thread_process_try_observation_lease((void *)(uintptr_t)watch->owner, watch->pid) != watch->lease) return;
+    phase = &ios_cs2_recovery_phase[slot];
     target = slot % 3 ? &watch->worker[slot % 3 - 1] : &watch->main;
-    wine_log_write("[cs2-store-progress-v1] pid=%04x tid=%04x native=%llu slot=%u sample=%u/%u interval-us=%llu user-us=%llu kernel-us=%llu run-state=%d eligible=%d captures=%llu completed=%llu unhandled=%llu refused=%llu partial=%llu publication-failed=%llu last-pc=%#llx last-ea=%#llx last-insn=%08x last-bytes=%u last-result=%d last-held-us=%llu last-age-us=%llu result-2=observed-not-attempted captures-source=existing-recovery no-new-suspension=1",
+    wine_log_write("[cs2-store-progress-v1] pid=%04x tid=%04x native=%llu slot=%u sample=%u/%u interval-us=%llu user-us=%llu kernel-us=%llu run-state=%d eligible=%d captures=%llu completed=%llu unhandled=%llu refused=%llu partial=%llu publication-failed=%llu last-pc=%#llx last-ea=%#llx last-insn=%08x last-bytes=%u last-result=%d last-held-us=%llu last-age-us=%llu phase-advisory-us=%llu phase-prepare-read-us=%llu phase-suspend-us=%llu phase-capture-us=%llu phase-held-read-us=%llu phase-validation-us=%llu phase-write0-us=%llu phase-write1-us=%llu phase-note-us=%llu phase-publication-us=%llu phase-resume-us=%llu recovery-worker=%llu base-qos=%u held-qos=%u qos-changed=%u qos-query=%d qos-set=%d qos-held-query=%d qos-restore=%d capture-result=%d resume-result=%d result-2=observed-not-attempted captures-source=existing-recovery no-new-suspension=1 phases=wall-us emit=after-resume",
         watch->pid, target->tid, (unsigned long long)native_id, slot % 3,
         state[slot].rate.samples, IOS_CS2_STALL_SAMPLES,
         (unsigned long long)elapsed, (unsigned long long)user, (unsigned long long)system,
@@ -119,6 +133,15 @@ static void ios_cs2_stall_recovery_note(uint64_t native_id, int inspected,
         (unsigned long long)state[slot].publication_failed, (unsigned long long)state[slot].pc,
         (unsigned long long)state[slot].ea, state[slot].insn, state[slot].bytes, state[slot].result,
         (unsigned long long)state[slot].held_us,
-        (unsigned long long)(state[slot].captured_us && now >= state[slot].captured_us ? now - state[slot].captured_us : 0));
+        (unsigned long long)(state[slot].captured_us && now >= state[slot].captured_us ? now - state[slot].captured_us : 0),
+        (unsigned long long)phase->advisory_capture_us, (unsigned long long)phase->prepare_read_us,
+        (unsigned long long)phase->suspend_us, (unsigned long long)phase->capture_us,
+        (unsigned long long)phase->read_us, (unsigned long long)phase->validation_us,
+        (unsigned long long)phase->write_us[0], (unsigned long long)phase->write_us[1],
+        (unsigned long long)phase->note_us, (unsigned long long)phase->publication_us,
+        (unsigned long long)phase->resume_us, (unsigned long long)phase->worker_id,
+        phase->base_qos, phase->held_qos, phase->qos_changed,
+        phase->qos_query_result, phase->qos_set_result, phase->qos_held_query_result,
+        phase->qos_restore_result, phase->capture_result, phase->resume_result);
 }
 #endif

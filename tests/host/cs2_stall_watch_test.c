@@ -55,6 +55,7 @@ static int ios_ts_read(uint64_t address, void *out, size_t size)
 }
 static unsigned long long ios_thread_process_try_observation_lease(void *owner, unsigned pid)
 { assert(!held && owner == (void *)0x100000 && pid == 0x374); return 99; }
+static void wine_log_write(const char *format, ...) __attribute__((format(printf,1,2)));
 static void wine_log_write(const char *format, ...)
 {
     va_list ap;
@@ -105,9 +106,11 @@ int main(void)
     assert(strstr(output, "user-us=0 kernel-us=0"));
     /* Observation never completes or changes the store. It records a normal
      * completion reported by the existing production recovery owner. */
+    ios_cs2_stall_recovery_phases_note(73, &(struct ios_store_recovery_phases){.worker_id=123, .held_qos=33, .write_us={17,19}});
     ios_cs2_stall_recovery_note(73, 1, 11, 0, 0, 0, 0, 0x123400, 0x7a5aeb3ff1, 0x3d800500, 16, 1);
     ios_cs2_stall_recovery_note(73, 0, 100000, 100, 1000, 1, 1, 0, 0, 0, 0, 0);
     assert(strstr(output, "tid=038c") && strstr(output, "completed=1") && strstr(output, "last-held-us=11"));
+    assert(strstr(output, "recovery-worker=123") && strstr(output, "write0-us=17") && strstr(output, "write1-us=19"));
     fprintf(rows, "%s\n", output);
     assert(!fclose(rows));
     assert(captures == 2 && suspended == resumed);

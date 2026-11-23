@@ -3216,6 +3216,38 @@ static int ios_lean_diag;
  * episode. MADEIRA_STUCK_CHECK=0 turns the check off. */
 static int ios_stuck_clock_us(uint64_t *);
 static int ios_ldst_ea(uint32_t, const arm_thread_state64_t *, uint64_t *, unsigned *);
+#include "store_recovery_phases.h"
+
+/* Mach suspension has no pthread mutex owner through which QoS donation can
+ * reach this worker. Keep discovery/preparation at utility, but request UI
+ * QoS before acquiring a game-thread suspension. Record any QoS API failure.
+ * Restore the exact previous class/relative priority after the matching resume. */
+static void ios_stuck_store_qos_begin(struct ios_store_recovery_phases *phase)
+{
+    qos_class_t previous = QOS_CLASS_UNSPECIFIED, effective = QOS_CLASS_UNSPECIFIED;
+    int relative = 0, effective_relative = 0;
+    pthread_threadid_np(NULL, &phase->worker_id);
+    phase->qos_set_result = phase->qos_restore_result = -1;
+    phase->qos_query_result = pthread_get_qos_class_np(pthread_self(), &previous, &relative);
+    phase->base_qos = previous;
+    phase->relative_priority = relative;
+    if (!phase->qos_query_result && (previous == QOS_CLASS_BACKGROUND || previous == QOS_CLASS_UTILITY ||
+        previous == QOS_CLASS_DEFAULT || previous == QOS_CLASS_USER_INITIATED))
+    {
+        phase->qos_set_result = pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+        phase->qos_changed = !phase->qos_set_result;
+    }
+    phase->qos_held_query_result = pthread_get_qos_class_np(pthread_self(), &effective, &effective_relative);
+    phase->held_qos = effective;
+}
+
+static void ios_stuck_store_qos_end(struct ios_store_recovery_phases *phase)
+{
+    if (phase->qos_changed)
+        phase->qos_restore_result = pthread_set_qos_class_self_np((qos_class_t)phase->base_qos,
+                                                                phase->relative_priority);
+}
+
 #include "cs2_stall_watch_native.h"
 #include "stuck_store_history.h"
 static struct ios_stuck_history ios_stuck;
@@ -3268,8 +3300,9 @@ static int ios_ldst_ea( uint32_t insn, const arm_thread_state64_t *st, uint64_t 
     return 0;
 }
 
-int ios_store_split_crossing( uint32_t insn, arm_thread_state64_t *st, const arm_neon_state64_t *neon,
-                              uintptr_t rx, uintptr_t rw, size_t sz );
+int ios_store_split_crossing_timed( uint32_t insn, arm_thread_state64_t *st, const arm_neon_state64_t *neon,
+                                    uintptr_t rx, uintptr_t rw, size_t sz,
+                                    struct ios_store_recovery_phases *phase );
 
 /* Production recovery has a single owner, independent of the diagnostic
  * sampler. Only a thread whose store was actually completed can enter this
@@ -3365,74 +3398,116 @@ static int ios_stuck_store_inspect( mach_port_t thread, uint64_t native_id,
 {
     extern void *ios_jit_rx_base_global, *ios_jit_rw_base_global;
     extern size_t ios_jit_pool_size_global;
-    arm_thread_state64_t st;
+    arm_thread_state64_t advisory, st;
     arm_neon_state64_t neon;
+    struct ios_store_recovery_phases phase = {0};
     mach_msg_type_number_t cnt = ARM_THREAD_STATE64_COUNT, nc = ARM_NEON_STATE64_COUNT;
-    uint64_t pc, bb = 0, ea = 0, held_start = 0, held_end = 0;
-    uint32_t insn = 0;
-    unsigned len = 0;
-    int got, have_neon = 0, cross;
+    uint64_t pc = 0, bb = 0, ea = 0, fresh_ea = 0, held_start = 0, held_end = 0, started;
+    uint32_t insn = 0, fresh_insn = 0;
+    unsigned len = 0, fresh_len = 0, hits = 0;
+    int have_neon = 0, cross, r = 2, suspended = 0, attempted = 0;
+    phase.capture_result = phase.resume_result = -1;
+    phase.qos_query_result = phase.qos_set_result = phase.qos_held_query_result = phase.qos_restore_result = -1;
 
-    ios_stuck_clock_us(&held_start);
-    if (thread_suspend( thread ) != KERN_SUCCESS)
+    /* This snapshot is advisory, not permission to write or publish state.
+     * Mach supports reading another thread without owning a suspend count.
+     * Compressed frame/code reads and all first-observation work therefore
+     * cannot leave that thread explicitly suspended by this worker. */
+    started = ios_store_phase_clock();
+    phase.capture_result = thread_get_state(thread, ARM_THREAD_STATE64, (thread_state_t)&advisory, &cnt);
+    phase.advisory_capture_us = ios_store_phase_elapsed(started);
+    if (phase.capture_result != KERN_SUCCESS) { r = -1; goto clear; }
+    pc = arm_thread_state64_get_pc(advisory);
+    started = ios_store_phase_clock();
+    if (!ios_ts_read(advisory.__x[28], &bb, 8) || bb <= 0x10000)
     {
-        entry->pc = entry->ea = entry->hits = 0;
-        return -1;
+        phase.prepare_read_us = ios_store_phase_elapsed(started);
+        r = -1; goto clear;
     }
-    got = thread_get_state( thread, ARM_THREAD_STATE64, (thread_state_t)&st, &cnt ) == KERN_SUCCESS;
-    if (!got || !ios_ts_read( st.__x[28], &bb, 8 ) || bb <= 0x10000)
-    {
-        entry->pc = entry->ea = entry->hits = 0;
-        thread_resume( thread );
-        return -1;
-    }
-    pc = arm_thread_state64_get_pc( st );
-    cross = ios_ts_read( pc, &insn, 4 ) && ios_ldst_ea( insn, &st, &ea, &len ) &&
+    cross = ios_ts_read(pc, &insn, 4) && ios_ldst_ea(insn, &advisory, &ea, &len) &&
             ((ea ^ (ea + len - 1)) & ~(uint64_t)(vm_page_size - 1));
-    if (cross && entry->pc == pc && entry->ea == ea)
+    phase.prepare_read_us = ios_store_phase_elapsed(started);
+    if (!cross || entry->pc != pc || entry->ea != ea)
     {
-        unsigned hits = ++entry->hits;
-        /* General-register stores never read vector state. Capture it only
-         * for an actual repeated SIMD candidate, while still suspended. */
-        if (insn & (1u << 26))
-            have_neon = thread_get_state( thread, ARM_NEON_STATE64, (thread_state_t)&neon, &nc ) == KERN_SUCCESS;
-        int r = ios_store_split_crossing( insn, &st, have_neon ? &neon : NULL,
-                                          (uintptr_t)ios_jit_rx_base_global, (uintptr_t)ios_jit_rw_base_global,
-                                          ios_jit_pool_size_global );
-        if (r > 0)
-        {
-            __darwin_arm_thread_state64_set_pc_fptr( st, (void *)(uintptr_t)(pc + 4) );
-            if (thread_set_state( thread, ARM_THREAD_STATE64, (thread_state_t)&st, ARM_THREAD_STATE64_COUNT ) != KERN_SUCCESS)
-                r = -2;   /* bytes written, authoritative PC unchanged */
-            else
-                ios_stuck_fixed++;
-        }
-        thread_resume( thread );
-        ios_stuck_clock_us(&held_end);
-        ios_cs2_stall_recovery_note(native_id, 1, held_end >= held_start ? held_end - held_start : 0,
-            0, 0, 0, 0, pc, ea, insn, len, r);
-        if (ios_stuck_logs < 400 && (r > 0 || hits <= 3 || hits % 10 == 0))
-        {
-            ios_stuck_logs++;
-            wine_log_write( "[stuck-store] ml1292 tid=%llu hits=%u pc=0x%llx insn=%08x ea=0x%llx len=%u "
-                            "sys+%llu ms in %llu ms: %s confirmed-prefix=%u (%llu completed so far)",
-                            (unsigned long long)native_id, hits, (unsigned long long)pc, insn,
-                            (unsigned long long)ea, len, (unsigned long long)dsys, (unsigned long long)dt,
-                            r > 0 ? "completed, pc+4" : r == -2 ? "written, set_state FAILED"
-                            : r <= -3 ? "checked write failed; partial store, PC unchanged"
-                            : r < 0 ? "not completed (validation or checked write)" : "not a store it decodes",
-                            r > 0 || r == -2 ? len : r <= -3 ? (unsigned)(-r - 2) : 0, ios_stuck_fixed );
-        }
-        if (r > 0) { entry->pc = entry->ea = entry->hits = 0; return 1; }
-        return r <= -2 ? -1 : 0;
+        entry->pc = cross ? pc : 0;
+        entry->ea = cross ? ea : 0;
+        goto observed;
     }
-    thread_resume( thread );
+
+    ios_stuck_store_qos_begin(&phase);
+    ios_stuck_clock_us(&held_start);
+    started = ios_store_phase_clock();
+    int suspend_result = thread_suspend(thread);
+    phase.suspend_us = ios_store_phase_elapsed(started);
+    if (suspend_result != KERN_SUCCESS) { r = -1; goto restore; }
+    suspended = 1;
+    cnt = ARM_THREAD_STATE64_COUNT;
+    started = ios_store_phase_clock();
+    phase.capture_result = thread_get_state(thread, ARM_THREAD_STATE64, (thread_state_t)&st, &cnt);
+    phase.capture_us = ios_store_phase_elapsed(started);
+    if (phase.capture_result != KERN_SUCCESS) { r = -1; goto release; }
+    /* The target was runnable throughout preparation. Require its current
+     * frame, PC, instruction and effective access to match before acting.
+     * Source operands and writeback ALWAYS come from this fresh held state.
+     * No prepared destination/permission/payload is reused across the gap. */
+    if (arm_thread_state64_get_pc(st) != pc || st.__x[28] != advisory.__x[28]) goto release;
+    started = ios_store_phase_clock();
+    cross = ios_ts_read(st.__x[28], &bb, 8) && bb > 0x10000 &&
+            ios_ts_read(pc, &fresh_insn, 4) && fresh_insn == insn &&
+            ios_ldst_ea(fresh_insn, &st, &fresh_ea, &fresh_len) && fresh_ea == ea && fresh_len == len;
+    phase.read_us = ios_store_phase_elapsed(started);
+    if (!cross) goto release;
+    hits = ++entry->hits;
+    if (insn & (1u << 26))
+    {
+        started = ios_store_phase_clock();
+        have_neon = thread_get_state(thread, ARM_NEON_STATE64, (thread_state_t)&neon, &nc) == KERN_SUCCESS;
+        phase.capture_us += ios_store_phase_elapsed(started);
+    }
+    attempted = 1;
+    r = ios_store_split_crossing_timed(insn, &st, have_neon ? &neon : NULL,
+                                      (uintptr_t)ios_jit_rx_base_global, (uintptr_t)ios_jit_rw_base_global,
+                                      ios_jit_pool_size_global, &phase);
+    if (r > 0)
+    {
+        started = ios_store_phase_clock();
+        __darwin_arm_thread_state64_set_pc_fptr(st, (void *)(uintptr_t)(pc + 4));
+        if (thread_set_state(thread, ARM_THREAD_STATE64, (thread_state_t)&st, ARM_THREAD_STATE64_COUNT) != KERN_SUCCESS)
+            r = -2; /* Bytes written, authoritative PC unchanged. */
+        else ios_stuck_fixed++;
+        phase.publication_us = ios_store_phase_elapsed(started);
+    }
+release:
+    /* A checked write is synchronous. There is no deadline/cancel/resume path
+     * through it: publication and this matching resume follow its return. */
+    started = ios_store_phase_clock();
+    phase.resume_result = thread_resume(thread);
+    phase.resume_us = ios_store_phase_elapsed(started);
     ios_stuck_clock_us(&held_end);
-    ios_cs2_stall_recovery_note(native_id, 1, held_end >= held_start ? held_end - held_start : 0,
-        0, 0, 0, 0, pc, ea, insn, len, 2 /* observed; no completion attempted */);
-    entry->pc = cross ? pc : 0;
-    entry->ea = cross ? ea : 0;
-    return 0;
+    if (phase.resume_result != KERN_SUCCESS && r >= 0) r = r == 1 ? -2 : -1;
+restore:
+    ios_stuck_store_qos_end(&phase);
+clear:
+    if (r == 1 || (r == 2 && suspended) || (r < 0 && !attempted))
+        entry->pc = entry->ea = entry->hits = 0;
+observed:
+    /* Fixed-size state/phase observation and formatting occur AFTER resume. */
+    ios_cs2_stall_recovery_phases_note(native_id, &phase);
+    ios_cs2_stall_recovery_note(native_id, 1, suspended && held_end >= held_start ? held_end - held_start : 0,
+        0, 0, 0, 0, pc, ea, insn, len, r);
+    if (ios_stuck_logs < 400 && hits && ((r > 0 && r != 2) || hits <= 3 || hits % 10 == 0))
+    {
+        ios_stuck_logs++;
+        wine_log_write("[stuck-store] ml1292 tid=%llu hits=%u pc=0x%llx insn=%08x ea=0x%llx len=%u "
+                       "sys+%llu ms in %llu ms: %s confirmed-prefix=%u (%llu completed so far)",
+            (unsigned long long)native_id, hits, (unsigned long long)pc, insn, (unsigned long long)ea, len,
+            (unsigned long long)dsys, (unsigned long long)dt,
+            r == 1 ? "completed, pc+4" : r == -2 ? "written, state publication or resume FAILED" :
+            r <= -3 ? "checked write failed; partial store, PC unchanged" :
+            r < 0 ? "not completed (validation, capture or resume)" : "not a store it decodes",
+            r == 1 || r == -2 ? len : r <= -3 ? (unsigned)(-r - 2) : 0, ios_stuck_fixed);
+    }
+    return r == 1 ? 1 : r <= -2 || (r < 0 && !attempted) ? -1 : 0;
 }
 
 static void ios_stuck_store_hot_check(uint64_t now_us);
@@ -3609,7 +3684,10 @@ static void ios_stuck_store_recovery_poll( void )
 static void *ios_stuck_store_recovery_main( void *unused )
 {
     (void)unused;
-    pthread_set_qos_class_self_np( QOS_CLASS_UTILITY, 0 );
+    int status = pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+    wine_log_write("[store-recovery-scope-v1] advisory=unheld commit=fresh-held discovery-qos=utility "
+                   "utility=%u held-qos=user-interactive interactive=%u initial-qos-result=%d "
+                   "checked-writes=synchronous deadlines=none", QOS_CLASS_UTILITY, QOS_CLASS_USER_INTERACTIVE, status);
     for (;;)
     {
         ios_stuck_store_recovery_poll();

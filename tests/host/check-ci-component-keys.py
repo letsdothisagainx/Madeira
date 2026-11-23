@@ -31,6 +31,7 @@ cases = {
     'native-provenance-parser': ('build/native_build_provenance.h', {'ipa'}),
     'self-suspend-client': ('build/ntdll-unix/thread_ios.c', {'ipa'}),
     'cross-page-store-history': ('build/ntdll-unix/stuck_store_history.h', {'ipa'}),
+    'scoped-recovery-phases': ('build/ntdll-unix/store_recovery_phases.h', {'ipa'}),
     'cross-page-checked-writes': ('build/ntdll-unix/signal_arm64_ios.c', {'ipa'}),
     'self-suspend-protocol': ('build/ntdll-unix/self_suspend_protocol.h', {'ipa'}),
     'self-suspend-trace': ('build/ntdll-unix/self_suspend_trace.h', {'ipa'}),
