@@ -461,7 +461,7 @@ enum RunDiagnostics {
     }
 
     static func export(documents: URL, temporaryDirectory: URL, bundleInfo: [String: Any] = [:],
-                       limits: Limits = Limits(), cancelled: () -> Bool = { false }, evidenceFiles: [String: URL] = [:]) throws -> URL {
+                       limits: Limits = Limits(), cancelled: () -> Bool = { false }, evidenceFiles: [String: URL] = [:], evidenceAvailability: String = "not-requested") throws -> URL {
         guard limits.mainBytes > 0, limits.mainBytes <= 64 << 20, limits.consoleBytes > 0, limits.consoleBytes <= 8 << 20,
               limits.steamBytes > 0, limits.steamBytes <= 4 << 20, limits.totalBytes >= 4096, limits.totalBytes <= 96 << 20,
               limits.lines > 0, limits.lines <= 1_000_000, limits.lineBytes > 0, limits.lineBytes <= 16 << 10 else { throw Failure.unavailable }
@@ -592,7 +592,7 @@ enum RunDiagnostics {
             "compression": "ZIP-method-8-raw-DEFLATE", "io": "streamed-owned-files-with-fixed-64KiB-buffers-and-private-disk-spools", "sources": sources,
             "mainByteBudget": limits.mainBytes, "consoleByteBudget": limits.consoleBytes, "steamLogByteBudget": limits.steamBytes,
             "payloadByteBudget": payloadBudget, "totalPayloadByteBudget": limits.totalBytes, "lineBudgetPerSource": limits.lines, "lineByteBudget": limits.lineBytes,
-            "structuredEvidenceBytes": evidenceBytes, "typedVACSnapshot": typedState, "typedVACEntries": typedSources,
+            "structuredEvidenceBytes": evidenceBytes, "structuredEvidenceState": ["not-requested","recorder-unavailable","snapshot-included","recorder-snapshot-failed-existing-logs-retained"].contains(evidenceAvailability) ? evidenceAvailability : "unavailable", "typedVACSnapshot": typedState, "typedVACEntries": typedSources,
             "excluded": ["account-and-authentication-files", "cookies-and-credentials", "configuration-databases", "arbitrary-files", "symlinks-and-special-files", "external-library-links", "chat-and-secret-bearing-rows", "non-ASCII-or-overlong-rows"],
             "sanitization": "secret-bearing-and-chat-rows-omitted; identifiers-and-opaque-values-redacted; source-text-never-copied-into-manifest",
             "runtimeCoverage": "broad-sanitized-Madeira-log-including-process-module-allocator-build-and-clock-rows-when-present; not-a-complete-live-inventory",

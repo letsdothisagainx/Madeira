@@ -207,11 +207,17 @@ final class LogStore: ObservableObject {
             try await withCheckedThrowingContinuation { continuation in
                 DispatchQueue.global(qos: .utility).async {
                     do {
-                        let evidence = try RunEvidenceRecorder.shared?.snapshot(cancelled: cancellation.isCancelled)
+                        var evidence: (URL, [String: URL])?
+                        var evidenceState = "recorder-unavailable"
+                        if let recorder = RunEvidenceRecorder.shared {
+                            do { evidence = try recorder.snapshot(cancelled: cancellation.isCancelled); evidenceState = "snapshot-included" }
+                            catch is CancellationError { throw RunDiagnostics.Failure.cancelled }
+                            catch { evidenceState = "recorder-snapshot-failed-existing-logs-retained" }
+                        }
                         defer { if let evidence { try? FileManager.default.removeItem(at: evidence.0) } }
                         let url = try RunDiagnostics.export(documents: documents,
                             temporaryDirectory: FileManager.default.temporaryDirectory, bundleInfo: bundleInfo,
-                            cancelled: cancellation.isCancelled, evidenceFiles: evidence?.1 ?? [:])
+                            cancelled: cancellation.isCancelled, evidenceFiles: evidence?.1 ?? [:], evidenceAvailability: evidenceState)
                         continuation.resume(returning: url)
                     } catch { continuation.resume(throwing: error) }
                 }
