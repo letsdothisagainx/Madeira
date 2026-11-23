@@ -129,6 +129,13 @@ enum RunEvidenceSchema {
             if w[1] == 4 { r["result"] = Int64(bitPattern:w[15]); r["errno"] = w[16]; r["durationNS"] = w[17] }
             r["ownerStatus"] = "range-generation; owner-resolve-from-access-record; not-guessed-from-current-thread"
             return ("vm-operations", r)
+        case 10:
+            r["event"]="watched-recovery-progress";r["source"]="existing-recovery-gate-no-new-capture"
+            for (i,k) in [(9,"intervalUS"),(10,"userCPUUS"),(11,"kernelCPUUS"),(12,"runState"),(13,"eligible"),(14,"captures"),(15,"completed"),(16,"unhandled"),(17,"refused"),(18,"partial"),(19,"publicationFailed"),(25,"lastHoldUS"),(26,"lastAgeUS"),(27,"captureUS"),(28,"validationUS"),(29,"write0US"),(30,"write1US"),(31,"publicationUS"),(32,"resumeUS"),(33,"recoveryWorker"),(34,"baseQoS"),(35,"heldQoS"),(36,"qosChanged")] {r[k]=w[i]}
+            r["lastPC"]=w[14]>0 ? hex(w[20]) : NSNull();r["lastEA"]=w[14]>0 ? hex(w[21]) : NSNull();r["lastInstruction"]=w[14]>0 ? hex(w[22]) : NSNull();r["lastWidth"]=w[14]>0 ? w[23] : NSNull()
+            r["lastResult"]=w[14]>0 ? Int64(bitPattern:w[24]) : NSNull();r["lastCaptureResult"]=w[14]>0 ? Int64(bitPattern:w[37]) : NSNull();r["lastResumeResult"]=w[14]>0 ? Int64(bitPattern:w[38]) : NSNull()
+            r["cpuScope"]="one-watched-native-thread; phase-and-last-access-age-explicit"
+            return ("thread-frame-memory",r)
         case 9:
             r["event"]="executable-copy-mapping-load";r["PEBase"]=hex(w[9]);r["RXCopyBase"]=hex(w[10]);r["mappedBytes"]=w[11];r["loadGeneration"]=String(w[12]);r["identityStatus"]="range-and-native-mapping-generation; module-name-from-loader-row; hash-unavailable"
             return ("timeline",r)
@@ -255,6 +262,7 @@ final class RunEvidenceStore {
             "allocatorOverhead":"not-measured; payload-bounds-are-not-a-physical-footprint-guarantee",
             "terminationReason":"unknown-unless-authoritative-report; no-clean-host-exit-record",
             "unflushedTail":"unknown-at-abrupt-termination; native-ring-and-log-tail-may-not-be-persisted",
+            "nativeObserverIdentityCaps":["CS2LifetimesPerAppSession":4,"workersPerCS2Lifetime":2],
             "observerCoverage":"native-samples-rolling; console-and-text-bounded-polling; unavailable-is-not-zero",
             "systemReports":"only-reports-actually-delivered; export-does-not-wait",
             "guestCrashReports":"app-owned-report-metadata-only; no-memory-minidumps-or-kernel-stacks"]

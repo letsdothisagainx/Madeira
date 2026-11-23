@@ -73,6 +73,7 @@ static void ios_cs2_stall_main_sample(mach_port_t port, uint64_t native_id)
         if (got && resume_result == KERN_SUCCESS && decoded && length)
         { ev.w[1]=IOS_EV_ACCESS; ev.w[2]=0; ev.w[3]=0; ios_evidence_access(&ev); }
     }
+    if (previous[process].rate.samples <= IOS_CS2_STALL_SAMPLES)
     wine_log_write("[cs2-main-progress-v1] pid=%04x tid=%04x native=%llu owner=%#llx lease=%llu sample=%u/%u interval-us=%llu user-us=%llu kernel-us=%llu run-state=%d suspend-count-before=%d host-pc=%#llx host-lr=%#llx host-sp=%#llx syscall-x16=%llu symbol=%s image-pc=%#llx captured=%d suspend-result=%d resume-result=%d held-us=%llu code-read=after-resume insn=%08x decoded-access=%d ea=%#llx bytes=%u",
         watch->pid, watch->main.tid, (unsigned long long)native_id, (unsigned long long)watch->owner,
         (unsigned long long)watch->lease, previous[process].rate.samples, IOS_CS2_STALL_SAMPLES,
@@ -138,6 +139,24 @@ static void ios_cs2_stall_recovery_note(uint64_t native_id, int inspected,
         ios_thread_process_try_observation_lease((void *)(uintptr_t)watch->owner, watch->pid) != watch->lease) return;
     phase = &ios_cs2_recovery_phase[slot];
     target = slot % 3 ? &watch->worker[slot % 3 - 1] : &watch->main;
+    {
+        struct ios_evidence_record r={{0}};
+        r.w[1]=10;r.w[4]=watch->owner;r.w[5]=watch->lease;r.w[6]=watch->pid;r.w[7]=target->tid;r.w[8]=native_id;
+        r.w[9]=elapsed;r.w[10]=user;r.w[11]=system;r.w[12]=run_state;r.w[13]=eligible;
+        r.w[14]=state[slot].captures;r.w[15]=state[slot].completed;r.w[16]=state[slot].unhandled;
+        r.w[17]=state[slot].refused;r.w[18]=state[slot].partial;r.w[19]=state[slot].publication_failed;
+        r.w[20]=state[slot].pc;r.w[21]=state[slot].ea;r.w[22]=state[slot].insn;r.w[23]=state[slot].bytes;
+        r.w[24]=(int64_t)state[slot].result;r.w[25]=state[slot].held_us;
+        r.w[26]=state[slot].captured_us && now>=state[slot].captured_us ? now-state[slot].captured_us : 0;
+        r.w[27]=phase->capture_us;r.w[28]=phase->validation_us;r.w[29]=phase->write_us[0];r.w[30]=phase->write_us[1];
+        r.w[31]=phase->publication_us;r.w[32]=phase->resume_us;r.w[33]=phase->worker_id;
+        r.w[34]=phase->base_qos;r.w[35]=phase->held_qos;r.w[36]=phase->qos_changed;
+        r.w[37]=(int64_t)phase->capture_result;r.w[38]=(int64_t)phase->resume_result;
+        ios_evidence_emit(&r);
+    }
+    /* The existing text budget remains bounded. Structured progress continues
+     * in the rolling recorder instead of adding unbounded diagnostic text. */
+    if (state[slot].rate.samples > IOS_CS2_STALL_SAMPLES) return;
     wine_log_write("[cs2-store-progress-v1] pid=%04x tid=%04x native=%llu slot=%u sample=%u/%u interval-us=%llu user-us=%llu kernel-us=%llu run-state=%d eligible=%d captures=%llu completed=%llu unhandled=%llu refused=%llu partial=%llu publication-failed=%llu last-pc=%#llx last-ea=%#llx last-insn=%08x last-bytes=%u last-result=%d last-held-us=%llu last-age-us=%llu phase-advisory-us=%llu phase-prepare-read-us=%llu phase-suspend-us=%llu phase-capture-us=%llu phase-held-read-us=%llu phase-validation-us=%llu phase-write0-us=%llu phase-write1-us=%llu phase-note-us=%llu phase-publication-us=%llu phase-resume-us=%llu recovery-worker=%llu base-qos=%u held-qos=%u qos-changed=%u qos-query=%d qos-set=%d qos-held-query=%d qos-restore=%d capture-result=%d resume-result=%d result-2=observed-not-attempted captures-source=existing-recovery no-new-suspension=1 phases=wall-us emit=after-resume",
         watch->pid, target->tid, (unsigned long long)native_id, slot % 3,
         state[slot].rate.samples, IOS_CS2_STALL_SAMPLES,
