@@ -51,6 +51,7 @@ enum RunEvidenceSchema {
         guard w.count == 48, w[0] == 1 else { return nil }
         var r: [String: Any] = ["nativeSequence": String(w[2]), "nativeMonotonicNS": String(w[3]), "nativeClock": "CLOCK_MONOTONIC",
             "owner": w[4]>0 ? hex(w[4]) : NSNull(), "lease": w[5]>0 ? String(w[5]) : NSNull(), "pid": w[6]>0 ? hex(w[6]) : NSNull(), "tid": w[7]>0 ? hex(w[7]) : NSNull(), "nativeThreadLifetimeID": w[8]>0 ? String(w[8]) : NSNull()]
+        if ![UInt64(1),2,3,10].contains(w[1]) {r["nativeThreadLifetimeID"]=NSNull()}
         switch w[1] {
         case 1:
             r["event"] = "cs2-start-observed"; r["teb"] = hex(w[9]); r["source"] = "validated-initial-thread"; return ("timeline", r)

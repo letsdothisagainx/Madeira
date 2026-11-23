@@ -240,6 +240,12 @@ enum RunDiagnostics {
             else { typedState = "partially-omitted-total-byte-budget" }
             typedSources.append(["entry": "vac/" + entry.name, "bytes": entry.data.count, "state": included ? "included" : "omitted-total-byte-budget"])
         }
+        if !evidenceFiles.isEmpty {
+            // This is the immediately preceding native log, which may differ
+            // from the older pinned incident. Keep it separately named and do
+            // not assign its counters to the current/pinned structured run.
+            try consume("immediately-previous-native-session", "madeira-log.prev.txt", min(4 << 20, limits.mainBytes))
+        }
         try consume("madeira-session", "madeira-log.txt", limits.mainBytes)
         for (index, install) in ["Program Files (x86)/Steam", "Program Files/Steam"].enumerated() {
             let base = "wine/drive_c/" + install + "/", suffix = index == 0 ? "" : "-alternate-install"
@@ -592,7 +598,7 @@ enum RunDiagnostics {
             "compression": "ZIP-method-8-raw-DEFLATE", "io": "streamed-owned-files-with-fixed-64KiB-buffers-and-private-disk-spools", "sources": sources,
             "mainByteBudget": limits.mainBytes, "consoleByteBudget": limits.consoleBytes, "steamLogByteBudget": limits.steamBytes,
             "payloadByteBudget": payloadBudget, "totalPayloadByteBudget": limits.totalBytes, "lineBudgetPerSource": limits.lines, "lineByteBudget": limits.lineBytes,
-            "structuredEvidenceBytes": evidenceBytes, "structuredEvidenceState": ["not-requested","recorder-unavailable","snapshot-included","recorder-snapshot-failed-existing-logs-retained"].contains(evidenceAvailability) ? evidenceAvailability : "unavailable", "typedVACSnapshot": typedState, "typedVACEntries": typedSources,
+            "previousNativeLogIdentity": "immediately-preceding-app-log; match-to-structured-run-unverified; never-current-counters", "structuredEvidenceBytes": evidenceBytes, "structuredEvidenceState": ["not-requested","recorder-unavailable","snapshot-included","recorder-snapshot-failed-existing-logs-retained"].contains(evidenceAvailability) ? evidenceAvailability : "unavailable", "typedVACSnapshot": typedState, "typedVACEntries": typedSources,
             "excluded": ["account-and-authentication-files", "cookies-and-credentials", "configuration-databases", "arbitrary-files", "symlinks-and-special-files", "external-library-links", "chat-and-secret-bearing-rows", "non-ASCII-or-overlong-rows"],
             "sanitization": "secret-bearing-and-chat-rows-omitted; identifiers-and-opaque-values-redacted; source-text-never-copied-into-manifest",
             "runtimeCoverage": "broad-sanitized-Madeira-log-including-process-module-allocator-build-and-clock-rows-when-present; not-a-complete-live-inventory",

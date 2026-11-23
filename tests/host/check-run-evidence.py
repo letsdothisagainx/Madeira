@@ -38,6 +38,9 @@ func verify(_ ok:@autoclosure ()->Bool,_ file:StaticString=#file,_ line:Int=#lin
   w[35]=3;w[17]=1;w[18]=2;w[39]=2;w[43]=1;w[28]=3;w[29]=7
   let (_,changed)=RunEvidenceSchema.native(w)!;try verify(changed["metadataConsistency"] as? String == "VM-changed-during-query");try verify(changed["instruction"] as? String == "0xc89ffcd3")
   store.record(channel,changed)
+  var operation=[UInt64](repeating:0,count:48);operation[0]=1;operation[1]=4;operation[8]=123
+  let (_,op)=RunEvidenceSchema.native(operation)!
+  try verify(op["nativeThreadLifetimeID"] is NSNull && op["operationToken"] as? String == "123")
   let technical=RunEvidenceSchema.fields("policy=stlr-fallback-v1 password=PRIVATE ticket=SECRET LRCPC2=false",keys:["policy","LRCPC2"])
   try verify(technical.count==2 && technical["policy"]=="stlr-fallback-v1")
   try verify(RunEvidenceRecorder.consoleEvent("11/23 09:19:43 [Networking] closed: NETWORK_DISCONNECT_TIMEDOUT") == "disconnect-network-timeout")
