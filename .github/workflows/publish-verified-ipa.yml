@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: publish-ipa-508afe02
+  group: publish-ipa-58b0001e
   cancel-in-progress: false
 
 jobs:
@@ -22,9 +22,9 @@ jobs:
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
-      SOURCE_REVISION: 508afe0223f28a5704e99cce553955adc43ba588
-      SOURCE_RUN: '45089380967'
-      RELEASE_TAG: ipa-508afe02
+      SOURCE_REVISION: 58b0001e4a03f3ef9e2402188659c6a6eadc73e3
+      SOURCE_RUN: '45089929298'
+      RELEASE_TAG: ipa-58b0001e
     steps:
       - name: Require the exact successful build and artifact
         run: |
@@ -54,7 +54,7 @@ jobs:
           PY
       - uses: actions/checkout@v4
         with:
-          ref: 508afe0223f28a5704e99cce553955adc43ba588
+          ref: 58b0001e4a03f3ef9e2402188659c6a6eadc73e3
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
@@ -84,9 +84,9 @@ jobs:
       - name: Publish the same IPA as a stable prerelease asset
         run: |
           cat > "$RUNNER_TEMP/ipa-release-notes.txt" <<'NOTES'
-          Installable Madeira candidate from source 508afe0223f28a5704e99cce553955adc43ba588.
+          Installable Madeira candidate from source 58b0001e4a03f3ef9e2402188659c6a6eadc73e3.
 
-          IPA build: https://github.com/letsdothisagainx/Madeira/actions/runs/45089380967
+          IPA build: https://github.com/letsdothisagainx/Madeira/actions/runs/45089929298
           Focused Linux/macOS checks: https://github.com/letsdothisagainx/Madeira/actions/runs/45089318014
 
           Run15 records a recovery-owned main-thread hold of 7,083,212 microseconds. This candidate moves read-only first-observation/candidate preparation outside an explicit target suspension, then captures and revalidates fresh held state before any checked write or PC publication. The recovery worker requests user-interactive QoS only while it owns a suspension, restoring its prior class and relative priority after the matching resume. Discovery remains utility. No guest suspension count is cleared or forced.
@@ -103,14 +103,14 @@ jobs:
 
           Device acceptance remains responsive remote team selection, sustained gameplay through a round and a clean menu/map transition without failed required textures. Build and host checks do not establish those outcomes.
 
-          Detailed analysis: https://github.com/letsdothisagainx/Madeira/blob/508afe0223f28a5704e99cce553955adc43ba588/docs/run15-recovery-hold-20261123.md
+          Detailed analysis: https://github.com/letsdothisagainx/Madeira/blob/58b0001e4a03f3ef9e2402188659c6a6eadc73e3/docs/run15-recovery-hold-20261123.md
 
           Download Madeira.ipa below. SHA256SUMS verifies its bytes.
           NOTES
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title 'Madeira 508afe02 - Run15 recovery-scope candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt"
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title 'Madeira 58b0001e - Run15 recovery-scope candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt"
           else
-            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title 'Madeira 508afe02 - Run15 recovery-scope candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title 'Madeira 58b0001e - Run15 recovery-scope candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
           fi
           gh release upload "$RELEASE_TAG" release-output/Madeira.ipa release-output/SHA256SUMS release-output/recovery-package.json --repo "$GITHUB_REPOSITORY" --clobber
           gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false

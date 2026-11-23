@@ -40,6 +40,7 @@ jobs:
         run: python3 tests/host/check-cs2-stall-watch.py ${{ runner.os == 'macOS' && '--require-swift' || '' }}
       - name: Compile existing touched fixtures without executing fault scenarios
         run: |
+          python3 tests/host/check-cross-page-store-recovery.py --compile-only
           python3 tests/host/check-cs2-observation.py --compile-only
           python3 tests/host/check-stuck-store-scheduling.py --compile-only
       - name: Compile historical ARM guard/alias fixtures without running fault cases
