@@ -165,12 +165,26 @@ def main():
                         help='Require the linked Run14 producer markers and defined native callback')
     parser.add_argument('--require-recovery-scope', action='store_true',
                         help='Require linked advisory/held-scope producer and phase record')
+    parser.add_argument('--require-cs2-tso-profile', action='store_true',
+                        help='Require the rebuilt CS2-specific ARM64EC feature selector')
     args = parser.parse_args()
     with zipfile.ZipFile(args.ipa) as ipa:
         info = plistlib.loads(ipa.read('Payload/Madeira.app/Info.plist'))
         if info.get('MadeiraNativeBuildProvenance', {}).get('packageSourceRevision') != args.revision:
             raise ValueError('package source revision mismatch')
         result = inspect(ipa.read('Payload/Madeira.app/Madeira.debug.dylib'), args.require_pressure_boundary, args.require_recovery_scope)
+        if args.require_cs2_tso_profile:
+            import hashlib
+            cpu = ipa.read('Payload/Madeira.app/arm64ec-windows/xtajit64.dll')
+            pe = struct.unpack_from('<I', cpu, 0x3c)[0]
+            if cpu[:2] != b'MZ' or cpu[pe:pe+4] != b'PE\0\0' or struct.unpack_from('<H',cpu,pe+4)[0] != 0xa641:
+                raise ValueError('expected ARM64EC FEX module')
+            for marker in (b'[cs2-tso-profile-v1]', b'policy=stlr-fallback-v1',
+                           b'code-cache=disabled context=fresh phase=before-create-context'):
+                if marker not in cpu:
+                    raise ValueError('CS2 feature selector missing from packaged FEX: ' + marker.decode())
+            result.update(cs2TSOProfileRequired=True, arm64ecCPUSHA256=hashlib.sha256(cpu).hexdigest(),
+                          featureSelection='runtime-record-required-on-device')
         result.update(source=args.revision, bundleIdentifier=info['CFBundleIdentifier'],
                       nativeUUID=info['MadeiraNativeBuildProvenance']['nativeImageUUID'])
     print(json.dumps(result, indent=2))

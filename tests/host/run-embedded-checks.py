@@ -291,6 +291,7 @@ if args.profile == 'recovery-normal':
     # Final native-image, topology, ABI, source and packaging checks still run
     # in the normal IPA workflow. This is not reported as the full host suite.
     commands = [
+        ['python3', 'tests/host/check-cs2-tso-profile.py'],
         ['python3', 'tests/host/check-recovery-hold.py', '--require-darwin'],
         ['python3', 'tests/host/check-cross-page-store-recovery.py', '--compile-only'],
         ['python3', 'tests/host/check-cs2-stall-watch.py', '--require-swift'],

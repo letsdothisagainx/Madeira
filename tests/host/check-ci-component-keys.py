@@ -57,6 +57,7 @@ cases = {
     'native-code-guard-registry': ('build/ntdll-unix/fex_code_guards.h', {'ipa'}),
     'fex': ('pin:FEX', {'fex', 'fex-pe', 'ipa'}),
     'fex-code-buffer-producer': ('build/fex-compat/code-buffer-guard.patch', {'fex-pe', 'ipa'}),
+    'cs2-tso-profile': ('build/fex-compat/cs2-tso-profile.patch', {'fex-pe', 'ipa'}),
     'fex-code-sweep-retry': ('build/fex-compat/code-sweep-retry.patch', {'fex-pe', 'ipa'}),
     'fex-owner-backoff': ('build/fex-compat/owner_allocator_backoff.h', {'fex-pe', 'ipa'}),
     'fex-shufps-broadcast': ('build/fex-compat/shufps-broadcast.patch', {'fex-pe', 'ipa'}),

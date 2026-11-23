@@ -1,0 +1,57 @@
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -973,6 +973,27 @@
+ };
+ #endif
+ 
++#ifdef FEX_IOS_HOST
++/* Process-local candidate: preserve unrelated overrides and TSO ordering.
++ * This runs after LoadConfig/ReloadMetaLayer, before FetchHostFeatures and
++ * creation of a fresh CTX. Never mutate the host or inherited environment. */
++static bool MadeiraConfigureCS2TSO(const fextl::string& ExecutableName) {
++  if (_stricmp(ExecutableName.c_str(), "cs2.exe") != 0) {
++    return false;
++  }
++  FEX_CONFIG_OPT(PreviousFeatures, HOSTFEATURES);
++  const uint64_t Before = PreviousFeatures();
++  const uint64_t After = (Before & ~uint64_t(FEXCore::Config::HostFeatures::ENABLELRCPC2)) |
++                         uint64_t(FEXCore::Config::HostFeatures::DISABLELRCPC2);
++  FEXCore::Config::Set(FEXCore::Config::CONFIG_HOSTFEATURES, fextl::fmt::format("{}", After));
++  // Do not import a translation produced under different effective features.
++  // The existing Windows cache loader has no feature-qualified cache key.
++  // Keep all files intact; the new context's lookups start empty as usual.
++  FEXCore::Config::Set(FEXCore::Config::CONFIG_ENABLECODECACHINGWIP, "0");
++  return true;
++}
++#endif
++
+ NTSTATUS ProcessInit() {
+   /* The loader serializes first process initialization. A repeated call
+    * must not replace CTX or the published tracker while readers use it. */
+@@ -1023,6 +1044,9 @@
+   FEX::Config::LoadConfig(fextl::string {ExecutableName}, _environ, FEX::ReadPortabilityInformation());
+   FEXCore::Config::ReloadMetaLayer();
+   FEX::Windows::Logging::Init();
++#ifdef FEX_IOS_HOST
++  const bool MadeiraCS2TSO = MadeiraConfigureCS2TSO(fextl::string {ExecutableName});
++#endif
+ 
+ #ifdef FEX_IOS_HOST
+   /* Recorder emitted only for this executable, before CTX/JIT creation. */
+@@ -1136,6 +1160,16 @@
+ 
+   {
+     auto HostFeatures = FEX::Windows::CPUFeatures::FetchHostFeatures(IsWine, FEXCore::HostFeatures::HostTypeEnum::Arm64ec);
++#ifdef FEX_IOS_HOST
++    if (MadeiraCS2TSO) {
++      FEX_CONFIG_OPT(ProfileTSO, TSOENABLED);
++      FEX_CONFIG_OPT(ProfileHalfBarrier, HALFBARRIERTSOENABLED);
++      FEX_CONFIG_OPT(ProfileFeatures, HOSTFEATURES);
++      LogMan::Msg::IFmt("[cs2-tso-profile-v1] exe=cs2.exe LRCPC2={} tso={} halfbar={} host-features={} "
++                      "code-cache=disabled context=fresh phase=before-create-context policy=stlr-fallback-v1",
++                      HostFeatures.SupportsTSOImm9, ProfileTSO(), ProfileHalfBarrier(), ProfileFeatures());
++    }
++#endif
+     CTX = FEXCore::Context::Context::CreateNewContext(HostFeatures);
+ #ifdef FEX_IOS_HOST
+     /* ExitFunctionECJit (Module.S) leaves out ExitFunctionEC's FPCR test, so it is used only without AFP,
