@@ -377,9 +377,21 @@ final class RunEvidenceRecorder {
         let t=DispatchSource.makeTimerSource(queue:queue); t.schedule(deadline:.now(),repeating:1,leeway:.milliseconds(150))
         t.setEventHandler { [weak self] in self?.tick() }; t.resume(); timer=t
     }
-    private func stamp(_ r:[String:Any]) -> [String:Any] {
-        var row=r; row["processLifetimeID"]=process as Any? ?? NSNull(); row["attemptID"]=attempt>0 ? "\(process ?? "unknown")-\(attempt)" : NSNull(); row["attemptKind"]=attemptKind;row["phase"]=phase;row["phaseConfidence"]="observed-message-arrival; not-packet-or-playability-state"
+    static func correlate(_ values:[String:Any], current:String?, attempt:Int, kind:String, phase:String) -> [String:Any] {
+        var row=values
+        let pair: String?
+        if let owner=values["owner"] as? String,let lease=values["lease"] as? String {pair=owner+"-"+lease} else {pair=nil}
+        let identity=pair ?? current, matches=identity==current
+        row["processLifetimeID"]=identity as Any? ?? NSNull()
+        row["identitySource"]=pair != nil ? "native-owner-and-lease" : "current-correlation-context; observer-scope-remains-authoritative"
+        row["attemptID"]=matches && attempt>0 ? "\(current ?? "unknown")-\(attempt)" : NSNull()
+        row["attemptKind"]=matches ? kind : "unclassified-other-lifetime"
+        row["phase"]=matches ? phase : "unclassified-other-lifetime"
+        row["phaseConfidence"]="observed-message-arrival; not-packet-or-playability-state"
         return row
+    }
+    private func stamp(_ values:[String:Any]) -> [String:Any] {
+        Self.correlate(values,current:process,attempt:attempt,kind:attemptKind,phase:phase)
     }
     private func tick() {
         let begin=RunEvidenceSchema.mono(); ticks+=1
@@ -397,7 +409,7 @@ final class RunEvidenceRecorder {
                     var entry:[String:String]=[:];for (key,value) in r {if let s=value as? String {entry[key]=s}}
                     store.module(entry)
                 }
-                if r["event"] as? String == "main-progress", activated {
+                if r["event"] as? String == "main-progress", activated, let owner=r["owner"] as? String,let lease=r["lease"] as? String,owner+"-"+lease==process {
                     mainUserUS += r["userCPUUS"] as? UInt64 ?? 0; mainKernelUS += r["kernelCPUUS"] as? UInt64 ?? 0
                     store.fact("postActivationSampledMainCPUUS",["user":mainUserUS,"kernel":mainKernelUS,"scope":"sampled-intervals-for-current-CS2-lifetime; not-total-loading-or-kernel-stack"])
                 }
@@ -411,12 +423,13 @@ final class RunEvidenceRecorder {
         }
         store.record("thread-frame-memory",["event":"native-recorder-coverage","latestNativeSequence":String(stats[1]),"tryLockDrops":stats[2],"overwrittenNativeRecords":stats[3],"VMOperations":stats[5],"VMBytesCumulative":stats[6],"VMErrors":stats[7],"VMDurationNSCumulative":stats[8],"scope":"host-app-instrumented-operations","status":stats[0]==1 ? "drained" : "drain-busy-or-unavailable"])
         var frame=[UInt64](repeating:0,count:5); nativeEvidenceFrame(&frame)
-        let gap=frame[1]>0 && frame[2]>=frame[1] ? frame[2]-frame[1] : nil
-        store.record("thread-frame-memory",stamp(["event":"frame-progress","scope":"validated-CS2-owner-DXMT-pacing-hook-not-GPU-completion","count":frame[0],"observedOwner":RunEvidenceSchema.hex(frame[3]),"observedLease":String(frame[4]),"lastHookNS":frame[1]>0 ? String(frame[1]) : NSNull(),"gapNS":gap as Any? ?? NSNull(),"foreground":foreground,"GPUCompletion":"available-only-in-existing-frame-logs","intentionalPause":"unknown-unless-observed"] ))
+        let framePair=frame[3]>0 && frame[4]>0 ? RunEvidenceSchema.hex(frame[3])+"-"+String(frame[4]) : nil
+        let gap=framePair==process && frame[1]>0 && frame[2]>=frame[1] ? frame[2]-frame[1] : nil
+        store.record("thread-frame-memory",stamp(["event":"frame-progress","scope":"validated-CS2-owner-DXMT-pacing-hook-not-GPU-completion","count":frame[3]>0 ? frame[0] : NSNull(),"owner":frame[3]>0 ? RunEvidenceSchema.hex(frame[3]) : NSNull(),"lease":frame[4]>0 ? String(frame[4]) : NSNull(),"frameIdentityStatus":framePair==process && framePair != nil ? "current-lease-matched" : framePair != nil ? "other-live-lifetime" : "identity-busy-or-no-active-observer","lastHookNS":frame[1]>0 ? String(frame[1]) : NSNull(),"gapNS":gap as Any? ?? NSNull(),"foreground":foreground,"GPUCompletion":"available-only-in-existing-frame-logs","intentionalPause":"unknown-unless-observed"] ))
         if let gap, foreground, gap>3_000_000_000, process != nil, !stall {
             stall=true; store.record("timeline",stamp(["event":"frame-stall-observed","gapNS":gap,"source":"DXMT-pacing-hook","confidence":"no-hook-progress; intentional-pause-not-excluded"]))
             if activated { incident("post-activation-frame-stall") }
-        } else if stall, frame[0] != lastFrame {
+        } else if stall, framePair==process, frame[0] != lastFrame {
             stall=false; store.record("timeline",stamp(["event":"frame-progress-recovered","source":"DXMT-pacing-hook"]))
         }
         lastFrame=frame[0]

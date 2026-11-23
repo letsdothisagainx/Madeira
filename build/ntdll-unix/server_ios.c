@@ -7411,16 +7411,23 @@ void ios_evidence_present_note(void)
 {
     uintptr_t owner=(uintptr_t)ios_jit_current_peb();
     for (unsigned i=0;i<IOS_CS2_STALL_PROCESSES;++i)
-        if (owner && __atomic_load_n(&ios_cs2_stall_watches[i].owner,__ATOMIC_ACQUIRE)==owner)
+        if (owner && __atomic_load_n(&ios_cs2_stall_watches[i].owner,__ATOMIC_ACQUIRE)==owner &&
+            ios_thread_process_try_observation_lease((void *)owner,ios_cs2_stall_watches[i].pid)==ios_cs2_stall_watches[i].lease)
         { __atomic_add_fetch(&ios_ev_frame_count[i],1,__ATOMIC_RELAXED); __atomic_store_n(&ios_ev_frame_ns[i],ios_evidence_now(),__ATOMIC_RELEASE); break; }
 }
 void madeira_evidence_frame(uint64_t *out)
 {
     uint64_t latest=0; unsigned selected=0;
+    int found=0;
     for(unsigned i=0;i<IOS_CS2_STALL_PROCESSES;++i)
-    { uint64_t t=__atomic_load_n(&ios_ev_frame_ns[i],__ATOMIC_ACQUIRE); if(t>latest) {latest=t;selected=i;} }
-    out[0]=__atomic_load_n(&ios_ev_frame_count[selected],__ATOMIC_RELAXED); out[1]=latest; out[2]=ios_evidence_now();
-    out[3]=ios_cs2_stall_watches[selected].owner;out[4]=ios_cs2_stall_watches[selected].lease;
+    {
+        uint64_t owner=__atomic_load_n(&ios_cs2_stall_watches[i].owner,__ATOMIC_ACQUIRE),t;
+        if (!owner || ios_thread_process_try_observation_lease((void *)(uintptr_t)owner,ios_cs2_stall_watches[i].pid)!=ios_cs2_stall_watches[i].lease) continue;
+        t=__atomic_load_n(&ios_ev_frame_ns[i],__ATOMIC_ACQUIRE);
+        if(!found || t>latest) {latest=t;selected=i;found=1;}
+    }
+    out[0]=found ? __atomic_load_n(&ios_ev_frame_count[selected],__ATOMIC_RELAXED) : 0; out[1]=latest; out[2]=ios_evidence_now();
+    out[3]=found ? ios_cs2_stall_watches[selected].owner : 0;out[4]=found ? ios_cs2_stall_watches[selected].lease : 0;
 }
 void madeira_evidence_host_io(uint64_t *out)
 {
