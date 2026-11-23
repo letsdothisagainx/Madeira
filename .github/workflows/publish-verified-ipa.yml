@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: publish-ipa-58b0001e
+  group: publish-ipa-90ec5b64
   cancel-in-progress: false
 
 jobs:
@@ -22,10 +22,10 @@ jobs:
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
-      SOURCE_REVISION: 58b0001e4a03f3ef9e2402188659c6a6eadc73e3
-      SOURCE_RUN: '45089929298'
-      SOURCE_UUID: 8EA1D7F2-C3BC-3B4F-925E-6CFA074C0A03
-      RELEASE_TAG: ipa-58b0001e
+      SOURCE_REVISION: 90ec5b64cb3048c25055281e612257131db450d9
+      SOURCE_RUN: '45098761826'
+      SOURCE_UUID: 12241A2B-D7F0-3253-BF69-B81E5ECBF19F
+      RELEASE_TAG: ipa-90ec5b64
     steps:
       - name: Require the exact successful build and artifact
         run: |
@@ -55,7 +55,7 @@ jobs:
           PY
       - uses: actions/checkout@v4
         with:
-          ref: 58b0001e4a03f3ef9e2402188659c6a6eadc73e3
+          ref: 90ec5b64cb3048c25055281e612257131db450d9
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
@@ -71,7 +71,7 @@ jobs:
           test -s release-output/Madeira.ipa
           python3 tools/build/native-provenance.py check --root "$GITHUB_WORKSPACE" --revision "$SOURCE_REVISION" --ipa release-output/Madeira.ipa
           python3 delivery-tools/tests/host/check-store-recovery-package-inspector.py
-          python3 delivery-tools/tools/check-store-recovery-package.py --ipa release-output/Madeira.ipa --revision "$SOURCE_REVISION" --require-pressure-boundary --require-recovery-scope > release-output/recovery-package.json
+          python3 delivery-tools/tools/check-store-recovery-package.py --ipa release-output/Madeira.ipa --revision "$SOURCE_REVISION" --require-pressure-boundary --require-recovery-scope --require-cs2-tso-profile > release-output/recovery-package.json
           cat release-output/recovery-package.json
           python3 - <<'PY'
           import json, os
@@ -79,6 +79,7 @@ jobs:
           assert package['bundleIdentifier'] == 'com.willfaust.madeora', 'installation identity changed'
           assert package['pressureBoundaryRequired'] is True
           assert package['recoveryScopeRequired'] is True
+          assert package['cs2TSOProfileRequired'] is True
           assert package['nativeUUID'] == os.environ['SOURCE_UUID']
           print('PASS existing installation identity and compiled scoped recovery/pressure producers')
           PY
@@ -86,33 +87,33 @@ jobs:
       - name: Publish the same IPA as a stable prerelease asset
         run: |
           cat > "$RUNNER_TEMP/ipa-release-notes.txt" <<'NOTES'
-          Installable Madeira candidate from source 58b0001e4a03f3ef9e2402188659c6a6eadc73e3.
+          Installable Madeira Run16 instruction-path candidate from source 90ec5b64cb3048c25055281e612257131db450d9.
 
-          IPA build: https://github.com/letsdothisagainx/Madeira/actions/runs/45089929298
-          Focused Linux/macOS checks: https://github.com/letsdothisagainx/Madeira/actions/runs/45089979742
+          IPA build: https://github.com/letsdothisagainx/Madeira/actions/runs/45098761826
+          Focused Linux/macOS checks: https://github.com/letsdothisagainx/Madeira/actions/runs/45098595719
 
-          Run15 records a recovery-owned main-thread hold of 7,083,212 microseconds. This candidate moves read-only first-observation/candidate preparation outside an explicit target suspension, then captures and revalidates fresh held state before any checked write or PC publication. The recovery worker requests user-interactive QoS only while it owns a suspension, restoring its prior class and relative priority after the matching resume. Discovery remains utility. No guest suspension count is cleared or forced.
+          CS2 alone merges disablelrcpc2 into its initialized FEX configuration before host-feature selection and creation of its JIT context. Only the conflicting enablelrcpc2 bit is removed; unrelated overrides, TSO and half-barrier settings remain intact. Steam and other executable contexts keep their existing feature selection. No host-wide environment variable is changed and no AppConfig JSON lookup is required.
 
-          The existing fixed-size store-progress record now attributes advisory capture/read, suspend, held capture/read, destination validation, each synchronous checked fragment write, alias accounting, state publication and resume. It records worker identity, actual QoS and API results after the resume attempt. No timer cancels a write, and the target is not resumed while a write is in flight. The seven-second baseline does not establish which phase dominates, and this patch does not guarantee an upper hold duration.
+          The initializer now owns the executable basename: the prior string_view referred to a temporary full-path string. This establishes a valid name throughout configuration loading and the process-specific match. CS2 starts a fresh translation context and its experimental persistent-code-cache path is gated off; no installed files, account data or caches are deleted.
 
-          Normal macOS tests use real Mach state capture on a live unsuspended worker, real QoS changes and checked Mach writes into writable pages. A pinned actual predecessor demonstrates two VM reads under an owned first-observation suspension; the corrected inspector performs both without acquiring one. One thousand repeated scalar/vector stores check fresh operands, exact bytes/PC, normal concurrent target progress, nested suspend ownership and QoS restoration. Existing scheduling, pressure-predicate, privacy/sanitizer and cache checks pass. The recovery-normal build compiles historical fault fixtures without executing them; no deliberate crash, protected-memory, page-revocation or fault-injection experiment is requested.
+          Normal host validation executes the staged profile, pinned CPUFeatures selection, the actual scalar StoreMemTSO body and real FEX CodeEmitter headers. It reports LRCPC2=false, tso=true and halfbar=true for CS2, verifies unaffected other guests and emits fresh ARM64 STLR bytes. Captured baseline 99000356/d90000d3 becomes 889fff56/c89ffcd3, with the existing NOP slots retained. Those bytes are inspected rather than executed; no protected-memory, page-revocation or deliberate crash/fault experiment is requested.
 
-          Required texture allocation still exhausted Run15 headroom. No safely reclaimable physical owner or duplicate backing has been established; no memory saving, texture repair, complete loading fix or iPhone gameplay pass is claimed. The safety reserve and resource allocation semantics are unchanged.
+          This is an instruction-path hypothesis, not a demonstrated iOS kernel diagnosis or a playable-gameplay claim. The tested archive had short sampled recovery holds but kernel-heavy aligned stores and a remote timeout. The new actual CS2/iPhone runtime feature record, frame times and networking outcome still need to be observed after installation.
 
-          The full 1,152 MiB JIT pool and 768/384 MiB partition, code-buffer reuse, checked-store recovery, physical safety reserve, GPU completion/resource lifetimes, Steam authentication, networking and existing input behavior are preserved. The existing bundle identifier, Wine prefix, game files, Steam setup and user configuration are retained. Install over the existing app with the same signing identity; do not uninstall or delete its data.
+          The Run15 recovery/QoS correction, physical reserve, resource lifetimes, graphics and networking timeouts remain intact. The full 1,152 MiB JIT pool and 768/384 MiB partition, existing code-buffer reuse, FEX revision, bundle identifier, Wine prefix, game files, Steam session and configuration are preserved. Install over the existing app with the same signing identity; do not uninstall or delete its data.
 
-          The artifact's source revision, native provenance and immutable archive digest are checked before publication. recovery-package.json verifies the compiled discovery path, scoped-recovery/phase markers, linked timed checked-write helper, and preserved pressure callback. Publication copies the built IPA without rebuilding it, then compares an unauthenticated public download byte for byte.
+          Publication verifies the actual built IPA source/native provenance, native UUID, immutable artifact digest, bundle identity, compiled recovery producer, and the new policy marker in the real ARM64EC FEX hybrid module. Its CPU SHA256 is recorded in recovery-package.json. An unauthenticated public download is compared byte for byte with the built IPA.
 
-          Device acceptance remains responsive remote team selection, sustained gameplay through a round and a clean menu/map transition without failed required textures. Build and host checks do not establish those outcomes.
+          Device comparison: use the same Mirage sequence. Assess connection-to-activation, post-activation main-thread user/kernel time, Present gaps, texture errors, responsive team selection and a sustained round without disconnecting. If kernel-heavy stalls persist despite confirmed fallback, investigate backing/mapping next instead of changing recovery polling. No texture-memory repair is inferred from this run's zero logged allocation errors.
 
-          Detailed analysis: https://github.com/letsdothisagainx/Madeira/blob/58b0001e4a03f3ef9e2402188659c6a6eadc73e3/docs/run15-recovery-hold-20261123.md
+          Details: https://github.com/letsdothisagainx/Madeira/blob/90ec5b64cb3048c25055281e612257131db450d9/docs/run16-cs2-stlr-candidate-20261123.md
 
           Download Madeira.ipa below. SHA256SUMS verifies its bytes.
           NOTES
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title 'Madeira 58b0001e - Run15 recovery-scope candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt"
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title 'Madeira 90ec5b64 - Run16 CS2 STLR candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt"
           else
-            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title 'Madeira 58b0001e - Run15 recovery-scope candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title 'Madeira 90ec5b64 - Run16 CS2 STLR candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
           fi
           gh release upload "$RELEASE_TAG" release-output/Madeira.ipa release-output/SHA256SUMS release-output/recovery-package.json --repo "$GITHUB_REPOSITORY" --clobber
           gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
