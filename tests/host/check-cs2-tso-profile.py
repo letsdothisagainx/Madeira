@@ -39,7 +39,7 @@ with tempfile.TemporaryDirectory(prefix='madeira-cs2-tso-') as directory:
     data=json.loads((ROOT/'FEX/FEXCore/Source/Interface/Config/Config.json.in').read_text())
     enums=next(group['HostFeatures']['Enums'] for group in data['Options'].values() if 'HostFeatures' in group)
     assert '1 <<' in generator or '1ULL <<' in generator
-    bits='\n'.join(f'constexpr uint64_t {name}=UINT64_C(1)<<{i};' for i,name in enumerate(enums))
+    bits='\n'.join(f'inline constexpr uint64_t {name}=UINT64_C(1)<<{i};' for i,name in enumerate(enums))
     stub=work/'include';(stub/'FEXCore/Utils').mkdir(parents=True);(stub/'FEXCore/fextl').mkdir(parents=True)
     (stub/'FEXCore/fextl/vector.h').write_text('#pragma once\n#include <vector>\nnamespace fextl {template<class T>using vector=std::vector<T>;}\n')
     (stub/'FEXCore/Utils/LogManager.h').write_text(r'''
