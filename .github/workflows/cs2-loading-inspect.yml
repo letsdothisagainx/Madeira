@@ -27,6 +27,9 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+      - name: Type-check the actual observer against the iPhone SDK
+        if: runner.os == 'macOS'
+        run: tools/build/check-run-evidence-ios.sh
       - name: Validate bounded run evidence and existing one-ZIP export
         run: |
           python3 tests/host/check-run-evidence.py ${{ runner.os == 'macOS' && '--require-swift' || '' }}
