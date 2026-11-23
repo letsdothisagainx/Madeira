@@ -78,6 +78,18 @@ PYCODE
     fi
 }
 
+# Type-check the exact two changed native translation units before expensive
+# FEX builds. Same compiler/config/includes as final compilation, no linking,
+# runtime execution, memory tests, or use of an older object file.
+if [ "${1:-}" = "--syntax-only-core" ]; then
+    python3 "$REPO_ROOT/tools/build/native-provenance.py" header --root "$REPO_ROOT" \
+        --component virtual --output "$OBJ_DIR/native-provenance.generated.h" \
+        --revision "${GITHUB_SHA:-$(git -C "$REPO_ROOT" rev-parse HEAD)}"
+    compile_one "$BUILD_DIR/virtual_ios.c" "virtual" -fsyntax-only -include "$OBJ_DIR/native-provenance.generated.h"
+    compile_one "$BUILD_DIR/server_ios.c" "server" -fsyntax-only
+    exit 0
+fi
+
 # iOS-Madeira 2026-07-05 (Steam S0): compile a DLL's unix side into
 # libntdll_unix.a. Args: src, obj-name, funcs-prefix, extra flags...
 # The __wine_unix_call_funcs tables are renamed per-lib (they'd collide

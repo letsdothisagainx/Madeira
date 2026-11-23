@@ -36,6 +36,8 @@ bash "$ROOT/tools/check-prefix-template.sh" "$ROOT/app/Madeira/prefix-template.t
 "$ROOT/build/madeira-dock/build.sh"
 "$ROOT/build/wow64-probe/build.sh"
 "$ROOT/tools/build/build-wine.sh"
+"$ROOT/build/ntdll-unix/build.sh" --syntax-only-core
+"$ROOT/tools/build/check-run-evidence-ios.sh"
 "$ROOT/tools/build/build-wow64-io.sh"
 "$ROOT/tools/build/build-scm-rpc.sh"
 "$ROOT/build/wine-pe/build-security-compat.sh"

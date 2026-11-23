@@ -14680,7 +14680,7 @@ static inline UINT64 maskbits( size_t idx )
 /***********************************************************************
  *           set_arm64ec_range
  */
-static BOOL set_vprot_evidence_impl( struct file_view *view, void *base, size_t size, BYTE vprot );  /* fwd-decl */
+static BOOL set_vprot( struct file_view *view, void *base, size_t size, BYTE vprot );  /* fwd-decl */
 static void ios_swap_release_range( void *base, size_t size, int copy_back );   /* ml1077 fwd-decls */
 static int ios_swap_overlaps( const void *base, size_t size );
 static void ios_swap_init( void );
@@ -14710,12 +14710,7 @@ static void set_arm64ec_range( const void *addr, size_t size )
     }
     else map[pos] |= maskbits( idx ) & ~maskbits( end );
 }
-static BOOL set_vprot( struct file_view *view, void *base, size_t size, BYTE vprot )
-{
-    uint64_t token=ios_evidence_begin(2,(uintptr_t)base,size,view ? view->ios_evidence_id : 0,1);
-    BOOL ret=set_vprot_evidence_impl(view,base,size,vprot); int saved=errno;
-    ios_evidence_end(token,ret ? 0 : -1,ret ? 0 : saved);errno=saved;return ret;
-}
+
 
 
 /* Exported: mark an arbitrary range (e.g. hand-written stubs in the pool's
@@ -21766,7 +21761,7 @@ static int mprotect_range( void *base, size_t size, BYTE set, BYTE clear )
  *
  * Change the protection of a range of pages.
  */
-static BOOL set_vprot( struct file_view *view, void *base, size_t size, BYTE vprot )
+static BOOL set_vprot_evidence_impl( struct file_view *view, void *base, size_t size, BYTE vprot )
 {
     if (!use_kernel_writewatch && view->protect & VPROT_WRITEWATCH)
     {
@@ -21780,6 +21775,12 @@ static BOOL set_vprot( struct file_view *view, void *base, size_t size, BYTE vpr
         set_page_vprot( base, size, vprot );
     }
     return !mprotect_range( base, size, 0, 0 );
+}
+static BOOL set_vprot( struct file_view *view, void *base, size_t size, BYTE vprot )
+{
+    uint64_t token=ios_evidence_begin(2,(uintptr_t)base,size,view ? view->ios_evidence_id : 0,1);
+    BOOL ret=set_vprot_evidence_impl(view,base,size,vprot); int saved=errno;
+    ios_evidence_end(token,ret ? 0 : -1,ret ? 0 : saved);errno=saved;return ret;
 }
 
 

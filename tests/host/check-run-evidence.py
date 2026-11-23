@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Actual recorder, ordinary metadata fixtures only. Never execute guest code."""
 from pathlib import Path
-import os,shutil,subprocess,tempfile,argparse
+import os,shutil,subprocess,tempfile,argparse,re
 r=Path(__file__).resolve().parents[2]
 p=argparse.ArgumentParser();p.add_argument('--require-swift',action='store_true');a=p.parse_args()
 with tempfile.TemporaryDirectory() as d:
@@ -9,6 +9,8 @@ with tempfile.TemporaryDirectory() as d:
     subprocess.run([os.getenv('CC','cc'),'-std=c11','-O2','-Wall','-Wextra','-Werror','-pthread','-I'+str(r/'build/ntdll-unix'),str(r/'tests/host/run_evidence_ring_test.c'),'-o',str(t/'ring')],check=True)
     subprocess.run([str(t/'ring')],check=True)
     source=(r/'build/ntdll-unix/virtual_ios.c').read_text()
+    for function in ['set_vprot','set_vprot_evidence_impl','decommit_pages','decommit_pages_evidence_impl']:
+        assert len(re.findall(r'^static (?:BOOL|NTSTATUS) '+function+r'\([^;]+?\)\n\{',source,re.M))==1, function+' body/prototype confused'
     begin=source.index('void ios_evidence_access(');end=source.index('\n}',begin)+2
     access=source[begin:end]
     assert 'pthread_mutex_trylock' in access and 'mach_vm_region_recurse' in access
