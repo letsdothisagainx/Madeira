@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: publish-ipa-90ec5b64
+  group: publish-ipa-fed11839
   cancel-in-progress: false
 
 jobs:
@@ -22,10 +22,10 @@ jobs:
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
-      SOURCE_REVISION: 90ec5b64cb3048c25055281e612257131db450d9
-      SOURCE_RUN: '45098761826'
-      SOURCE_UUID: 12241A2B-D7F0-3253-BF69-B81E5ECBF19F
-      RELEASE_TAG: ipa-90ec5b64
+      SOURCE_REVISION: fed1183934f481c617562e66ecbb6a75315a7553
+      SOURCE_RUN: '45262074228'
+      SOURCE_UUID: 9F3C8A5B-A16D-3195-955C-4AAC1268B3C6
+      RELEASE_TAG: ipa-fed11839
     steps:
       - name: Require the exact successful build and artifact
         run: |
@@ -55,7 +55,7 @@ jobs:
           PY
       - uses: actions/checkout@v4
         with:
-          ref: 90ec5b64cb3048c25055281e612257131db450d9
+          ref: fed1183934f481c617562e66ecbb6a75315a7553
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
@@ -83,39 +83,43 @@ jobs:
           assert package['nativeUUID'] == os.environ['SOURCE_UUID']
           print('PASS existing installation identity and compiled scoped recovery/pressure producers')
           PY
+          python3 delivery-tools/tools/check-run-evidence-package.py --ipa release-output/Madeira.ipa > release-output/run-evidence-package.json
           (cd release-output && sha256sum Madeira.ipa > SHA256SUMS)
       - name: Publish the same IPA as a stable prerelease asset
         run: |
           cat > "$RUNNER_TEMP/ipa-release-notes.txt" <<'NOTES'
-          Installable Madeira Run16 instruction-path candidate from source 90ec5b64cb3048c25055281e612257131db450d9.
+          Installable Madeira Run17 live-mapping/evidence candidate from source fed1183934f481c617562e66ecbb6a75315a7553.
 
-          IPA build: https://github.com/letsdothisagainx/Madeira/actions/runs/45098761826
-          Focused Linux/macOS checks: https://github.com/letsdothisagainx/Madeira/actions/runs/45098595719
+          IPA build: https://github.com/letsdothisagainx/Madeira/actions/runs/45262074228
+          Focused normal Linux/macOS and actual iPhone SDK checks: https://github.com/letsdothisagainx/Madeira/actions/runs/45262069313
+          Native UUID: 9F3C8A5B-A16D-3195-955C-4AAC1268B3C6
 
-          CS2 alone merges disablelrcpc2 into its initialized FEX configuration before host-feature selection and creation of its JIT context. Only the conflicting enablelrcpc2 bit is removed; unrelated overrides, TSO and half-barrier settings remain intact. Steam and other executable contexts keep their existing feature selection. No host-wide environment variable is changed and no AppConfig JSON lookup is required.
+          Run17 confirms the earlier CS2 STLR fallback was active and did not remove the kernel-heavy stall. All five highlighted effective addresses overlap one historical shared-file mapping; the export cannot establish its later live backing/protection state. No kernel diagnosis or repaired gameplay is claimed, and no backing policy, instruction selection, recovery eligibility, reserve, renderer/network setting or JIT partition is changed.
 
-          The initializer now owns the executable basename: the prior string_view referred to a temporary full-path string. This establishes a valid name throughout configuration loading and the process-specific match. CS2 starts a fresh translation context and its experimental persistent-code-cache path is gated off; no installed files, account data or caches are deleted.
+          This candidate keeps existing main/watched-worker observations rolling after the old 1200-sample limit. After the existing target resume, a nonblocking bookkeeping snapshot and bounded Mach region query preserve current allocation/extent identities, owner, guest/host protection and disposition metadata with separate timestamps and inconsistency/availability states. Fixed native records expose slow/error/in-flight map, protection, decommit, discard and punch operations without formatting or filesystem work in VM critical sections. Operation tokens are distinct from native thread lifetime IDs.
 
-          Normal host validation executes the staged profile, pinned CPUFeatures selection, the actual scalar StoreMemTSO body and real FEX CodeEmitter headers. It reports LRCPC2=false, tso=true and halfbar=true for CS2, verifies unaffected other guests and emits fresh ARM64 STLR bytes. Captured baseline 99000356/d90000d3 becomes 889fff56/c89ffcd3, with the existing NOP slots retained. Those bytes are inspected rather than executed; no protected-memory, page-revocation or deliberate crash/fault experiment is requested.
+          The existing Export Run button automatically packages typed rolling history, live access metadata, frame/paging/CPU/memory/recovery progress, console-derived attempts/transitions, bounded resource-error summaries, runtime/component/module metadata and available MetricKit summaries. A previous incident run and the separately identified immediately preceding native log are preserved. Unknown termination stays unknown; console timestamps are separate from parsing time. Data missing from an observer is not synthesized as zero.
 
-          This is an instruction-path hypothesis, not a demonstrated iOS kernel diagnosis or a playable-gameplay claim. The tested archive had short sampled recovery holds but kernel-heavy aligned stores and a remote timeout. The new actual CS2/iPhone runtime feature record, frame times and networking outcome still need to be observed after installation.
+          Recording has bounded native buffers and less than 16 MiB persisted evidence per retained run. Native/Swift allocator overhead and iPhone recording cost remain unmeasured. No guest payload reads, extra capture suspension, forced faults, protection changes or kernel-stack collection are introduced. Matching symbols are a separate Madeira-native-symbols Actions artifact, referenced in package metadata. Export does not wait for system-report delivery, GPU completion or guest memory scans.
 
-          The Run15 recovery/QoS correction, physical reserve, resource lifetimes, graphics and networking timeouts remain intact. The full 1,152 MiB JIT pool and 768/384 MiB partition, existing code-buffer reuse, FEX revision, bundle identifier, Wine prefix, game files, Steam session and configuration are preserved. Install over the existing app with the same signing identity; do not uninstall or delete its data.
+          Normal C/Swift fixtures cover actual after-resume mapping observation, busy locks/lease changes, nonblocking producer contention, rotation, identities/nulls, redaction, clocks, deduplication, incomplete-run retention, disk limits and the existing streaming ZIP/share/cancellation path. The actual iPhone SDK API type-check and final native/app packaging checks pass. No deliberate crash, protected-memory, page-revocation, fault-injection or execution of captured instructions is used.
 
-          Publication verifies the actual built IPA source/native provenance, native UUID, immutable artifact digest, bundle identity, compiled recovery producer, and the new policy marker in the real ARM64EC FEX hybrid module. Its CPU SHA256 is recorded in recovery-package.json. An unauthenticated public download is compared byte for byte with the built IPA.
+          The full 1152 MiB JIT pool (768/384), recovery/QoS correction, code-buffer reuse, TSO correctness, memory reserve, GPU lifetimes, installed files, Steam session, prefix, input and bundle identifier are preserved. Install over the existing application using the same signing identity; do not uninstall or delete data.
 
-          Device comparison: use the same Mirage sequence. Assess connection-to-activation, post-activation main-thread user/kernel time, Present gaps, texture errors, responsive team selection and a sustained round without disconnecting. If kernel-heavy stalls persist despite confirmed fallback, investigate backing/mapping next instead of changing recovery polling. No texture-memory repair is inferred from this run's zero logged allocation errors.
+          Publication verifies the source, actual native UUID/component provenance, linked recorder/consumer, immutable artifact digest and bundle identity. The unauthenticated public download is compared byte for byte with the built IPA.
 
-          Details: https://github.com/letsdothisagainx/Madeira/blob/90ec5b64cb3048c25055281e612257131db450d9/docs/run16-cs2-stlr-candidate-20261123.md
+          Device acceptance remains unverified: use the same remote Mirage sequence; check activation duration, main-thread user/kernel time and live mapping metadata, Present gaps, textures, responsive team selection, sustained gameplay through a round and a clean return/changelevel. Menu FPS, a build, or a richer ZIP does not prove the stall is fixed.
 
-          Download Madeira.ipa below. SHA256SUMS verifies its bytes.
+          Details: https://github.com/letsdothisagainx/Madeira/blob/fed1183934f481c617562e66ecbb6a75315a7553/docs/cs2-run17-live-mapping-evidence.md
+
+          Run CS2, encounter the issue, tap Export Run, share the single ZIP. Download Madeira.ipa below; SHA256SUMS verifies the bytes.
           NOTES
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title 'Madeira 90ec5b64 - Run16 CS2 STLR candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt"
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title 'Madeira fed11839 - Run17 live mapping evidence candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt"
           else
-            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title 'Madeira 90ec5b64 - Run16 CS2 STLR candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title 'Madeira fed11839 - Run17 live mapping evidence candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
           fi
-          gh release upload "$RELEASE_TAG" release-output/Madeira.ipa release-output/SHA256SUMS release-output/recovery-package.json --repo "$GITHUB_REPOSITORY" --clobber
+          gh release upload "$RELEASE_TAG" release-output/Madeira.ipa release-output/SHA256SUMS release-output/recovery-package.json release-output/run-evidence-package.json --repo "$GITHUB_REPOSITORY" --clobber
           gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
       - name: Verify the public download without authentication
         run: |
