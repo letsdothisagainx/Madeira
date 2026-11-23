@@ -240,12 +240,6 @@ enum RunDiagnostics {
             else { typedState = "partially-omitted-total-byte-budget" }
             typedSources.append(["entry": "vac/" + entry.name, "bytes": entry.data.count, "state": included ? "included" : "omitted-total-byte-budget"])
         }
-        if !evidenceFiles.isEmpty {
-            // This is the immediately preceding native log, which may differ
-            // from the older pinned incident. Keep it separately named and do
-            // not assign its counters to the current/pinned structured run.
-            try consume("immediately-previous-native-session", "madeira-log.prev.txt", min(4 << 20, limits.mainBytes))
-        }
         try consume("madeira-session", "madeira-log.txt", limits.mainBytes)
         for (index, install) in ["Program Files (x86)/Steam", "Program Files/Steam"].enumerated() {
             let base = "wine/drive_c/" + install + "/", suffix = index == 0 ? "" : "-alternate-install"
@@ -575,6 +569,12 @@ enum RunDiagnostics {
             catch is CancellationError { throw Failure.cancelled }
             catch { throw Failure.stage("compressing run evidence", (error as NSError).code) }
             summary["source"] = id; summary["entry"] = name; sources.append(summary); used += bytes
+        }
+        if !evidenceFiles.isEmpty {
+            // This is the immediately preceding native log, which may differ
+            // from the older pinned incident. Keep it separately named and do
+            // not assign its counters to the current/pinned structured run.
+            try consume("immediately-previous-native-session", "madeira-log.prev.txt", min(4 << 20, limits.mainBytes))
         }
         try consume("madeira-session", "madeira-log.txt", limits.mainBytes)
         for (index, install) in ["Program Files (x86)/Steam", "Program Files/Steam"].enumerated() {
