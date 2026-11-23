@@ -23,6 +23,7 @@
 #endif
 
 #include "config.h"
+#include "run_evidence.h"
 #ifdef WINE_IOS
 #ifndef MADEIRA_NATIVE_VIRTUAL_SOURCE_SHA256
 #define MADEIRA_NATIVE_VIRTUAL_SOURCE_SHA256 "unknown"
@@ -9299,12 +9300,15 @@ struct builtin_module
 
 static struct list builtin_modules = LIST_INIT( builtin_modules );
 
+static uint64_t ios_ev_vm_generation, ios_ev_allocation_id, ios_ev_extent_id;
+
 struct file_view
 {
     struct wine_rb_entry entry;  /* entry in global view tree */
     void         *base;          /* base address */
     size_t        size;          /* size in bytes */
     unsigned int  protect;       /* protection for all pages at allocation time and SEC_* flags */
+    uint64_t ios_evidence_id, ios_evidence_owner;
     unsigned int  ios_flags;     /* IOS_VIEW_* */
     void         *ios_fex_owner; /* native FEX data only; never guest/image/JIT aliases */
     unsigned long long ios_fex_lease;
@@ -14676,7 +14680,7 @@ static inline UINT64 maskbits( size_t idx )
 /***********************************************************************
  *           set_arm64ec_range
  */
-static BOOL set_vprot( struct file_view *view, void *base, size_t size, BYTE vprot );  /* fwd-decl */
+static BOOL set_vprot_evidence_impl( struct file_view *view, void *base, size_t size, BYTE vprot );  /* fwd-decl */
 static void ios_swap_release_range( void *base, size_t size, int copy_back );   /* ml1077 fwd-decls */
 static int ios_swap_overlaps( const void *base, size_t size );
 static void ios_swap_init( void );
@@ -14706,6 +14710,13 @@ static void set_arm64ec_range( const void *addr, size_t size )
     }
     else map[pos] |= maskbits( idx ) & ~maskbits( end );
 }
+static BOOL set_vprot( struct file_view *view, void *base, size_t size, BYTE vprot )
+{
+    uint64_t token=ios_evidence_begin(2,(uintptr_t)base,size,view ? view->ios_evidence_id : 0,1);
+    BOOL ret=set_vprot_evidence_impl(view,base,size,vprot); int saved=errno;
+    ios_evidence_end(token,ret ? 0 : -1,ret ? 0 : saved);errno=saved;return ret;
+}
+
 
 /* Exported: mark an arbitrary range (e.g. hand-written stubs in the pool's
  * reserved page) as ARM64EC code, committing the covering bitmap pages
@@ -16557,6 +16568,7 @@ static void ios_vh_dump( const void *addr )
  */
 static void delete_view( struct file_view *view ) /* [in] View */
 {
+    __atomic_add_fetch(&ios_ev_vm_generation,1,__ATOMIC_RELEASE);
     ios_vh_note( 'd', view );   /* madeira-bcd: view history */
     /* ml989: entered BEFORE any field of `view` is read, so "call never
      * entered" is distinguishable from "died reading the view". */
@@ -16658,6 +16670,9 @@ static NTSTATUS create_view( struct file_view **view_ret, void *base, size_t siz
     view->base    = base;
     view->size    = size;
     view->protect = vprot;
+    view->ios_evidence_id = ++ios_ev_allocation_id;
+    view->ios_evidence_owner = (uintptr_t)ios_jit_current_peb();
+    __atomic_add_fetch(&ios_ev_vm_generation,1,__ATOMIC_RELEASE);
     view->ios_flags = 0;
     view->ios_fex_owner = NULL;
     view->ios_fex_lease = 0;
@@ -20817,7 +20832,7 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
                 if (mn && (strstr(mn, "d3d11") || strstr(mn, "D3D11")))
                     ios_fast_footprint = 1;
             }
-            dprintf(2, "[jit-pool] image %p+0x%lx (%s) → pool %p used=0x%lx/0x%lx tramp+0x%lx%s\n",
+            dprintf(2, "[jit-pool] image %p+0x%lx (%s) -> pool %p used=0x%lx/0x%lx tramp+0x%lx%s\n",
                     image_base, (unsigned long)image_size,
                     ios_pe_module_name( image_base, image_size ), (char *)jit_rx_base + offset,
                     (unsigned long)image_used, (unsigned long)image_budget,
@@ -21690,10 +21705,17 @@ static int ios_protect_alias_run(uintptr_t base, size_t size, int prot, int alia
     errno = saved_errno;
     return result;
 }
+static int ios_ev_protect(void *base, size_t size, int prot)
+{
+    uint64_t token=ios_evidence_begin(3,(uintptr_t)base,size,
+        __atomic_add_fetch(&ios_ev_vm_generation,1,__ATOMIC_RELEASE),1);
+    int result=mprotect_exec(base,size,prot), saved=errno;
+    ios_evidence_end(token,result,result ? saved : 0); errno=saved; return result;
+}
 static int ios_protect_host_range(void *base, size_t size, int prot)
 {
     if (!(prot & PROT_WRITE) || !ios_jit_anon_alias_overlaps(base,size,NULL,NULL))
-        return mprotect_exec(base,size,prot);
+        return ios_ev_protect(base,size,prot);
     return madeira_protect_alias_writes((uintptr_t)base,size,host_page_size,prot,
                                         ios_protect_page_is_alias,ios_protect_alias_run,NULL);
 }
@@ -23480,7 +23502,7 @@ static uint64_t ios_swap_cap, ios_swap_bump;
  * decommit inside it retains zero-filled file backing. key: the size asked for
  * (reservation or commit), the churn filter's unit; born: ns when it was backed
  * (ml1258). img: an image section's (madeira-bcd swap-images, ios_swap_image_map). */
-struct ios_swap_extent { char *va; size_t len; uint64_t off; int resv; size_t key; uint64_t born; int img; };
+struct ios_swap_extent { uint64_t evidence_id; char *va; size_t len; uint64_t off; int resv; size_t key; uint64_t born; int img; };
 static struct ios_swap_extent ios_swap_ext[16384];
 static unsigned ios_swap_n;
 static struct { uint64_t off, len; } ios_swap_free[8192];
@@ -23753,10 +23775,27 @@ static int ios_swap_pq_state;   /* 0 not started, 1 running, -1 off */
 static unsigned long long ios_swap_pq_done, ios_swap_punch_slow, ios_swap_punch_max_ms;
 static unsigned long long ios_swap_decommit_remaps, ios_swap_decommit_fallbacks;
 
+static int ios_ev_discard(void *base, size_t size, int flags)
+{
+    uint64_t token=ios_evidence_begin(4,(uintptr_t)base,size,
+        __atomic_load_n(&ios_ev_vm_generation,__ATOMIC_RELAXED),1);
+    int result=msync(base,size,flags), saved=errno;
+    ios_evidence_end(token,result,result ? saved : 0); errno=saved; return result;
+}
+static void *ios_ev_swap_map(void *base, size_t size, int prot, uint64_t off)
+{
+    uint64_t token=ios_evidence_begin(1,(uintptr_t)base,size,
+        __atomic_load_n(&ios_ev_vm_generation,__ATOMIC_RELAXED),1);
+    void *result=mmap(base,size,prot,MAP_FIXED|MAP_SHARED,ios_swap_fd,(off_t)off);
+    int saved=errno;
+    ios_evidence_end(token,result==MAP_FAILED ? -1 : 0,result==MAP_FAILED ? saved : 0);
+    errno=saved; return result;
+}
 static int ios_swap_punch_timed( uint64_t off, uint64_t len, const char *why )
 {
     struct fpunchhole ph;
     uint64_t t0 = ios_swap_now_ns(), ms;
+    uint64_t evidence=ios_evidence_begin(5,0,len,off,strcmp(why,"deferred") ? 1 : 0);
     int rc;
     memset( &ph, 0, sizeof(ph) );
     ph.fp_offset = (off_t)off; ph.fp_length = (off_t)len;
@@ -23766,6 +23805,7 @@ static int ios_swap_punch_timed( uint64_t off, uint64_t len, const char *why )
         if (said++ < 8) dprintf( 2, "[swap] ml1291 F_PUNCHHOLE (%s) off=%llu len=%llu failed errno=%d\n",
                                  why, (unsigned long long)off, (unsigned long long)len, errno );
     }
+    { int saved=errno; ios_evidence_end(evidence,rc,rc ? saved : 0); errno=saved; }
     ms = (ios_swap_now_ns() - t0) / 1000000;
     if (ms > ios_swap_punch_max_ms) ios_swap_punch_max_ms = ms;
     if (ms >= 100 && (++ios_swap_punch_slow <= 16 || (ios_swap_punch_slow % 64) == 0))
@@ -23957,7 +23997,7 @@ static int ios_swap_map( void *base, size_t size, int unix_prot )
     len = he - hs;
     off = ios_swap_take( len );
     if (off == (uint64_t)-1) { ios_swap_refused++; return IOS_SW_REFUSED; }
-    p = mmap( hs, len, unix_prot, MAP_FIXED | MAP_SHARED, ios_swap_fd, (off_t)off );
+    p = ios_ev_swap_map( hs, len, unix_prot, off );
     if (p == MAP_FAILED)
     {
         static int said;
@@ -23965,6 +24005,8 @@ static int ios_swap_map( void *base, size_t size, int unix_prot )
         ios_swap_give( off, len );
         return IOS_SW_MAPFAIL;
     }
+    ios_swap_ext[ios_swap_n].evidence_id = ++ios_ev_extent_id;
+    __atomic_add_fetch(&ios_ev_vm_generation,1,__ATOMIC_RELEASE);
     ios_swap_ext[ios_swap_n].va = hs; ios_swap_ext[ios_swap_n].len = len; ios_swap_ext[ios_swap_n].off = off;
     ios_swap_ext[ios_swap_n].resv = 0; ios_swap_ext[ios_swap_n].key = size; ios_swap_ext[ios_swap_n].img = 0;
     ios_swap_ext[ios_swap_n].born = ios_swap_broad ? ios_swap_now_ns() : 0; ios_swap_n++;
@@ -24066,6 +24108,7 @@ static void ios_swap_release_range( void *base, size_t size, int copy_back )
     unsigned long long releases_before = ios_swap_releases;
     uint64_t noted_born = 0;   /* ml1258: pieces of one split extent are one death */
     if (ios_swap_fd < 0 || !ios_swap_n) return;
+    __atomic_add_fetch(&ios_ev_vm_generation,1,__ATOMIC_RELEASE);
     if (copy_back)
     {
         lo = (char *)((uintptr_t)lo & ~(uintptr_t)host_page_mask);
@@ -24101,7 +24144,7 @@ static void ios_swap_release_range( void *base, size_t size, int copy_back )
             /* ml1293: the range's contents are dead (decommit/release), but its dirty pages would
              * still be written to the file by the pageout daemon -- I/O that slowed every other
              * fault on the file and the punch behind it. Discard them first: no writeback. */
-            if (!copy_back) msync( oa, olen, MS_KILLPAGES );
+            if (!copy_back) ios_ev_discard( oa, olen, MS_KILLPAGES );
             ios_swap_give( ooff, olen );
             ios_swap_bytes -= olen;
             if (ios_swap_ext[i].img) ios_swap_img_bytes -= olen;   /* madeira-bcd swap-images */
@@ -24174,14 +24217,15 @@ static int ios_swap_punch_resv( char *lo, size_t len )
         extra += (oa > a) + (ob < b);
     }
     if (covered != len) return 0;
+    __atomic_add_fetch(&ios_ev_vm_generation,1,__ATOMIC_RELEASE);
 
     if (extra <= 16384 - original_n && ios_swap_punch_room( parts ) &&
         (fresh = ios_swap_take( len )) != (uint64_t)-1)
     {
         /* Only dead full host pages are discarded. Never touch replacement
          * pages: the worker receives old file offsets, not these addresses. */
-        if (!msync( lo, len, MS_KILLPAGES ) &&
-            mmap( lo, len, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_SHARED, ios_swap_fd, (off_t)fresh ) != MAP_FAILED)
+        if (!ios_ev_discard( lo, len, MS_KILLPAGES ) &&
+            ios_ev_swap_map( lo, len, PROT_READ | PROT_WRITE, fresh ) != MAP_FAILED)
         {
             for (i = 0; i < original_n; i++)
             {
@@ -24206,6 +24250,7 @@ static int ios_swap_punch_resv( char *lo, size_t len )
                 ios_swap_ext[i].va = oa;
                 ios_swap_ext[i].len = dead;
                 ios_swap_ext[i].off = fresh + (oa - lo);
+                ios_swap_ext[i].evidence_id = ++ios_ev_extent_id;
                 /* Queue room was reserved by the producer's virtual lock.
                  * If its invariant is ever violated, leak/quarantine the old
                  * offset honestly rather than reusing dirty or live backing. */
@@ -24223,6 +24268,7 @@ static int ios_swap_punch_resv( char *lo, size_t len )
                     if (a >= lo && b <= hi) continue;
                     ios_swap_ext[out++] = ios_swap_ext[i];
                 }
+                merged.evidence_id = ++ios_ev_extent_id;
                 merged.va = lo; merged.len = len; merged.off = fresh;
                 ios_swap_ext[out++] = merged;
                 ios_swap_n = out;
@@ -24250,7 +24296,7 @@ static int ios_swap_punch_resv( char *lo, size_t len )
         char *a = ios_swap_ext[i].va, *b = a + ios_swap_ext[i].len;
         char *oa = a > lo ? a : lo, *ob = b < hi ? b : hi;
         if (oa >= ob) continue;
-        msync( oa, ob - oa, MS_KILLPAGES );
+        ios_ev_discard( oa, ob - oa, MS_KILLPAGES );
         if (ios_swap_punch_timed( ios_swap_ext[i].off + (oa - a), ob - oa, "decommit" )) return 0;
     }
     if (mprotect( lo, len, PROT_READ | PROT_WRITE )) return 0;
@@ -24463,7 +24509,7 @@ static int ios_swap_image_map( char *va, size_t len, uint64_t off )
         ios_swap_img_refused++;
         return 0;
     }
-    p = mmap( va, len, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_SHARED, ios_swap_fd, (off_t)off );
+    p = ios_ev_swap_map( va, len, PROT_READ | PROT_WRITE, off );
     if (p == MAP_FAILED)
     {
         static int said;
@@ -24472,6 +24518,8 @@ static int ios_swap_image_map( char *va, size_t len, uint64_t off )
         ios_swap_img_refused++;
         return 0;
     }
+    ios_swap_ext[ios_swap_n].evidence_id = ++ios_ev_extent_id;
+    __atomic_add_fetch(&ios_ev_vm_generation,1,__ATOMIC_RELEASE);
     ios_swap_ext[ios_swap_n].va = va; ios_swap_ext[ios_swap_n].len = len; ios_swap_ext[ios_swap_n].off = off;
     ios_swap_ext[ios_swap_n].resv = 0; ios_swap_ext[ios_swap_n].key = 0; ios_swap_ext[ios_swap_n].born = 0;
     ios_swap_ext[ios_swap_n].img = 1; ios_swap_n++;
@@ -24616,7 +24664,7 @@ static size_t ios_decommit_zero_committed( char *start, char *end )
     return zeroed;
 }
 
-static NTSTATUS decommit_pages( struct file_view *view, char *base, size_t size )
+static NTSTATUS decommit_pages_evidence_impl( struct file_view *view, char *base, size_t size )
 {
     char *host_end, *host_start = (char *)ROUND_SIZE( 0, base, host_page_mask );
     /* ml293 probe state: which branch honoured the zero contract, and where to read back. */
@@ -24857,6 +24905,13 @@ static NTSTATUS decommit_pages( struct file_view *view, char *base, size_t size 
     if (host_start < host_end) kernel_writewatch_register_range( view, host_start, host_end - host_start );
     return STATUS_SUCCESS;
 }
+static NTSTATUS decommit_pages( struct file_view *view, char *base, size_t size )
+{
+    uint64_t token=ios_evidence_begin(6,(uintptr_t)base,size,view ? view->ios_evidence_id : 0,1);
+    NTSTATUS ret=decommit_pages_evidence_impl(view,base,size); int saved=errno;
+    ios_evidence_end(token,ret ? -1 : 0,ret ? saved : 0);errno=saved;return ret;
+}
+
 
 
 /***********************************************************************
@@ -39341,3 +39396,78 @@ NTSTATUS WINAPI NtWow64IsProcessorFeaturePresent( UINT feature )
 }
 
 #endif  /* _WIN64 */
+
+/* Passive Run17 access attribution. Called AFTER the existing observer resumes
+ * its target. No payload reads, protection changes, page-in or blocking lock.
+ * Allocation/extent IDs describe lifetimes; vm-generation is a conservative
+ * process-wide mutation epoch, not proof of an unchanged Mach mapping. */
+void ios_evidence_access(struct ios_evidence_record *r)
+{
+    uintptr_t ea=r->w[12], host=ea & ~(uintptr_t)host_page_mask;
+    uint64_t started=ios_evidence_now(), before=0;
+    struct file_view *view;
+    unsigned i;
+    int saved=errno;
+    mach_vm_address_t address=ea;
+    mach_vm_size_t length=0;
+    natural_t depth=0;
+    vm_region_submap_info_data_64_t info;
+    mach_msg_type_number_t count=VM_REGION_SUBMAP_INFO_COUNT_64;
+    kern_return_t kr;
+    memset(r->w+14,0,(IOS_EVIDENCE_WORDS-14)*sizeof(uint64_t));
+    r->w[45]=host_page_size; r->w[46]=page_size;
+    r->w[37]=started; r->w[41]=r->w[13] ? ea % r->w[13] : 0;
+    r->w[42]=r->w[13] && r->w[13]-1 > host_page_mask-(ea & host_page_mask);
+    if (pthread_mutex_trylock(&virtual_mutex)) { r->w[35]=1; goto done; }
+    before=__atomic_load_n(&ios_ev_vm_generation,__ATOMIC_ACQUIRE); r->w[17]=before;
+    view=find_view((void *)ea,1);
+    if (view)
+    {
+        r->w[14]=(uintptr_t)view->base; r->w[15]=view->size; r->w[16]=view->ios_evidence_id;
+        r->w[22]=view->ios_evidence_owner; r->w[24]=view->protect; r->w[40]=view->ios_flags;
+        r->w[19]=(view->protect & SEC_IMAGE) ? 3 : (view->protect & SEC_FILE) ? 5 : 1;
+        for (i=0;i<4 && i*page_size<host_page_size;++i)
+            r->w[25] |= (uint64_t)get_page_vprot((void *)(host+i*page_size)) << (8*i);
+        for (i=0;i<ios_swap_n;++i)
+            if (ea >= (uintptr_t)ios_swap_ext[i].va && ea-(uintptr_t)ios_swap_ext[i].va < ios_swap_ext[i].len)
+            { r->w[19]=2; r->w[20]=ios_swap_ext[i].evidence_id;
+              r->w[21]=ios_swap_ext[i].off + ea-(uintptr_t)ios_swap_ext[i].va; break; }
+        if (ios_swap_is_fexjit(ea,1)) r->w[19]=4;
+        r->w[35]=3;
+    }
+    else r->w[35]=2;
+    pthread_mutex_unlock(&virtual_mutex);
+    /* Bounded metadata-only query. A submap is reported as unsupported rather
+     * than recursively walking the address space. No lock spans this call. */
+    kr=mach_vm_region_recurse(mach_task_self(),&address,&length,&depth,
+                             (vm_region_recurse_info_t)&info,&count);
+    r->w[36]=kr;
+    if (kr==KERN_SUCCESS && address<=ea && ea-address<length && !info.is_submap)
+    {
+        r->w[26]=address; r->w[27]=length; r->w[28]=info.protection; r->w[29]=info.max_protection;
+        r->w[30]=info.share_mode; r->w[31]=info.external_pager; r->w[32]=info.pages_resident;
+        r->w[33]=info.pages_swapped_out; r->w[34]=info.pages_dirtied; r->w[43]=1;
+        r->w[44]=info.offset;
+    }
+    r->w[18]=__atomic_load_n(&ios_ev_vm_generation,__ATOMIC_ACQUIRE);
+    r->w[39]=before==r->w[18] ? 1 : 2;
+ done:
+    { extern unsigned long long ios_thread_process_try_observation_lease(void *,unsigned);
+      uint64_t lease=ios_thread_process_try_observation_lease((void *)(uintptr_t)r->w[4],r->w[6]);
+      r->w[47]=!lease ? 0 : lease==r->w[5] ? 1 : 2; }
+    r->w[38]=ios_evidence_now()-started; ios_evidence_emit(r); errno=saved;
+}
+void madeira_evidence_backing(void)
+{
+    struct ios_evidence_record r={{0}};
+    int saved=errno;
+    r.w[1]=IOS_EV_BACKING;
+    if (pthread_mutex_trylock(&virtual_mutex)) { r.w[9]=1; ios_evidence_emit(&r); errno=saved; return; }
+    r.w[9]=2; r.w[10]=ios_swap_bytes; r.w[11]=ios_swap_n; r.w[12]=ios_swap_nfree;
+    r.w[13]=ios_swap_bump; r.w[14]=ios_swap_cap; r.w[15]=ios_swap_refused;
+    r.w[16]=ios_swap_punch_leaks; r.w[17]=ios_ev_vm_generation; r.w[18]=host_page_size;
+    if (!pthread_mutex_trylock(&ios_swap_pq_lock))
+    { r.w[19]=1; r.w[20]=ios_swap_pq_n; pthread_mutex_unlock(&ios_swap_pq_lock); }
+    for (unsigned i=0;i<ios_swap_nfree;++i) r.w[21]+=ios_swap_free[i].len;
+    pthread_mutex_unlock(&virtual_mutex); ios_evidence_emit(&r); errno=saved;
+}

@@ -461,7 +461,7 @@ enum RunDiagnostics {
     }
 
     static func export(documents: URL, temporaryDirectory: URL, bundleInfo: [String: Any] = [:],
-                       limits: Limits = Limits(), cancelled: () -> Bool = { false }) throws -> URL {
+                       limits: Limits = Limits(), cancelled: () -> Bool = { false }, evidenceFiles: [String: URL] = [:]) throws -> URL {
         guard limits.mainBytes > 0, limits.mainBytes <= 64 << 20, limits.consoleBytes > 0, limits.consoleBytes <= 8 << 20,
               limits.steamBytes > 0, limits.steamBytes <= 4 << 20, limits.totalBytes >= 4096, limits.totalBytes <= 96 << 20,
               limits.lines > 0, limits.lines <= 1_000_000, limits.lineBytes > 0, limits.lineBytes <= 16 << 10 else { throw Failure.unavailable }
@@ -501,6 +501,29 @@ enum RunDiagnostics {
             catch is CancellationError { throw Failure.cancelled }
             catch { throw Failure.stage("compressing run metadata", (error as NSError).code) }
             used += data.count
+        }
+        // Critical structured history is packaged first, so ancillary logs
+        // cannot crowd it out. Files are private immutable recorder snapshots.
+        var evidenceBytes = 0
+        for (name, url) in evidenceFiles.sorted(by: { $0.key < $1.key }) {
+            try check()
+            let parts = name.split(separator: "/").map(String.init)
+            let allowed = ["run-summary.json", "timeline.jsonl", "thread-frame-memory.jsonl", "memory-access.jsonl", "vm-operations.jsonl", "graphics-errors.jsonl", "graphics-summary.json", "runtime-config.json", "modules.json", "termination.json", "incident.jsonl", "system.json"]
+            guard parts.first == "evidence", allowed.contains(parts.last ?? ""),
+                  parts.count == 2 || (parts.count == 4 && parts[1] == "previous" && UUID(uuidString: parts[2]) != nil) else { continue }
+            let input = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+            guard input >= 0 else { continue }
+            let file = FileHandle(fileDescriptor: input, closeOnDealloc: true)
+            defer { try? file.close() }
+            var info = stat()
+            guard fstat(input, &info) == 0, info.st_uid == getuid(), info.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG),
+                  info.st_size >= 0, info.st_size <= 16 << 20,
+                  info.st_size <= max(0, payloadBudget - used), evidenceBytes + Int(info.st_size) <= 32 << 20 else {
+                sources.append(["source": name, "state": "structured-evidence-budget-or-file-rejected"]); continue
+            }
+            try writer.add(name: name, file: file, size: UInt64(info.st_size), cancelled: cancelled)
+            used += Int(info.st_size); evidenceBytes += Int(info.st_size)
+            sources.append(["source": name, "state": "private-typed-recorder-snapshot", "bytes": info.st_size])
         }
         var typedState = "included-separate-bounded-typed-snapshot"
         // The existing closed-schema package remains useful, but its read
@@ -569,7 +592,7 @@ enum RunDiagnostics {
             "compression": "ZIP-method-8-raw-DEFLATE", "io": "streamed-owned-files-with-fixed-64KiB-buffers-and-private-disk-spools", "sources": sources,
             "mainByteBudget": limits.mainBytes, "consoleByteBudget": limits.consoleBytes, "steamLogByteBudget": limits.steamBytes,
             "payloadByteBudget": payloadBudget, "totalPayloadByteBudget": limits.totalBytes, "lineBudgetPerSource": limits.lines, "lineByteBudget": limits.lineBytes,
-            "typedVACSnapshot": typedState, "typedVACEntries": typedSources,
+            "structuredEvidenceBytes": evidenceBytes, "typedVACSnapshot": typedState, "typedVACEntries": typedSources,
             "excluded": ["account-and-authentication-files", "cookies-and-credentials", "configuration-databases", "arbitrary-files", "symlinks-and-special-files", "external-library-links", "chat-and-secret-bearing-rows", "non-ASCII-or-overlong-rows"],
             "sanitization": "secret-bearing-and-chat-rows-omitted; identifiers-and-opaque-values-redacted; source-text-never-copied-into-manifest",
             "runtimeCoverage": "broad-sanitized-Madeira-log-including-process-module-allocator-build-and-clock-rows-when-present; not-a-complete-live-inventory",

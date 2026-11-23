@@ -145,6 +145,7 @@ static void wine_log_write(const char *fmt, ...)
 #include "cs2_observation.h"
 #ifdef WINE_IOS
 #include "cs2_stall_watch.h"
+#include "run_evidence_native.h"
 extern unsigned long long ios_thread_process_try_observation_lease(void *, unsigned);
 static void ios_cs2_stall_main_sample(mach_port_t, uint64_t);
 
@@ -152,12 +153,17 @@ static void ios_cs2_stall_main_sample(mach_port_t, uint64_t);
  * never guesses the main TID from PID arithmetic or thread creation order. */
 void ios_cs2_stall_observe_start(void *owner, unsigned pid, unsigned tid, unsigned long long lease)
 {
-    thread_identifier_info_data_t id;
+    struct ios_evidence_record ev = {{0}};
+    wine_log_write("[run-evidence-v1] abi=1 ring-records=1024 words=48 producer=try-only metadata=after-resume no-payload-reads=1");
+    thread_identifier_info_data_t id = {0};
     mach_msg_type_number_t count = THREAD_IDENTIFIER_INFO_COUNT;
     if (thread_info(pthread_mach_thread_np(pthread_self()), THREAD_IDENTIFIER_INFO,
                     (thread_info_t)&id, &count) == KERN_SUCCESS)
         ios_cs2_stall_register_main((uintptr_t)owner, pid, lease, tid,
                                     (uintptr_t)NtCurrentTeb(), id.thread_id);
+    ev.w[1]=IOS_EV_PROCESS; ev.w[4]=(uintptr_t)owner; ev.w[5]=lease; ev.w[6]=pid; ev.w[7]=tid;
+    ev.w[8]=ios_cs2_stall_find((uintptr_t)owner,pid,lease) ? id.thread_id : 0;
+    ev.w[9]=(uintptr_t)NtCurrentTeb(); ios_evidence_emit(&ev);
 }
 #endif
 #include "ddk/wdm.h"
@@ -2502,6 +2508,7 @@ unsigned long long ios_fps_cap_dxmt_pace( void )
     uint64_t now, period, slept;
     int cap;
 
+    { extern void ios_evidence_present_note(void); ios_evidence_present_note(); }
     if (!ios_fps_gov_armed) return 0;
     __atomic_add_fetch( &ios_fps_presents, 1, __ATOMIC_RELAXED );
     cap = ios_fps_cap;
@@ -7397,3 +7404,30 @@ NTSTATUS wow64_wine_server_handle_to_fd( void *args )
 }
 
 #endif /* _WIN64 */
+
+#ifdef WINE_IOS
+static uint64_t ios_ev_frame_count[IOS_CS2_STALL_PROCESSES], ios_ev_frame_ns[IOS_CS2_STALL_PROCESSES];
+void ios_evidence_present_note(void)
+{
+    uintptr_t owner=(uintptr_t)ios_jit_current_peb();
+    for (unsigned i=0;i<IOS_CS2_STALL_PROCESSES;++i)
+        if (owner && __atomic_load_n(&ios_cs2_stall_watches[i].owner,__ATOMIC_ACQUIRE)==owner)
+        { __atomic_add_fetch(&ios_ev_frame_count[i],1,__ATOMIC_RELAXED); __atomic_store_n(&ios_ev_frame_ns[i],ios_evidence_now(),__ATOMIC_RELEASE); break; }
+}
+void madeira_evidence_frame(uint64_t *out)
+{
+    uint64_t latest=0; unsigned selected=0;
+    for(unsigned i=0;i<IOS_CS2_STALL_PROCESSES;++i)
+    { uint64_t t=__atomic_load_n(&ios_ev_frame_ns[i],__ATOMIC_ACQUIRE); if(t>latest) {latest=t;selected=i;} }
+    out[0]=__atomic_load_n(&ios_ev_frame_count[selected],__ATOMIC_RELAXED); out[1]=latest; out[2]=ios_evidence_now();
+    out[3]=ios_cs2_stall_watches[selected].owner;out[4]=ios_cs2_stall_watches[selected].lease;
+}
+void madeira_evidence_host_io(uint64_t *out)
+{
+    struct rusage_info_v6 ru; int saved=errno, rc;
+    memset(&ru,0,sizeof(ru)); rc=proc_pid_rusage(getpid(),6,&ru);
+    out[0]=(int64_t)rc; out[1]=rc ? errno : 0;
+    if (!rc) {out[2]=ru.ri_pageins;out[3]=ru.ri_diskio_bytesread;out[4]=ru.ri_diskio_byteswritten;}
+    errno=saved;
+}
+#endif

@@ -63,6 +63,10 @@ static void wine_log_write(const char *format, ...)
     va_start(ap, format); vsnprintf(output, sizeof(output), format, ap); va_end(ap);
 }
 #include "actual_store_decode.h"
+#include "run_evidence.h"
+uint64_t ios_evidence_now(void) { return 123000; }
+void ios_evidence_emit(struct ios_evidence_record *r) { assert(!held); (void)r; }
+void ios_evidence_access(struct ios_evidence_record *r) { assert(!held); (void)r; }
 #include "cs2_stall_watch_native.h"
 
 int main(void)
@@ -91,7 +95,7 @@ int main(void)
         assert(ios_cs2_stall_due(&rate, (uint64_t)i * 1000000));
         assert(!ios_cs2_stall_due(&rate, (uint64_t)i * 1000000 + 999999));
     }
-    assert(!ios_cs2_stall_due(&rate, UINT64_C(5000000000)));
+    assert(ios_cs2_stall_due(&rate, UINT64_C(5000000000)));
     /* Waiting main thread is observed, not filtered as an idle thread. */
     ios_cs2_stall_main_sample(17, 71);
     assert(captures == 1 && suspended == 1 && resumed == 1 && !held);

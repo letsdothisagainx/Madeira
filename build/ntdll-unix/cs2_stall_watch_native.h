@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #ifndef MADEIRA_CS2_STALL_WATCH_NATIVE_H
 #define MADEIRA_CS2_STALL_WATCH_NATIVE_H
-/* One exact main-thread snapshot/second, <= 20 minutes per accepted process.
+/* One exact main-thread snapshot/second, rolling throughout each accepted process.
  * Reuse xprobe's existing task_threads right and enumeration. All lookups,
  * instruction/mapping reads, symbolization and logging happen with the target
  * RUNNING again. The only held operations are Mach get_state and the balanced
@@ -16,7 +16,7 @@ static void ios_cs2_stall_main_sample(mach_port_t port, uint64_t native_id)
     thread_basic_info_data_t bi;
     arm_thread_state64_t st = {0};
     mach_msg_type_number_t bic = THREAD_BASIC_INFO_COUNT, sc = ARM_THREAD_STATE64_COUNT;
-    uint64_t now, held_start = 0, held_end = 0, cpu_user, cpu_system, du = 0, ds = 0, elapsed = 0;
+    uint64_t capture_ns = 0, now, held_start = 0, held_end = 0, cpu_user, cpu_system, du = 0, ds = 0, elapsed = 0;
     uint64_t pc = 0, lr = 0, ea = 0;
     uintptr_t pe = 0;
     uint32_t insn = 0;
@@ -47,6 +47,7 @@ static void ios_cs2_stall_main_sample(mach_port_t port, uint64_t native_id)
     suspend_result = thread_suspend(port);
     if (suspend_result == KERN_SUCCESS)
     {
+        capture_ns = ios_evidence_now();
         got = thread_get_state(port, ARM_THREAD_STATE64, (thread_state_t)&st, &sc) == KERN_SUCCESS;
         resume_result = thread_resume(port);
     }
@@ -57,6 +58,20 @@ static void ios_cs2_stall_main_sample(mach_port_t port, uint64_t native_id)
         ios_ts_sym(pc, symbol, sizeof(symbol));
         ios_jit_pool_image_pc(pc, &pe);
         decoded = ios_ts_read(pc, &insn, sizeof(insn)) && ios_ldst_ea(insn, &st, &ea, &length);
+    }
+    {
+        struct ios_evidence_record ev = {{0}};
+        ev.w[1]=IOS_EV_MAIN; ev.w[4]=watch->owner; ev.w[5]=watch->lease; ev.w[6]=watch->pid;
+        ev.w[7]=watch->main.tid; ev.w[8]=native_id; ev.w[9]=capture_ns;
+        ev.w[10]=pc; ev.w[11]=insn; ev.w[12]=ea; ev.w[13]=length;
+        ev.w[14]=elapsed; ev.w[15]=du; ev.w[16]=ds; ev.w[17]=bi.run_state; ev.w[18]=bi.suspend_count;
+        ev.w[19]=got; ev.w[20]=(int64_t)suspend_result; ev.w[21]=(int64_t)resume_result;
+        ev.w[22]=held_end>=held_start ? held_end-held_start : 0; ev.w[23]=lr; ev.w[24]=pe;
+        ios_evidence_emit(&ev);
+        /* The only suspension above is already balanced. Metadata queries do
+         * not read guest data, acquire a blocking VM lock, or warm the page. */
+        if (got && resume_result == KERN_SUCCESS && decoded && length)
+        { ev.w[1]=IOS_EV_ACCESS; ev.w[2]=0; ev.w[3]=0; ios_evidence_access(&ev); }
     }
     wine_log_write("[cs2-main-progress-v1] pid=%04x tid=%04x native=%llu owner=%#llx lease=%llu sample=%u/%u interval-us=%llu user-us=%llu kernel-us=%llu run-state=%d suspend-count-before=%d host-pc=%#llx host-lr=%#llx host-sp=%#llx syscall-x16=%llu symbol=%s image-pc=%#llx captured=%d suspend-result=%d resume-result=%d held-us=%llu code-read=after-resume insn=%08x decoded-access=%d ea=%#llx bytes=%u",
         watch->pid, watch->main.tid, (unsigned long long)native_id, (unsigned long long)watch->owner,

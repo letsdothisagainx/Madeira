@@ -135,7 +135,10 @@ final class RunExportCoordinator: ObservableObject {
         // A Menu may not materialize its background anchor. A single active
         // scene is unambiguous; never send an archive to an arbitrary scene.
         if scene == nil, activeScenes.count == 1 { scene = activeScenes[0] }
-        operation.start(export: export, present: { [self] url in try await present(url) }, record: record)
+        operation.start(export: export, present: { [self] url in try await present(url) }, record: { message in
+            record(message)
+            RunEvidenceRecorder.presentation(message)
+        })
     }
 
     private func presentationRoot() throws -> UIViewController {

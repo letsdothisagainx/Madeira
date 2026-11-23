@@ -90,6 +90,7 @@ final class LogStore: ObservableObject {
             try? FileManager.default.moveItem(at: logFileURL, to: prevLogURL)
         }
         try? "".write(to: logFileURL, atomically: true, encoding: .utf8)
+        RunEvidenceRecorder.start(documents: docs, bundle: Bundle.main.infoDictionary ?? [:])
         // A session that never returned to the library (a crash, Force close) wrote
         // no madeira-summary.txt; summarize it now. A launch without a session
         // leaves the last summary in place (LogSummary.write).
@@ -206,9 +207,11 @@ final class LogStore: ObservableObject {
             try await withCheckedThrowingContinuation { continuation in
                 DispatchQueue.global(qos: .utility).async {
                     do {
+                        let evidence = try RunEvidenceRecorder.shared?.snapshot(cancelled: cancellation.isCancelled)
+                        defer { if let evidence { try? FileManager.default.removeItem(at: evidence.0) } }
                         let url = try RunDiagnostics.export(documents: documents,
                             temporaryDirectory: FileManager.default.temporaryDirectory, bundleInfo: bundleInfo,
-                            cancelled: cancellation.isCancelled)
+                            cancelled: cancellation.isCancelled, evidenceFiles: evidence?.1 ?? [:])
                         continuation.resume(returning: url)
                     } catch { continuation.resume(throwing: error) }
                 }

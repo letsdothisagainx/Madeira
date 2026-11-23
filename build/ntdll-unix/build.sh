@@ -39,7 +39,7 @@ compile_one() {
 
     if xcrun -sdk iphoneos clang \
         -arch arm64 -isysroot "$SDK" -miphoneos-version-min=17.0 \
-        -O2 -fPIC -fvisibility=hidden -fno-stack-protector -fno-strict-aliasing \
+        -O2 -gline-tables-only -fPIC -fvisibility=hidden -fno-stack-protector -fno-strict-aliasing \
         "${VULKAN_FLAGS[@]}" \
         -Wno-implicit-function-declaration -Wno-int-conversion \
         -include "$WINE_BUILD/include/config.h" \
@@ -92,7 +92,7 @@ compile_unixlib() {
     echo -n "  $name... "
     if xcrun -sdk iphoneos clang \
         -arch arm64 -isysroot "$SDK" -miphoneos-version-min=17.0 \
-        -O2 -fPIC -fvisibility=hidden -fno-stack-protector -fno-strict-aliasing \
+        -O2 -gline-tables-only -fPIC -fvisibility=hidden -fno-stack-protector -fno-strict-aliasing \
         "${VULKAN_FLAGS[@]}" \
         -Wno-implicit-function-declaration -Wno-int-conversion \
         -include "$WINE_BUILD/include/config.h" \
@@ -250,7 +250,7 @@ compile_unixlib "$BUILD_DIR/winegstreamer_unixlib_ios.c" "winegstreamer_unixlib"
 echo -n "  wg_parser_apple_ios... "
 if xcrun -sdk iphoneos clang \
     -arch arm64 -isysroot "$SDK" -miphoneos-version-min=17.0 \
-    -O2 -fPIC -fvisibility=hidden -fno-stack-protector -fno-strict-aliasing -Wall -Werror=implicit-function-declaration \
+    -O2 -gline-tables-only -fPIC -fvisibility=hidden -fno-stack-protector -fno-strict-aliasing -Wall -Werror=implicit-function-declaration \
     -c "$BUILD_DIR/wg_parser_apple_ios.c" -o "$OBJ_DIR/wg_parser_apple_ios.o" 2>"$OBJ_DIR/wg_parser_apple_ios.err"; then
     echo "OK"
     SUCCEEDED=$((SUCCEEDED + 1))

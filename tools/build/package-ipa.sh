@@ -88,6 +88,26 @@ python3 "$ROOT/tools/build/native-provenance.py" stamp --root "$ROOT" \
 # Preserve Madeira's requested JIT/debug entitlements in the IPA. SideStore will
 # replace this ad-hoc signature with the user's development signature while
 # retaining the supported entitlements.
+# Matching symbols stay in Actions, outside the phone's run ZIP. dsymutil
+# reads the same linked image and object paths before build cleanup.
+mkdir -p "$DIST/symbols"
+for image in Madeira Madeira.debug.dylib; do
+  xcrun dsymutil "$APP/$image" -o "$DIST/symbols/$image.dSYM"
+  xcrun dwarfdump --uuid "$DIST/symbols/$image.dSYM" >> "$DIST/symbols/UUIDS.txt"
+  xcrun nm -n "$APP/$image" > "$DIST/symbols/$image.nm.txt"
+done
+python3 - "$APP/Info.plist" "$ROOT" <<'PY_EVIDENCE_STAMP'
+import json,os,plistlib,subprocess,sys
+from pathlib import Path
+path,root=Path(sys.argv[1]),Path(sys.argv[2])
+value=plistlib.loads(path.read_bytes())
+value['MadeiraEvidenceSymbolArtifact']='Madeira-native-symbols:'+os.environ.get('GITHUB_RUN_ID','local')
+value['MadeiraEvidenceComponents']={name:subprocess.check_output(['git','-C',str(root/name),'rev-parse','HEAD'],text=True).strip() for name in ['FEX','wine','dxmt']}
+value['MadeiraEvidenceComponents']['schema']='madeira-evidence-v1'
+value['MadeiraEvidenceComponents']['normalWorkflow']='Run-CS2-then-Export-Run-one-ZIP'
+path.write_bytes(plistlib.dumps(value,fmt=plistlib.FMT_BINARY))
+PY_EVIDENCE_STAMP
+
 codesign --force --sign - \
   --entitlements "$ROOT/app/Madeira/Madeira.entitlements" \
   "$APP"
@@ -191,3 +211,5 @@ python3 "$ROOT/tools/check-htmlipc-image.py" \
 
 python3 "$ROOT/tools/build/native-provenance.py" check --root "$ROOT" \
   --revision "$source_revision" --app "$APP" --ipa "$DIST/Madeira.ipa"
+
+python3 "$ROOT/tools/check-run-evidence-package.py" --ipa "$DIST/Madeira.ipa"

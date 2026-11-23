@@ -27,6 +27,12 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+      - name: Validate bounded run evidence and existing one-ZIP export
+        run: |
+          python3 tests/host/check-run-evidence.py ${{ runner.os == 'macOS' && '--require-swift' || '' }}
+          python3 tests/host/check-run-diagnostics.py ${{ runner.os == 'macOS' && '--require-swift' || '' }}
+          python3 tests/host/check-run-diagnostics-zip.py ${{ runner.os == 'macOS' && '--require-swift' || '' }}
+          python3 tests/host/check-run-export-presentation.py ${{ runner.os == 'macOS' && '--require-swift' || '' }}
       - name: Fetch matching headers without executing vendor binaries
         run: git submodule update --init --depth 1 dxmt FEX
       - name: Normal Run14 pressure metadata and measured-budget inputs only

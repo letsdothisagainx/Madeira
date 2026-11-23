@@ -103,7 +103,7 @@ static struct ios_cs2_stall_watch *ios_cs2_stall_for_native(uint64_t native_id, 
 struct ios_cs2_stall_rate { uint64_t next_us; unsigned samples; };
 static int ios_cs2_stall_due(struct ios_cs2_stall_rate *rate, uint64_t now_us)
 {
-    if (rate->samples >= IOS_CS2_STALL_SAMPLES || now_us < rate->next_us) return 0;
+    if (now_us < rate->next_us) return 0;
     rate->next_us = now_us > UINT64_MAX - 1000000 ? UINT64_MAX : now_us + 1000000;
     ++rate->samples;
     return 1;
