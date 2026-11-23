@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: publish-ipa-9ba172ee
+  group: publish-ipa-508afe02
   cancel-in-progress: false
 
 jobs:
@@ -22,9 +22,9 @@ jobs:
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
-      SOURCE_REVISION: 9ba172ee9ff3d093b0681ea3867ffcb237e0b55e
-      SOURCE_RUN: '45077310645'
-      RELEASE_TAG: ipa-9ba172ee
+      SOURCE_REVISION: 508afe0223f28a5704e99cce553955adc43ba588
+      SOURCE_RUN: '45089380967'
+      RELEASE_TAG: ipa-508afe02
     steps:
       - name: Require the exact successful build and artifact
         run: |
@@ -54,7 +54,7 @@ jobs:
           PY
       - uses: actions/checkout@v4
         with:
-          ref: 9ba172ee9ff3d093b0681ea3867ffcb237e0b55e
+          ref: 508afe0223f28a5704e99cce553955adc43ba588
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
@@ -70,44 +70,47 @@ jobs:
           test -s release-output/Madeira.ipa
           python3 tools/build/native-provenance.py check --root "$GITHUB_WORKSPACE" --revision "$SOURCE_REVISION" --ipa release-output/Madeira.ipa
           python3 delivery-tools/tests/host/check-store-recovery-package-inspector.py
-          python3 delivery-tools/tools/check-store-recovery-package.py --ipa release-output/Madeira.ipa --revision "$SOURCE_REVISION" --require-pressure-boundary > release-output/recovery-package.json
+          python3 delivery-tools/tools/check-store-recovery-package.py --ipa release-output/Madeira.ipa --revision "$SOURCE_REVISION" --require-pressure-boundary --require-recovery-scope > release-output/recovery-package.json
           cat release-output/recovery-package.json
           python3 - <<'PY'
           import json
           package = json.load(open('release-output/recovery-package.json'))
           assert package['bundleIdentifier'] == 'com.willfaust.madeora', 'installation identity changed'
           assert package['pressureBoundaryRequired'] is True
-          print('PASS existing installation identity and compiled Run14 pressure producer')
+          assert package['recoveryScopeRequired'] is True
+          print('PASS existing installation identity and compiled scoped recovery/pressure producers')
           PY
           (cd release-output && sha256sum Madeira.ipa > SHA256SUMS)
       - name: Publish the same IPA as a stable prerelease asset
         run: |
           cat > "$RUNNER_TEMP/ipa-release-notes.txt" <<'NOTES'
-          Installable Madeira candidate from source 9ba172ee9ff3d093b0681ea3867ffcb237e0b55e.
+          Installable Madeira candidate from source 508afe0223f28a5704e99cce553955adc43ba588.
 
-          IPA build: https://github.com/letsdothisagainx/Madeira/actions/runs/45077310645
-          Focused Linux/macOS checks: https://github.com/letsdothisagainx/Madeira/actions/runs/44885207359
+          IPA build: https://github.com/letsdothisagainx/Madeira/actions/runs/45089380967
+          Focused Linux/macOS checks: https://github.com/letsdothisagainx/Madeira/actions/runs/45089318014
 
-          This packages the existing Run14 pressure-boundary changes for installation on iPhone. It is not a demonstrated texture-memory or playable-multiplayer fix. The remaining reclaimable memory owner and the loading/renderer failure still require attribution; no on-device pass or memory saving is claimed.
+          Run15 records a recovery-owned main-thread hold of 7,083,212 microseconds. This candidate moves read-only first-observation/candidate preparation outside an explicit target suspension, then captures and revalidates fresh held state before any checked write or PC publication. The recovery worker requests user-interactive QoS only while it owns a suspension, restoring its prior class and relative priority after the matching resume. Discovery remains utility. No guest suspension count is cleared or forced.
 
-          The first physical-budget refusal queues one bounded ownership observation per process lease (four maximum per host session). The existing worker records selected non-pool VM regions and their recorded FEX/CEF/window ownership and generation metadata. Unknown/stale ownership remains explicit and never permits reclamation. The native request occurs after releasing the creation-receipt mutex. No texture success is fabricated, and no live or quarantined storage is forcibly freed.
+          The existing fixed-size store-progress record now attributes advisory capture/read, suspend, held capture/read, destination validation, each synchronous checked fragment write, alias accounting, state publication and resume. It records worker identity, actual QoS and API results after the resume attempt. No timer cancels a write, and the target is not resumed while a write is in flight. The seven-second baseline does not establish which phase dominates, and this patch does not guarantee an upper hold duration.
 
-          Normal-input checks reproduce all eight recorded admission decisions against the actual native predicate, exercise 400 parallel receipt acquisitions/releases and 80,000 coalesced observation requests, preserve privacy filtering, and retain the existing checked-store discovery tests. The build selects the recovery-normal profile; no deliberate crash, protected-memory, page-revocation or fault-injection experiment is requested. The full historical host suite is not claimed.
+          Normal macOS tests use real Mach state capture on a live unsuspended worker, real QoS changes and checked Mach writes into writable pages. A pinned actual predecessor demonstrates two VM reads under an owned first-observation suspension; the corrected inspector performs both without acquiring one. One thousand repeated scalar/vector stores check fresh operands, exact bytes/PC, normal concurrent target progress, nested suspend ownership and QoS restoration. Existing scheduling, pressure-predicate, privacy/sanitizer and cache checks pass. The recovery-normal build compiles historical fault fixtures without executing them; no deliberate crash, protected-memory, page-revocation or fault-injection experiment is requested.
+
+          Required texture allocation still exhausted Run15 headroom. No safely reclaimable physical owner or duplicate backing has been established; no memory saving, texture repair, complete loading fix or iPhone gameplay pass is claimed. The safety reserve and resource allocation semantics are unchanged.
 
           The full 1,152 MiB JIT pool and 768/384 MiB partition, code-buffer reuse, checked-store recovery, physical safety reserve, GPU completion/resource lifetimes, Steam authentication, networking and existing input behavior are preserved. The existing bundle identifier, Wine prefix, game files, Steam setup and user configuration are retained. Install over the existing app with the same signing identity; do not uninstall or delete its data.
 
-          The artifact's source revision, native provenance and immutable archive digest are checked before publication. recovery-package.json verifies the compiled recovery path, Run14 native producer markers, and the defined pressure callback. Publication copies the built IPA without rebuilding it, then compares an unauthenticated public download byte for byte.
+          The artifact's source revision, native provenance and immutable archive digest are checked before publication. recovery-package.json verifies the compiled discovery path, scoped-recovery/phase markers, linked timed checked-write helper, and preserved pressure callback. Publication copies the built IPA without rebuilding it, then compares an unauthenticated public download byte for byte.
 
           Device acceptance remains responsive remote team selection, sustained gameplay through a round and a clean menu/map transition without failed required textures. Build and host checks do not establish those outcomes.
 
-          Detailed analysis: https://github.com/letsdothisagainx/Madeira/blob/9ba172ee9ff3d093b0681ea3867ffcb237e0b55e/docs/cs2-run14-pressure-attribution-20261121.md
+          Detailed analysis: https://github.com/letsdothisagainx/Madeira/blob/508afe0223f28a5704e99cce553955adc43ba588/docs/run15-recovery-hold-20261123.md
 
           Download Madeira.ipa below. SHA256SUMS verifies its bytes.
           NOTES
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title 'Madeira 9ba172ee - Run14 installable candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt"
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title 'Madeira 508afe02 - Run15 recovery-scope candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt"
           else
-            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title 'Madeira 9ba172ee - Run14 installable candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title 'Madeira 508afe02 - Run15 recovery-scope candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
           fi
           gh release upload "$RELEASE_TAG" release-output/Madeira.ipa release-output/SHA256SUMS release-output/recovery-package.json --repo "$GITHUB_REPOSITORY" --clobber
           gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false

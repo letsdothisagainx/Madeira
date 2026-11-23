@@ -9,15 +9,23 @@ and ASan/UBSan.
 """
 from pathlib import Path
 import os
+import argparse
 import subprocess
 import tempfile
 
 root = Path(__file__).resolve().parents[2]
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--compile-only', action='store_true', help='Compile historical fixture without executing fault cases')
+options = parser.parse_args()
+
 source = (root / 'build/ntdll-unix/signal_arm64_ios.c').read_text()
 
 def function(signature):
     start = source.index(signature)
-    return source[start:source.index('\n}', start) + 2] + '\n'
+    body = source[start:source.index('\n}', start) + 2] + '\n'
+    if signature.startswith('int ios_store_split_crossing('):
+        return (root / 'build/ntdll-unix/store_recovery_phases.h').read_text() + '\n' + function('int ios_store_split_crossing_timed(') + body
+    return body
 
 start = source.index('                    int aliased = ios_write_alias(')
 end = source.index('                    ++wr_seen;', start)
@@ -41,6 +49,7 @@ typedef size_t mach_vm_size_t;
 typedef unsigned mach_msg_type_number_t;
 typedef int mach_port_t;
 typedef int *vm_region_info_t;
+typedef int kern_return_t;
 typedef struct { int protection; } vm_region_basic_info_data_64_t;
 #define VM_REGION_BASIC_INFO_COUNT_64 1
 #define VM_REGION_BASIC_INFO_64 1
@@ -312,4 +321,7 @@ with tempfile.TemporaryDirectory(prefix='madeira-alias-write-') as tmp:
     src.write_text(code)
     subprocess.run([os.environ.get('CC','cc'), '-std=gnu11', '-Wall', '-Wextra', '-Werror',
                     '-fsanitize=address,undefined', '-fno-sanitize-recover=all', str(src), '-o', str(exe)], check=True)
-    subprocess.run([str(exe)], check=True)
+    if not options.compile_only:
+        subprocess.run([str(exe)], check=True)
+    else:
+        print('PASS historical guard/alias fixture compiles; no executable was run')

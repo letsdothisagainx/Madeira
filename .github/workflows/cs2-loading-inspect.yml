@@ -42,6 +42,11 @@ jobs:
         run: |
           python3 tests/host/check-cs2-observation.py --compile-only
           python3 tests/host/check-stuck-store-scheduling.py --compile-only
+      - name: Compile historical ARM guard/alias fixtures without running fault cases
+        if: runner.os == 'macOS'
+        run: |
+          python3 tests/host/check-code-guard-fault.py --compile-only
+          python3 tests/host/check-jit-alias-write-fault.py --compile-only
       - name: Replay successful copy progress during ordinary discovery work
         run: python3 tests/host/check-stuck-store-scheduling.py --discovery-normal-only
   official-images:

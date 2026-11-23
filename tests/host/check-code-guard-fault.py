@@ -7,16 +7,24 @@ reimplemented. The native producer suite separately executes the guarded code.
 """
 from pathlib import Path
 import os
+import argparse
 import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--compile-only', action='store_true', help='Compile historical fixture without executing fault cases')
+options = parser.parse_args()
+
 source = (ROOT / 'build/ntdll-unix/signal_arm64_ios.c').read_text()
 
 
 def function(signature):
     start = source.index(signature)
-    return source[start:source.index('\n}', start) + 2] + '\n'
+    body = source[start:source.index('\n}', start) + 2] + '\n'
+    if signature.startswith('int ios_store_split_crossing('):
+        return (ROOT / 'build/ntdll-unix/store_recovery_phases.h').read_text() + '\n' + function('int ios_store_split_crossing_timed(') + body
+    return body
 
 
 # The Mach path must bypass every recovery that could remove the real guard.
@@ -58,6 +66,7 @@ typedef size_t mach_vm_size_t;
 typedef unsigned mach_msg_type_number_t;
 typedef int mach_port_t;
 typedef int *vm_region_info_t;
+typedef int kern_return_t;
 typedef struct { int protection; } vm_region_basic_info_data_64_t;
 static int mach_task_self(void) { return 0; }
 static int mach_vm_region(int task, uintptr_t *address, size_t *size, int flavor,
@@ -194,4 +203,7 @@ with tempfile.TemporaryDirectory(prefix='madeira-code-guard-fault-') as tmp:
                     '-Wno-missing-field-initializers', '-fsanitize=address,undefined',
                     '-fno-sanitize-recover=all', '-I', str(ROOT / 'build/ntdll-unix'),
                     str(src), '-o', str(exe)], check=True)
-    subprocess.run([str(exe)], check=True)
+    if not options.compile_only:
+        subprocess.run([str(exe)], check=True)
+    else:
+        print('PASS historical guard/alias fixture compiles; no executable was run')
