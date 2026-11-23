@@ -329,7 +329,7 @@ final class RunEvidenceRecorder {
     private var maxTickNS:UInt64=0, overruns:UInt64=0
     private var previousIO:[UInt64]?
     private var previous:String?
-    private var phase="startup"
+    private var phase="startup", lastLoopbackConsoleStamp:String?
     private var connectSecond:Int?, mainUserUS:UInt64=0, mainKernelUS:UInt64=0, maxGapNS:UInt64=0, peakFootprint:UInt64=0
     private var pendingTextureAPI:String?, consoleLineNumber:UInt64=0, pendingTextureLine:UInt64=0
     private var nativeSourceRead:UInt64=0, consoleSourceRead:UInt64=0
@@ -520,9 +520,12 @@ final class RunEvidenceRecorder {
                 store.graphic(["API":api,"HRESULT":"E_OUTOFMEMORY","association":"preceding-creation-row-within-four-lines"],category:"allocation")
                 pendingTextureAPI=nil
             }
-            guard let event=Self.consoleEvent(line) else { return }
+            guard var event=Self.consoleEvent(line) else { return }
+            let originalStamp=Self.consoleStamp(line)
+            if event=="remote-connected",originalStamp != nil,originalStamp==lastLoopbackConsoleStamp {event="loopback-connection-confirmation"}
+            if event=="loopback-connected" {lastLoopbackConsoleStamp=originalStamp}
             if event == "remote-connected" || event == "loopback-connected" {
-                if !(event == "remote-connected" && attemptKind == "loopback" && !activated) { attempt+=1; attemptKind=event == "remote-connected" ? "remote" : "loopback"; activated=false }
+                attempt+=1; attemptKind=event == "remote-connected" ? "remote" : "loopback"; activated=false
             }
             let stampSeconds=Self.consoleStamp(line).flatMap { t -> Int? in
                 let p=t.split(separator:":").compactMap { Int($0) };return p.count==3 ? p[0]*3600+p[1]*60+p[2] : nil
