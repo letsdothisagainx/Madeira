@@ -50,7 +50,7 @@ enum RunEvidenceSchema {
     static func native(_ w: [UInt64]) -> (String, [String: Any])? {
         guard w.count == 48, w[0] == 1 else { return nil }
         var r: [String: Any] = ["nativeSequence": String(w[2]), "nativeMonotonicNS": String(w[3]), "nativeClock": "CLOCK_MONOTONIC",
-            "owner": hex(w[4]), "lease": String(w[5]), "pid": hex(w[6]), "tid": hex(w[7]), "nativeThreadLifetimeID": String(w[8])]
+            "owner": w[4]>0 ? hex(w[4]) : NSNull(), "lease": w[5]>0 ? String(w[5]) : NSNull(), "pid": w[6]>0 ? hex(w[6]) : NSNull(), "tid": w[7]>0 ? hex(w[7]) : NSNull(), "nativeThreadLifetimeID": w[8]>0 ? String(w[8]) : NSNull()]
         switch w[1] {
         case 1:
             r["event"] = "cs2-start-observed"; r["teb"] = hex(w[9]); r["source"] = "validated-initial-thread"; return ("timeline", r)
@@ -62,8 +62,8 @@ enum RunEvidenceSchema {
             r["effectiveAddress"] = hex(w[12])
             r["widthBytes"] = w[13]
             r["intervalUS"] = w[14]
-            r["userCPUUS"] = w[15]
-            r["kernelCPUUS"] = w[16]
+            r["userCPUUS"] = w[14]>0 ? w[15] : NSNull()
+            r["kernelCPUUS"] = w[14]>0 ? w[16] : NSNull()
             r["cpuScope"] = "one-native-thread"
             r["runState"] = w[17]
             r["observedSuspendCount"] = w[18]
@@ -90,21 +90,21 @@ enum RunEvidenceSchema {
             r["queryDurationNS"] = w[38]
             r["captureToQueryNS"] = w[37] >= w[9] && w[9] != 0 ? String(w[37]-w[9]) : "unavailable"
             r["bookkeepingResult"] = w[35] == 1 ? "VM-lock-busy" : w[35] == 2 ? "view-not-found" : "copied-under-try-lock"
-            r["allocationBase"] = hex(w[14])
-            r["allocationBytes"] = w[15]
-            r["allocationGeneration"] = String(w[16])
-            r["recordedAllocationOwner"] = hex(w[22])
+            r["allocationBase"] = w[35]==3 ? hex(w[14]) : NSNull()
+            r["allocationBytes"] = w[35]==3 ? w[15] : NSNull()
+            r["allocationGeneration"] = w[35]==3 ? String(w[16]) : NSNull()
+            r["recordedAllocationOwner"] = w[35]==3 && w[22]>0 ? hex(w[22]) : NSNull()
             r["allocationOwnerLease"] = NSNull()
             r["allocationOwnerLeaseStatus"] = "not-recorded-at-allocation; sampling-owner-lease-is-separate"
-            r["vmEpochBefore"] = String(w[17])
-            r["vmEpochAfter"] = String(w[18])
+            r["vmEpochBefore"] = w[35] != 1 ? String(w[17]) : NSNull()
+            r["vmEpochAfter"] = w[35] != 1 ? String(w[18]) : NSNull()
             r["metadataConsistency"] = w[39] == 1 ? "epoch-unchanged; not-atomic-with-registers" : w[39] == 2 ? "VM-changed-during-query" : "unavailable"
             r["backing"] = [0:"unknown",1:"anonymous-view",2:"Madeira-backing-ledger",3:"image",4:"JIT-or-alias",5:"section"][w[19]] ?? "unknown"
             r["extentGeneration"] = w[20] == 0 ? NSNull() : String(w[20])
             r["fileOffsetAtEA"] = w[19] == 2 ? String(w[21]) : NSNull()
-            r["guestAllocationFlags"] = hex(w[24])
-            r["guestFourKiBFlagsPacked"] = hex(w[25])
-            r["lifetimeFlags"] = hex(w[40])
+            r["guestAllocationFlags"] = w[35]==3 ? hex(w[24]) : NSNull()
+            r["guestFourKiBFlagsPacked"] = w[35]==3 ? hex(w[25]) : NSNull()
+            r["lifetimeFlags"] = w[35]==3 ? hex(w[40]) : NSNull()
             r["machQueryResult"] = w[35] == 1 ? NSNull() : w[36]
             r["hostRegionBase"] = w[43] == 1 ? hex(w[26]) : NSNull()
             r["hostRegionBytes"] = w[43] == 1 ? w[27] : NSNull()

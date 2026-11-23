@@ -34,7 +34,7 @@ func verify(_ ok:@autoclosure ()->Bool,_ file:StaticString=#file,_ line:Int=#lin
   let store=try RunEvidenceStore(root:root)
   store.calibration("fixture")
   var w=[UInt64](repeating:0,count:48);w[0]=1;w[1]=3;w[2]=19;w[3]=100;w[4]=0x100;w[5]=34;w[9]=80;w[10]=0x7c3531d840;w[11]=0xc89ffcd3;w[12]=0x7a58142b58;w[13]=8;w[35]=1;w[37]=90;w[38]=3
-  let (channel,busy)=RunEvidenceSchema.native(w)!;try verify(channel=="memory-access");try verify(busy["hostProtection"] is NSNull);try verify(busy["bookkeepingResult"] as? String == "VM-lock-busy")
+  let (channel,busy)=RunEvidenceSchema.native(w)!;try verify(channel=="memory-access");try verify(busy["hostProtection"] is NSNull && busy["allocationBytes"] is NSNull && busy["allocationGeneration"] is NSNull);try verify(busy["bookkeepingResult"] as? String == "VM-lock-busy")
   w[35]=3;w[17]=1;w[18]=2;w[39]=2;w[43]=1;w[28]=3;w[29]=7
   let (_,changed)=RunEvidenceSchema.native(w)!;try verify(changed["metadataConsistency"] as? String == "VM-changed-during-query");try verify(changed["instruction"] as? String == "0xc89ffcd3")
   store.record(channel,changed)
