@@ -176,9 +176,12 @@ def main():
         if args.require_cs2_tso_profile:
             import hashlib
             cpu = ipa.read('Payload/Madeira.app/arm64ec-windows/xtajit64.dll')
-            pe = struct.unpack_from('<I', cpu, 0x3c)[0]
-            if cpu[:2] != b'MZ' or cpu[pe:pe+4] != b'PE\0\0' or struct.unpack_from('<H',cpu,pe+4)[0] != 0xa641:
-                raise ValueError('expected ARM64EC FEX module')
+            # This existing module may have an AMD64-header ARM64EC hybrid
+            # container. Require its real hybrid metadata/exports, not one
+            # header-machine assumption or an arbitrary AMD64 executable.
+            import runpy
+            contract = runpy.run_path(str(Path(__file__).with_name('check-io-abi-package.py')))
+            contract['fex_cpu'](cpu, 'arm64ec')
             for marker in (b'[cs2-tso-profile-v1]', b'policy=stlr-fallback-v1',
                            b'code-cache=disabled context=fresh phase=before-create-context'):
                 if marker not in cpu:

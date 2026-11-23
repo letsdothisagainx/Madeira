@@ -28,7 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Fetch matching headers without executing vendor binaries
-        run: git submodule update --init --depth 1 dxmt
+        run: git submodule update --init --depth 1 dxmt FEX
       - name: Normal Run14 pressure metadata and measured-budget inputs only
         run: |
           python3 tests/host/check-pressure-boundary-observation.py ${{ runner.os == 'macOS' && '--require-swift' || '' }}
