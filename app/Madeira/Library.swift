@@ -1748,7 +1748,7 @@ final class LibraryModel: ObservableObject {
         launchDismissLogged = false
         DockStartScreen.shared.begin(dock, at: launchStarted)
         if let observer=steamLaunchObserver {NotificationCenter.default.removeObserver(observer)}
-        steamLaunch=nil;steamViewRevealed=false;lastSteamWindowNS=0
+        steamLaunch=nil;steamViewRevealed=false;lastSteamWindowNS=0;steamRevealResult=nil
         if let app=nativeSteamAppID {
             let state=SteamLaunchState(appID:app,requestID:UUID().uuidString,requestedNS:RunEvidenceSchema.mono(),requestedWall:Date().timeIntervalSince1970)
             steamLaunch=state
@@ -1955,7 +1955,7 @@ final class LibraryModel: ObservableObject {
         timer?.invalidate(); timer = nil
         if let observer=steamLaunchObserver {NotificationCenter.default.removeObserver(observer);steamLaunchObserver=nil}
         if steamLaunch != nil {winios_window_census_enable(0)}
-        steamLaunch=nil;steamViewRevealed=false
+        steamLaunch=nil;steamViewRevealed=false;steamRevealResult=nil
         saveCurrentProfile()
         controllerMode = nil
         controllerBinds = [:]

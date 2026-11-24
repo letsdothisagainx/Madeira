@@ -683,7 +683,7 @@ final class RunEvidenceRecorder {
         guard shared==nil else { return }; shared=try? RunEvidenceRecorder(documents:documents,bundle:bundle)
     }
     static func beginSteamLaunch(_ state:SteamLaunchState) {
-        guard let shared else{return};shared.queue.async{shared.launch=state;shared.publishLaunch()}
+        guard let shared else{return};shared.queue.async{shared.launch=state;shared.lastLaunchWindows=Data();shared.lastLaunchViewNS=0;shared.publishLaunch()}
     }
     static func launchView(_ values:[String:Any]) {
         guard let shared else{return};shared.queue.async{
