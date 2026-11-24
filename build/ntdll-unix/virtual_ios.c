@@ -23656,6 +23656,7 @@ static void ios_swap_init( void )
     if (ios_swap_cap < (64ull << 20)) return;
     ios_swap_fd = open( f, O_RDWR | O_CLOEXEC );
     if (ios_swap_fd < 0) { dprintf( 2, "[swap] ml1077 cannot open %s (errno %d): tier OFF\n", f, errno ); return; }
+    __atomic_add_fetch(&ios_evidence_backing_file,1,__ATOMIC_RELEASE);
     ios_swap_config();
     ios_swap_logical = ios_swap_cap;
     if (ios_swap_broad && ios_swap_logical < (128ull << 30))
@@ -23719,22 +23720,22 @@ static void ios_swap_free_add( uint64_t off, uint64_t len )
     if (ios_swap_nfree < 8192) { ios_swap_free[ios_swap_nfree].off = off; ios_swap_free[ios_swap_nfree].len = len; ios_swap_nfree++; }
     else ios_swap_free_drop++;   /* leaked offset space: later backings may be refused, never wrong */
 }
-static int ios_swap_punch_defer( uint64_t off, size_t len );   /* ml1291, below */
-static void ios_swap_give( uint64_t off, size_t len )
+static int ios_swap_punch_timed( uint64_t off, uint64_t len, const char *why, uint64_t extent );
+static int ios_swap_punch_defer( uint64_t off, size_t len, uint64_t extent );   /* ml1291, below */
+static void ios_swap_give_extent( uint64_t off, size_t len, uint64_t extent )
 {
-    struct fpunchhole ph;
-    if (ios_swap_punch_defer( off, len )) return;   /* ml1291: punched and freed off the virtual lock */
-    memset( &ph, 0, sizeof(ph) );
-    ph.fp_offset = (off_t)off; ph.fp_length = (off_t)len;
-    if (fcntl( ios_swap_fd, F_PUNCHHOLE, &ph ))
+    if (ios_swap_punch_defer( off, len, extent )) return;
+    /* A returned range remains quarantined until actual hole punching succeeds.
+     * Include the synchronous queue-full/worker-off route in the same observer. */
+    if (ios_swap_punch_timed( off, len, "sync-release", extent ))
     {
-        static int said;
-        if (said++ < 8) dprintf( 2, "[swap] ml1077 F_PUNCHHOLE off=%llu len=%zu failed errno=%d (range not reused, ml1297)\n", (unsigned long long)off, len, errno );
         ios_swap_punch_leaks++;
         return;
     }
     ios_swap_free_add( off, len );
 }
+static void ios_swap_give( uint64_t off, size_t len )
+{ ios_swap_give_extent(off,len,0); }
 static uint64_t ios_swap_now_ns( void )
 {
     struct timespec ts;
@@ -23768,7 +23769,7 @@ static uint64_t ios_swap_now_ns( void )
  * normally replace dead pages with a fresh zero offset before queueing the old
  * backing, so their slow punch does not hold the heap and virtual locks. */
 #define IOS_SWAP_PQ 1024
-static struct { uint64_t off, len; } ios_swap_pq[IOS_SWAP_PQ];
+static struct { uint64_t off, len, extent; } ios_swap_pq[IOS_SWAP_PQ];
 static unsigned ios_swap_pq_head, ios_swap_pq_n;
 static pthread_mutex_t ios_swap_pq_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t ios_swap_pq_cond = PTHREAD_COND_INITIALIZER;
@@ -23776,40 +23777,32 @@ static int ios_swap_pq_state;   /* 0 not started, 1 running, -1 off */
 static unsigned long long ios_swap_pq_done, ios_swap_punch_slow, ios_swap_punch_max_ms;
 static unsigned long long ios_swap_decommit_remaps, ios_swap_decommit_fallbacks;
 
-static int ios_ev_discard(void *base, size_t size, int flags)
-{
-    uint64_t token=ios_evidence_begin(4,(uintptr_t)base,size,
-        __atomic_load_n(&ios_ev_vm_generation,__ATOMIC_RELAXED),1);
-    int result=msync(base,size,flags), saved=errno;
-    ios_evidence_end(token,result,result ? saved : 0); errno=saved; return result;
-}
 static void *ios_ev_swap_map(void *base, size_t size, int prot, uint64_t off)
 {
-    uint64_t token=ios_evidence_begin(1,(uintptr_t)base,size,
-        __atomic_load_n(&ios_ev_vm_generation,__ATOMIC_RELAXED),1);
+    uint64_t token=ios_evidence_begin(1,(uintptr_t)base,size,off,1);
     void *result=mmap(base,size,prot,MAP_FIXED|MAP_SHARED,ios_swap_fd,(off_t)off);
     int saved=errno;
     ios_evidence_end(token,result==MAP_FAILED ? -1 : 0,result==MAP_FAILED ? saved : 0);
     errno=saved; return result;
 }
-static int ios_swap_punch_timed( uint64_t off, uint64_t len, const char *why )
+static int ios_swap_punch_timed( uint64_t off, uint64_t len, const char *why, uint64_t extent )
 {
     struct fpunchhole ph;
     uint64_t t0 = ios_swap_now_ns(), ms;
-    uint64_t evidence=ios_evidence_begin(5,0,len,off,strcmp(why,"deferred") ? 1 : 0);
+    uint64_t evidence=ios_evidence_begin_extent(5,0,len,off,strcmp(why,"deferred") ? 1 : 2,extent);
     int rc;
     memset( &ph, 0, sizeof(ph) );
     ph.fp_offset = (off_t)off; ph.fp_length = (off_t)len;
     if ((rc = fcntl( ios_swap_fd, F_PUNCHHOLE, &ph )))
     {
         static int said;
-        if (said++ < 8) dprintf( 2, "[swap] ml1291 F_PUNCHHOLE (%s) off=%llu len=%llu failed errno=%d\n",
+        if (!strcmp(why,"deferred") && said++ < 8) dprintf( 2, "[swap] ml1291 F_PUNCHHOLE (%s) off=%llu len=%llu failed errno=%d\n",
                                  why, (unsigned long long)off, (unsigned long long)len, errno );
     }
     { int saved=errno; ios_evidence_end(evidence,rc,rc ? saved : 0); errno=saved; }
     ms = (ios_swap_now_ns() - t0) / 1000000;
     if (ms > ios_swap_punch_max_ms) ios_swap_punch_max_ms = ms;
-    if (ms >= 100 && (++ios_swap_punch_slow <= 16 || (ios_swap_punch_slow % 64) == 0))
+    if (ms >= 100 && !strcmp(why,"deferred") && (++ios_swap_punch_slow <= 16 || (ios_swap_punch_slow % 64) == 0))
         dprintf( 2, "[swap] ml1291 F_PUNCHHOLE (%s) off=%llu len=%llu took %llu ms (%llu slow, max %llu ms)\n",
                  why, (unsigned long long)off, (unsigned long long)len, (unsigned long long)ms,
                  ios_swap_punch_slow, ios_swap_punch_max_ms );
@@ -23824,17 +23817,18 @@ static void *ios_swap_punch_thread( void *arg )
     pthread_setname_np( "madeira-swap-punch" );
     for (;;)
     {
-        uint64_t off, len;
+        uint64_t off, len, extent;
         int rc;
         pthread_mutex_lock( &ios_swap_pq_lock );
         while (!ios_swap_pq_n) pthread_cond_wait( &ios_swap_pq_cond, &ios_swap_pq_lock );
         off = ios_swap_pq[ios_swap_pq_head].off;
         len = ios_swap_pq[ios_swap_pq_head].len;
+        extent = ios_swap_pq[ios_swap_pq_head].extent;
         ios_swap_pq_head = (ios_swap_pq_head + 1) % IOS_SWAP_PQ;
         ios_swap_pq_n--;
         pthread_mutex_unlock( &ios_swap_pq_lock );
 
-        rc = ios_swap_punch_timed( off, len, "deferred" );
+        rc = ios_swap_punch_timed( off, len, "deferred", extent );
 
         pthread_mutex_lock( &virtual_mutex );   /* the free list and the bump live under it */
         if (rc) ios_swap_punch_leaks++;   /* ml1297: not reused */
@@ -23879,7 +23873,7 @@ static int ios_swap_punch_room( unsigned count )
     return room;
 }
 
-static int ios_swap_punch_defer( uint64_t off, size_t len )
+static int ios_swap_punch_defer( uint64_t off, size_t len, uint64_t extent )
 {
     int queued = 0;
     if (!ios_swap_punch_start()) return 0;
@@ -23889,6 +23883,7 @@ static int ios_swap_punch_defer( uint64_t off, size_t len )
         unsigned slot = (ios_swap_pq_head + ios_swap_pq_n) % IOS_SWAP_PQ;
         ios_swap_pq[slot].off = off;
         ios_swap_pq[slot].len = len;
+        ios_swap_pq[slot].extent = extent;
         ios_swap_pq_n++;
         queued = 1;
         pthread_cond_signal( &ios_swap_pq_cond );
@@ -24142,11 +24137,14 @@ static void ios_swap_release_range( void *base, size_t size, int copy_back )
                 }
                 ios_swap_unbacks++;
             }
-            /* ml1293: the range's contents are dead (decommit/release), but its dirty pages would
-             * still be written to the file by the pageout daemon -- I/O that slowed every other
-             * fault on the file and the punch behind it. Discard them first: no writeback. */
-            if (!copy_back) ios_ev_discard( oa, olen, MS_KILLPAGES );
-            ios_swap_give( ooff, olen );
+            /* The external-pager mapping is dead or has been copied back.
+             * MS_KILLPAGES is NOT a dirty-page disposal guarantee for a vnode:
+             * published XNU clears dirty state only for internal objects, and
+             * can instead deactivate external pages. Do not scan/deactivate
+             * dirty backing before detachment. Only a successful hole punch
+             * permits the old file offset to return to the zero-on-reuse pool.
+             * virtual_mutex prevents reuse before this caller unmaps the VA. */
+            ios_swap_give_extent( ooff, olen, ios_swap_ext[i].evidence_id );
             ios_swap_bytes -= olen;
             if (ios_swap_ext[i].img) ios_swap_img_bytes -= olen;   /* madeira-bcd swap-images */
             ios_swap_releases++;
@@ -24223,10 +24221,11 @@ static int ios_swap_punch_resv( char *lo, size_t len )
     if (extra <= 16384 - original_n && ios_swap_punch_room( parts ) &&
         (fresh = ios_swap_take( len )) != (uint64_t)-1)
     {
-        /* Only dead full host pages are discarded. Never touch replacement
-         * pages: the worker receives old file offsets, not these addresses. */
-        if (!ios_ev_discard( lo, len, MS_KILLPAGES ) &&
-            ios_ev_swap_map( lo, len, PROT_READ | PROT_WRITE, fresh ) != MAP_FAILED)
+        /* Only dead whole host pages are replaced. Fresh offsets are already
+         * zero (never used, or successfully punched). External MS_KILLPAGES
+         * neither certifies disposal nor belongs in this success predicate.
+         * Retired dirty offsets remain quarantined until their punch completes. */
+        if (ios_ev_swap_map( lo, len, PROT_READ | PROT_WRITE, fresh ) != MAP_FAILED)
         {
             for (i = 0; i < original_n; i++)
             {
@@ -24255,7 +24254,7 @@ static int ios_swap_punch_resv( char *lo, size_t len )
                 /* Queue room was reserved by the producer's virtual lock.
                  * If its invariant is ever violated, leak/quarantine the old
                  * offset honestly rather than reusing dirty or live backing. */
-                if (!ios_swap_punch_defer( old.off + (oa - a), dead )) ios_swap_punch_leaks++;
+                if (!ios_swap_punch_defer( old.off + (oa - a), dead, old.evidence_id )) ios_swap_punch_leaks++;
             }
             /* Repeated overlapping decommits must not accumulate every old
              * split boundary. A replacement is one contiguous file mapping;
@@ -24285,9 +24284,8 @@ static int ios_swap_punch_resv( char *lo, size_t len )
             }
             return 1;
         }
-        /* Failed discard stays synchronous to avoid retaining old dirty pages
-         * alongside a fresh mapping. No writer has used this zeroed offset,
-         * and Darwin's failed fixed map leaves the prior mapping intact. */
+        /* No guest has written the unused fresh offset. Mapping failure does
+         * not make the old offset free or certify its dirty pages as disposed. */
         ios_swap_free_add( fresh, len );
     }
 
@@ -24297,8 +24295,7 @@ static int ios_swap_punch_resv( char *lo, size_t len )
         char *a = ios_swap_ext[i].va, *b = a + ios_swap_ext[i].len;
         char *oa = a > lo ? a : lo, *ob = b < hi ? b : hi;
         if (oa >= ob) continue;
-        ios_ev_discard( oa, ob - oa, MS_KILLPAGES );
-        if (ios_swap_punch_timed( ios_swap_ext[i].off + (oa - a), ob - oa, "decommit" )) return 0;
+        if (ios_swap_punch_timed( ios_swap_ext[i].off + (oa - a), ob - oa, "decommit", ios_swap_ext[i].evidence_id )) return 0;
     }
     if (mprotect( lo, len, PROT_READ | PROT_WRITE )) return 0;
     if (++ios_swap_holes <= 8 || !(ios_swap_holes % 1024))
@@ -39408,6 +39405,7 @@ void ios_evidence_access(struct ios_evidence_record *r)
     uint64_t started=ios_evidence_now(), before=0;
     struct file_view *view;
     unsigned i;
+    uint64_t file_lifetime=0, origin=0;
     int saved=errno;
     mach_vm_address_t address=ea;
     mach_vm_size_t length=0;
@@ -39425,6 +39423,7 @@ void ios_evidence_access(struct ios_evidence_record *r)
     if (view)
     {
         r->w[14]=(uintptr_t)view->base; r->w[15]=view->size; r->w[16]=view->ios_evidence_id;
+        origin=is_view_valloc(view) ? 1 : (view->protect & SEC_IMAGE) ? 2 : (view->protect & SEC_FILE) ? 3 : 0;
         r->w[22]=view->ios_evidence_owner; r->w[24]=view->protect; r->w[40]=view->ios_flags;
         r->w[19]=(view->protect & SEC_IMAGE) ? 3 : (view->protect & SEC_FILE) ? 5 : 1;
         for (i=0;i<4 && i*page_size<host_page_size;++i)
@@ -39432,6 +39431,7 @@ void ios_evidence_access(struct ios_evidence_record *r)
         for (i=0;i<ios_swap_n;++i)
             if (ea >= (uintptr_t)ios_swap_ext[i].va && ea-(uintptr_t)ios_swap_ext[i].va < ios_swap_ext[i].len)
             { r->w[19]=2; r->w[20]=ios_swap_ext[i].evidence_id;
+              file_lifetime=__atomic_load_n(&ios_evidence_backing_file,__ATOMIC_ACQUIRE);
               r->w[21]=ios_swap_ext[i].off + ea-(uintptr_t)ios_swap_ext[i].va; break; }
         if (ios_swap_is_fexjit(ea,1)) r->w[19]=4;
         r->w[35]=3;
@@ -39457,7 +39457,29 @@ void ios_evidence_access(struct ios_evidence_record *r)
     { extern unsigned long long ios_thread_process_try_observation_lease(void *,unsigned);
       uint64_t lease=ios_thread_process_try_observation_lease((void *)(uintptr_t)r->w[4],r->w[6]);
       r->w[47]=!lease ? 0 : lease==r->w[5] ? 1 : 2; }
-    r->w[38]=ios_evidence_now()-started; ios_evidence_emit(r); errno=saved;
+    r->w[23]=file_lifetime;
+    r->w[38]=ios_evidence_now()-started; ios_evidence_emit(r);
+    if (r->w[35]!=1)
+    {
+        struct ios_evidence_record p={{0}};
+        for (i=4;i<=13;++i) p.w[i]=r->w[i];
+        p.w[1]=11; p.w[14]=r->w[16];p.w[15]=r->w[20];p.w[16]=file_lifetime;p.w[17]=origin;
+        p.w[18]=__atomic_load_n(&ios_ev_vm_generation,__ATOMIC_ACQUIRE);
+        for (i=0;i<(r->w[42] ? 2u : 1u);++i)
+        {
+            integer_t disposition=0, refs=0;
+            unsigned at=20+i*8;
+            p.w[at]=host+i*host_page_size;p.w[at+1]=ios_evidence_now();
+            kr=mach_vm_page_query(mach_task_self(),p.w[at],&disposition,&refs);
+            p.w[at+2]=kr;p.w[at+3]=(uint32_t)disposition;p.w[at+4]=(uint32_t)refs;
+            p.w[at+5]=ios_evidence_now()-p.w[at+1];
+        }
+        p.w[19]=__atomic_load_n(&ios_ev_vm_generation,__ATOMIC_ACQUIRE);
+        p.w[36]=r->w[42] ? 2 : 1;p.w[37]=r->w[47];p.w[38]=host_page_size;
+        p.w[39]=r->w[17];p.w[40]=r->w[18];
+        ios_evidence_emit(&p);
+    }
+    errno=saved;
 }
 void madeira_evidence_backing(void)
 {
@@ -39467,6 +39489,7 @@ void madeira_evidence_backing(void)
     if (pthread_mutex_trylock(&virtual_mutex)) { r.w[9]=1; ios_evidence_emit(&r); errno=saved; return; }
     r.w[9]=2; r.w[10]=ios_swap_bytes; r.w[11]=ios_swap_n; r.w[12]=ios_swap_nfree;
     r.w[13]=ios_swap_bump; r.w[14]=ios_swap_cap; r.w[15]=ios_swap_refused;
+    r.w[26]=__atomic_load_n(&ios_evidence_backing_file,__ATOMIC_ACQUIRE);r.w[27]=1; /* external-retire-no-killpages-v1 */
     r.w[22]=ios_swap_min;r.w[23]=ios_swap_resv_max;r.w[24]=ios_swap_broad ? 3 : ios_swap_wide ? 2 : ios_swap_v2 ? 1 : 0;r.w[25]=ios_swap_fd>=0;
     r.w[16]=ios_swap_punch_leaks; r.w[17]=ios_ev_vm_generation; r.w[18]=host_page_size;
     if (!pthread_mutex_trylock(&ios_swap_pq_lock))

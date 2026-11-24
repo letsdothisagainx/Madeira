@@ -9,9 +9,11 @@
 enum { IOS_EV_PROCESS=1, IOS_EV_MAIN=2, IOS_EV_ACCESS=3, IOS_EV_VM=4, IOS_EV_FRAME=5,
        IOS_EV_BACKING=6, IOS_EV_INFLIGHT=7, IOS_EV_COUNTERS=8 };
 struct ios_evidence_record { uint64_t w[IOS_EVIDENCE_WORDS]; };
+extern uint64_t ios_evidence_backing_file;
 uint64_t ios_evidence_now(void);
 void ios_evidence_emit(struct ios_evidence_record *);
 uint64_t ios_evidence_begin(unsigned op, uintptr_t address, uint64_t bytes, uint64_t generation, unsigned lock_scope);
+uint64_t ios_evidence_begin_extent(unsigned, uintptr_t, uint64_t, uint64_t, unsigned, uint64_t);
 void ios_evidence_end(uint64_t token, int result, int error);
 void ios_evidence_access(struct ios_evidence_record *);
 #endif

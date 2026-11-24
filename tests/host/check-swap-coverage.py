@@ -32,8 +32,8 @@ extents, whole-host-page copy-back and the [swap] census.
 2. Source-checks the call sites in allocate_virtual_memory(), that every new
    entry point returns first when the tier is off, that the census neither
    allocates nor uses stdio, that the punch thread punches without
-   virtual_mutex and returns the range under it, and (ml1293) that a dead
-   range drops its dirty pages (MS_KILLPAGES) before it is punched.
+   virtual_mutex and returns the range under it, and that external retirement relies on successful punching, never an
+   MS_KILLPAGES dirty-disposal guarantee.
 Device runs are still required: this proves the bookkeeping, not iOS paging.
 """
 from pathlib import Path
@@ -651,17 +651,17 @@ check('return ios_swap_map( base, size, get_unix_prot( vprot | VPROT_COMMITTED )
       'ios_swap_map( base, size, get_unix_prot( vprot | VPROT_COMMITTED ) );' in virt, 'ml1082: commit-time extents mapped committed')
 check('ios_swap_map( base, size, get_unix_prot( vprot ) )' in body_of(virt, 'static void ios_swap_reserve( void *base, size_t size, unsigned int vprot, struct file_view *view )\n{'),
       'reserve-time extents keep the reservation protection (PROT_NONE)')
-give = body_of(virt, 'static void ios_swap_give( uint64_t off, size_t len )\n{')
-check(give.index('if (ios_swap_punch_defer( off, len )) return;') < give.index('F_PUNCHHOLE'), 'ml1291: a give is queued before the synchronous punch')
+give = body_of(virt, 'static void ios_swap_give_extent( uint64_t off, size_t len, uint64_t extent )\n{')
+check(give.index('if (ios_swap_punch_defer( off, len, extent )) return;') < give.index('ios_swap_punch_timed'), 'ml1291: a give is queued before the synchronous punch')
 punch = body_of(virt, 'static void *ios_swap_punch_thread( void *arg )\n{')
 check(punch.index('ios_swap_punch_timed(') < punch.index('pthread_mutex_lock( &virtual_mutex );') < punch.index('ios_swap_free_add('),
       'ml1291: the punch runs without virtual_mutex, the free list is updated under it')
 rel = body_of(virt, 'static void ios_swap_release_range( void *base, size_t size, int copy_back )\n{')
-check('if (!copy_back) msync( oa, olen, MS_KILLPAGES );\n            ios_swap_give( ooff, olen );' in rel,
-      'ml1293: a released range drops its dirty pages before it is given back')
+check('ios_ev_discard(' not in rel and 'msync(' not in rel,
+      'external release does not interpret KILLPAGES as dirty disposal')
 resv = body_of(virt, 'static int ios_swap_punch_resv( char *lo, size_t len )\n{')
-check('msync( lo, len, MS_KILLPAGES )' in resv and resv.index('msync( lo, len, MS_KILLPAGES )') < resv.index('ios_swap_punch_timed('),
-      'ml1293: a decommit drops its dirty pages before the punch')
+check('ios_ev_discard(' not in resv and 'msync(' not in resv and 'ios_swap_punch_timed(' in resv,
+      'decommit relies on fresh zero offsets or successful punch, not external discard')
 setprot = body_of(virt, 'static NTSTATUS set_protection( struct file_view *view, void *base, SIZE_T size, ULONG protect )')
 check('ios_swap_release_range( base, size, 1 )' in setprot, 'set_protection still leaves the tier for EXEC/WRITECOPY/GUARD')
 

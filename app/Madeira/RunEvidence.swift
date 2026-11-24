@@ -65,7 +65,7 @@ enum RunEvidenceSchema {
         guard w.count == 48, w[0] == 1 else { return nil }
         var r: [String: Any] = ["nativeSequence": String(w[2]), "nativeMonotonicNS": String(w[3]), "nativeClock": "CLOCK_MONOTONIC",
             "owner": w[4]>0 ? hex(w[4]) : NSNull(), "lease": w[5]>0 ? String(w[5]) : NSNull(), "pid": w[6]>0 ? hex(w[6]) : NSNull(), "tid": w[7]>0 ? hex(w[7]) : NSNull(), "nativeThreadLifetimeID": w[8]>0 ? String(w[8]) : NSNull()]
-        if ![UInt64(1),2,3,10].contains(w[1]) {r["nativeThreadLifetimeID"]=NSNull()}
+        if ![UInt64(1),2,3,10,11].contains(w[1]) {r["nativeThreadLifetimeID"]=NSNull()}
         switch w[1] {
         case 1:
             r["event"] = "cs2-start-observed"; r["teb"] = hex(w[9]); r["source"] = "validated-initial-thread"; return ("timeline", r)
@@ -116,6 +116,8 @@ enum RunEvidenceSchema {
             r["vmEpochAfter"] = w[35] != 1 ? String(w[18]) : NSNull()
             r["metadataConsistency"] = w[39] == 1 ? "epoch-unchanged; not-atomic-with-registers" : w[39] == 2 ? "VM-changed-during-query" : "unavailable"
             r["backing"] = [0:"unknown",1:"anonymous-view",2:"Madeira-backing-ledger",3:"image",4:"JIT-or-alias",5:"section"][w[19]] ?? "unknown"
+            r["backingFileOpenLifetime"] = w[23]>0 ? String(w[23]) : NSNull()
+            r["fileIdentityScope"]="host-app-open-generation; join-with-runID; not-inode-or-pager-object-proof"
             r["extentGeneration"] = w[20] == 0 ? NSNull() : String(w[20])
             r["fileOffsetAtEA"] = w[19] == 2 ? String(w[21]) : NSNull()
             r["guestAllocationFlags"] = w[35]==3 ? hex(w[24]) : NSNull()
@@ -145,10 +147,37 @@ enum RunEvidenceSchema {
             r["event"] = w[1] == 4 ? "VM-slow-or-error" : "VM-in-flight"
             r["operation"] = [1:"map-shared-fixed",2:"set-guest-protection-or-commit",3:"protect",4:"discard-MS_KILLPAGES",5:"hole-punch",6:"decommit"][w[10]] ?? "unknown"
             r["operationToken"] = String(w[8]); r["beginNS"] = String(w[9]); r["address"] = hex(w[11]); r["bytes"] = w[12]
-            r["generationOrPunchFileOffset"] = String(w[13]); r["VM-lock-held"] = w[14] == 1
+            r["generationOrPunchFileOffset"] = String(w[13]); r["VM-lock-held"] = w[14] & 1 != 0
+            r["execution"] = w[14] & 2 != 0 ? "deferred" : "synchronous"
+            r["backingFileOpenLifetime"] = w[18]>0 ? String(w[18]) : NSNull()
+            r["extentGeneration"]=w[19]>0 ? String(w[19]) : NSNull()
+            r["fileOffset"] = [UInt64(1),5].contains(w[10]) ? String(w[13]) : NSNull()
+            r["pageStateEffect"] = "not-queried-by-operation; syscall-success-is-not-dirty-disposal-or-zeroing"
             if w[1] == 4 { r["result"] = Int64(bitPattern:w[15]); r["errno"] = w[16]; r["durationNS"] = w[17] }
             r["ownerStatus"] = "range-generation; owner-resolve-from-access-record; not-guessed-from-current-thread"
             return ("vm-operations", r)
+        case 11:
+            r["event"]="sampled-host-page-metadata";r["registerCaptureBeginNS"]=String(w[9]);r["hostPC"]=hex(w[10]);r["instruction"]=hex(w[11]);r["effectiveAddress"]=hex(w[12]);r["widthBytes"]=w[13]
+            r["allocationGeneration"]=w[14]>0 ? String(w[14]) : NSNull();r["extentGeneration"]=w[15]>0 ? String(w[15]) : NSNull()
+            r["backingFileOpenLifetime"]=w[16]>0 ? String(w[16]) : NSNull()
+            r["allocationOrigin"]=[0:"unknown",1:"Wine-private-virtual-allocation",2:"image-section",3:"file-section"][w[17]] ?? "unknown"
+            r["originScope"]="existing-view-classification; creation-context-is-not-current-ownership-or-migration-permission"
+            r["vmEpochBeforePages"]=String(w[18]);r["vmEpochAfterPages"]=String(w[19]);r["accessEpochBefore"]=String(w[39]);r["accessEpochAfter"]=String(w[40])
+            r["metadataConsistency"]=w[18]==w[19] && w[39]==w[40] && w[40]==w[18] ? "epochs-unchanged; post-resume-not-atomic-with-registers" : "VM-changed-between-observations"
+            r["samplingLeaseRecheck"]=[0:"busy-or-unavailable",1:"matched",2:"changed"][w[37]] ?? "unknown"
+            var pages:[[String:Any]]=[]
+            for i in 0..<min(2,Int(w[36])) {
+                let at=20+i*8
+                pages.append(["hostPageBase":hex(w[at]),"queryNS":String(w[at+1]),"result":Int64(bitPattern:w[at+2]),"dispositionBits":w[at+2]==0 ? hex(w[at+3]) : NSNull(),"referenceCount":w[at+2]==0 ? w[at+4] : NSNull(),"durationNS":w[at+5],"captureToQueryNS":w[at+1]>=w[9] ? String(w[at+1]-w[9]) : "unavailable"])
+            }
+            r["pages"]=pages;r["hostPageBytes"]=w[38];r["scope"]="actual-EA-host-pages; mach_vm_page_query; raw-disposition-not-region-counts; no-payload-read"
+            return ("memory-access",r)
+        case 12:
+            r["event"]="VM-operation-aggregate";r["operation"]=[1:"map-shared-fixed",2:"set-guest-protection-or-commit",3:"protect",4:"discard-MS_KILLPAGES",5:"hole-punch",6:"decommit"][w[9]] ?? "unknown"
+            r["VM-lock-held"]=w[10]&1 != 0;r["execution"]=w[10]&2 != 0 ? "deferred" : "synchronous"
+            r["countCumulative"]=w[11];r["bytesCumulative"]=w[12];r["errorsCumulative"]=w[13];r["durationNSCumulative"]=w[14]
+            r["scope"]="host-app-instrumented-operations; nested-or-overlapping-elapsed-totals-not-main-CPU; try-lock-drops-separate"
+            return ("vm-operations",r)
         case 10:
             r["event"]="watched-recovery-progress";r["source"]="existing-recovery-gate-no-new-capture"
             for (i,k) in [(9,"intervalUS"),(10,"userCPUUS"),(11,"kernelCPUUS"),(12,"runState"),(13,"eligible"),(14,"captures"),(15,"completed"),(16,"unhandled"),(17,"refused"),(18,"partial"),(19,"publicationFailed"),(25,"lastHoldUS"),(26,"lastAgeUS"),(27,"captureUS"),(28,"validationUS"),(29,"write0US"),(30,"write1US"),(31,"publicationUS"),(32,"resumeUS"),(33,"recoveryWorker"),(34,"baseQoS"),(35,"heldQoS"),(36,"qosChanged")] {r[k]=w[i]}
@@ -163,6 +192,8 @@ enum RunEvidenceSchema {
             r["event"] = "backing-progress"; r["scope"] = "host-app-Madeira-backing-ledger"
             r["status"] = w[9] == 1 ? "VM-lock-busy" : "sampled"
             r["initialized"] = w[9] == 2 && w[25] == 1
+            r["backingFileOpenLifetime"]=w[26]>0 ? String(w[26]) : NSNull()
+            r["retirementPolicy"]=w[27]==1 ? "external-retire-no-killpages-v1" : "unobserved"
             if w[9] == 2 {
                 for (i,k) in [(10,"liveBytes"),(11,"extentCount"),(12,"freeRangeCount"),(13,"fileBumpBytes"),(14,"fileCapBytes"),(15,"refusals"),(16,"quarantinedPunchFailures"),(17,"vmEpoch"),(18,"hostPageBytes"),(21,"freeBytes")] { r[k] = w[i] }
                 r["punchQueueDepth"] = w[19] == 1 ? w[20] : NSNull()
@@ -186,6 +217,25 @@ final class RunEvidenceStore {
     private var startedNS = RunEvidenceSchema.mono()
     private var config: [String: Any] = [:], modules: [[String: String]] = [], graphics: [String: [String: Any]] = [:]
     private var lastNS: UInt64 = 0
+    private var configDirty=true, modulesDirty=true, graphicsDirty=true
+    private var dirtyJournals:Set<String>=[]
+    private var logicalBytes:UInt64=0, metadataWrites:UInt64=0, checkpointCount:UInt64=0, checkpointNS:UInt64=0, flushCount:UInt64=0, flushNS:UInt64=0, fsyncCount:UInt64=0, fsyncNS:UInt64=0, rotationNS:UInt64=0, incidentCount:UInt64=0, incidentBytes:UInt64=0, incidentNS:UInt64=0, writeFailures:UInt64=0
+    private var lastMemorySequence:UInt64=0
+    private var anchors:[(mono:UInt64,wall:Double)]=[]
+    let startWallUnix=Date().timeIntervalSince1970
+    func persistenceCounters() -> [String:Any] {
+        ["logicalBytesWritten":logicalBytes,"metadataWrites":metadataWrites,"checkpointCount":checkpointCount,"checkpointDurationNS":checkpointNS,"flushCount":flushCount,"flushDurationNS":flushNS,"fsyncCount":fsyncCount,"fsyncDurationNS":fsyncNS,"fsyncFailures":syncErrors,"rotationCount":overwritten,"rotationDurationNS":rotationNS,"incidentCopies":incidentCount,"incidentCopyBytes":incidentBytes,"incidentCopyDurationNS":incidentNS,"writeFailures":writeFailures,"scope":"recorder-owned-logical-writes-and-copies; not-physical-device-IO; excludes-export-copy-and-filesystem-metadata","selfMeasurement":"completed-work-before-this-snapshot; counters-may-lag-current-checkpoint","maximumSummaryLagSeconds":5,"unflushedTail":"unknown-after-abrupt-termination"]
+    }
+    func monotonic(for wall:Double) -> UInt64? {
+        guard let a=anchors.min(by:{abs($0.wall-wall)<abs($1.wall-wall)}) else{return nil}
+        let ns=Double(a.mono)+(wall-a.wall)*1e9
+        return ns>=0 && ns<Double(UInt64.max) ? UInt64(ns) : nil
+    }
+    private func persist(_ values:[String:Any],_ name:String) throws {
+        let data=try RunEvidenceSchema.json(values);guard data.count<=256<<10 else {throw CocoaError(.fileWriteOutOfSpace)}
+        do {try data.write(to:directory.appendingPathComponent(name),options:.atomic);try fm.setAttributes([.posixPermissions:0o600],ofItemAtPath:directory.appendingPathComponent(name).path);logicalBytes+=UInt64(data.count);metadataWrites+=1}
+        catch {writeFailures+=1;throw error}
+    }
     private var facts: [String:Any] = [:]
     func fact(_ key:String,_ value:Any) { if facts.count<32 || facts[key] != nil { facts[key]=value } }
     static let segmentBytes = 256 << 10
@@ -206,49 +256,58 @@ final class RunEvidenceStore {
         data.append(10)
         var f=files[channel] ?? (0,0)
         if f.bytes + data.count > Self.segmentBytes {
+            let rotationBegin=RunEvidenceSchema.mono()
+            defer {rotationNS+=RunEvidenceSchema.mono()-rotationBegin}
             f = ((f.slot+1) % slots,0); overwritten += 1
             let key="\(channel).\(f.slot)";overwrittenRecords+=segmentRecords[key] ?? 0;segmentRecords[key]=0
             try? fm.removeItem(at: directory.appendingPathComponent("\(channel).\(f.slot).jsonl"))
         }
         let path=directory.appendingPathComponent("\(channel).\(f.slot).jsonl")
         let fd=open(path.path,O_WRONLY|O_APPEND|O_CREAT|O_NOFOLLOW|O_CLOEXEC,0o600)
-        guard fd>=0 else { dropped += 1; return }
+        guard fd>=0 else { dropped += 1; writeFailures+=1; return }
         defer { close(fd) }
         let n=data.withUnsafeBytes { write(fd,$0.baseAddress,data.count) }
-        guard n == data.count else { _ = ftruncate(fd,off_t(f.bytes)); dropped += 1; return }
+        if n>0 {logicalBytes+=UInt64(n)}
+        guard n == data.count else { _ = ftruncate(fd,off_t(f.bytes)); dropped += 1; writeFailures+=1; return }
+        if row["event"] as? String == "memory-progress" {lastMemorySequence=sequence}
+        dirtyJournals.insert(channel)
         f.bytes += data.count; files[channel]=f; counts[channel,default:0] += 1; segmentRecords["\(channel).\(f.slot)",default:0]+=1; persisted=sequence; lastNS=now
     }
     func calibration(_ reason: String) {
         let a=RunEvidenceSchema.mono(), wall=Date(), b=RunEvidenceSchema.mono()
+        anchors.append(((a+b)/2,wall.timeIntervalSince1970));if anchors.count>32 {anchors.removeFirst()}
         record("timeline",["event":"clock-calibration","reason":reason,"monotonicBeforeNS":String(a),"monotonicAfterNS":String(b),
             "wallUTC":ISO8601DateFormatter().string(from:wall),"wallUnixSeconds":wall.timeIntervalSince1970,
             "uncertaintyNSAtLeast":b>=a ? b-a : 0,"wallClockUncertainty":"system-wall-resolution-and-adjustments-not-bounded",
             "consoleClock":"console-wall; timestamp-retained-separately; arrival-is-not-packet-arrival"])
     }
-    func setConfig(_ tag: String, _ fields: [String:String]) { if config.count<32 || config[tag] != nil { config[tag]=fields } }
-    func module(_ fields: [String:String]) { if modules.count>=256 { modules.removeFirst();dropped+=1 }; modules.append(fields) }
+    func setConfig(_ tag: String, _ fields: [String:String]) { if (config.count<32 || config[tag] != nil) && config[tag] as? [String:String] != fields { config[tag]=fields;configDirty=true } }
+    func module(_ fields: [String:String]) { if modules.count>=256 { modules.removeFirst();dropped+=1 }; modules.append(fields);modulesDirty=true }
     func graphic(_ fields: [String:String], category: String) {
         guard let keyData=try? RunEvidenceSchema.json(fields), let key=String(data:keyData,encoding:.utf8) else { return }
         let now=String(RunEvidenceSchema.mono())
         if var old=graphics[key] { old["count"]=(old["count"] as? UInt64 ?? 1)+1; old["lastNS"]=now; graphics[key]=old }
         else if graphics.count<64 { graphics[key]=["fields":fields,"category":category,"count":UInt64(1),"firstNS":now,"lastNS":now] }
         else { dropped += 1 }
-        record("graphics-errors",["event":"graphics-error","category":category,"fields":fields,"memoryReference":"latest-host-app-memory-sample; not-atomic-with-error"])
+        graphicsDirty=true
+        record("graphics-errors",["memorySnapshotSequence":lastMemorySequence>0 ? String(lastMemorySequence) : NSNull(),"event":"graphics-error","category":category,"fields":fields,"memoryReference":"latest-host-app-memory-sample; not-atomic-with-error"])
     }
     /// Pin the newest incident (at most 3 MiB); no source payload, only typed
     /// journals. Replaced on the next terminal/postactivation incident.
     func incident(_ reason: String) {
+        let incidentBegin=RunEvidenceSchema.mono();incidentCount+=1
+        defer {incidentNS+=RunEvidenceSchema.mono()-incidentBegin}
         record("timeline",["event":"incident-window","reason":reason])
         let url=directory.appendingPathComponent("incident.jsonl")
         try? fm.removeItem(at:url)
         let fd=open(url.path,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0o600)
-        guard fd>=0 else { dropped += 1; return }; defer { close(fd) }
+        guard fd>=0 else { dropped += 1; writeFailures+=1; return }; defer { close(fd) }
         var budget=3<<20
         for channel in ["memory-access","thread-frame-memory","timeline","vm-operations","graphics-errors"] {
             guard let f=files[channel] else { continue }
             for slot in [(f.slot+Self.slots[channel]!-1)%Self.slots[channel]!,f.slot] {
                 let source=directory.appendingPathComponent("\(channel).\(slot).jsonl")
-                budget -= Self.copy(source,to:fd,maximum:budget)
+                let copied=Self.copy(source,to:fd,maximum:budget);budget-=copied;incidentBytes+=UInt64(copied);logicalBytes+=UInt64(copied)
             }
         }
     }
@@ -265,21 +324,30 @@ final class RunEvidenceStore {
         return total
     }
     func flush() {
+        let begin=RunEvidenceSchema.mono();flushCount+=1
+        defer {flushNS+=RunEvidenceSchema.mono()-begin}
         var failed=false
-        for (channel,f) in files {
+        for (channel,f) in files where dirtyJournals.contains(channel) {
             let fd=open(directory.appendingPathComponent("\(channel).\(f.slot).jsonl").path,O_WRONLY|O_NOFOLLOW|O_CLOEXEC)
-            if fd<0 { failed=true;continue };if fsync(fd) != 0 {failed=true};close(fd)
+            if fd<0 { failed=true;continue };let start=RunEvidenceSchema.mono();fsyncCount+=1;if fsync(fd) != 0 {failed=true} else {dirtyJournals.remove(channel)};fsyncNS+=RunEvidenceSchema.mono()-start;close(fd)
         }
         if failed {syncErrors+=1} else {syncSequence=persisted;syncNS=RunEvidenceSchema.mono()}
     }
+    func reportReceiverIdentity() -> [String:String] {
+        let p=config["package-provenance"] as? [String:String] ?? [:]
+        return p.filter{["packageSourceRevision","nativeImageUUID","CFBundleVersion","CFBundleShortVersionString"].contains($0.key)}
+    }
+    func systemSummary(_ report:[String:Any]) {try? persist(report,"system.json")}
     func checkpoint() throws {
+        let checkpointBegin=RunEvidenceSchema.mono();checkpointCount+=1
+        defer {checkpointNS+=RunEvidenceSchema.mono()-checkpointBegin}
         let coverage: [String:Any] = ["schema":RunEvidenceSchema.version,"runID":runID,"startNS":String(startedNS),"latestCapturedSequence":String(sequence),
             "latestPersistedSequence":String(persisted),"lastPersistedNS":String(lastNS),"droppedRecords":dropped,"overwrittenSegments":overwritten,"overwrittenRecords":overwrittenRecords,"retainedJournalRecords":segmentRecords.values.reduce(0,+),
             "lastFsyncedSequence":String(syncSequence),"lastFsyncNS":String(syncNS),"fsyncFailures":syncErrors,"persistence":"write-acknowledged-every-tick; fsync-five-seconds-and-export; final-unflushed-tail-unknown",
-            "recordsCollectedByChannel":counts,"observedFacts":facts,"samplingSeconds":1,"units":"NS unless suffixed US/Bytes/Pages",
+            "recorderPersistence":persistenceCounters(),"recordsCollectedByChannel":counts,"observedFacts":facts,"samplingSeconds":1,"units":"NS unless suffixed US/Bytes/Pages",
             "perRunDiskCapBytes":RunEvidenceSchema.perRunLimit,"rollingSegmentCapBytes":Self.segmentBytes,"rollingSlots":Self.slots,
             "limits":"rolling-journals-8.5MiB; incident-3MiB; system-1MiB; metadata-1MiB; total-less-than-16MiB",
-            "payloadRAM":"native-ring-393216; native-inflight-3584; Swift-native-batch-24576; input-65536; copy-16384; record-max-16384; bounded-metadata",
+            "payloadRAM":"native-ring-393216; native-inflight-4608; Swift-native-batch-24576; input-65536; copy-16384; record-max-16384; bounded-metadata",
             "allocatorOverhead":"not-measured; payload-bounds-are-not-a-physical-footprint-guarantee",
             "terminationReason":"unknown-unless-authoritative-report; no-clean-host-exit-record",
             "unflushedTail":"unknown-at-abrupt-termination; native-ring-and-log-tail-may-not-be-persisted",
@@ -287,11 +355,11 @@ final class RunEvidenceStore {
             "observerCoverage":"native-samples-rolling; console-and-text-bounded-polling; unavailable-is-not-zero",
             "systemReports":"only-reports-actually-delivered; export-does-not-wait",
             "guestCrashReports":"app-owned-report-metadata-only; no-memory-minidumps-or-kernel-stacks"]
-        try Self.writeJSON(coverage,to:directory.appendingPathComponent("run-summary.json"))
-        try Self.writeJSON(["schema":RunEvidenceSchema.version,"runID":runID,"effectiveFromInitializedRows":config,"unobserved":"unavailable; requested-is-not-effective"],to:directory.appendingPathComponent("runtime-config.json"))
-        try Self.writeJSON(["schema":RunEvidenceSchema.version,"runID":runID,"modules":modules,"limit":256,"scope":"observed-load-events-not-exhaustive-live-inventory","unloadTracking":"unavailable; entries-not-proof-still-loaded"],to:directory.appendingPathComponent("modules.json"))
-        try Self.writeJSON(["schema":RunEvidenceSchema.version,"runID":runID,"errors":Array(graphics.values),"observerCoverage":"bounded-known-native-tags-and-console-errors; zero-entries-not-proof-of-zero-errors"],to:directory.appendingPathComponent("graphics-summary.json"))
-        try Self.writeJSON(["schema":RunEvidenceSchema.version,"runID":runID,"reason":"unknown","cleanHostExitObserved":false,"latestPersistedSequence":String(persisted),"lastPersistedNS":String(lastNS),"unflushedTail":"unknown","authoritativeReports":"see-system-directory-if-delivered"],to:directory.appendingPathComponent("termination.json"))
+        try persist(coverage,"run-summary.json")
+        if configDirty {try persist(["schema":RunEvidenceSchema.version,"runID":runID,"effectiveFromInitializedRows":config,"unobserved":"unavailable; requested-is-not-effective"],"runtime-config.json");configDirty=false}
+        if modulesDirty {try persist(["schema":RunEvidenceSchema.version,"runID":runID,"modules":modules,"limit":256,"scope":"observed-load-events-not-exhaustive-live-inventory","unloadTracking":"unavailable; entries-not-proof-still-loaded"],"modules.json");modulesDirty=false}
+        if graphicsDirty {try persist(["schema":RunEvidenceSchema.version,"runID":runID,"errors":Array(graphics.values),"observerCoverage":"bounded-known-native-tags-and-console-errors; zero-entries-not-proof-of-zero-errors"],"graphics-summary.json");graphicsDirty=false}
+        try persist(["schema":RunEvidenceSchema.version,"runID":runID,"reason":"unknown","captureState":"live-session-recording; no-crash-inference","hostRunningAtCheckpoint":true,"cleanHostExitObserved":false,"latestPersistedSequence":String(persisted),"lastPersistedNS":String(lastNS),"unflushedTail":"unknown","authoritativeReports":"see-system-directory-if-delivered"],"termination.json")
     }
     static func writeJSON(_ values: [String:Any], to url: URL) throws {
         let data=try RunEvidenceSchema.json(values); guard data.count<=256<<10 else { throw CocoaError(.fileWriteOutOfSpace) }
@@ -299,7 +367,7 @@ final class RunEvidenceStore {
     }
     /// Snapshot on the recorder queue. The ZIP writer streams these private
     /// files later and never reads mutable recording files concurrently.
-    static func snapshotRun(_ source: URL, destination: URL) throws -> [String:URL] {
+    static func snapshotRun(_ source: URL, destination: URL, hostRunning:Bool?=nil) throws -> [String:URL] {
         let fm=FileManager.default; try fm.createDirectory(at:destination,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
         var result:[String:URL]=[:], budget=RunEvidenceSchema.perRunLimit
         let names=try fm.contentsOfDirectory(atPath:source.path)
@@ -319,6 +387,11 @@ final class RunEvidenceStore {
             let fd=open(path.path,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0o600); guard fd>=0 else { continue }
             let bytes=copy(source.appendingPathComponent(name),to:fd,maximum:min(max(0,budget),name=="incident.jsonl" ? 3<<20 : 1<<20)); close(fd)
             if bytes>0 { budget-=bytes; result[name]=path } else { try? fm.removeItem(at:path) }
+        }
+        if let hostRunning,let termination=result["termination.json"],let bytes=try? Data(contentsOf:termination),bytes.count<256<<10,var value=(try? JSONSerialization.jsonObject(with:bytes)) as? [String:Any] {
+            value["hostRunningAtSnapshot"]=hostRunning
+            value["snapshotRelationship"]=hostRunning ? "current-live-session; absent-clean-exit-does-not-mean-crash" : "preceding-session; termination-cause-unknown-without-matched-report"
+            try Self.writeJSON(value,to:termination)
         }
         return result
     }
@@ -342,7 +415,7 @@ final class RunEvidenceRecorder {
     let queue=DispatchQueue(label:"com.madeira.run-evidence",qos:.utility)
     let store: RunEvidenceStore
     private let documents:URL, root:URL
-    private var timer:DispatchSourceTimer?, ticks=0, foreground=true, observers:[NSObjectProtocol]=[]
+    private var timer:DispatchSourceTimer?, ticks=0, foreground=true, foregroundBegan=RunEvidenceSchema.mono(), observers:[NSObjectProtocol]=[]
     private var offsets:[String:(inode:UInt64,offset:UInt64)]=[:], fileDroppedBytes:UInt64=0
     private var process:String?, attempt=0, attemptKind="unknown", activated=false
     private var lastFrame:UInt64=0, stall=false, lastIncident:UInt64=0
@@ -351,6 +424,7 @@ final class RunEvidenceRecorder {
     private var previous:String?
     private var phase="startup", lastLoopbackConsoleStamp:String?
     private var connectSecond:Int?, mainUserUS:UInt64=0, mainKernelUS:UInt64=0, maxGapNS:UInt64=0, peakFootprint:UInt64=0
+    private var mainIntervals:[[String:Any]]=[], backgroundSpans:[(UInt64,UInt64)]=[], backgroundBegin:UInt64?, activationNS:UInt64?, closeReason:String?, closeReports=0
     private var pendingTextureAPI:String?, consoleLineNumber:UInt64=0, pendingTextureLine:UInt64=0
     private var nativeSourceRead:UInt64=0, consoleSourceRead:UInt64=0
     #if os(iOS)
@@ -388,7 +462,7 @@ final class RunEvidenceRecorder {
         #if os(iOS)
         for (name,event,active) in [(UIApplication.didEnterBackgroundNotification,"app-background",false),(UIApplication.didBecomeActiveNotification,"app-foreground",true)] {
             observers.append(NotificationCenter.default.addObserver(forName:name,object:nil,queue:nil) { [weak self] _ in
-                self?.queue.async { [weak self] in guard let self else { return }; self.foreground=active; self.store.record("timeline",["event":event,"source":"UIApplication-notification"]); self.store.calibration(event); try? self.store.checkpoint() }
+                self?.queue.async { [weak self] in guard let self else { return }; self.foreground=active;let now=RunEvidenceSchema.mono();if active {self.foregroundBegan=now;if let begin=self.backgroundBegin {self.backgroundSpans.append((begin,now));self.backgroundBegin=nil;if self.backgroundSpans.count>64 {self.backgroundSpans.removeFirst()}}} else {self.backgroundBegin=now}; self.store.record("timeline",["event":event,"source":"UIApplication-notification"]); self.store.calibration(event); try? self.store.checkpoint() }
             })
         }
         metricSubscriber=RunEvidenceMetrics(recorder:self)
@@ -428,13 +502,12 @@ final class RunEvidenceRecorder {
                     var entry:[String:String]=[:];for (key,value) in r {if let s=value as? String {entry[key]=s}}
                     store.module(entry)
                 }
-                if r["event"] as? String == "main-progress", activated, let owner=r["owner"] as? String,let lease=r["lease"] as? String,owner+"-"+lease==process {
-                    mainUserUS += r["userCPUUS"] as? UInt64 ?? 0; mainKernelUS += r["kernelCPUUS"] as? UInt64 ?? 0
-                    store.fact("postActivationSampledMainCPUUS",["user":mainUserUS,"kernel":mainKernelUS,"scope":"sampled-intervals-for-current-CS2-lifetime; not-total-loading-or-kernel-stack"])
+                if r["event"] as? String == "main-progress" {
+                    mainIntervals.append(r);if mainIntervals.count>192 {mainIntervals.removeFirst()}
                 }
                 if r["event"] as? String == "backing-progress",let initialized=r["initialized"] as? Bool,initialized {
                     let base=i*48
-                    store.setConfig("effective-native-backing",["capBytes":String(words[base+14]),"minBytes":String(words[base+22]),"reservationMaxBytes":String(words[base+23]),"coverage":["classic","blocks","wide","broad"][min(3,Int(words[base+24]))]])
+                    store.setConfig("effective-native-backing",["capBytes":String(words[base+14]),"minBytes":String(words[base+22]),"reservationMaxBytes":String(words[base+23]),"retirementPolicy":words[base+27]==1 ? "external-retire-no-killpages-v1" : "unobserved","fileOpenLifetime":String(words[base+26]),"coverage":["classic","blocks","wide","broad"][min(3,Int(words[base+24]))]])
                 }
                 store.record(channel,stamp(r))
             }
@@ -444,15 +517,16 @@ final class RunEvidenceRecorder {
         var frame=[UInt64](repeating:0,count:5); nativeEvidenceFrame(&frame)
         let framePair=frame[3]>0 && frame[4]>0 ? RunEvidenceSchema.hex(frame[3])+"-"+String(frame[4]) : nil
         let gap=framePair==process && frame[1]>0 && frame[2]>=frame[1] ? frame[2]-frame[1] : nil
-        store.record("thread-frame-memory",stamp(["event":"frame-progress","scope":"validated-CS2-owner-DXMT-pacing-hook-not-GPU-completion","count":frame[3]>0 ? frame[0] : NSNull(),"owner":frame[3]>0 ? RunEvidenceSchema.hex(frame[3]) : NSNull(),"lease":frame[4]>0 ? String(frame[4]) : NSNull(),"frameIdentityStatus":framePair==process && framePair != nil ? "current-lease-matched" : framePair != nil ? "other-live-lifetime" : "identity-busy-or-no-active-observer","lastHookNS":frame[1]>0 ? String(frame[1]) : NSNull(),"gapNS":gap as Any? ?? NSNull(),"foreground":foreground,"GPUCompletion":"available-only-in-existing-frame-logs","intentionalPause":"unknown-unless-observed"] ))
-        if let gap, foreground, gap>3_000_000_000, process != nil, !stall {
+        store.record("thread-frame-memory",stamp(["event":"frame-progress","scope":"validated-CS2-owner-DXMT-pacing-hook-not-GPU-completion","count":frame[3]>0 ? frame[0] : NSNull(),"owner":frame[3]>0 ? RunEvidenceSchema.hex(frame[3]) : NSNull(),"lease":frame[4]>0 ? String(frame[4]) : NSNull(),"frameIdentityStatus":framePair==process && framePair != nil ? "current-lease-matched" : framePair != nil ? "other-live-lifetime" : "identity-busy-or-no-active-observer","lastHookNS":frame[1]>0 ? String(frame[1]) : NSNull(),"gapNS":gap as Any? ?? NSNull(),"foreground":foreground,"foregroundBeganNS":String(foregroundBegan),"GPUCompletion":"available-only-in-existing-frame-logs","intentionalPause":"unknown-unless-observed"] ))
+        let activeGap=foreground && framePair==process && frame[2]>=max(frame[1],foregroundBegan) ? frame[2]-max(frame[1],foregroundBegan) : nil
+        if let gap=activeGap, gap>3_000_000_000, process != nil, !stall {
             stall=true; store.record("timeline",stamp(["event":"frame-stall-observed","gapNS":gap,"source":"DXMT-pacing-hook","confidence":"no-hook-progress; intentional-pause-not-excluded"]))
             if activated { incident("post-activation-frame-stall") }
         } else if stall, framePair==process, frame[0] != lastFrame {
             stall=false; store.record("timeline",stamp(["event":"frame-progress-recovered","source":"DXMT-pacing-hook"]))
         }
         lastFrame=frame[0]
-        if let gap,foreground { maxGapNS=max(maxGapNS,gap);store.fact("maxObservedPacingHookGapNS",maxGapNS) }
+        if let gap=activeGap { maxGapNS=max(maxGapNS,gap);store.fact("maxForegroundObservedPacingHookGap",["NS":maxGapNS,"scope":"whole-app foreground portions; includes startup/local; not remote-gameplay benchmark"]) }
         var info=task_vm_info_data_t(); var count=mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size/MemoryLayout<integer_t>.size)
         let kr=withUnsafeMutablePointer(to:&info) { p in p.withMemoryRebound(to:integer_t.self,capacity:Int(count)) { task_info(mach_task_self_,task_flavor_t(TASK_VM_INFO),$0,&count) } }
         var memory:[String:Any]=["event":"memory-progress","scope":"host-app-task","queryResult":kr,"thermalState":ProcessInfo.processInfo.thermalState.rawValue,"availableBytes":os_proc_available_memory()]
@@ -474,7 +548,8 @@ final class RunEvidenceRecorder {
         if ticks%30==0 { store.calibration("periodic"); installedBuild() }
         store.fact("textSourceCoverage",["nativeBytesRead":nativeSourceRead,"consoleBytesRead":consoleSourceRead,"skippedBytes":fileDroppedBytes,"samplingSeconds":1,"arrivalClock":"CLOCK_MONOTONIC; console-original-wall-separate","partialLinePolicy":"defer-complete-lines; source-size-bounded-per-tick"] )
         if ticks%5==0 {store.flush()}
-        try? store.checkpoint()
+        if ticks%5==0 {try? store.checkpoint()}
+        store.record("thread-frame-memory",["event":"recorder-persistence", "counters":store.persistenceCounters()])
         let elapsed=RunEvidenceSchema.mono()-begin; maxTickNS=max(maxTickNS,elapsed); if elapsed>250_000_000 { overruns+=1 }
         store.record("thread-frame-memory",["event":"recorder-cost","elapsedNS":elapsed,"maxNS":maxTickNS,"over250ms":overruns,"inputBytesSkipped":fileDroppedBytes,"scope":"recorder-utility-queue-wall-time; includes-flush-and-checkpoint; excludes-this-cost-row-write","allocatorOverhead":"unmeasured"])
     }
@@ -500,15 +575,24 @@ final class RunEvidenceRecorder {
         // Crash dump payloads may contain account/guest memory. Preserve only
         // app-owned exception-report file metadata at the known report root.
         let crash=documents.appendingPathComponent("wine/drive_c/Program Files (x86)/Steam/dumps")
-        if let names=try? FileManager.default.contentsOfDirectory(atPath:crash.path) {
-            var reports:[[String:Any]]=[]
-            for name in names.prefix(32) where name.hasSuffix(".dmp") || name.hasSuffix(".txt") {
-                var st=stat();let path=crash.appendingPathComponent(name)
+        if let names=FileManager.default.enumerator(at:crash,includingPropertiesForKeys:[],options:[.skipsSubdirectoryDescendants,.skipsHiddenFiles]) {
+            var reports:[[String:Any]]=[];var examined=0
+            while examined<128, let path=names.nextObject() as? URL {
+                examined+=1;let name=path.lastPathComponent
+                guard name.hasSuffix(".dmp") || name.hasSuffix(".txt") else {continue}
+                var st=stat()
                 if lstat(path.path,&st)==0,st.st_uid==getuid(),st.st_mode & mode_t(S_IFMT)==mode_t(S_IFREG) {
-                    reports.append(["kind":name.hasSuffix(".dmp") ? "minidump" : "text-report","bytes":st.st_size,"payload":"excluded; may-contain-guest-memory-or-identifiers"])
+                    #if canImport(Darwin)
+                    let modified=Double(st.st_mtimespec.tv_sec)+Double(st.st_mtimespec.tv_nsec)/1e9
+                    #else
+                    let modified=Double(st.st_mtim.tv_sec)+Double(st.st_mtim.tv_nsec)/1e9
+                    #endif
+                    reports.append(["fileIdentity":"\(st.st_dev)-\(st.st_ino)","modifiedUnixSeconds":modified,"timeRelation":modified>=store.startWallUnix ? "modified-since-recorder-start; not-proof-of-crash" : "predates-recorder-start","kind":name.hasSuffix(".dmp") ? "minidump" : "text-report","bytes":st.st_size,"payload":"excluded; may-contain-guest-memory-or-identifiers"])
                 }
             }
-            store.fact("appOwnedWineReportMetadata",reports)
+            reports.sort{($0["modifiedUnixSeconds"] as? Double ?? 0)>($1["modifiedUnixSeconds"] as? Double ?? 0)}
+            store.fact("appOwnedWineReportMetadata",Array(reports.prefix(32)))
+            store.fact("reportMetadataCoverage",["entriesExamined":examined,"scanLimit":128,"retainedLimit":32,"scanReachedLimit":examined==128,"absenceMeaning":"bounded-metadata-only; no-proof-no-crash"])
         }
     }
     private func incident(_ reason:String) {
@@ -544,6 +628,7 @@ final class RunEvidenceRecorder {
         offsets[relative]=(inode,offset-UInt64(data.count))
     }
     func observe(_ line:String, console:Bool) {
+        if let failure=Self.graphicsFailure(line) {store.graphic(failure.fields,category:failure.category)}
         if console {
             consoleLineNumber+=1
             if line.contains("D3D11Device()->CreateTexture") {
@@ -558,20 +643,35 @@ final class RunEvidenceRecorder {
             if event=="remote-connected",originalStamp != nil,originalStamp==lastLoopbackConsoleStamp {event="loopback-connection-confirmation"}
             if event=="loopback-connected" {lastLoopbackConsoleStamp=originalStamp}
             if event == "remote-connected" || event == "loopback-connected" {
-                attempt+=1; attemptKind=event == "remote-connected" ? "remote" : "loopback"; activated=false
+                let next=Self.attemptAfter(event,attempt:attempt,kind:attemptKind);attempt=next.0;attemptKind=next.1;activated=false;activationNS=nil;closeReason=nil;closeReports=0
             }
             let stampSeconds=Self.consoleStamp(line).flatMap { t -> Int? in
                 let p=t.split(separator:":").compactMap { Int($0) };return p.count==3 ? p[0]*3600+p[1]*60+p[2] : nil
             }
+            if event == "changelevel-observed" {activated=false;activationNS=nil;phase="remote-changelevel"}
+            if event=="changelevel-observed" {phase="remote-map-transition";activated=false;activationNS=nil}
             if event == "remote-connected" { connectSecond=stampSeconds;phase="remote-loading" }
-            if event == "loopback-connected" {phase="local-loopback"}
+            if event == "loopback-connected" || event == "loopback-activated" {phase="local-loopback"}
             if event == "remote-activated" {
                 activated=true;phase="remote-activated-not-playability"
+                if let date=Self.consoleDate(line,arrival:Date()) {activationNS=store.monotonic(for:date.timeIntervalSince1970)}
                 if let start=connectSecond,let end=stampSeconds,end>=start {
                     store.fact("lastRemoteConnectionToActivation",["seconds":end-start,"clock":"same-console-wall-second; no-packet-arrival-inference","uncertainty":"at-least-timestamp-granularity; console-buffering-unmeasured"])
                 }
             }
-            if event.hasPrefix("disconnect") { store.fact("lastObservedDisconnect",event);activated=false;phase="after-disconnect" }
+            if event=="disconnect-network-timeout" {
+                closeReports+=1
+                if closeReason==nil {
+                    closeReason="NETWORK_DISCONNECT_TIMEDOUT"
+                    store.fact("firstExplicitNetworkClose",["reason":closeReason!,"consoleTimestamp":originalStamp as Any? ?? NSNull(),"source":"explicit-console-token; reporting-time-not-packet-arrival"])
+                    if let start=activationNS,let date=Self.consoleDate(line,arrival:Date()),let end=store.monotonic(for:date.timeIntervalSince1970) {
+                        var spans=backgroundSpans;if let b=backgroundBegin {spans.append((b,RunEvidenceSchema.mono()))}
+                        store.fact("remoteActivationToCloseSampledCPU",Self.cpuSummary(mainIntervals,start:start,end:end,lifetime:process,background:spans))
+                    }
+                }
+                store.fact("networkCloseReportCount",closeReports)
+            }
+            if event.hasPrefix("disconnect") {store.fact(event=="disconnect-full-signon" ? "lastDisconnectCleanup" : "lastObservedDisconnect",event);activated=false;phase="after-disconnect"}
             let timestamp=Self.consoleStamp(line)
             store.record("timeline",stamp(["event":event,"source":"CS2-console-line","confidence":"observed-message; not-playability-or-packet-arrival","consoleTimestamp":timestamp as Any? ?? NSNull(),"consoleClock":"original-console-wall; year-and-timezone-unverified","consoleArrival":"this-read-tick; not-original-packet-time"]))
             if event.hasPrefix("disconnect") || event == "texture-allocation-failed" { incident(event) }
@@ -623,6 +723,50 @@ final class RunEvidenceRecorder {
             store.setConfig(String(line.prefix(64).split(separator:"]").first ?? "observed"),RunEvidenceSchema.fields(line,keys:["selected","applied","deferred","mode","min","cap","source","virtual-sha256","jit-sha256","uuid","width","height","policy"]))
         }
     }
+    static func attemptAfter(_ event:String,attempt:Int,kind:String) -> (Int,String) {
+        if event=="remote-connected" || event=="loopback-connected" {return (attempt+1,event=="remote-connected" ? "remote" : "loopback")}
+        return (attempt,kind)
+    }
+    static func consoleDate(_ text:String,arrival:Date) -> Date? {
+        guard let stamp=consoleStamp(text) else{return nil}
+        let time=stamp.split(separator:":").compactMap{Int($0)};guard time.count==3 else{return nil}
+        var cal=Calendar(identifier:.gregorian);cal.timeZone = .current
+        var c=cal.dateComponents([.year,.month,.day],from:arrival);c.hour=time[0];c.minute=time[1];c.second=time[2]
+        if let regex=try? NSRegularExpression(pattern:"([0-9]{2})/([0-9]{2}) "),let m=regex.firstMatch(in:text,range:NSRange(text.startIndex...,in:text)),let mr=Range(m.range(at:1),in:text),let dr=Range(m.range(at:2),in:text) {c.month=Int(text[mr]);c.day=Int(text[dr])}
+        guard let date=cal.date(from:c) else{return nil}
+        return [-1,0,1].compactMap{cal.date(byAdding:.day,value:$0,to:date)}.min(by:{abs($0.timeIntervalSince(arrival))<abs($1.timeIntervalSince(arrival))})
+    }
+    static func cpuSummary(_ rows:[[String:Any]],start:UInt64,end:UInt64,lifetime:String?,background:[(UInt64,UInt64)]) -> [String:Any] {
+        var user:UInt64=0,kernel:UInt64=0,elapsed:UInt64=0,count=0,boundary=0,bg=0
+        for r in rows {
+            guard let owner=r["owner"] as? String,let lease=r["lease"] as? String,owner+"-"+lease==lifetime,let t=r["registerCaptureBeginNS"] as? String,let finish=UInt64(t),let us=r["intervalUS"] as? UInt64,us>0,us<=finish/1000 else {continue}
+            let begin=finish-us*1000
+            guard finish>start && begin<end else {continue}
+            guard begin>=start && finish<=end else {boundary+=1;continue}
+            guard !background.contains(where:{$0.0<finish && $0.1>begin}) else {bg+=1;continue}
+            guard let u=r["userCPUUS"] as? UInt64,let k=r["kernelCPUUS"] as? UInt64 else {continue}
+            user+=u;kernel+=k;elapsed+=us;count+=1
+        }
+        return ["userUS":user,"kernelUS":kernel,"intervalUS":elapsed,"includedIntervals":count,"boundaryIntervalsExcluded":boundary,"backgroundIntervalsExcluded":bg,"windowBeginNS":String(start),"windowEndNS":String(end),"clockMapping":"original-console-wall mapped through measured nearest app calibration; device-timezone assumption; >=1-second console resolution; not-packet-arrival","intervalRule":"capture-time interval wholly inside activation-to-first-explicit-close; boundary/background overlaps excluded; bounded-192-interval history","kernelShareOfConsumedCPU":user+kernel>0 ? Double(kernel)/Double(user+kernel) : NSNull(),"rule":"whole-capture-interval-contained-in-console-derived-window; no-proration; background-overlaps-excluded","clockConfidence":"measured-app-wall-monotonic-calibration; console-second-resolution-and-device-timezone-assumption; console-buffering-unmeasured","retention":"last-192-main-intervals; missing-intervals-not-zero; not-exhaustive-process-CPU"]
+    }
+    static func graphicsFailure(_ line:String) -> (category:String,fields:[String:String])? {
+        let l=line.lowercased()
+        guard !["chat","say ","password","ticket","token","steamid"].contains(where:{l.contains($0)}) else{return nil}
+        let category:String
+        if l.contains("e_outofmemory") || l.contains("8007000e") {category="allocation"}
+        else if l.contains("e_invalidarg") || l.contains("80070057") {category="invalid-argument"}
+        else if l.contains("shader") && (l.contains("fail") || l.contains("error")) {category="shader"}
+        else if l.contains("pipeline") && (l.contains("fail") || l.contains("error")) {category="pipeline"}
+        else if (l.contains("missing") || l.contains("not found")) && (l.contains("material") || l.contains("resource") || l.contains("shader resource view")) {category="missing-resource-or-material"}
+        else {return nil}
+        var f=RunEvidenceSchema.fields(line,keys:["width","height","depth","mips","mip-count","format","fmt","bytes","usage","storage","flags","shader","pipeline","resource","resource-id","shader-hash","pipeline-hash","errno","code","Code"])
+        f["siteCategory"]=category;f["source"]="existing-failure-message; closed-fields-only"
+        for api in ["CreateTexture2D","CreateTexture3D","CreateShaderResourceView","CreateRenderPipelineState","CreateComputePipelineState"] where line.contains(api) {f["API"]=api}
+        if l.contains("e_outofmemory") || l.contains("8007000e") {f["HRESULT"]="E_OUTOFMEMORY"};if l.contains("e_invalidarg") || l.contains("80070057") {f["HRESULT"]="E_INVALIDARG"}
+        for domain in ["MTLLibraryErrorDomain","MTLRenderPipelineErrorDomain","MTLComputePipelineErrorDomain","MTLCommandBufferErrorDomain"] where line.contains(domain) {f["MetalErrorDomain"]=domain}
+        f["unreportedParameters"]="unavailable; not-inferred-from-error"
+        return (category,f)
+    }
     static func consoleStamp(_ s:String) -> String? {
         guard let r=s.range(of:"[0-9]{2}:[0-9]{2}:[0-9]{2}",options:.regularExpression) else { return nil }; return String(s[r])
     }
@@ -634,7 +778,8 @@ final class RunEvidenceRecorder {
         if s.contains("SIGNONSTATE_FULL") && l.contains("disconnect") { return "disconnect-full-signon" }
         if (s.contains("CreateTexture2D") || s.contains("CreateTexture3D")) && s.contains("E_OUTOFMEMORY") { return "texture-allocation-failed" }
         if s.contains("Host activate: Remote Connect") { return "remote-activated" }
-        if s.contains("Host activate: Loopback") || s.contains("loopback") && s.contains("Connected") { return "loopback-connected" }
+        if s.contains("Host activate: Loopback") {return "loopback-activated"}
+        if s.contains("loopback") && s.contains("Connected") { return "loopback-connected" }
         if s.contains("CL:") && s.contains("Connected to") { return l.contains("loopback") || l.contains("127.0.0.1") ? "loopback-connected" : "remote-connected" }
         if s.contains("received full update") { return "full-update-observed" }
         if l.contains("physics") && l.contains("created") { return "physics-created-observed" }
@@ -652,10 +797,10 @@ final class RunEvidenceRecorder {
             let destination=FileManager.default.temporaryDirectory.appendingPathComponent("madeira-evidence-"+UUID().uuidString,isDirectory:true)
             var complete=false
             defer {if !complete {try? FileManager.default.removeItem(at:destination)}}
-            var result=try RunEvidenceStore.snapshotRun(store.directory,destination:destination.appendingPathComponent("current"))
+            var result=try RunEvidenceStore.snapshotRun(store.directory,destination:destination.appendingPathComponent("current"),hostRunning:true)
             result=Dictionary(uniqueKeysWithValues:result.map { ("evidence/"+$0.key,$0.value) })
             if let previous, !cancelled() {
-                let prior=try? RunEvidenceStore.snapshotRun(root.appendingPathComponent(previous),destination:destination.appendingPathComponent("previous"))
+                let prior=try? RunEvidenceStore.snapshotRun(root.appendingPathComponent(previous),destination:destination.appendingPathComponent("previous"),hostRunning:false)
                 for (name,url) in prior ?? [:] { result["evidence/previous/\(previous)/\(name)"]=url }
             }
             if cancelled() {throw CancellationError()}
@@ -674,9 +819,9 @@ final class RunEvidenceRecorder {
             for d in (payload.crashDiagnostics ?? []).prefix(8) {
                 crashes.append(["exceptionType":d.exceptionType as Any? ?? NSNull(),"exceptionCode":d.exceptionCode as Any? ?? NSNull(),"signal":d.signal as Any? ?? NSNull()])
             }
-            let report:[String:Any]=["schema":RunEvidenceSchema.version,"runID":self.store.runID,"source":"MetricKit-delivered-typed-summary","receivedUTC":ISO8601DateFormatter().string(from:Date()),"beginUTC":ISO8601DateFormatter().string(from:payload.timeStampBegin),"endUTC":ISO8601DateFormatter().string(from:payload.timeStampEnd),"buildTimeMatch":"uncertain; system report may cover another run; build UUID not exposed by these typed fields","crashes":crashes,"hangDurationSeconds":(payload.hangDiagnostics ?? []).prefix(8).map{$0.hangDuration.converted(to:.seconds).value},"CPUExceptionCount":payload.cpuExceptionDiagnostics?.count as Any? ?? NSNull(),"diskWriteExceptionCount":payload.diskWriteExceptionDiagnostics?.count as Any? ?? NSNull(),"fullSystemPayload":"not-materialized: unbounded strings/stacks; typed supported fields only"]
+            let report:[String:Any]=["schema":RunEvidenceSchema.version,"runID":self.store.runID,"source":"MetricKit-delivered-typed-summary","receiverBuildIdentity":self.store.reportReceiverIdentity(),"intervalOverlapsRecording":payload.timeStampEnd.timeIntervalSince1970>=self.store.startWallUnix && payload.timeStampBegin<=Date(),"intervalMatchMeaning":"interval-overlap-not-incident-or-build-match","receivedUTC":ISO8601DateFormatter().string(from:Date()),"beginUTC":ISO8601DateFormatter().string(from:payload.timeStampBegin),"endUTC":ISO8601DateFormatter().string(from:payload.timeStampEnd),"buildTimeMatch":"uncertain; system report may cover another run; build UUID not exposed by these typed fields","crashes":crashes,"hangDurationSeconds":(payload.hangDiagnostics ?? []).prefix(8).map{$0.hangDuration.converted(to:.seconds).value},"CPUExceptionCount":payload.cpuExceptionDiagnostics?.count as Any? ?? NSNull(),"diskWriteExceptionCount":payload.diskWriteExceptionDiagnostics?.count as Any? ?? NSNull(),"fullSystemPayload":"not-materialized: unbounded strings/stacks; typed supported fields only"]
             guard let encoded=try? RunEvidenceSchema.json(report),encoded.count<=1<<20 else { return }
-            try? encoded.write(to:self.store.directory.appendingPathComponent("system.json"),options:.atomic)
+            self.store.systemSummary(report)
         }
     }
     func metrics(_ payload:MXMetricPayload) {

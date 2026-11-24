@@ -26,6 +26,15 @@ int main(void) {
      * in-flight slot while a snapshot could be reading immutable fields. */
     token=ios_evidence_begin(3,0,16,9,1); ios_ev_lock=1; ios_evidence_end(token,0,0); ios_ev_lock=0;
     madeira_evidence_poll(out,64,stats); assert(!ios_ev_flight[token%64].token && stats[2]>0);
+    ios_evidence_backing_file=7;
+    token=ios_evidence_begin(5,0,4096,12345,2);ios_evidence_end(token,0,0);
+    assert(ios_ev_by_op[5][2][0]==1 && ios_ev_by_op[5][2][1]==4096);
+    token=ios_evidence_begin(5,0,8192,23456,1);ios_evidence_end(token,0,0);
+    assert(ios_ev_by_op[5][1][0]==1 && ios_ev_by_op[5][1][1]==8192);
+    ios_ev_aggregate_ns=0;
+    n=madeira_evidence_poll(out,64,stats);
+    unsigned aggregates=0;for(unsigned i=0;i<n;++i)if(out[48*i+1]==12)aggregates++;
+    assert(aggregates>=2);
     pthread_t threads[4]; for(unsigned i=0;i<4;++i) assert(!pthread_create(threads+i,0,produce,(void *)(uintptr_t)(i+1)));
     for(unsigned i=0;i<4;++i) pthread_join(threads[i],0);
     while(madeira_evidence_poll(out,64,stats));

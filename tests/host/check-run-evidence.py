@@ -47,6 +47,26 @@ func verify(_ ok:@autoclosure ()->Bool,_ file:StaticString=#file,_ line:Int=#lin
   try verify(changed["machRegionObjectOffsetBytes"] as? String == "123456" && changed["accessType"] as? String == "store-release")
   try verify(RunEvidenceSchema.accessType(0x889fff56)=="store-release" && RunEvidenceSchema.accessType(0x99000356)=="store-release" && RunEvidenceSchema.accessType(0x3d800500)=="store")
   store.record(channel,changed)
+  var page=[UInt64](repeating:0,count:48);page[0]=1;page[1]=11;page[4]=0x100;page[5]=34;page[9]=80;page[14]=88;page[15]=99;page[16]=1;page[17]=1;page[18]=2;page[19]=2;page[39]=2;page[40]=2;page[20]=0x10000;page[21]=100;page[23]=5;page[24]=2;page[28]=0x14000;page[29]=101;page[30]=5;page[36]=2
+  let (_,pages)=RunEvidenceSchema.native(page)!
+  let entries=pages["pages"] as! [[String:Any]]
+  try verify(entries.count==2 && entries[1]["dispositionBits"] is NSNull && pages["allocationOrigin"] as? String == "Wine-private-virtual-allocation")
+  var aggregate=page;aggregate[1]=12;aggregate[9]=5;aggregate[10]=2;aggregate[11]=3;aggregate[12]=4096
+  let (_,agg)=RunEvidenceSchema.native(aggregate)!
+  try verify(agg["execution"] as? String == "deferred" && agg["VM-lock-held"] as? Bool == false && agg["countCumulative"] as? UInt64 == 3)
+  try verify(RunEvidenceRecorder.consoleEvent("Host activate: Loopback") == "loopback-activated")
+  let connected=RunEvidenceRecorder.attemptAfter("loopback-connected",attempt:0,kind:"unknown")
+  let activated=RunEvidenceRecorder.attemptAfter("loopback-activated",attempt:connected.0,kind:connected.1)
+  try verify(connected.0==1 && activated.0==1 && activated.1=="loopback")
+  for message in ["E_INVALIDARG CreateTexture2D width=32 height=32","shader compilation failed code=5","pipeline failed code=6","material missing"] {try verify(RunEvidenceRecorder.graphicsFailure(message) != nil)}
+  try verify(RunEvidenceRecorder.graphicsFailure("chat: shader failed ticket=SECRET") == nil)
+  let samples:[[String:Any]]=[
+    ["owner":"0x100","lease":"34","registerCaptureBeginNS":"8000","intervalUS":UInt64(2),"userCPUUS":UInt64(0),"kernelCPUUS":UInt64(1)],
+    ["owner":"0x100","lease":"34","registerCaptureBeginNS":"6000","intervalUS":UInt64(2),"userCPUUS":UInt64(0),"kernelCPUUS":UInt64(1)],
+    ["owner":"0x100","lease":"34","registerCaptureBeginNS":"12000","intervalUS":UInt64(2),"userCPUUS":UInt64(0),"kernelCPUUS":UInt64(1)],
+    ["owner":"0x100","lease":"34","registerCaptureBeginNS":"15000","intervalUS":UInt64(2),"userCPUUS":UInt64(0),"kernelCPUUS":UInt64(1)]]
+  let cpu=RunEvidenceRecorder.cpuSummary(samples,start:5000,end:15000,lifetime:"0x100-34",background:[(11000,12000)])
+  try verify(cpu["includedIntervals"] as? Int == 2 && cpu["boundaryIntervalsExcluded"] as? Int == 1 && cpu["backgroundIntervalsExcluded"] as? Int == 1 && cpu["intervalUS"] as? UInt64 == 4)
   var operation=[UInt64](repeating:0,count:48);operation[0]=1;operation[1]=4;operation[8]=123
   let (_,op)=RunEvidenceSchema.native(operation)!
   try verify(op["nativeThreadLifetimeID"] is NSNull && op["operationToken"] as? String == "123")
@@ -63,18 +83,25 @@ func verify(_ ok:@autoclosure ()->Bool,_ file:StaticString=#file,_ line:Int=#lin
   store.setConfig("effective",technical)
   store.graphic(["API":"CreateTexture2D","HRESULT":"E_OUTOFMEMORY"],category:"allocation")
   store.graphic(["API":"CreateTexture2D","HRESULT":"E_OUTOFMEMORY"],category:"allocation")
+  try store.checkpoint()
+  let initialWrites=store.persistenceCounters()["metadataWrites"] as! UInt64
+  let initialBytes=store.persistenceCounters()["logicalBytesWritten"] as! UInt64
+  for _ in 0..<100 {try store.checkpoint()}
+  try verify((store.persistenceCounters()["metadataWrites"] as! UInt64)-initialWrites==200)
+  print("100 unchanged checkpoints: 200 metadata writes, baseline method unconditionally wrote 500; logical bytes=\((store.persistenceCounters()["logicalBytesWritten"] as! UInt64)-initialBytes); measured checkpoint ns=\(store.persistenceCounters()["checkpointDurationNS"]!) (host fixture, not iPhone)")
+  store.flush();let syncs=store.persistenceCounters()["fsyncCount"] as! UInt64;store.flush();try verify(store.persistenceCounters()["fsyncCount"] as! UInt64 == syncs)
   let padding=String(repeating:"x",count:8000)
   for i in 0..<1800 {store.record("thread-frame-memory",["event":"fixture-normal-metadata","index":i,"padding":padding])}
   store.incident("post-activation-fixture");try store.checkpoint()
   try verify(store.overwritten>0)
-  let snap=try RunEvidenceStore.snapshotRun(store.directory,destination:root.appendingPathComponent("snapshot"))
+  let snap=try RunEvidenceStore.snapshotRun(store.directory,destination:root.appendingPathComponent("snapshot"),hostRunning:true)
   try verify(snap["memory-access.jsonl"] != nil && snap["incident.jsonl"] != nil)
   let termination=try JSONSerialization.jsonObject(with:Data(contentsOf:snap["termination.json"]!)) as! [String:Any]
-  try verify(termination["reason"] as? String == "unknown" && termination["cleanHostExitObserved"] as? Bool == false)
+  try verify(termination["reason"] as? String == "unknown" && termination["cleanHostExitObserved"] as? Bool == false && termination["hostRunningAtSnapshot"] as? Bool == true)
   let graphics=try JSONSerialization.jsonObject(with:Data(contentsOf:snap["graphics-summary.json"]!)) as! [String:Any]
   let errors=graphics["errors"] as! [[String:Any]]; try verify(errors.count==1 && (errors[0]["count"] as! NSNumber).intValue==2)
   let second=try RunEvidenceStore(root:root);second.record("timeline",["event":"app-session-start"]);try second.checkpoint()
-  let previous=try RunEvidenceStore.snapshotRun(store.directory,destination:root.appendingPathComponent("previous-fixture"))
+  let previous=try RunEvidenceStore.snapshotRun(store.directory,destination:root.appendingPathComponent("previous-fixture"),hostRunning:false)
   let priorSummary=try JSONSerialization.jsonObject(with:Data(contentsOf:previous["run-summary.json"]!)) as! [String:Any]
   try verify(priorSummary["runID"] as? String == store.runID && store.runID != second.runID)
   let all=try fm.contentsOfDirectory(at:store.directory,includingPropertiesForKeys:[.fileSizeKey]);var total=0
