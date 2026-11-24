@@ -24,11 +24,9 @@ with tempfile.TemporaryDirectory() as d:
  (t/'Stubs.swift').write_text('import Foundation\nenum LibraryError:Error{case message(String)}\n')
  writer=(r/'app/Madeira/SavesAndShortcuts.swift').read_text();writer=writer[writer.index('final class SaveZipWriter {'):writer.index('// MARK: - Zip reading')]
  (t/'Writer.swift').write_text('import Foundation\nimport zlib\n'+writer)
- (t/'module.modulemap').write_text('module zlib [system] { header "/usr/include/zlib.h" link "z" export * }\n' if os.uname().sysname!='Darwin' else 'module zlib [system] { header "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/zlib.h" link "z" export * }\n')
- # Use the selected SDK instead of assuming a CommandLineTools installation.
- if os.uname().sysname=='Darwin':
-  sdk=subprocess.check_output(['xcrun','--sdk','macosx','--show-sdk-path'],text=True).strip()
-  (t/'module.modulemap').write_text(f'module zlib [system] {{ header "{sdk}/usr/include/zlib.h" link "z" export * }}\n')
+ # Apple SDK already supplies zlib. Linux Swift needs the ordinary system header map.
+ if os.uname().sysname!='Darwin':
+  (t/'module.modulemap').write_text('module zlib [system] { header "/usr/include/zlib.h" link "z" export * }\n')
  library=(r/'app/Madeira/Library.swift').read_text()
  predicate=library[library.index('    func ownsSteamResponseTouch('):].split('\n',1)[0]
  (t/'Touch.swift').write_text('import Foundation\nstruct BannerFixture {var steamResponseBannerVisible=false;var steamResponseRect=CGRect.zero;\n'+predicate+'\n}\n')
