@@ -612,6 +612,7 @@ static int winios_restore_born_minimized_enabled(void) {
     return enabled;
 }
 
+static uint64_t winios_input_now(void);
 static pthread_mutex_t g_census_lock = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic int g_census_on;
 static struct winios_census_window g_census[WINIOS_CENSUS_MAX];
@@ -694,13 +695,13 @@ static void winios_census_note_frame(HWND hwnd, int x, int y, int w, int h, int 
         if (e->hwnd != (unsigned long long)(uintptr_t)hwnd) memset(e, 0, sizeof(*e));
         e->hwnd = (unsigned long long)(uintptr_t)hwnd;
         e->x = x; e->y = y; e->w = w; e->h = h;
-        e->pid = pid;
+        e->pid = pid;e->serial=ticket.serial;e->observed_ns=winios_input_now();
         e->visible = (unsigned char)shown;
         e->caption = (style & WINIOS_WS_CAPTION) == WINIOS_WS_CAPTION;
         memcpy(e->image, image, sizeof(e->image));
         if (shown) e->shown_once = 1;
         else if ((style & WINIOS_WS_VISIBLE) && (style & WINIOS_WS_MINIMIZE) && !e->shown_once && !e->restore_sent &&
-                 winios_restore_born_minimized_enabled()) {
+                 winios_restore_born_minimized_enabled() && atomic_load(&g_census_on)!=3) {
             e->restore_sent = 1;
             born_minimized = 1;
         }
@@ -719,17 +720,17 @@ static void winios_census_note_frame(HWND hwnd, int x, int y, int w, int h, int 
 
 /* Wine thread, from the GDI flush: count frames of listed windows only. */
 static void winios_census_note_present(HWND hwnd) {
-    if (atomic_load_explicit(&g_census_on, memory_order_relaxed) != 1) return;
+    if (atomic_load_explicit(&g_census_on, memory_order_relaxed) != 1 && atomic_load(&g_census_on)!=3) return;
     pthread_mutex_lock(&g_census_lock);
     struct winios_census_window *e = winios_census_find(hwnd);
-    if (e && e->presents < 0xffffffffu) e->presents++;
+    if (e && e->presents < 0xffffffffu) {e->presents++;e->present_ns=winios_input_now();}
     pthread_mutex_unlock(&g_census_lock);
 }
 
 /* A desktop-mode swapchain was made for this window (any thread). A swapchain
  * on a child window is not listed; the app also watches DXMT's present count. */
 static void winios_census_note_metal(HWND hwnd) {
-    if (atomic_load_explicit(&g_census_on, memory_order_relaxed) != 1) return;
+    if (atomic_load_explicit(&g_census_on, memory_order_relaxed) != 1 && atomic_load(&g_census_on)!=3) return;
     pthread_mutex_lock(&g_census_lock);
     struct winios_census_window *e = winios_census_find(hwnd);
     if (e) e->metal = 1;
@@ -787,7 +788,7 @@ void winios_window_census_enable(int on) {
     g_census_n = 0;
     g_census_images_n = 0;
     memset(g_census, 0, sizeof(g_census));
-    atomic_store(&g_census_on, on ? 1 : 0);
+    atomic_store(&g_census_on, on==3 ? 3 : on ? 1 : 0);
     pthread_mutex_unlock(&g_census_lock);
     if (!was != !on) {
         fprintf(stderr, "[window-census] %s\n", on ? "on" : "off");
@@ -945,7 +946,8 @@ void winios_input_source(unsigned kind,uint64_t value){
     else if(kind==2){atomic_fetch_add(&g_input_observation[50],1);atomic_store(&g_input_observation[48],value);atomic_store(&g_input_observation[55],winios_input_now());}
     else if(kind==3)atomic_fetch_add(&g_input_observation[51],1);
     else if(kind==4)atomic_fetch_add(&g_input_observation[52],1);
-    else if(kind==5)atomic_store(&g_input_observation[53],value);
+    else if(kind==5){atomic_store(&g_input_observation[53],value);atomic_store(&g_input_observation[25],winios_input_now());}
+    else if(kind==7){atomic_fetch_add(&g_input_observation[23],1);atomic_store(&g_input_observation[48],value);atomic_store(&g_input_observation[47],winios_input_now());}
     else if(kind==6)atomic_fetch_add(&g_input_observation[54],1);
 }
 void winios_input_injection(unsigned kind,unsigned status){
@@ -2175,6 +2177,32 @@ void winios_ui_surface_trace(void *hwnd, unsigned int pid, unsigned int tid,
                 metal.superlayer != nil, g_compositor_view.window != nil,
                 g_compositor_view ? (int)g_compositor_view.hidden : -1);
     });
+}
+
+/* Passive launch view metadata, after the caller's normal UI work. No Wine
+ * requests, payload reads, focus changes or logging under either lock. */
+int winios_launch_window_snapshot(struct winios_census_window *out,int max) {
+    if(!NSThread.isMainThread || !out || max<=0 || pthread_mutex_trylock(&g_census_lock))return -1;
+    int n=g_census_n<max?g_census_n:max;memcpy(out,g_census,(size_t)n*sizeof(*out));pthread_mutex_unlock(&g_census_lock);
+    extern int ios_thread_process_try_pid_identity(unsigned,uintptr_t*,unsigned long long*) __attribute__((weak));
+    for(int i=0;i<n;i++){
+        NSNumber *key=@(out[i].hwnd);
+        if(!out[i].serial || g_layer_tickets[key].unsignedLongLongValue!=out[i].serial){out[i].native_flags=0;continue;}
+        CALayer *layer=g_layers[key];CAMetalLayer *metal=g_metal_layers[key];
+        BOOL attached=(layer.superlayer!=nil || metal.superlayer!=nil);
+        BOOL visible=(layer && !layer.hidden) || (metal && !metal.hidden);
+        out[i].native_flags=1 | (attached?2:0) | (visible?4:0) | (layer.contents?8:0) | (g_compositor_view.window && !g_compositor_view.hidden?16:0);
+        uintptr_t owner=0;unsigned long long lease=0;
+        if(ios_thread_process_try_pid_identity)ios_thread_process_try_pid_identity(out[i].pid,&owner,&lease);
+        out[i].owner=owner;out[i].lease=lease;
+    }
+    return n;
+}
+/* Explicit user handoff only. Reveal existing compositor; never answer a
+ * prompt, select a Windows recipient, or manufacture a missing window. */
+int winios_reveal_session_view(void) {
+    if(!NSThread.isMainThread || !g_compositor_view)return 0;
+    g_compositor_view.hidden=NO;winios_layout_compositor();return g_compositor_view.window!=nil;
 }
 
 /* MADEIRA_DUMP_SURFACES=1: save each window's DIB as PNG under

@@ -2763,7 +2763,7 @@ struct ContentView: View {
         let program = entry.desktop == true ? "explorer.exe"
             : entry.launchWindowsPath.split(separator: "\\").last.map(String.init) ?? entry.launchWindowsPath
         LogStore.shared.startSessionLog(program: program)
-        library.begin(entry, remember: remember)
+        library.begin(entry, remember: remember, nativeSteamAppID:nativeSteamClient ? effectiveProfile.steamAppID : nil)
         runWineFullSequence(profile: effectiveProfile, nativeSteamClient: nativeSteamClient, nativeSteamBrowser: nativeSteamBrowser, standaloneProbe: standaloneProbe)
     }
 

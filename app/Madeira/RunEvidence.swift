@@ -17,6 +17,77 @@ import MetricKit
 @_silgen_name("madeira_evidence_backing") private func nativeEvidenceBacking()
 #endif
 
+/// Typed public Steam stages. Never retain prompt bodies, account data or DOM.
+struct SteamLaunchObservation: Equatable {
+    static let stages:Set<String>=["UpdatingAppInfo","ProcessingInstallScript","RunningInstallScript","SynchronizingCloud","SynchronizingStats","ShowInterstitials","CreatingProcess","WaitingGameWindow","Completed","DelayLaunch","SiteLicenseSeatCheckout","UpdatingApp","CheckingLegacyCDKeys","CheckingPrerequisites","VerifyingFiles"]
+    var appID:Int, actionID:String, stage:String, waiting:Bool, continued:Bool, sourceTimestamp:String
+    private static let expression=try? NSRegularExpression(pattern:#"^\[([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2})\] GameAction \[AppID ([0-9]{1,10}), ActionID ([0-9]{1,20})\] : LaunchApp (changed task to ([A-Za-z]{1,48})|waiting for user response to ([A-Za-z]{1,48})|continues with user response)"#)
+    static func parse(_ line:String)->Self? {
+        guard line.utf8.count<=16384,line.contains("GameAction [AppID "),let re=expression,
+              let m=re.firstMatch(in:line,range:NSRange(line.startIndex...,in:line)) else{return nil}
+        func group(_ n:Int)->String?{Range(m.range(at:n),in:line).map{String(line[$0])}}
+        guard let stamp=group(1),let app=group(2).flatMap(Int.init),app>0,let action=group(3) else{return nil}
+        let waiting=group(6) != nil,continued=group(4)=="continues with user response"
+        let name=group(5) ?? group(6) ?? "unknown"
+        return Self(appID:app,actionID:action,stage:stages.contains(name) ? name : "unknown",waiting:waiting,continued:continued,sourceTimestamp:stamp)
+    }
+    static func date(_ stamp:String,timeZone:TimeZone = .current)->Date? {
+        let f=DateFormatter();f.locale=Locale(identifier:"en_US_POSIX");f.timeZone=timeZone;f.dateFormat="yyyy-MM-dd HH:mm:ss";return f.date(from:stamp)
+    }
+}
+struct SteamLaunchState: Equatable {
+    static let notification=Notification.Name("MadeiraSteamLaunchProgress")
+    var appID:Int,requestID:String,requestedNS:UInt64,requestedWall:Double
+    var actionID:String?,stage="requested",waiting=false,observedNS:UInt64=0,stageBeganNS:UInt64=0,sourceTimestamp:String?,sourceWall:Double?,stageBeganSource:String?
+    var cs2Lifetime:String?,firstPresentationNS:UInt64?
+    mutating func apply(_ o:SteamLaunchObservation,now:UInt64,timeZone:TimeZone = .current)->Bool {
+        guard cs2Lifetime==nil,o.appID==appID,let date=SteamLaunchObservation.date(o.sourceTimestamp,timeZone:timeZone),date.timeIntervalSince1970>=requestedWall-2,
+              date.timeIntervalSince1970 >= (sourceWall ?? 0) else{return false}
+        let next=o.continued ? "response-received" : o.stage
+        if actionID != o.actionID || stage != next {stageBeganNS=now;stageBeganSource=o.sourceTimestamp}
+        actionID=o.actionID;stage=next;waiting=o.waiting
+        observedNS=now;sourceTimestamp=o.sourceTimestamp;sourceWall=date.timeIntervalSince1970;return true
+    }
+    func fields(now:UInt64)->[String:Any] {
+        let age=observedNS>0 && now>=observedNS ? now-observedNS : nil
+        var r:[String:Any]=["event":"steam-launch-progress","appID":appID,"requestID":requestID,"stage":stage]
+        r["actionID"]=actionID as Any? ?? NSNull();r["captureNS"]=String(now);r["clockDomain"]="CLOCK_MONOTONIC"
+        r["stageObservedNS"]=observedNS>0 ? String(observedNS) : NSNull();r["stageAgeNS"]=age as Any? ?? NSNull()
+        r["stageBeganReceiptNS"]=String(stageBeganNS>0 ? stageBeganNS : requestedNS);r["stageBeganSourceTimestamp"]=stageBeganSource as Any? ?? NSNull()
+        r["requestedNS"]=String(requestedNS);r["requestedWallUnix"]=requestedWall
+        r["stageCurrency"]="last-observed; no-proof-stage-remains-current-between-transitions"
+        r["source"]=cs2Lifetime != nil ? "native-CS2-lifetime-and-frame-observer" : observedNS>0 ? "appended-Steam-console-GameAction" : "user-launch-request"
+        r["sourceTimestamp"]=sourceTimestamp as Any? ?? NSNull();r["sourceClock"]="Steam-local-wall; device-timezone-calibration; second-resolution; receipt-is-not-source-time"
+        r["explicitUserResponseRequested"]=waiting;r["promptSubtype"]="unknown";r["promptSubtypeReason"]="private-prompt-body-not-collected; CEF-not-required"
+        r["cs2ProcessLifetime"]=cs2Lifetime as Any? ?? NSNull();r["firstObservedCS2PresentationNS"]=firstPresentationNS.map(String.init) as Any? ?? NSNull()
+        r["gameplayAcceptance"]="unverified; process-or-presentation-is-not-playability"
+        return r
+    }
+}
+/// File identity and byte boundaries, not a presumption based on export time.
+struct RunLogSource {
+    var initialIdentity:String?,initialBytes:UInt64?,initialNS:UInt64=0
+    var identity:String?,bytes:UInt64?,observedNS:UInt64=0,modifiedWall:Double?,rotations=0,truncations=0
+    mutating func observe(identity:String?,bytes:UInt64?,now:UInt64,modified:Double?) {
+        if let old=self.identity,let identity,old != identity{rotations+=1}
+        if self.identity==identity,let old=self.bytes,let bytes,bytes<old{truncations+=1}
+        self.identity=identity;self.bytes=bytes;observedNS=now;modifiedWall=modified
+    }
+    func fields()->[String:Any] {
+        let same=identity != nil && identity==initialIdentity && rotations==0 && truncations==0
+        let historic=same ? min(initialBytes ?? 0,bytes ?? 0) : nil
+        let appended=same && bytes != nil && initialBytes != nil ? max(bytes!,initialBytes!)-initialBytes! : nil
+        var r:[String:Any]=["initialObservationNS":String(initialNS),"lastObservationNS":String(observedNS),"rotations":rotations,"truncations":truncations]
+        r["initialFileIdentity"]=initialIdentity as Any? ?? NSNull();r["initialBytes"]=initialBytes as Any? ?? NSNull()
+        r["lastFileIdentity"]=identity as Any? ?? NSNull();r["lastBytes"]=bytes as Any? ?? NSNull();r["modifiedUnixSeconds"]=modifiedWall as Any? ?? NSNull()
+        r["preRunBytePrefix"]=historic as Any? ?? NSNull();r["bytesAppendedSinceInitialObservation"]=appended as Any? ?? NSNull()
+        r["relationship"]=identity==nil ? "missing-or-unavailable" : same ? ((appended ?? 0)>0 ? "historical-prefix-and-run-appends" : "preexisting-content; no-run-appends-observed; early-current-startup-may-be-in-prefix") : "changed-file-generation; prior-byte-boundary-not-applicable"
+        r["initialSourceState"]=initialIdentity==nil ? "missing-or-unavailable-at-start; not-proof-file-did-not-exist" : "present-at-start"
+        r["interpretation"]="byte-relationship-only; source timestamps retain separate clock and uncertainty; no-gameplay-inference"
+        return r
+    }
+}
+
 /// Closed, metadata-only evidence. All persistence/serialization runs on one
 /// utility queue. Native producers use a fixed try-only ring, never this queue.
 /// Wire addresses are strings to preserve all 64 bits in JSON consumers.
@@ -24,7 +95,7 @@ enum RunEvidenceSchema {
     static let version = "madeira-evidence-v1"
     static let recordBytes = 48 * 8
     static let perRunLimit = 16 << 20
-    static let channels = ["timeline", "thread-frame-memory", "memory-access", "vm-operations", "graphics-errors", "resource-failures", "input-path"]
+    static let channels = ["timeline", "thread-frame-memory", "memory-access", "vm-operations", "graphics-errors", "resource-failures", "input-path", "launch-progress"]
     static func mono() -> UInt64 {
         var t = timespec(); guard clock_gettime(CLOCK_MONOTONIC, &t) == 0 else { return 0 }
         return UInt64(t.tv_sec) * 1_000_000_000 + UInt64(t.tv_nsec)
@@ -86,6 +157,13 @@ enum RunEvidenceSchema {
         r["consumptionLeaseUnavailable"]=w[61];r["watchedIdentityConsistency"]=w[31]==1 ? "watch-sequence-stable; counters-individually-atomic" : "watch-changed-during-query"
         r["targetMatchesWatchedCS2"]=w[36]>0 && w[37]>0 && w[5]>0 && w[6]>0 ? (w[36]==w[5] && w[37]==w[6]) : NSNull()
         r["effectiveSourceFlags"]=w[50]>0 ? w[48] : NSNull();r["sourceSnapshotNS"]=w[55]>0 ? String(w[55]) : NSNull();r["lastContextChangeNS"]=w[56]>0 ? String(w[56]) : NSNull();r["physicalChangeCallbacks"]=w[49];r["physicalSlot0Samples"]=w[50];r["translatedDigitalActions"]=w[51];r["translatedMotionEvents"]=w[52];r["bindingSignature"]=w[53]>0 ? hex(w[53]) : NSNull();r["focusBlockedSamples"]=w[54]
+        func age(_ timestamp:UInt64)->Any {timestamp>0 && w[1]>=timestamp ? w[1]-timestamp : NSNull()}
+        r["routeAgeNS"]=age(w[38]);r["routeCurrency"]=w[38]==0 ? "unavailable" : "last-known-at-routeCaptureNS; not-a-current-focus-query"
+        r["physicalSourceAgeNS"]=age(w[55]);r["bindingSnapshotNS"]=w[25]>0 ? String(w[25]) : NSNull();r["bindingAgeNS"]=age(w[25])
+        r["samplerInvocations"]=w[23];r["controllerStateSnapshotNS"]=w[47]>0 ? String(w[47]) : NSNull();r["controllerStateAgeNS"]=age(w[47])
+        r["controllerObservation"]=w[47]>0 ? "cached-physical-profile-and-mode-observed; input-changes-and-data-samples-counted-separately" : "physical-profile-observer-unavailable; zero-samples-does-not-prove-disconnection"
+        r["physicalSamplingState"]=w[50]>0 ? "slot-zero-data-samples-observed" : "no-slot-zero-data-samples-observed; not-a-connection-status"
+        if w[47]>0 {r["effectiveSourceFlags"]=w[48]}
         r["sourceFlagMeaning"]="1=physical-enabled 2=KBM 4=slot0-connected 8=app-active 16=library-owns 32=native-UI-focus-allows 64=physical-input-active; last-sample-not-current-device-query"
         return r
     }
@@ -331,10 +409,13 @@ final class RunEvidenceStore {
         do {try data.write(to:directory.appendingPathComponent(name),options:.atomic);logicalBytes+=UInt64(data.count);metadataWrites+=1;try fm.setAttributes([.posixPermissions:0o600],ofItemAtPath:directory.appendingPathComponent(name).path)}
         catch {writeFailures+=1;throw error}
     }
+    private var sourceEvidence:[String:Any]=[:]
+    private var cs2Observed=false,resourceCountersObserved=false
+    func sourceFreshness(_ value:[String:Any]) {sourceEvidence=value}
     private var facts: [String:Any] = [:]
     func fact(_ key:String,_ value:Any) { if facts.count<32 || facts[key] != nil { facts[key]=value } }
     static let segmentBytes = 256 << 10
-    static let slots = ["timeline":4,"thread-frame-memory":12,"memory-access":12,"vm-operations":4,"graphics-errors":2,"resource-failures":4,"input-path":2]
+    static let slots = ["timeline":4,"thread-frame-memory":12,"memory-access":12,"vm-operations":4,"graphics-errors":2,"resource-failures":4,"input-path":2,"launch-progress":2]
     init(root: URL, runID: String = UUID().uuidString) throws {
         guard UUID(uuidString:runID) != nil else { throw CocoaError(.fileWriteInvalidFileName) }
         self.runID=runID; directory=root.appendingPathComponent(runID,isDirectory:true)
@@ -342,6 +423,8 @@ final class RunEvidenceStore {
         try checkpoint()
     }
     func record(_ channel: String, _ values: [String: Any]) {
+        if values["event"] as? String=="cs2-start-observed" {cs2Observed=true}
+        if values["event"] as? String=="resource-request-counters" {resourceCountersObserved=true}
         var channel=channel
         let failed=Self.failedRequest(values)
         if failed {
@@ -494,12 +577,12 @@ final class RunEvidenceStore {
         flushRoutineResources()
         let checkpointBegin=RunEvidenceSchema.mono();checkpointCount+=1
         defer {checkpointNS+=RunEvidenceSchema.mono()-checkpointBegin}
-        let coverage: [String:Any] = ["schema":RunEvidenceSchema.version,"runID":runID,"startNS":String(startedNS),"latestCapturedSequence":String(sequence),
+        var coverage: [String:Any] = ["schema":RunEvidenceSchema.version,"runID":runID,"startNS":String(startedNS),"latestCapturedSequence":String(sequence),
             "latestPersistedSequence":String(persisted),"lastPersistedNS":String(lastNS),"droppedRecords":dropped,"overwrittenSegments":overwritten,"overwrittenRecords":overwrittenRecords,"retainedJournalRecords":segmentRecords.values.reduce(0,+),
             "lastFsyncedSequence":String(syncSequence),"lastFsyncNS":String(syncNS),"fsyncFailures":syncErrors,"persistence":"write-acknowledged-every-tick; fsync-five-seconds-and-export; final-unflushed-tail-unknown",
             "recorderPersistence":persistenceCounters(),"recordsCollectedByChannel":counts,"observedFacts":facts,"samplingSeconds":1,"units":"NS unless suffixed US/Bytes/Pages",
             "perRunDiskCapBytes":RunEvidenceSchema.perRunLimit,"rollingSegmentCapBytes":Self.segmentBytes,"rollingSlots":Self.slots,
-            "limits":"rolling-journals-10MiB; incidents-2MiB; first-failures-256KiB; system-1MiB; metadata-1MiB; total-less-than-16MiB",
+            "limits":"rolling-journals-10.5MiB; incidents-2MiB; first-failures-256KiB; system-1MiB; metadata-1.5MiB; total-less-than-16MiB",
             "failureDetailRetention":["firstBytes":firstFailureBytes,"firstRecords":firstFailureRecords,"firstDetailNotRetained":firstFailureDropped,"duplicateDetailsSuppressed":failureDuplicates,"firstByteLimit":256<<10,"recentByteLimit":1<<20,"nativePriorityBytes":49152],"suppressedLowerPriorityOrRepeatedIncidents":suppressedIncidents,
             "payloadRAM":"native-ring-393216; native-inflight-4608; Swift-native-batch-24576; native-failure-lane-49152; fixed-CPU-history-9216; input-log-window-262144; prefix-65536; copy-16384; record-max-16384; bounded-metadata",
             "allocatorOverhead":"not-measured; payload-bounds-are-not-a-physical-footprint-guarantee",
@@ -509,7 +592,10 @@ final class RunEvidenceStore {
             "observerCoverage":"native-samples-rolling; input-route-and-counters-on-utility-tick; console-and-text-bounded-polling; unavailable-is-not-zero",
             "systemReports":"only-reports-actually-delivered; export-does-not-wait",
             "guestCrashReports":"app-owned-report-metadata-only; no-memory-minidumps-or-kernel-stacks"]
+        coverage["gameplayMetrics"]=cs2Observed ? ["state":"process-observed; inspect-sample-and-phase-coverage; not-playability"] : ["state":"unavailable","reason":"no-CS2-process-start-observed; historical-logs-are-not-current-gameplay"]
+        coverage["resourceFailureCoverage"]=["state":firstFailureRecords>0 ? "detailed-failure-retained" : !cs2Observed ? "game-workload-not-reached" : resourceCountersObserved ? "no-qualifying-direct-failure-detail-observed; inspect-counters-and-drops" : "direct-observer-unavailable-or-not-reached", "gameProcessObserved":cs2Observed,"directCountersObserved":resourceCountersObserved,"detailedRecords":firstFailureRecords,"droppedFirstDetail":firstFailureDropped]
         try persist(coverage,"run-summary.json")
+        if !sourceEvidence.isEmpty {try persist(sourceEvidence,"source-freshness.json")}
         if configDirty {try persist(["schema":RunEvidenceSchema.version,"runID":runID,"effectiveFromInitializedRows":config,"unobserved":"unavailable; requested-is-not-effective"],"runtime-config.json");configDirty=false}
         if modulesDirty {try persist(["schema":RunEvidenceSchema.version,"runID":runID,"modules":modules,"limit":256,"scope":"observed-load-events-not-exhaustive-live-inventory","unloadTracking":"unavailable; entries-not-proof-still-loaded"],"modules.json");modulesDirty=false}
         if graphicsDirty {try persist(["schema":RunEvidenceSchema.version,"runID":runID,"errors":Array(graphics.values),"duplicateSourceOccurrencesSuppressed":graphicsDuplicates,"observerCoverage":"bounded-known-native-tags-and-console-errors; source-occurrences-not-unique-resource-requests; direct-native-counters-in-graphics-journal; zero-entries-not-proof-of-zero-errors"],"graphics-summary.json");graphicsDirty=false}
@@ -558,7 +644,7 @@ final class RunEvidenceStore {
             for file in selected { budget -= copy(source.appendingPathComponent(file),to:fd,maximum:max(0,budget)) }
             close(fd); result[channel+".jsonl"]=path
         }
-        for name in ["run-summary.json","runtime-config.json","modules.json","graphics-summary.json","termination.json","incident.jsonl","incident-first.jsonl","resource-failures-first.jsonl","system.json"] {
+        for name in ["run-summary.json","runtime-config.json","modules.json","graphics-summary.json","termination.json","incident.jsonl","incident-first.jsonl","resource-failures-first.jsonl","source-freshness.json","system.json"] {
             let path=destination.appendingPathComponent(name)
             let fd=open(path.path,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0o600); guard fd>=0 else { continue }
             let bytes=copy(source.appendingPathComponent(name),to:fd,maximum:min(max(0,budget),name=="resource-failures-first.jsonl" ? 256<<10 : 1<<20)); close(fd)
@@ -594,6 +680,76 @@ final class RunEvidenceRecorder {
     static func start(documents: URL, bundle: [String:Any]) {
         guard shared==nil else { return }; shared=try? RunEvidenceRecorder(documents:documents,bundle:bundle)
     }
+    static func beginSteamLaunch(_ state:SteamLaunchState) {
+        guard let shared else{return};shared.queue.async{shared.launch=state;shared.publishLaunch()}
+    }
+    static func launchView(_ values:[String:Any]) {
+        guard let shared else{return};shared.queue.async{
+            guard let launch=shared.launch,values["requestID"] as? String==launch.requestID else{return}
+            let stableKeys:Set<String>=["HWND","PID","windowGeneration","owner","lease","wineVisibleLastObserved","everGDIPresented","metalSwapchainObserved","hostFlags"]
+            let windows=(values["windows"] as? [[String:Any]])?.map{$0.filter{stableKeys.contains($0.key)}}
+            let signature=windows.flatMap{try? RunEvidenceSchema.json($0)} ?? Data()
+            let now=RunEvidenceSchema.mono(),changed=signature != shared.lastLaunchWindows
+            if changed || now-shared.lastLaunchViewNS>=15_000_000_000 || values["revealRequested"] as? Bool==true {
+                shared.lastLaunchWindows=signature;shared.lastLaunchViewNS=now;shared.store.record("launch-progress",values)
+            }
+        }
+    }
+    static func steamObserver(_ status:String) {
+        guard ["disabled","started","timeout","reply","stopped","unavailable"].contains(status),let shared else{return}
+        shared.queue.async{shared.observerStatus=status;shared.observerNS=RunEvidenceSchema.mono();if status=="timeout"{shared.observerTimeouts+=1};shared.publishLaunch(record:false)}
+    }
+    private func publishLaunch(record:Bool=true) {
+        guard let launch else{return};var row=launch.fields(now:RunEvidenceSchema.mono())
+        row["observerStatus"]=observerStatus;row["observerObservedNS"]=observerNS>0 ? String(observerNS) : NSNull();row["observerTimeouts"]=observerTimeouts
+        row["observerAgeNS"]=observerNS>0 && RunEvidenceSchema.mono()>=observerNS ? RunEvidenceSchema.mono()-observerNS : NSNull()
+        row["observerCurrency"]="last-observed; timeout-does-not-prove-CEF-exited"
+        row["observerDependency"]="optional; opening-real-Steam-does-not-await-CEF"
+        if record {store.record("launch-progress",row)}
+        store.fact("SteamLaunch",row)
+        NotificationCenter.default.post(name:SteamLaunchState.notification,object:launch)
+    }
+    private static var logPaths:[(String,String)] {
+        var paths=[("madeira-session","madeira-log.txt"),("immediately-previous-native-session","madeira-log.prev.txt")]
+        for root in ["Program Files (x86)/Steam","Program Files/Steam"] {
+            for name in ["console","gameprocess","service","content","connection","bootstrap","cef"] {paths.append(("steam-"+name,"wine/drive_c/\(root)/logs/\(name)_log.txt"))}
+            paths.append(("cs2-console","wine/drive_c/\(root)/steamapps/common/Counter-Strike Global Offensive/game/csgo/console.log"))
+        }
+        return paths
+    }
+    private func sourceSnapshot(_ relative:String)->(String?,UInt64?,Double?) {
+        let rootfd=open(documents.path,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);guard rootfd>=0 else{return(nil,nil,nil)};defer{close(rootfd)}
+        guard let fd=SteamGameDiagnostics.openOwned(rootfd,relative.split(separator:"/").map(String.init)) else{return(nil,nil,nil)};defer{close(fd)}
+        var s=stat();guard fstat(fd,&s)==0,s.st_size>=0 else{return(nil,nil,nil)}
+        #if canImport(Darwin)
+        let modified=Double(s.st_mtimespec.tv_sec)+Double(s.st_mtimespec.tv_nsec)/1e9
+        #else
+        let modified=Double(s.st_mtim.tv_sec)+Double(s.st_mtim.tv_nsec)/1e9
+        #endif
+        return("\(s.st_dev):\(s.st_ino)",UInt64(s.st_size),modified)
+    }
+    private func captureSources(initial:Bool=false) {
+        let now=RunEvidenceSchema.mono()
+        for (_,path) in Self.logPaths {
+            let (id,bytes,modified)=sourceSnapshot(path)
+            if initial {sourceBounds[path]=RunLogSource(initialIdentity:id,initialBytes:bytes,initialNS:now,identity:id,bytes:bytes,observedNS:now,modifiedWall:modified)}
+            else {sourceBounds[path]?.observe(identity:id,bytes:bytes,now:now,modified:modified)}
+        }
+        var rows:[String:Any]=[:]
+        for(id,path) in Self.logPaths {
+            guard let value=sourceBounds[path] else{continue}
+            if rows[id]==nil || value.identity != nil {rows[id]=value.fields()}
+        }
+        store.sourceFreshness(["schema":RunEvidenceSchema.version,"runID":store.runID,"runStartWallUnix":store.startWallUnix,"captureNS":String(now),"clockDomain":"CLOCK_MONOTONIC","sources":rows])
+    }
+    private func steamLine(_ line:String) {
+        guard let event=SteamLaunchObservation.parse(line),var current=launch,current.apply(event,now:RunEvidenceSchema.mono()) else{return}
+        launch=current;publishLaunch()
+        #if os(iOS)
+        if event.waiting {Task{@MainActor in SteamLibraryDiagnostics.shared.launchAttention()}}
+        #endif
+    }
+
     static func presentation(_ text:String) {
         guard let shared else{return}
         let keys:Set<String>=["event","request","completed","code"]
@@ -618,6 +774,9 @@ final class RunEvidenceRecorder {
     private var pendingTextureAPI:String?, consoleLineNumber:UInt64=0, pendingTextureLine:UInt64=0
     private var nativeSourceRead:UInt64=0, consoleSourceRead:UInt64=0, sourceOccurrence:UInt64=0
     private var lastConnectionObservation:String?
+    private var launch:SteamLaunchState?,observerStatus="not-observed",observerNS:UInt64=0,observerTimeouts=0
+    private var sourceBounds:[String:RunLogSource]=[:]
+    private var lastLaunchWindows=Data(),lastLaunchViewNS:UInt64=0
     private var lastInputRoute:String?
     #if os(iOS)
     private var metricSubscriber: RunEvidenceMetrics?
@@ -629,6 +788,7 @@ final class RunEvidenceRecorder {
         guard lstat(root.path,&rootInfo)==0,rootInfo.st_uid==getuid(),rootInfo.st_mode & mode_t(S_IFMT)==mode_t(S_IFDIR) else {throw CocoaError(.fileReadNoPermission)}
         previous=RunEvidenceStore.retainPreceding(in:root)
         store=try RunEvidenceStore(root:root)
+        captureSources(initial:true)
         do {
             let marker=root.appendingPathComponent("last-session")
             try Data(store.runID.utf8).write(to:marker,options:.atomic)
@@ -698,6 +858,7 @@ final class RunEvidenceRecorder {
             for i in 0..<n {
                 guard let (channel,r)=RunEvidenceSchema.native(Array(words[i*48..<(i+1)*48])) else { continue }
                 if r["event"] as? String == "cs2-start-observed" {
+                    if var current=launch,current.appID==730 {current.cs2Lifetime="\(r["owner"] ?? "unknown")-\(r["lease"] ?? "unknown")";current.stage="CS2-process-observed";current.waiting=false;current.observedNS=RunEvidenceSchema.mono();launch=current;publishLaunch()}
                     nativeInputWatch(words[i*48+4],words[i*48+5],UInt32(truncatingIfNeeded:words[i*48+6]))
                     process="\(r["owner"] ?? "unknown")-\(r["lease"] ?? "unknown")"; attempt=0; activated=false;phase="CS2-started-unclassified"
                 }
@@ -732,6 +893,7 @@ final class RunEvidenceRecorder {
         } else if stall, framePair==process, frame[0] != lastFrame {
             stall=false; store.record("timeline",stamp(["event":"frame-progress-recovered","source":"DXMT-pacing-hook"]))
         }
+        if framePair==process,frame[0]>0,var current=launch,current.cs2Lifetime==process,current.firstPresentationNS==nil {current.firstPresentationNS=frame[1];launch=current;publishLaunch()}
         lastFrame=frame[0]
         if let gap=activeGap { maxGapNS=max(maxGapNS,gap);store.fact("maxForegroundObservedPacingHookGap",["NS":maxGapNS,"scope":"whole-app foreground portions; includes startup/local; not remote-gameplay benchmark"]) }
         var info=task_vm_info_data_t(); var count=mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size/MemoryLayout<integer_t>.size)
@@ -754,11 +916,12 @@ final class RunEvidenceRecorder {
         #endif
         tail("madeira-log.txt",console:false)
         for install in ["Program Files (x86)/Steam","Program Files/Steam"] {
+            tail("wine/drive_c/\(install)/logs/console_log.txt",console:false,steam:true)
             tail("wine/drive_c/\(install)/steamapps/common/Counter-Strike Global Offensive/game/csgo/console.log",console:true)
         }
         if ticks%30==0 { store.calibration("periodic"); installedBuild() }
         store.fact("textSourceCoverage",["nativeBytesRead":nativeSourceRead,"consoleBytesRead":consoleSourceRead,"skippedBytes":fileDroppedBytes,"samplingSeconds":1,"arrivalClock":"CLOCK_MONOTONIC; console-original-wall-separate","partialLinePolicy":"defer-complete-lines; source-size-bounded-per-tick"] )
-        if ticks%5==0 {store.flush()}
+        if ticks%5==0 {captureSources();store.flush()}
         if ticks%5==0 {try? store.checkpoint()}
         store.record("thread-frame-memory",["event":"recorder-persistence", "counters":store.persistenceCounters()])
         let elapsed=RunEvidenceSchema.mono()-begin; maxTickNS=max(maxTickNS,elapsed); if elapsed>250_000_000 { overruns+=1 }
@@ -809,17 +972,19 @@ final class RunEvidenceRecorder {
     private func incident(_ reason:String) {
         store.incident(reason)
     }
-    private func tail(_ relative:String,console:Bool) {
+    private func tail(_ relative:String,console:Bool,steam:Bool=false) {
         let rootfd=open(documents.path,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC); guard rootfd>=0 else { return }; defer { close(rootfd) }
         guard let fd=SteamGameDiagnostics.openOwned(rootfd,relative.split(separator:"/").map(String.init)) else { return }; defer { close(fd) }
         var info=stat(); guard fstat(fd,&info)==0,info.st_size>=0 else { return }
         let size=UInt64(info.st_size), inode=UInt64(info.st_ino)
-        var old=offsets[relative] ?? (inode,console ? size : 0)
-        if old.inode != inode || old.offset>size { old=(inode,0); store.record("timeline",["event":"input-rotated-or-truncated","source":console ? "cs2-console" : "native-log"]) }
+        let baseline=sourceBounds[relative]
+        let initial=(baseline?.initialIdentity=="\(info.st_dev):\(info.st_ino)") ? baseline?.initialBytes : nil
+        var old=offsets[relative] ?? (inode,(console || steam) ? (initial ?? (baseline?.initialIdentity==nil && baseline != nil ? 0 : size)) : 0)
+        if old.inode != inode || old.offset>size { old=(inode,0); store.record("timeline",["event":"input-rotated-or-truncated","source":steam ? "steam-console" : console ? "cs2-console" : "native-log"]) }
         // A startup burst may skip the ordinary tail. Preserve just the typed
         // loaded/package provenance from a bounded prefix, without replaying
         // historical process, failure or console events into this session.
-        if !console && old.offset==0 && size>256<<10 {
+        if !console && !steam && old.offset==0 && size>256<<10 {
             var prefix=[UInt8](repeating:0,count:64<<10)
             let n=prefix.withUnsafeMutableBytes{pread(fd,$0.baseAddress,64<<10,0)}
             if n>0,let text=String(bytes:prefix.prefix(n),encoding:.utf8) {
@@ -843,7 +1008,7 @@ final class RunEvidenceRecorder {
             while let end=data.firstIndex(of:10) {
                 let bytes=data.prefix(end), start=lineOffset;lineOffset+=UInt64(bytes.count)+1;data.removeSubrange(...end)
                 if partial { partial=false; continue }
-                if bytes.count<=16<<10, let line=String(data:bytes,encoding:.utf8) { observe(line,console:console,occurrence:"\(console ? "console" : "native")-\(inode)-\(start)") }
+                if bytes.count<=16<<10, let line=String(data:bytes,encoding:.utf8) { if steam {steamLine(line);continue}; if console {guard process != nil else{continue};if let date=Self.consoleDate(line,arrival:Date()),date.timeIntervalSince1970 < store.startWallUnix-2 {continue}}; observe(line,console:console,occurrence:"\(console ? "console" : "native")-\(inode)-\(start)") }
             }
             if data.count>16<<10 { fileDroppedBytes+=UInt64(data.count); data.removeAll(keepingCapacity:false); lineOffset=offset; partial=true }
         }
@@ -1055,7 +1220,7 @@ final class RunEvidenceRecorder {
         try queue.sync {
             if cancelled() { throw CancellationError() }
             store.record("timeline",stamp(["event":"export-request","source":"existing-Export-Run"]))
-            tick(); store.record("timeline",["event":"capture-cutoff","source":"recorder-queue-snapshot","tailAfterCutoff":"not-in-this-export"]); store.flush(); try store.checkpoint()
+            tick(); captureSources();publishLaunch(record:false); store.record("timeline",["event":"capture-cutoff","source":"recorder-queue-snapshot","tailAfterCutoff":"not-in-this-export"]); store.flush(); try store.checkpoint()
             let destination=FileManager.default.temporaryDirectory.appendingPathComponent("madeira-evidence-"+UUID().uuidString,isDirectory:true)
             var complete=false
             defer {if !complete {try? FileManager.default.removeItem(at:destination)}}

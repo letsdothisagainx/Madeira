@@ -4,3 +4,5 @@ import Foundation
 enum SteamGameDiagnostics {
     static func openOwned(_ root: Int32, _ parts: [String]) -> Int32? { nil }
 }
+
+@MainActor final class SteamLibraryDiagnostics {static let shared=SteamLibraryDiagnostics();func launchAttention(){}}

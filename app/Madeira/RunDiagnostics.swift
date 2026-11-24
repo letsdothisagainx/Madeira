@@ -131,6 +131,29 @@ enum RunDiagnostics {
         value["provenanceInterpretation"] = "packaged-expectations; compare-with-native-build-provenance-v1-runtime-row-for-linked-image-agreement"
         return value
     }
+    static func sourceRelationship(_ id:String,identity:String,bytes:UInt64,metadata:[String:Any])->[String:Any] {
+        guard let rows=metadata["sources"] as? [String:Any],let row=rows[id] as? [String:Any] else{return ["relationship":"unknown; no-run-start-file-boundary","runAppendedBytes":NSNull(),"historicalPrefixBytes":NSNull()]}
+        var result:[String:Any]=["runID":metadata["runID"] as Any? ?? NSNull(),"structuredSnapshotNS":metadata["captureNS"] as Any? ?? NSNull(),"boundaryEvidence":row]
+        let initial=(row["initialBytes"] as? NSNumber)?.uint64Value
+        if row["initialFileIdentity"] as? String==identity,let initial,initial<=bytes,(row["rotations"] as? Int ?? 0)==0,(row["truncations"] as? Int ?? 0)==0 {
+            result["historicalPrefixBytes"]=initial;result["runAppendedBytes"]=bytes-initial
+            result["relationship"]=bytes==initial ? "historical-content-only; no-run-appends-at-export" : "historical-prefix-and-run-appends; byte-ranges-not-gameplay-acceptance"
+            if bytes==initial,let modified=row["modifiedUnixSeconds"] as? Double,let start=metadata["runStartWallUnix"] as? Double,modified<start-2 {
+                result["relationship"]="historical-content-only; last-modified-before-run-start; no-appends-observed"
+            } else if bytes==initial {result["relationship"]="preexisting-content-only; may-include-early-current-startup; no-appends-observed"}
+            result["historicalPrefixMeaning"]="predates-initial-file-observation; source-time-and-file-mtime-needed-for-session-attribution"
+            result["historicalByteRange"]=[UInt64(0),initial];result["runAppendByteRange"]=[initial,bytes]
+            if let recorded=(row["lastBytes"] as? NSNumber)?.uint64Value {result["bytesAfterStructuredObservation"]=bytes>=recorded ? bytes-recorded : NSNull()}
+        } else {result["relationship"]="unknown-or-rotated-generation; do-not-merge-with-current-run";result["runAppendedBytes"]=NSNull();result["historicalPrefixBytes"]=NSNull()}
+        return result
+    }
+    private static func freshnessMetadata(_ files:[String:URL])->[String:Any] {
+        guard let url=files["evidence/source-freshness.json"] else{return [:]}
+        let fd=open(url.path,O_RDONLY|O_NOFOLLOW|O_CLOEXEC);guard fd>=0 else{return [:]};defer{close(fd)}
+        var st=stat();guard fstat(fd,&st)==0,st.st_uid==getuid(),st.st_mode & mode_t(S_IFMT)==mode_t(S_IFREG),st.st_size>=0,st.st_size<=64<<10 else{return [:]}
+        var data=Data(count:Int(st.st_size));let n=data.withUnsafeMutableBytes{read(fd,$0.baseAddress,$0.count)}
+        guard n==data.count else{return [:]};return (try? JSONSerialization.jsonObject(with:data)) as? [String:Any] ?? [:]
+    }
     static func collect(documents: URL, bundleInfo: [String: Any] = [:], now: Date = Date(),
                         uptimeNanoseconds: UInt64 = DispatchTime.now().uptimeNanoseconds,
                         limits: Limits = Limits(), cancelled: () -> Bool = { false }) throws -> [SteamGameDiagnostics.Entry] {
@@ -285,6 +308,7 @@ enum RunDiagnostics {
         var omitted = 0, redacted = 0, overlong = 0, outputOmitted = 0, readBytes = 0
         var prefixEnd: UInt64 = 0, firstTail: UInt64 = original, tailRecordBytes: UInt64 = 0
         var readWindows: [[String: UInt64]] = []
+        var sourceFirstStamp:String?,sourceLastStamp:String?
         func check() throws { if cancelled() { throw Failure.cancelled } }
         func read(_ offset: UInt64, _ count: Int) throws -> Data {
             try check()
@@ -307,6 +331,11 @@ enum RunDiagnostics {
             line = sanitize(raw)
             #endif
             guard let line else { omitted += 1; return nil }
+            // Only the public date/time prefix; never retain the row body.
+            if let range=raw.range(of:#"^(?:\[?[0-9]{4}[-/][0-9]{2}[-/][0-9]{2}|[0-9]{2}/[0-9]{2}) [0-9]{2}:[0-9]{2}:[0-9]{2}"#,options:.regularExpression) {
+                let stamp=String(raw[range]).replacingOccurrences(of:"[",with:"")
+                sourceFirstStamp=min(sourceFirstStamp ?? stamp,stamp);sourceLastStamp=max(sourceLastStamp ?? stamp,stamp)
+            }
             if raw != line { redacted += 1 }
             return Data((line + "\n").utf8)
         }
@@ -457,7 +486,8 @@ enum RunDiagnostics {
                 "rowsOmitted": omitted, "rowsRedacted": redacted, "overlongRowsOmitted": overlong,
                 "rowsOmittedForOutputBudget": outputOmitted, "lineBudgetReached": prefixRows + tailRows >= limits.lines,
                 "outputBudgetReached": outputOmitted > 0, "partialTrailingRowOmitted": trailingPartial,
-                "ioBufferBytes": chunkBytes, "maxRawLineBytes": limits.lineBytes]
+                "observedSourceTimestampRange":["first":sourceFirstStamp as Any? ?? NSNull(),"last":sourceLastStamp as Any? ?? NSNull(),"scope":"selected-sanitized-rows-only; source-wall-clock; timezone-and-receipt-separate"],
+                "fileIdentity":"\(before.st_dev):\(before.st_ino)","captureUnixSeconds":Date().timeIntervalSince1970,"ioBufferBytes": chunkBytes, "maxRawLineBytes": limits.lineBytes]
     }
 
     static func export(documents: URL, temporaryDirectory: URL, bundleInfo: [String: Any] = [:],
@@ -504,11 +534,12 @@ enum RunDiagnostics {
         }
         // Critical structured history is packaged first, so ancillary logs
         // cannot crowd it out. Files are private immutable recorder snapshots.
+        let freshness=freshnessMetadata(evidenceFiles)
         var evidenceBytes = 0
         for (name, url) in evidenceFiles.sorted(by: { $0.key < $1.key }) {
             try check()
             let parts = name.split(separator: "/").map(String.init)
-            let allowed = ["run-summary.json", "timeline.jsonl", "thread-frame-memory.jsonl", "memory-access.jsonl", "vm-operations.jsonl", "graphics-errors.jsonl", "resource-failures.jsonl", "resource-failures-first.jsonl", "input-path.jsonl", "graphics-summary.json", "runtime-config.json", "modules.json", "termination.json", "incident.jsonl", "incident-first.jsonl", "system.json"]
+            let allowed = ["run-summary.json", "timeline.jsonl", "thread-frame-memory.jsonl", "memory-access.jsonl", "vm-operations.jsonl", "graphics-errors.jsonl", "resource-failures.jsonl", "resource-failures-first.jsonl", "input-path.jsonl", "graphics-summary.json", "runtime-config.json", "modules.json", "termination.json", "incident.jsonl", "incident-first.jsonl", "source-freshness.json", "launch-progress.jsonl", "system.json"]
             guard parts.first == "evidence", allowed.contains(parts.last ?? ""),
                   parts.count == 2 || (parts.count == 4 && parts[1] == "previous" && UUID(uuidString: parts[2]) != nil) else { continue }
             let input = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
@@ -568,7 +599,7 @@ enum RunDiagnostics {
             do { try writer.add(name: name, file: stage, size: UInt64(bytes), cancelled: cancelled) }
             catch is CancellationError { throw Failure.cancelled }
             catch { throw Failure.stage("compressing run evidence", (error as NSError).code) }
-            summary["source"] = id; summary["entry"] = name; sources.append(summary); used += bytes
+            summary["source"] = id; summary["entry"] = name;summary["runRelationship"]=sourceRelationship(id,identity:identity,bytes:UInt64(info.st_size),metadata:freshness); sources.append(summary); used += bytes
         }
         if !evidenceFiles.isEmpty {
             // This is the immediately preceding native log, which may differ

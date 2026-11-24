@@ -296,6 +296,7 @@ if args.profile == 'recovery-normal':
         ['python3', 'tests/host/check-cross-page-store-recovery.py', '--compile-only'],
         ['python3', 'tests/host/check-cs2-stall-watch.py', '--require-swift'],
         ['python3', 'tests/host/check-swap-external-retire.py'],
+        ['python3', 'tests/host/check-steam-launch-progress.py', '--require-swift'],
         ['python3', 'tests/host/check-run-evidence.py', '--require-swift'],
         ['python3', 'tests/host/check-run-diagnostics.py', '--require-swift'],
         ['python3', 'tests/host/check-run-export-presentation.py', '--require-swift'],

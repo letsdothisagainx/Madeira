@@ -1170,6 +1170,9 @@ final class LibraryModel: ObservableObject {
     @Published var dockGameEnded = false
     private var dockGameEndedAt: Date?
     private var quitRequestedAt: Date?
+    @Published var steamLaunch:SteamLaunchState?
+    @Published private(set) var steamViewRevealed=false
+    private var steamLaunchObserver:NSObjectProtocol?,lastSteamWindowNS:UInt64=0,steamRevealResult:Int32?
     @Published var launching = false
     @Published var overlayFields = ["FPS", "Frame time", "RAM", "Battery"]
     private var launchPresent: UInt64 = 0
@@ -1692,7 +1695,7 @@ final class LibraryModel: ObservableObject {
     /// `remember: false` runs a session that is not a library entry (a Madeira
     /// Dock start): it is neither added to the library nor stamped as played.
     /// `dock`: the game a Madeira Dock start launches (DockStartScreen).
-    func begin(_ entry: LibraryEntry, remember: Bool = true, dock: DockGame? = nil) {
+    func begin(_ entry: LibraryEntry, remember: Bool = true, dock: DockGame? = nil, nativeSteamAppID:Int? = nil) {
         CS2VACMarkers.shared.begin(appID: entry.steamAppID ?? dock?.id)
         wine_exit_status_reset()
         JITPoolMeter.reset(); smallPoolNoted = false
@@ -1741,11 +1744,25 @@ final class LibraryModel: ObservableObject {
         if remember { var played = entry; played.lastPlayed = Date(); save(played) }
         launchDismissLogged = false
         DockStartScreen.shared.begin(dock, at: launchStarted)
+        if let observer=steamLaunchObserver {NotificationCenter.default.removeObserver(observer)}
+        steamLaunch=nil;steamViewRevealed=false;lastSteamWindowNS=0
+        if let app=nativeSteamAppID {
+            let state=SteamLaunchState(appID:app,requestID:UUID().uuidString,requestedNS:RunEvidenceSchema.mono(),requestedWall:Date().timeIntervalSince1970)
+            steamLaunch=state
+            steamLaunchObserver=NotificationCenter.default.addObserver(forName:SteamLaunchState.notification,object:nil,queue:.main){[weak self] note in
+                guard let self,let state=note.object as? SteamLaunchState,self.steamLaunch?.requestID==state.requestID else{return}
+                self.steamLaunch=state
+                if state.cs2Lifetime != nil {winios_window_census_enable(0)}
+            }
+            winios_window_census_enable(3)
+            RunEvidenceRecorder.beginSteamLaunch(state)
+        }
         sawProcess = false
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.poll() }
     }
     private func poll() {
+        sampleSteamLaunchWindows()
         let dockStart = DockStartScreen.shared
         if dockStart.active {
             // A Dock start: the desktop's own frames (explorer, the host's console window)
@@ -1820,6 +1837,41 @@ final class LibraryModel: ObservableObject {
         var transaction = Transaction(); transaction.disablesAnimations = true
         withTransaction(transaction) { launchLogs = false; launching = false }
     }
+    /// User-directed handoff to the real session. No CEF query or dialog answer.
+    func openSteamSession() {
+        guard steamLaunch != nil,current != nil else{return}
+        LibraryKeyboard.hide();menu=false
+        LibraryController.shared.configure(enabled:enabled,ownsInput:false)
+        MetalHostView.shared.isHidden=false
+        showGameView(reason:"steam-user-response")
+        steamRevealResult=winios_reveal_session_view()
+        steamViewRevealed=steamRevealResult != 0
+        LibraryController.shared.configure(enabled:enabled,ownsInput:false)
+        sampleSteamLaunchWindows(revealed:true)
+    }
+    private func sampleSteamLaunchWindows(revealed:Bool=false) {
+        guard let launch=steamLaunch,launch.cs2Lifetime==nil else{return}
+        let now=RunEvidenceSchema.mono()
+        guard revealed || now-lastSteamWindowNS>=2_000_000_000 else{return};lastSteamWindowNS=now
+        var raw=[winios_census_window](repeating:winios_census_window(),count:Int(WINIOS_CENSUS_MAX))
+        let count=Int(winios_launch_window_snapshot(&raw,Int32(raw.count)))
+        var windows:[[String:Any]]=[]
+        for w in raw.prefix(max(0,count)) {
+            let image=withUnsafeBytes(of:w.image){String(decoding:$0.prefix{$0 != 0},as:UTF8.self)}
+            guard SteamLaunchScene.owner(image,places:.standard) == .client,windows.count<8 else{continue}
+            windows.append(["HWND":RunEvidenceSchema.hex(w.hwnd),"PID":RunEvidenceSchema.hex(UInt64(w.pid)),"windowGeneration":String(w.serial),
+                "owner":w.owner>0 ? RunEvidenceSchema.hex(w.owner) : NSNull(),"lease":w.lease>0 ? String(w.lease) : NSNull(),
+                "wineVisibleLastObserved":w.visible != 0,"windowObservationNS":String(w.observed_ns),"windowObservationAgeNS":now>=w.observed_ns ? now-w.observed_ns : 0,
+                "everGDIPresented":w.presents>0,"metalSwapchainObserved":w.metal != 0,"lastGDIPresentNS":w.present_ns>0 ? String(w.present_ns) : NSNull(),
+                "hostFlags":w.native_flags,"hostMetadataAvailable":w.native_flags&1 != 0,"hostLayerAttached":w.native_flags&2 != 0,"hostLayerVisible":w.native_flags&4 != 0,"compositorVisible":w.native_flags&16 != 0,
+                "association":"Steam-client-window-candidate; prompt-window-association-unknown","reachability":"host-layer-and-session-view-observations; Windows-focus-and-input-consumption-separate"])
+        }
+        RunEvidenceRecorder.launchView(["event":revealed ? "steam-view-revealed" : "steam-launch-window-summary","requestID":launch.requestID,"appID":launch.appID,
+            "captureNS":String(now),"clockDomain":"CLOCK_MONOTONIC","windows":windows,"windowQuery":count<0 ? "busy-or-unavailable" : "snapshot",
+            "sessionViewVisible":!launching && !menu,"nativeSessionRevealed":steamViewRevealed,"nativeRevealResult":steamRevealResult as Any? ?? NSNull(),"revealRequested":revealed,"revealed":revealed && steamViewRevealed,"reason":revealed ? "explicit-user-open-Steam" : "bounded-prelaunch-observation",
+            "promptIdentified":NSNull(),"promptIdentificationReason":"public-GameAction-does-not-name-a-window-or-prompt-subtype"])
+    }
+
     func toggleLaunchLogs() {
         launchLogs.toggle()
         LogStore.shared.setDisplayActive(launching ? launchLogs : liveLogs)
@@ -1897,6 +1949,9 @@ final class LibraryModel: ObservableObject {
         if sawProcess, let next = steamRunRequest() { restartNotice = next }
         else if sawProcess, let report = exitReport() { error = report }
         timer?.invalidate(); timer = nil
+        if let observer=steamLaunchObserver {NotificationCenter.default.removeObserver(observer);steamLaunchObserver=nil}
+        if steamLaunch != nil {winios_window_census_enable(0)}
+        steamLaunch=nil;steamViewRevealed=false
         saveCurrentProfile()
         controllerMode = nil
         controllerBinds = [:]
@@ -5245,6 +5300,10 @@ struct LibraryHUD: View {
                 if model.liveLogs && !model.startingScreen { LibraryLiveLogs().frame(maxWidth: 550, maxHeight: 140).padding(.top, Self.topInset(geo) + 60).padding(.horizontal, 12).allowsHitTesting(false) }
                 if !model.sessionMessage.isEmpty && !model.startingScreen { Text(model.sessionMessage).font(.caption).padding(10).background(.regularMaterial, in: Capsule()).frame(maxWidth: .infinity).padding(.top, Self.topInset(geo) + 12).allowsHitTesting(false) }
                 if !model.startingScreen { LibraryFloatingItem(isMenu: true, viewport: geo.size, insets: geo.safeAreaInsets) }
+                if let launch=model.steamLaunch,launch.waiting,!model.steamViewRevealed,!model.startingScreen,!model.menu {
+                    VStack {Spacer();HStack {VStack(alignment:.leading){Text("Steam needs your response").font(.callout);if let wall=launch.sourceWall {Text("Last reported \(Date(timeIntervalSince1970:wall),style:.relative) ago").font(.caption)}};Button("Open Steam"){model.openSteamSession()}}
+                        .padding(12).background(.regularMaterial,in:RoundedRectangle(cornerRadius:14)).padding(.bottom,geo.safeAreaInsets.bottom+12)}
+                }
                 if model.menu {
                     Color.black.opacity(0.5).ignoresSafeArea().onTapGesture { model.menu = false }.transition(.opacity)
                     (bindsPage ? AnyView(bindsMenu) : AnyView(menu))
@@ -5362,6 +5421,7 @@ struct LibraryHUD: View {
                     launchGlyph(showLogs ? "Hide live log" : "Show live log", "text.alignleft", on: showLogs) {
                         model.toggleLaunchLogs()
                     }
+                    if model.steamLaunch != nil {Button("Open Steam"){model.openSteamSession()}.frame(minHeight:44)}
                     if dockStart.holding {
                         launchGlyph("Show desktop", "macwindow") { dockStart.showDesktop(model) }
                             .accessibilityHint("Shows the Windows desktop")
@@ -5413,6 +5473,7 @@ struct LibraryHUD: View {
                     launchGlyph(showLogs ? "Hide live log" : "Show live log", "text.alignleft", on: showLogs) {
                         model.toggleLaunchLogs()
                     }
+                    if model.steamLaunch != nil {Button("Open Steam"){model.openSteamSession()}.frame(minHeight:44)}
                     if dockStart.holding {
                         launchGlyph("Show desktop", "macwindow") { dockStart.showDesktop(model) }
                             .accessibilityHint("Shows the Windows desktop")
@@ -5500,6 +5561,7 @@ struct LibraryHUD: View {
     /// What the start is doing before the Dock reports (or for a game without Dock).
     private var launchIdleStatus: String {
         if let entry = model.preparing { return model.startingJIT == entry.id ? "Enabling JIT…" : "Getting ready…" }
+        if let launch=model.steamLaunch,launch.waiting {return "Steam needs your response"}
         return model.launchSlow ? "Still starting…" : "Starting your game…"
     }
 
@@ -5542,6 +5604,7 @@ struct LibraryHUD: View {
     private var menu: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
+            if model.steamLaunch != nil {Button("Open Steam"){model.openSteamSession()}.frame(minHeight:44)}
                 HStack { Label("Session", systemImage: "gamecontroller.fill").font(.title2.bold()); Spacer(); Button("Done") { model.menu = false }.buttonStyle(.bordered) }
                 // The controls come first, the easiest to reach; the overlay settings last.
                 Toggle("Touch controls", isOn: $controls.visible)

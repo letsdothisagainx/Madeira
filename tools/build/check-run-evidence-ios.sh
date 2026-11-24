@@ -7,3 +7,8 @@ SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 xcrun --sdk iphoneos swiftc -typecheck -swift-version 5 \
   -target arm64-apple-ios18.0 -sdk "$SDK" \
   "$ROOT/app/Madeira/RunEvidence.swift" "$ROOT/tests/host/run_evidence_ios_stub.swift"
+# Ordinary Objective-C syntax checking catches bridge/header issues before the
+# long native/Metal/PE build. No executable is produced or run.
+xcrun --sdk iphoneos clang -fsyntax-only -fobjc-arc -fmodules \
+  -target arm64-apple-ios18.0 -isysroot "$SDK" \
+  "$ROOT/app/Madeira/Winios/Winios.m"

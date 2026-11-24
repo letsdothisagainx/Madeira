@@ -10,6 +10,8 @@ with zipfile.ZipFile(a.ipa) as z:
         assert marker in image, 'missing linked evidence producer/consumer: '+repr(marker)
     for marker in [b'_winios_input_snapshot',b'_ios_thread_process_try_pid_identity',b'input-path-progress',b'resource-failures-first.jsonl',b'incident-first.jsonl']:
         assert marker in image, 'missing Run20 linked input/retention component: '+repr(marker)
+    for marker in [b'launch-progress',b'source-freshness.json',b'_winios_launch_window_snapshot',b'_winios_reveal_session_view',b'no-CS2-process-start-observed',b'routeAgeNS']:
+        assert marker in image, 'missing Run21 launch/freshness component: '+repr(marker)
     components=info['MadeiraEvidenceComponents'];assert components['schema']=='madeira-evidence-v1'
     assert len(components['FEX'])==len(components['wine'])==len(components['dxmt'])==40
     assert info['MadeiraEvidenceSymbolArtifact'].startswith('Madeira-native-symbols:')

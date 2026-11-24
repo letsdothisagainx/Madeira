@@ -35,6 +35,7 @@ import Darwin
     }
     private var progress: [String: Progress] = [:]
     private var commandStarts: [Int: (Date, String)] = [:]
+    private var uiTotal=0, attentionBudget=0
     private let session = URLSession(configuration: .ephemeral)
 
     static func safeURL(_ text: String) -> String {
@@ -136,27 +137,27 @@ import Darwin
         LogStore.shared.log("[steam-library-v1] \(text)")
     }
     func start() {
-        stop(); emitted = 0; events = 0; discoveries = 0; categories.removeAll()
+        stop(); uiTotal=0;attentionBudget=0;RunEvidenceRecorder.steamObserver("started"); emitted = 0; events = 0; discoveries = 0; categories.removeAll()
         // MadeiraConfig.flag's production default is TRUE. TRACE_OFF must opt out.
         guard !MadeiraConfig.flag("MADEIRA_STEAM_LIBRARY_TRACE_OFF", fallback: false) else {
-            note("observer=disabled setting=MADEIRA_STEAM_LIBRARY_TRACE_OFF"); return
+            RunEvidenceRecorder.steamObserver("disabled");note("observer=disabled setting=MADEIRA_STEAM_LIBRARY_TRACE_OFF"); return
         }
         let fd = socket(AF_INET, SOCK_STREAM, 0)
-        guard fd >= 0 else { note("observer-failed stage=socket errno=\(errno)", category: "failure"); return }
+        guard fd >= 0 else { RunEvidenceRecorder.steamObserver("unavailable");note("observer-failed stage=socket errno=\(errno)", category: "failure"); return }
         var address = sockaddr_in(); address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
         address.sin_family = sa_family_t(AF_INET); address.sin_addr.s_addr = inet_addr("127.0.0.1")
         var length = socklen_t(MemoryLayout<sockaddr_in>.size)
         let bound = withUnsafeMutablePointer(to: &address) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, length) }
         }
-        guard bound == 0 else { let code = errno; close(fd); note("observer-failed stage=bind errno=\(code)", category: "failure"); return }
+        guard bound == 0 else { RunEvidenceRecorder.steamObserver("unavailable");let code = errno; close(fd); note("observer-failed stage=bind errno=\(code)", category: "failure"); return }
         let named = withUnsafeMutablePointer(to: &address) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &length) }
         }
         let code = errno; close(fd)
-        guard named == 0 else { note("observer-failed stage=getsockname errno=\(code)", category: "failure"); return }
+        guard named == 0 else { RunEvidenceRecorder.steamObserver("unavailable");note("observer-failed stage=getsockname errno=\(code)", category: "failure"); return }
         port = Int(UInt16(bigEndian: address.sin_port))
-        guard port >= 1024 else { note("observer-failed stage=port-selection", category: "failure"); port = 0; return }
+        guard port >= 1024 else { RunEvidenceRecorder.steamObserver("unavailable");note("observer-failed stage=port-selection", category: "failure"); port = 0; return }
         setenv("MADEIRA_STEAM_CDP_PORT", String(port), 1)
         note("observer=passive loopback=127.0.0.1 port=\(port) page-hooks=none; credentials and bodies excluded")
         let drive = MadeiraDock.drive
@@ -179,7 +180,13 @@ import Darwin
             if self?.generation == current { self?.stop() }
         }
     }
+    /// A relevant launch wait can use a reserved observation, never unblock it.
+    func launchAttention() {
+        guard attentionBudget<4,uiTotal<24 else{return};attentionBudget+=1
+        for id in sockets.keys {uiSampled[id]=nil;uiSampleCounts[id]=0}
+    }
     func stop() {
+        RunEvidenceRecorder.steamObserver("stopped")
         generation += 1
         poll?.cancel(); poll = nil
         for task in sampleTasks.values { task.cancel() }; sampleTasks.removeAll()
@@ -293,7 +300,7 @@ import Darwin
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
                 guard let self, let reply = self.replies.removeValue(forKey: id) else { return }
                 self.commands.removeValue(forKey: id); self.commandStarts.removeValue(forKey: id)
-                self.note("target=\(label) CEF command-timeout method=\(method) purpose=\(purpose)", category: "failure"); reply([:])
+                RunEvidenceRecorder.steamObserver("timeout");self.note("target=\(label) CEF command-timeout method=\(method) purpose=\(purpose)", category: "failure"); reply([:])
             }
             Task { [weak self] in await self?.transmit(socket, id: id, method: method, params: params, purpose: purpose) }
         }
@@ -440,13 +447,14 @@ import Darwin
         }
     }
     private func captureUIState(_ id: String, socket: URLSessionWebSocketTask) async {
-        guard uiSampleCounts[id, default: 0] < 8, Date().timeIntervalSince(uiSampled[id] ?? .distantPast) >= 15 else { return }
-        uiSampled[id] = Date(); uiSampleCounts[id, default: 0] += 1
+        guard uiTotal<(attentionBudget>0 ? 24 : 16),uiSampleCounts[id, default: 0] < (attentionBudget>0 ? 10 : 6), Date().timeIntervalSince(uiSampled[id] ?? .distantPast) >= 15 else { return }
+        uiSampled[id] = Date(); uiSampleCounts[id, default: 0] += 1;uiTotal+=1
         let result = await command(socket, "Runtime.evaluate", ["expression": Self.uiMessageExpression, "returnByValue": true, "throwOnSideEffect": true, "timeout": 500], purpose: "known-ui-text")
         guard sockets[id] === socket, !Task.isCancelled else { return }
         if result["exceptionDetails"] != nil {
             if uiSnapshots[id] != "unavailable" { targetNote(id, "readonly-ui-text=unavailable side-effect-check=retained", category: "ui"); uiSnapshots[id] = "unavailable" }
         } else if let value = (result["result"] as? [String: Any])?["value"] as? [String: Any] {
+            RunEvidenceRecorder.steamObserver("reply")
             let clean = Self.safeUIState(value)
             if uiSnapshots[id] != clean {
                 targetNote(id, "readonly-ui-text visibility=unproven \(clean)", category: "ui"); uiSnapshots[id] = clean

@@ -126,6 +126,8 @@ struct winios_census_window {
     unsigned char restore_sent;   /* born minimized; SC_RESTORE posted */
     unsigned char caption;        /* WS_CAPTION: a title bar (a message box or a dialog) */
     char image[WINIOS_CENSUS_IMAGE];
+    unsigned long long serial, observed_ns, present_ns, owner, lease;
+    unsigned int native_flags; /* bit0 metadata, bit1 attached, bit2 visible, bit3 content, bit4 compositor visible */
 };
 
 /* Main thread. on=1 starts an empty census (and forgets cached process paths,
@@ -136,6 +138,9 @@ void winios_window_census_enable(int on);
 
 /* Main thread. Copies up to `max` entries; returns how many were copied. */
 int winios_window_census(struct winios_census_window *out, int max);
+/* Main-thread, try-only, read-only host-layer snapshot. Mode 3 never restores windows. */
+int winios_launch_window_snapshot(struct winios_census_window *out,int max);
+int winios_reveal_session_view(void);
 
 #ifdef __cplusplus
 }

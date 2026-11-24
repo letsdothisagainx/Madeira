@@ -385,6 +385,11 @@ final class GamepadInput: @unchecked Sendable {
     }
 
     private func sample() {
+        let connected=profiles.first.flatMap{$0} != nil
+        var flags:UInt64=Self.enabled ? 1 : 0
+        if keyboardMouse != nil {flags |= 2};if connected {flags |= 4};if active {flags |= 8}
+        if LibraryController.shared.ownsInput {flags |= 16};if winios_input_accepting() != 0 {flags |= 32}
+        winios_input_source(7,flags)
         for i in profiles.indices {
             let pad = profiles[i]
             let touchConnected = i == 0 && touchState.connected

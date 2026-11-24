@@ -1,0 +1,31 @@
+{
+  "archiveSHA256": "ee7bee08131b54a5c511865df887622abd688918075af827e3cbb558f6dd8023",
+  "runID": "90520442-BFAF-4858-BB21-518A26B2029F",
+  "source": "06a93b3c81460e63c3da7d9b7b1e39b088318fec",
+  "steam": [
+    "[2026-11-24 03:01:33] GameAction [AppID 730, ActionID 1] : LaunchApp changed task to SynchronizingCloud",
+    "[2026-11-24 03:01:34] GameAction [AppID 730, ActionID 1] : LaunchApp changed task to SynchronizingStats",
+    "[2026-11-24 03:01:34] GameAction [AppID 730, ActionID 1] : LaunchApp changed task to ShowInterstitials",
+    "[2026-11-24 03:01:34] GameAction [AppID 730, ActionID 1] : LaunchApp waiting for user response to ShowInterstitials",
+    "[2026-11-24 03:01:37] GameAction [AppID 730, ActionID 1] : LaunchApp continues with user response",
+    "[2026-11-24 03:01:38] GameAction [AppID 730, ActionID 1] : LaunchApp changed task to VerifyingFiles",
+    "[2026-11-24 03:01:38] GameAction [AppID 730, ActionID 1] : LaunchApp changed task to SiteLicenseSeatCheckout",
+    "[2026-11-24 03:01:38] GameAction [AppID 730, ActionID 1] : LaunchApp changed task to DelayLaunch",
+    "[2026-11-24 03:01:38] GameAction [AppID 730, ActionID 1] : LaunchApp changed task to CreatingProcess",
+    "[2026-11-24 03:01:38] GameAction [AppID 730, ActionID 1] : LaunchApp waiting for user response to CreatingProcess",
+    "[2026-11-24 03:01:38] GameAction [AppID 730, ActionID 1] : LaunchApp continues with user response",
+    "[2026-11-24 03:01:38] GameAction [AppID 730, ActionID 1] : LaunchApp changed task to WaitingGameWindow",
+    "[2026-11-24 03:01:38] GameAction [AppID 730, ActionID 1] : LaunchApp changed task to Completed",
+    "[2026-11-24 09:00:12] GameAction [AppID 730, ActionID 1] : LaunchApp changed task to UpdatingAppInfo",
+    "[2026-11-24 09:00:13] GameAction [AppID 730, ActionID 1] : LaunchApp changed task to RunningInstallScript",
+    "[2026-11-24 09:00:46] GameAction [AppID 730, ActionID 1] : LaunchApp changed task to SynchronizingCloud",
+    "[2026-11-24 09:00:46] GameAction [AppID 730, ActionID 1] : LaunchApp changed task to SynchronizingStats",
+    "[2026-11-24 09:00:46] GameAction [AppID 730, ActionID 1] : LaunchApp changed task to ShowInterstitials",
+    "[2026-11-24 09:00:46] GameAction [AppID 730, ActionID 1] : LaunchApp waiting for user response to ShowInterstitials"
+  ],
+  "historicalCS2TimeRange": [
+    "11/24 03:01:47",
+    "11/24 03:17:53"
+  ],
+  "currentCS2StartObserved": false
+}
