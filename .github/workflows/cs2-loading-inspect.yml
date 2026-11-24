@@ -39,6 +39,7 @@ jobs:
         run: |
           python3 tests/host/check-swap-external-retire.py
           python3 tests/host/check-steam-launch-progress.py ${{ runner.os == 'macOS' && '--require-swift' || '' }}
+          python3 tests/host/check-runtime-progress.py
           python3 tests/host/check-run-evidence.py ${{ runner.os == 'macOS' && '--require-swift' || '' }}
           python3 tests/host/check-run-diagnostics.py ${{ runner.os == 'macOS' && '--require-swift' || '' }}
           python3 tests/host/check-run-diagnostics-zip.py ${{ runner.os == 'macOS' && '--require-swift' || '' }}

@@ -30,6 +30,8 @@ EXTRA_SOURCES = {
                 'build/ntdll-unix/pread_observation.h',
                 'build/ntdll-unix/run_evidence.h',
                 'build/ntdll-unix/run_evidence_native.h',
+                'build/ntdll-unix/runtime_progress.h',
+                'build/ntdll-unix/signal_arm64_ios.c',
                 'build/ntdll-unix/cs2_stall_watch_native.h',
                 'build/ntdll-unix/cs2_stall_watch.h',
                 'build/ntdll-unix/server_ios.c'),

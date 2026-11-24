@@ -8,6 +8,8 @@ with tempfile.TemporaryDirectory() as d:
     t=Path(d)
     subprocess.run([os.getenv('CC','cc'),'-std=c11','-O2','-Wall','-Wextra','-Werror','-pthread','-I'+str(r/'build/ntdll-unix'),str(r/'tests/host/run_evidence_ring_test.c'),'-o',str(t/'ring')],check=True)
     subprocess.run([str(t/'ring')],check=True)
+    subprocess.run([os.getenv('CC','cc'),'-std=c11','-O2','-Wall','-Wextra','-Werror','-pthread','-I'+str(r/'build/ntdll-unix'),str(r/'tests/host/runtime_progress_test.c'),'-o',str(t/'runtime')],check=True)
+    subprocess.run([str(t/'runtime')],check=True)
     source=(r/'build/ntdll-unix/virtual_ios.c').read_text()
     for function in ['set_vprot','set_vprot_evidence_impl','decommit_pages','decommit_pages_evidence_impl']:
         assert len(re.findall(r'^static (?:BOOL|NTSTATUS) '+function+r'\([^;]+?\)\n\{',source,re.M))==1, function+' body/prototype confused'
@@ -75,6 +77,27 @@ func verify(_ ok:@autoclosure ()->Bool,_ file:StaticString=#file,_ line:Int=#lin
     try verify(termination["hostRunningAtCheckpoint"] as? Bool == true && termination["reason"] as? String == "unknown")
     print("Run19 actual parser: 81 console occurrences + eight native reports, distinct from 299 old structured rows; repeated same occurrence suppressed; guest C0000005 with host running PASS")
   }
+  let stallRetention=try RunEvidenceStore(root:root.appendingPathComponent("first-play-stall"))
+  stallRetention.record("thread-frame-memory",["event":"main-progress","fixture":"first-post-activation-window"])
+  stallRetention.incident("post-activation-frame-stall")
+  let originalStall=try Data(contentsOf:stallRetention.directory.appendingPathComponent("incident-post-activation-first.jsonl"))
+  for i in 0..<300 {stallRetention.record("thread-frame-memory",["event":"frame-progress","fixture":i]);stallRetention.beginAttempt();stallRetention.incident("post-activation-frame-stall")}
+  let retainedStall=try Data(contentsOf:stallRetention.directory.appendingPathComponent("incident-post-activation-first.jsonl"))
+  try verify(originalStall == retainedStall && originalStall.count<=256<<10)
+  var runtime=[UInt64](repeating:0,count:48);runtime[0]=1;runtime[1]=16;runtime[4]=0x1000;runtime[5]=34;runtime[8]=98;runtime[9]=10;runtime[10]=40;runtime[11]=2;runtime[12]=3;runtime[16]=4;runtime[20]=30;runtime[24]=20;runtime[32]=1
+  let (_,runtimeRow)=RunEvidenceSchema.native(runtime)!
+  try verify(runtimeRow["event"] as? String == "main-runtime-operations" && runtimeRow["nativeThreadLifetimeID"] as? String == "98")
+  try verify(runtimeRow["consistency"] as? String == "changed-during-query")
+  let ops=runtimeRow["operations"] as! [[String:Any]];try verify(ops.count==4 && ops[0]["activeAgeNS"] as? UInt64 == 20)
+  runtime[1]=17;runtime[13]=0x713000;runtime[14]=0x123;runtime[15]=1;runtime[16]=1
+  for i in 20..<25 {runtime[i]=0}
+  for(i,c) in "tier0.dll".utf8.enumerated(){runtime[20+i/8] |= UInt64(c)<<UInt64((i%8)*8)}
+
+  let (_,resolved)=RunEvidenceSchema.native(runtime)!
+  try verify(resolved["RIPEntryLimit"] as? Int == 256 && resolved["guestPC"] as? String == "0x713000")
+  let privateResource=RunEvidenceRecorder.graphicsFailure("Error pipeline missing materials/private/customer.vmat_c")!
+  try verify(privateResource.fields["resourceStableID"] != nil && !String(describing:privateResource).contains("customer"))
+  try verify(RunEvidenceRecorder.graphicsFailure("chat missing resource materials/private/customer.vmat_c")==nil)
   let run20=try JSONSerialization.jsonObject(with:Data(contentsOf:URL(fileURLWithPath:CommandLine.arguments[3]))) as! [String:Any]
   try verify((run20["console"] as! [String]).count==222 && (run20["native"] as! [String]).count==8)
   try verify(RunEvidenceRecorder.consoleEvent(run20["close"] as! String)=="disconnect-kicked-votedoff")

@@ -17216,7 +17216,7 @@ static struct ios_vlpair ios_vl64pair_decode( const uint8_t *d )
     return o;
 }
 
-uint64_t ios_native_rip_from_hostpc( uint64_t block_begin, uint64_t host_pc, const char **why )
+static uint64_t ios_native_rip_bounded( uint64_t block_begin, uint64_t host_pc, const char **why, unsigned limit )
 {
     uint32_t off_tail = 0;
     struct { uint64_t size; uint64_t rip; uint64_t guest_size;
@@ -17259,6 +17259,7 @@ uint64_t ios_native_rip_from_hostpc( uint64_t block_begin, uint64_t host_pc, con
 
     for (i = 0; i < tail.n_entries; i++)
     {
+        if (i >= limit) { if (why) *why = "diagnostic RIP entry budget"; return 0; }
         struct ios_vlpair e;
         if (pos + 17 > (uint32_t)got)
         {
@@ -17276,6 +17277,11 @@ uint64_t ios_native_rip_from_hostpc( uint64_t block_begin, uint64_t host_pc, con
     }
     return cur_rip;
 }
+
+uint64_t ios_native_rip_from_hostpc(uint64_t block, uint64_t pc, const char **why)
+{ return ios_native_rip_bounded(block,pc,why,65536); }
+uint64_t ios_native_rip_from_hostpc_budget(uint64_t block, uint64_t pc)
+{ return ios_native_rip_bounded(block,pc,NULL,256); }
 
 static const char *ios_wait_api_name( uint64_t pc, const char *sym )
 {

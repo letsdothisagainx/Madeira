@@ -4,13 +4,14 @@
 #include "run_evidence.h"
 #include <string.h>
 #include <errno.h>
+#include "runtime_progress.h"
 static struct ios_evidence_record ios_ev_ring[IOS_EVIDENCE_RECORDS];
 /* 48 KiB reserved for failed request details: first 32 plus rolling 96.
  * Routine records cannot replace them before the utility consumer drains. */
 static struct ios_evidence_record ios_ev_fail_first[32],ios_ev_fail_recent[96];
 static unsigned ios_ev_fail_first_count,ios_ev_fail_first_read;
 static uint64_t ios_ev_fail_head,ios_ev_fail_tail;
-static struct { uint64_t token, start, address, bytes, generation, op, lock_scope, file_lifetime, extent; } ios_ev_flight[64];
+static struct { uint64_t token, start, address, bytes, generation, op, lock_scope, file_lifetime, extent, identity[5]; } ios_ev_flight[64];
 static unsigned ios_ev_lock;
 static uint64_t ios_ev_head, ios_ev_tail, ios_ev_dropped, ios_ev_overwritten, ios_ev_sequence, ios_ev_ticket;
 uint64_t ios_evidence_backing_file;
@@ -55,6 +56,7 @@ uint64_t ios_evidence_begin_extent(unsigned op, uintptr_t address, uint64_t byte
     ios_ev_flight[i].start=ios_evidence_now(); ios_ev_flight[i].address=address;
     ios_ev_flight[i].bytes=bytes; ios_ev_flight[i].generation=generation;
     ios_ev_flight[i].extent=extent;ios_ev_flight[i].op=op; ios_ev_flight[i].lock_scope=lock_scope;
+    ios_runtime_identity(ios_ev_flight[i].identity);
     ios_ev_flight[i].file_lifetime=__atomic_load_n(&ios_evidence_backing_file,__ATOMIC_ACQUIRE);
     __atomic_store_n(&ios_ev_flight[i].token,token,__ATOMIC_RELEASE);
     __atomic_store_n(&ios_ev_lock,0,__ATOMIC_RELEASE);
@@ -75,6 +77,8 @@ void ios_evidence_end(uint64_t token, int result, int error)
       __atomic_store_n(&ios_ev_flight[i].token,token | (UINT64_C(1)<<63),__ATOMIC_RELEASE);
       __atomic_fetch_add(&ios_ev_dropped,1,__ATOMIC_RELAXED); return; }
     elapsed = ios_evidence_now() - ios_ev_flight[i].start;
+    for(unsigned k=0;k<4;++k)r.w[4+k]=ios_ev_flight[i].identity[k];
+    r.w[20]=ios_ev_flight[i].identity[4];
     r.w[8]=token; r.w[1]=IOS_EV_VM; r.w[9]=ios_ev_flight[i].start; r.w[10]=ios_ev_flight[i].op;
     r.w[11]=ios_ev_flight[i].address; r.w[12]=ios_ev_flight[i].bytes;
     r.w[13]=ios_ev_flight[i].generation; r.w[14]=ios_ev_flight[i].lock_scope;
@@ -113,6 +117,8 @@ unsigned madeira_evidence_poll(uint64_t *out, unsigned records, uint64_t *stats)
         if (token && token != UINT64_MAX)
         {
             struct ios_evidence_record r={{0}};
+            for(unsigned k=0;k<4;++k)r.w[4+k]=ios_ev_flight[i].identity[k];
+    r.w[20]=ios_ev_flight[i].identity[4];
             r.w[0]=1; r.w[1]=IOS_EV_INFLIGHT; r.w[3]=ios_evidence_now(); r.w[8]=token;
             r.w[9]=ios_ev_flight[i].start; r.w[10]=ios_ev_flight[i].op;
             r.w[11]=ios_ev_flight[i].address; r.w[12]=ios_ev_flight[i].bytes;

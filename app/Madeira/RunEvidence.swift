@@ -210,6 +210,32 @@ enum RunEvidenceSchema {
             for (i,k) in ["started","nonFailureResults","outOfMemoryResults","invalidArgumentResults","otherFailureResults","admissionRefusals","nativeAllocationFailures","initializationFailures","viewFailures","unwoundWithoutResult","detailsAccepted","detailsTryLockDropped","failureDetailLaneOverwritten","reclamationObservations","firstFailureNS","lastFailureNS"].enumerated() {r[k]=w[9+i]}
             r["scope"]="host-app-session; direct-request-results-not-console-occurrences; stage-subcounts-overlap-results"
             return ("graphics-errors",r)
+        case 16:
+            r["event"]="main-runtime-operations";r["nativeThreadLifetimeID"]=String(w[8])
+            r["registerCaptureBeginNS"]=String(w[9]);r["counterQueryNS"]=String(w[10])
+            r["captureToQueryNS"]=w[10]>=w[9] && w[9]>0 ? String(w[10]-w[9]) : "unavailable"
+            r["updateBefore"]=String(w[11]);r["updateAfter"]=String(w[12])
+            r["consistency"]=w[11]==w[12] ? "no-update-observed; individually-atomic-not-transactional" : "changed-during-query"
+            r["scope"]="validated-CS2-initial-native-thread; inclusive-nested-elapsed-not-CPU; uninstrumented-work-unavailable"
+            r["operations"]=["server-call-including-direct-and-IPC","uninterrupted-mutex-acquisition","server-select-wait","explicit-VM-operation"].enumerated().map { i,name -> [String:Any] in
+                ["kind":name,"begunCumulative":w[16+i],"completedInclusiveNSCumulative":w[20+i],"activeBeginNS":w[24+i]>0 ? String(w[24+i]) : NSNull(),"activeDepth":w[32+i],"lastDetail":hex(w[28+i]),"activeAgeNS":w[24+i]>0 && w[10]>=w[24+i] ? w[10]-w[24+i] : NSNull(),"detailMeaning":"request-opcode / mutex-address-token / select-flags / VM-operation-code; not-call-stack"]
+            }
+            return ("thread-frame-memory",r)
+        case 17:
+            r["event"]="main-PC-resolution";r["nativeThreadLifetimeID"]=String(w[8]);r["registerCaptureBeginNS"]=String(w[9]);r["hostPC"]=hex(w[10]);r["queryBeginNS"]=String(w[11]);r["queryDurationNS"]=w[12]
+            r["captureToQueryNS"]=w[11]>=w[9] && w[9]>0 ? String(w[11]-w[9]) : "unavailable"
+            r["guestPC"]=w[13]>0 ? hex(w[13]) : NSNull();r["RVA"]=w[15]>0 ? hex(w[14]) : NSNull()
+            var bytes:[UInt8]=[];for word in w[20..<25] {for n in 0..<8 {let c=UInt8(truncatingIfNeeded:word>>UInt64(n*8));if c==0 {break};bytes.append(c)}}
+            let name=String(bytes:bytes,encoding:.ascii) ?? ""
+            r["module"]=w[15]>0 && safeAtom(name) ? name : "unavailable"
+            r["status"]=[0:"unavailable",1:"bounded-generated-block-lookup",2:"image-mapping",3:"no-generated-mapping-within-budget"][w[16]] ?? "unknown"
+            r["moduleStatus"]=w[15]>0 ? "cached-loader-map-matching-owner-and-lease" : "cached-module-unavailable"
+            r["confidence"]="post-resume-JIT-metadata; not-atomic-with-register-capture; no-saved-guest-RIP-substitution"
+            r["moduleCacheObservedNS"]=w[17]>0 ? String(w[17]) : NSNull()
+            r["moduleCacheAgeNS"]=w[17]>0 && w[11]>=w[17] ? w[11]-w[17] : NSNull()
+            r["moduleCacheCurrency"]="last-known-loader-map; unload-reload-after-cache-not-excluded"
+            r["RIPEntryLimit"]=256
+            return ("thread-frame-memory",r)
         case 15:
             r["event"]="guest-process-exit";r["requireNativeLifetime"]=true;r["exitStatus"]=hex(w[9]&0xffffffff)
             r["signedExitStatus"]=Int64(Int32(bitPattern:UInt32(truncatingIfNeeded:w[9])))
@@ -302,7 +328,8 @@ enum RunEvidenceSchema {
             r["fileOffset"] = [UInt64(1),5].contains(w[10]) ? String(w[13]) : NSNull()
             r["pageStateEffect"] = "not-queried-by-operation; syscall-success-is-not-dirty-disposal-or-zeroing"
             if w[1] == 4 { r["result"] = Int64(bitPattern:w[15]); r["errno"] = w[16]; r["durationNS"] = w[17] }
-            r["ownerStatus"] = "range-generation; owner-resolve-from-access-record; not-guessed-from-current-thread"
+            r["creatorNativeThreadID"]=w[20]>0 ? String(w[20]) : NSNull()
+            r["ownerStatus"] = w[4]>0 ? "operation-issued-by-validated-CS2-main; allocation-owner-not-implied" : "issuer-unavailable; range-generation-only"
             return ("vm-operations", r)
         case 11:
             r["event"]="sampled-host-page-metadata";r["registerCaptureBeginNS"]=String(w[9]);r["hostPC"]=hex(w[10]);r["instruction"]=hex(w[11]);r["effectiveAddress"]=hex(w[12]);r["widthBytes"]=w[13]
@@ -384,7 +411,7 @@ final class RunEvidenceStore {
     private var lastExceptionContext:[String:Any]?
     private var routineResource:[String:UInt64]=[:],failureOccurrences:[String]=[]
     private var failureDuplicates:UInt64=0,firstFailureBytes=0,firstFailureRecords:UInt64=0,firstFailureDropped:UInt64=0
-    private var incidentPriority=0,firstIncidentSaved=false,lastIncidentNS:UInt64=0,suppressedIncidents:UInt64=0
+    private var incidentPriority=0,firstIncidentSaved=false,firstPostActivationStallSaved=false,lastIncidentNS:UInt64=0,suppressedIncidents:UInt64=0
     static func failedRequest(_ row:[String:Any])->Bool {
         guard row["event"] as? String == "resource-request-result" else{return false}
         if row["stage"] as? String == "unwound-without-result" {return true}
@@ -525,17 +552,19 @@ final class RunEvidenceStore {
         incidentPriority=priority;lastIncidentNS=now
         let begin=now;incidentCount+=1;defer{incidentNS+=RunEvidenceSchema.mono()-begin}
         record("timeline",["event":"incident-window","reason":reason,"priority":priority])
-        func capture(_ name:String) {
+        func capture(_ name:String,focused:Bool=false) {
             let url=directory.appendingPathComponent(name);try? fm.removeItem(at:url)
             let fd=open(url.path,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0o600)
             guard fd>=0 else{writeFailures+=1;return};defer{close(fd)}
-            let budgets=[("resource-failures",192<<10),("input-path",64<<10),("timeline",128<<10),("thread-frame-memory",256<<10),("memory-access",256<<10),("vm-operations",64<<10),("graphics-errors",64<<10)]
+            let ordinary=[("resource-failures",192<<10),("input-path",64<<10),("timeline",128<<10),("thread-frame-memory",256<<10),("memory-access",256<<10),("vm-operations",64<<10),("graphics-errors",64<<10)]
+            let budgets=focused ? [("timeline",32<<10),("thread-frame-memory",128<<10),("memory-access",64<<10),("vm-operations",16<<10),("input-path",16<<10)] : ordinary
             for(channel,maximum) in budgets {
                 guard let f=files[channel] else{continue}
                 let copied=Self.copy(directory.appendingPathComponent("\(channel).\(f.slot).jsonl"),to:fd,maximum:maximum,tail:true)
                 logicalBytes+=UInt64(copied);incidentBytes+=UInt64(copied)
             }
         }
+        if reason=="post-activation-frame-stall" && !firstPostActivationStallSaved {capture("incident-post-activation-first.jsonl",focused:true);firstPostActivationStallSaved=true}
         if priority>=3 && !firstIncidentSaved {capture("incident-first.jsonl");firstIncidentSaved=true}
         capture("incident.jsonl")
     }
@@ -584,7 +613,7 @@ final class RunEvidenceStore {
             "lastFsyncedSequence":String(syncSequence),"lastFsyncNS":String(syncNS),"fsyncFailures":syncErrors,"persistence":"write-acknowledged-every-tick; fsync-five-seconds-and-export; final-unflushed-tail-unknown",
             "recorderPersistence":persistenceCounters(),"recordsCollectedByChannel":counts,"observedFacts":facts,"samplingSeconds":1,"units":"NS unless suffixed US/Bytes/Pages",
             "perRunDiskCapBytes":RunEvidenceSchema.perRunLimit,"rollingSegmentCapBytes":Self.segmentBytes,"rollingSlots":Self.slots,
-            "limits":"rolling-journals-10.5MiB; incidents-2MiB; first-failures-256KiB; system-1MiB; metadata-1.5MiB; total-less-than-16MiB",
+            "limits":"rolling-journals-10.5MiB; incidents-2MiB-plus-first-post-activation-256KiB; first-failures-256KiB; system-1MiB; metadata-1.5MiB; total-less-than-16MiB",
             "failureDetailRetention":["firstBytes":firstFailureBytes,"firstRecords":firstFailureRecords,"firstDetailNotRetained":firstFailureDropped,"duplicateDetailsSuppressed":failureDuplicates,"firstByteLimit":256<<10,"recentByteLimit":1<<20,"nativePriorityBytes":49152],"suppressedLowerPriorityOrRepeatedIncidents":suppressedIncidents,
             "payloadRAM":"native-ring-393216; native-inflight-4608; Swift-native-batch-24576; native-failure-lane-49152; fixed-CPU-history-9216; input-log-window-262144; prefix-65536; copy-16384; record-max-16384; bounded-metadata",
             "allocatorOverhead":"not-measured; payload-bounds-are-not-a-physical-footprint-guarantee",
@@ -646,7 +675,7 @@ final class RunEvidenceStore {
             for file in selected { budget -= copy(source.appendingPathComponent(file),to:fd,maximum:max(0,budget)) }
             close(fd); result[channel+".jsonl"]=path
         }
-        for name in ["run-summary.json","runtime-config.json","modules.json","graphics-summary.json","termination.json","incident.jsonl","incident-first.jsonl","resource-failures-first.jsonl","source-freshness.json","system.json"] {
+        for name in ["run-summary.json","runtime-config.json","modules.json","graphics-summary.json","termination.json","incident.jsonl","incident-first.jsonl","incident-post-activation-first.jsonl","resource-failures-first.jsonl","source-freshness.json","system.json"] {
             let path=destination.appendingPathComponent(name)
             let fd=open(path.path,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0o600); guard fd>=0 else { continue }
             let bytes=copy(source.appendingPathComponent(name),to:fd,maximum:min(max(0,budget),name=="resource-failures-first.jsonl" ? 256<<10 : 1<<20)); close(fd)
@@ -667,6 +696,13 @@ final class RunEvidenceRecorder {
     static private(set) var shared: RunEvidenceRecorder?
     private static let inputConfigLock=NSLock()
     private static var pendingInputConfig:[String:String]=[:]
+    static func controllerDiscovery(reason:String,enumeratedNS:UInt64,total:Int?,extended:Int?,micro:Int?,cached:Int,timer:Bool,active:Bool,keyboardMouse:Bool) {
+        guard let shared else{return}
+        let now=RunEvidenceSchema.mono()
+        // Lifecycle/discovery transitions only; no callback/motion payload or device identifier.
+        let fields:[String:Any]=["event":"controller-discovery","source":"GameController-framework-enumeration-and-serial-profile-cache","reason":["initial-enumeration","controller-notification","foreground-rescan","app-active-state"].contains(reason) ? reason : "unknown","enumerationNS":enumeratedNS>0 ? String(enumeratedNS) : NSNull(),"captureNS":String(now),"clockDomain":"CLOCK_MONOTONIC","frameworkControllers":total.map{$0 as Any} ?? NSNull(),"frameworkExtendedProfiles":extended.map{$0 as Any} ?? NSNull(),"frameworkMicroProfiles":micro.map{$0 as Any} ?? NSNull(),"cachedExtendedProfiles":cached,"timerRunning":timer,"appActive":active,"keyboardMouseMode":keyboardMouse,"samplingPeriodMS":4,"coverage":"state-transition; enumeration-unavailable-for-app-state-only; zero-input-is-not-disconnection; no-proof-of-guest-consumption"]
+        shared.queue.async{shared.store.record("input-path",fields)}
+    }
     static func inputBindings(_ fields:[String:String]) {
         // Called only when initialized bindings change, not for typed inputs.
         let allowed:Set<String>=["LS","RS","A","B","X","Y","LB","RB","LT","RT","L3","R3","Menu","View","D↑","D↓","D←","D→","mouseVertical","source"]
@@ -1025,6 +1061,7 @@ final class RunEvidenceRecorder {
         var failure=Self.graphicsFailure(line)
         if console, failure != nil {
             failure!.fields["sourceKind"]="console-occurrence"
+            failure!.fields["observedPhase"]=phase;failure!.fields["phaseSource"]="last-parser-observation-not-capture-time-order"
             if let timestamp=Self.consoleStamp(line) {failure!.fields["consoleTimestamp"]=timestamp}
             if line.contains("E_OUTOFMEMORY"),let api=pendingTextureAPI,consoleLineNumber+1-pendingTextureLine<=4 {
                 failure!.fields["API"]=api;failure!.fields["association"]="preceding-creation-row-within-four-lines";pendingTextureAPI=nil
@@ -1186,13 +1223,23 @@ final class RunEvidenceRecorder {
         else if l.contains("e_invalidarg") || l.contains("80070057") {category="invalid-argument"}
         else if l.contains("shader") && (l.contains("fail") || l.contains("error")) {category="shader"}
         else if l.contains("pipeline") && (l.contains("fail") || l.contains("error")) {category="pipeline"}
-        else if (l.contains("missing") || l.contains("not found")) && (l.contains("material") || l.contains("resource") || l.contains("shader resource view")) {category="missing-resource-or-material"}
+        else if (l.contains("missing") || l.contains("not found") || l.contains("failed loading") || l.contains("error loading")) && (l.contains("material") || l.contains("resource") || l.contains("shader resource view")) {category="missing-resource-or-material"}
         else {return nil}
         var f=RunEvidenceSchema.fields(line,keys:["width","height","depth","mips","mip-count","format","fmt","bytes","usage","storage","flags","shader","pipeline","resource","resource-id","shader-hash","pipeline-hash","errno","code","Code"])
         f["siteCategory"]=category;f["source"]="existing-failure-message; closed-fields-only"
         for api in ["CreateTexture2D","CreateTexture3D","CreateShaderResourceView","CreateRenderPipelineState","CreateComputePipelineState"] where line.contains(api) {f["API"]=api}
         if l.contains("e_outofmemory") || l.contains("8007000e") {f["HRESULT"]="E_OUTOFMEMORY"};if l.contains("e_invalidarg") || l.contains("80070057") {f["HRESULT"]="E_INVALIDARG"}
         for domain in ["MTLLibraryErrorDomain","MTLRenderPipelineErrorDomain","MTLComputePipelineErrorDomain","MTLCommandBufferErrorDomain"] where line.contains(domain) {f["MetalErrorDomain"]=domain}
+        if category=="missing-resource-or-material" || category=="pipeline" || category=="shader" {
+            f["requiredForGameplay"]="unknown; engine-message-not-proof-of-required-resource"
+            if let regex=try? NSRegularExpression(pattern:"[A-Za-z0-9_./\\-]+\\.(?:vmat|vtex|vmdl|vpcf|vcs|vfx|vdata|vsnd|vmesh)(?:_c)?",options:.caseInsensitive),let match=regex.firstMatch(in:line,range:NSRange(line.startIndex...,in:line)),let range=Range(match.range,in:line) {
+                let candidate=String(line[range].prefix(512))
+                let hash=candidate.utf8.reduce(UInt64(14695981039346656037)){($0 ^ UInt64($1)) &* 1099511628211}
+                f["resourceStableID"]="opaque-path-v1-"+String(hash,radix:16)
+                f["resourceIdentityScope"]="bounded-path-token-hash; original-path-private; collision-possible; no-resource-contents"
+                f["loaderResultClass"]=category
+            } else {f["resourceIdentityStatus"]="not-observable-in-retained-message"}
+        }
         f["unreportedParameters"]="unavailable; not-inferred-from-error"
         return (category,f)
     }

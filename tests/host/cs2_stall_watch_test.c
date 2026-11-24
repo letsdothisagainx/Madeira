@@ -50,7 +50,8 @@ int ios_jit_pool_image_pc(uintptr_t pc, uintptr_t *out)
 static int ios_ts_read(uint64_t address, void *out, size_t size)
 {
     uint32_t insn = 0x3d800500; /* STR Q0,[X8,#16] from the observed copy loop */
-    assert(!held && address == 0x123400 && size == 4);
+    assert(!held);if(!address)return 0;
+    assert(address == 0x123400 && size == 4);
     memcpy(out, &insn, size); return 1;
 }
 static unsigned long long ios_thread_process_try_observation_lease(void *owner, unsigned pid)
@@ -67,6 +68,15 @@ static void wine_log_write(const char *format, ...)
 uint64_t ios_evidence_now(void) { return 123000; }
 void ios_evidence_emit(struct ios_evidence_record *r) { assert(!held); (void)r; }
 void ios_evidence_access(struct ios_evidence_record *r) { assert(!held); (void)r; }
+static void ios_runtime_snapshot(uint64_t native,uint64_t owner,uint64_t lease,uint64_t capture)
+{assert(!held);(void)native;(void)owner;(void)lease;(void)capture;}
+uint64_t ios_native_rip_from_hostpc_budget(uint64_t block,uint64_t pc)
+{assert(!held);(void)block;(void)pc;return 0;}
+struct ios_ts_mod { uint64_t base,size;char name[40]; };
+struct ios_ts_map {uint64_t peb,lease,observed_ns;int n;struct ios_ts_mod m[160];};
+static struct ios_ts_map ios_ts_maps[6];static int ios_ts_nmaps;
+static const char *ios_ts_mod_for(struct ios_ts_map *map,uint64_t pc,uint64_t *rva)
+{assert(!held);(void)map;(void)pc;(void)rva;return NULL;}
 #include "cs2_stall_watch_native.h"
 
 int main(void)

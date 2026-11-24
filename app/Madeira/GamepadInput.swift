@@ -254,7 +254,7 @@ final class GamepadInput: @unchecked Sendable {
         let center = NotificationCenter.default
         for name in [Notification.Name.GCControllerDidConnect, .GCControllerDidDisconnect] {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.refreshControllers() }
+                MainActor.assumeIsolated { self?.refreshControllers(reason:"controller-notification") }
             })
         }
         for name in [UIApplication.willResignActiveNotification, UIApplication.didEnterBackgroundNotification] {
@@ -264,17 +264,20 @@ final class GamepadInput: @unchecked Sendable {
         }
         observers.append(center.addObserver(forName: UIApplication.didBecomeActiveNotification,
                                             object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.refreshControllers() }
+            MainActor.assumeIsolated { self?.refreshControllers(reason:"foreground-rescan") }
             self?.setActive(true)
         })
-        refreshControllers()
+        refreshControllers(reason:"initial-enumeration")
         setActive(UIApplication.shared.applicationState == .active)
     }
 
-    @MainActor private func refreshControllers() {
+    @MainActor private func refreshControllers(reason:String) {
         // Capture the live profile on main. Re-fetching extendedGamepad on the
         // polling queue yielded stale axes on devices tested in the fork.
-        let live = GCController.controllers().compactMap { controller -> (GCController, GCExtendedGamepad)? in
+        let discovered=GCController.controllers()
+        let enumeratedNS=RunEvidenceSchema.mono()
+        let microCount=discovered.filter{$0.microGamepad != nil}.count
+        let live = discovered.compactMap { controller -> (GCController, GCExtendedGamepad)? in
             guard let profile = controller.extendedGamepad else { return nil }
             controller.handlerQueue = queue
             return (controller, profile)
@@ -339,6 +342,7 @@ final class GamepadInput: @unchecked Sendable {
             // (and slot 0's the DualSense output); unchanged slots are no-ops.
             for i in controllers.indices { madeira_pad_output_set_slot(Int32(i), controllers[i]) }
             updateTimer()
+            RunEvidenceRecorder.controllerDiscovery(reason:reason,enumeratedNS:enumeratedNS,total:discovered.count,extended:live.count,micro:microCount,cached:profiles.filter{$0 != nil}.count,timer:timer != nil,active:active,keyboardMouse:keyboardMouse != nil)
             sample()
         }
     }
@@ -355,6 +359,7 @@ final class GamepadInput: @unchecked Sendable {
                 if keyboardMouse != nil { PadKeyboardMouse.shared.releaseAll("inactive") }
             }
             updateTimer()
+            RunEvidenceRecorder.controllerDiscovery(reason:"app-active-state",enumeratedNS:0,total:nil,extended:nil,micro:nil,cached:profiles.filter{$0 != nil}.count,timer:timer != nil,active:active,keyboardMouse:keyboardMouse != nil)
             sample()
         }
     }

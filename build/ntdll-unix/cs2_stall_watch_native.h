@@ -68,6 +68,29 @@ static void ios_cs2_stall_main_sample(mach_port_t port, uint64_t native_id)
         ev.w[19]=got; ev.w[20]=(int64_t)suspend_result; ev.w[21]=(int64_t)resume_result;
         ev.w[22]=held_end>=held_start ? held_end-held_start : 0; ev.w[23]=lr; ev.w[24]=pe;
         ios_evidence_emit(&ev);
+        ios_runtime_snapshot(native_id,watch->owner,watch->lease,capture_ns);
+        if(got && resume_result==KERN_SUCCESS) {
+            extern uint64_t ios_native_rip_from_hostpc_budget(uint64_t,uint64_t);
+            struct ios_evidence_record resolved={{0}};
+            uint64_t begin=ios_evidence_now(),block=0,rip=pe,rva=0;const char *module=NULL;
+            resolved.w[16]=pe ? 2 : 3;
+            /* Same native FEX metadata as the existing resolver. No guest stack
+             * or payload reads. A changed block that no longer contains PC fails. */
+            if(!rip && ios_ts_read(st.__x[28],&block,sizeof(block))) {
+                rip=ios_native_rip_from_hostpc_budget(block,pc);
+                if(rip)resolved.w[16]=1;
+            }
+            for(int m=0;m<ios_ts_nmaps && m<6;++m)
+                if(ios_ts_maps[m].peb==watch->owner && ios_ts_maps[m].lease==watch->lease) {
+                    module=ios_ts_mod_for(ios_ts_maps+m,rip,&rva);resolved.w[17]=ios_ts_maps[m].observed_ns;break;
+                }
+            resolved.w[1]=17;resolved.w[4]=watch->owner;resolved.w[5]=watch->lease;
+            resolved.w[6]=watch->pid;resolved.w[7]=watch->main.tid;resolved.w[8]=native_id;
+            resolved.w[9]=capture_ns;resolved.w[10]=pc;resolved.w[11]=begin;
+            resolved.w[12]=ios_evidence_now()-begin;resolved.w[13]=rip;resolved.w[14]=rva;
+            if(module) {unsigned n=0;while(n<39 && module[n])++n;resolved.w[15]=1;memcpy(resolved.w+20,module,n);}
+            ios_evidence_emit(&resolved);
+        }
         /* The only suspension above is already balanced. Metadata queries do
          * not read guest data, acquire a blocking VM lock, or warm the page. */
         if (got && resume_result == KERN_SUCCESS && decoded && length)

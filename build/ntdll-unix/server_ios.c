@@ -161,6 +161,8 @@ void ios_cs2_stall_observe_start(void *owner, unsigned pid, unsigned tid, unsign
                     (thread_info_t)&id, &count) == KERN_SUCCESS)
         ios_cs2_stall_register_main((uintptr_t)owner, pid, lease, tid,
                                     (uintptr_t)NtCurrentTeb(), id.thread_id);
+    if(ios_cs2_stall_find((uintptr_t)owner,pid,lease))
+        ios_runtime_register((uintptr_t)owner,lease,pid,tid,id.thread_id);
     ev.w[1]=IOS_EV_PROCESS; ev.w[4]=(uintptr_t)owner; ev.w[5]=lease; ev.w[6]=pid; ev.w[7]=tid;
     ev.w[8]=ios_cs2_stall_find((uintptr_t)owner,pid,lease) ? id.thread_id : 0;
     ev.w[9]=(uintptr_t)NtCurrentTeb(); ios_evidence_emit(&ev);
@@ -836,7 +838,7 @@ static inline unsigned int wait_reply( struct __server_request_info *req )
  *    GameThread and RUNNING threads on every pass, everything else once. */
 static int ios_ts_armed;
 struct ios_ts_mod { uint64_t base, size; char name[40]; };
-struct ios_ts_map { uint64_t peb; int n; struct ios_ts_mod m[160]; };
+struct ios_ts_map { uint64_t peb, lease, observed_ns; int n; struct ios_ts_mod m[160]; };
 static struct ios_ts_map ios_ts_maps[6];
 static int ios_ts_nmaps;
 
@@ -882,7 +884,10 @@ static struct ios_ts_map *ios_ts_map_for_teb(uint64_t teb)
     if (!teb || (teb & 0xfff) || !ios_ts_read(teb + 0x60, &peb, 8) || !peb) return NULL;
     for (i = 0; i < ios_ts_nmaps; i++) if (ios_ts_maps[i].peb == peb) return &ios_ts_maps[i];
     if (ios_ts_nmaps >= 6 || !ios_ts_read(peb + 0x18, &ldr, 8) || !ldr) return NULL;
-    mp = &ios_ts_maps[ios_ts_nmaps]; memset(mp, 0, sizeof(*mp)); mp->peb = peb;
+    mp = &ios_ts_maps[ios_ts_nmaps]; memset(mp, 0, sizeof(*mp)); mp->peb = peb; mp->observed_ns=ios_evidence_now();
+    for(unsigned w=0;w<IOS_CS2_STALL_PROCESSES;++w)
+        if(__atomic_load_n(&ios_cs2_stall_watches[w].owner,__ATOMIC_ACQUIRE)==peb)
+            mp->lease=ios_cs2_stall_watches[w].lease;
     head = ldr + 0x10;
     if (!ios_ts_read(head, &cur, 8)) return NULL;
     while (cur && cur != head && guard++ < 200 && mp->n < 160) {
@@ -3815,16 +3820,17 @@ unsigned int server_call_unlocked( void *req_ptr )
 {
     struct __server_request_info * const req = req_ptr;
     unsigned int ret;
+    uint64_t runtime=ios_runtime_begin(0,req->u.req.request_header.req);
 
     ios_srv_req_count++;
 #ifdef WINE_IOS
     ios_bg_qos_check();   /* madeira-bcd: [bg-qos] */
     /* killed inside a section (ios_defer_section_abort): no more requests */
-    if (ios_section_state() & IOS_SECTION_ABORT) return STATUS_THREAD_IS_TERMINATING;
+    if (ios_section_state() & IOS_SECTION_ABORT) {ios_runtime_end(0,runtime);return STATUS_THREAD_IS_TERMINATING;}
     if (__atomic_load_n( &g_madeira_srv_direct, __ATOMIC_RELAXED ) > 0 && ios_srv_try_direct( req, &ret ))
-        return ret;   /* madeira-bcd: MADEIRA_SRV_DIRECT */
+        {ios_runtime_end(0,runtime);return ret;}   /* madeira-bcd: MADEIRA_SRV_DIRECT */
 #endif
-    if ((ret = send_request( req ))) return ret;
+    if ((ret = send_request( req ))) {ios_runtime_end(0,runtime);return ret;}
     /* iOS-Madeira 2026-07-05: kick the in-process server loop out of its
      * tick sleep so the request is picked up in ~50us instead of waiting
      * for the next 1ms iteration (fd_ios.c ios_srv_wake_sem). */
@@ -3834,7 +3840,7 @@ unsigned int server_call_unlocked( void *req_ptr )
         extern void ios_wineserver_ring( unsigned int tid );
         ios_wineserver_ring( HandleToULong( NtCurrentTeb()->ClientId.UniqueThread ) );
     }
-    return wait_reply( req );
+    ret=wait_reply(req);ios_runtime_end(0,runtime);return ret;
 }
 
 
@@ -3872,7 +3878,9 @@ NTSTATUS unixcall_wine_server_call( void *args )
 void server_enter_uninterrupted_section( pthread_mutex_t *mutex, sigset_t *sigset )
 {
     pthread_sigmask( SIG_BLOCK, &server_block_set, sigset );
+    uint64_t runtime=ios_runtime_begin(1,(uintptr_t)mutex);
     mutex_lock( mutex );
+    ios_runtime_end(1,runtime);
 #ifdef WINE_IOS
     ios_section_set_state( ios_section_state() + 1 );
 #endif
@@ -4544,7 +4552,9 @@ unsigned int server_wait( const union select_op *select_op, data_size_t size, UI
         if (is_game) clock_gettime( CLOCK_MONOTONIC, &t0 );
         ios_wait_enter( select_op, size, flags, abs_timeout,
                         __builtin_return_address(0) );
+        uint64_t runtime=ios_runtime_begin(2,flags);
         ret = server_select( select_op, size, flags, abs_timeout, NULL, &apc );
+        ios_runtime_end(2,runtime);
         ios_wait_leave();
         if (is_game)
         {

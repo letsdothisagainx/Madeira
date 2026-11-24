@@ -21702,10 +21702,11 @@ static int ios_protect_alias_run(uintptr_t base, size_t size, int prot, int alia
 }
 static int ios_ev_protect(void *base, size_t size, int prot)
 {
+    uint64_t runtime=ios_runtime_begin(3,3);
     uint64_t token=ios_evidence_begin(3,(uintptr_t)base,size,
         __atomic_add_fetch(&ios_ev_vm_generation,1,__ATOMIC_RELEASE),1);
     int result=mprotect_exec(base,size,prot), saved=errno;
-    ios_evidence_end(token,result,result ? saved : 0); errno=saved; return result;
+    ios_runtime_end(3,runtime);ios_evidence_end(token,result,result ? saved : 0); errno=saved; return result;
 }
 static int ios_protect_host_range(void *base, size_t size, int prot)
 {
@@ -21778,9 +21779,10 @@ static BOOL set_vprot_evidence_impl( struct file_view *view, void *base, size_t 
 }
 static BOOL set_vprot( struct file_view *view, void *base, size_t size, BYTE vprot )
 {
+    uint64_t runtime=ios_runtime_begin(3,2);
     uint64_t token=ios_evidence_begin(2,(uintptr_t)base,size,view ? view->ios_evidence_id : 0,1);
     BOOL ret=set_vprot_evidence_impl(view,base,size,vprot); int saved=errno;
-    ios_evidence_end(token,ret ? 0 : -1,ret ? 0 : saved);errno=saved;return ret;
+    ios_runtime_end(3,runtime);ios_evidence_end(token,ret ? 0 : -1,ret ? 0 : saved);errno=saved;return ret;
 }
 
 
@@ -23779,10 +23781,11 @@ static unsigned long long ios_swap_decommit_remaps, ios_swap_decommit_fallbacks;
 
 static void *ios_ev_swap_map(void *base, size_t size, int prot, uint64_t off)
 {
+    uint64_t runtime=ios_runtime_begin(3,1);
     uint64_t token=ios_evidence_begin(1,(uintptr_t)base,size,off,1);
     void *result=mmap(base,size,prot,MAP_FIXED|MAP_SHARED,ios_swap_fd,(off_t)off);
     int saved=errno;
-    ios_evidence_end(token,result==MAP_FAILED ? -1 : 0,result==MAP_FAILED ? saved : 0);
+    ios_runtime_end(3,runtime);ios_evidence_end(token,result==MAP_FAILED ? -1 : 0,result==MAP_FAILED ? saved : 0);
     errno=saved; return result;
 }
 static int ios_swap_punch_timed( uint64_t off, uint64_t len, const char *why, uint64_t extent )
@@ -24905,9 +24908,10 @@ static NTSTATUS decommit_pages_evidence_impl( struct file_view *view, char *base
 }
 static NTSTATUS decommit_pages( struct file_view *view, char *base, size_t size )
 {
+    uint64_t runtime=ios_runtime_begin(3,6);
     uint64_t token=ios_evidence_begin(6,(uintptr_t)base,size,view ? view->ios_evidence_id : 0,1);
     NTSTATUS ret=decommit_pages_evidence_impl(view,base,size); int saved=errno;
-    ios_evidence_end(token,ret ? -1 : 0,ret ? saved : 0);errno=saved;return ret;
+    ios_runtime_end(3,runtime);ios_evidence_end(token,ret ? -1 : 0,ret ? saved : 0);errno=saved;return ret;
 }
 
 

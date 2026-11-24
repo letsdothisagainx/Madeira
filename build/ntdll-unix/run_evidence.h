@@ -11,6 +11,10 @@ enum { IOS_EV_PROCESS=1, IOS_EV_MAIN=2, IOS_EV_ACCESS=3, IOS_EV_VM=4, IOS_EV_FRA
 struct ios_evidence_record { uint64_t w[IOS_EVIDENCE_WORDS]; };
 extern uint64_t ios_evidence_backing_file;
 uint64_t ios_evidence_now(void);
+void ios_runtime_register(uint64_t,uint64_t,unsigned,unsigned,uint64_t);
+uint64_t ios_runtime_begin(unsigned,uint64_t);
+void ios_runtime_end(unsigned,uint64_t);
+void ios_runtime_identity(uint64_t *);
 void ios_evidence_emit(struct ios_evidence_record *);
 int ios_evidence_emit_checked(struct ios_evidence_record *);
 uint64_t ios_evidence_begin(unsigned op, uintptr_t address, uint64_t bytes, uint64_t generation, unsigned lock_scope);
