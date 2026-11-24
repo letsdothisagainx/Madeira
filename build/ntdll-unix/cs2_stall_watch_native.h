@@ -71,12 +71,17 @@ static void ios_cs2_stall_main_sample(mach_port_t port, uint64_t native_id)
         ios_runtime_snapshot(native_id,watch->owner,watch->lease,capture_ns);
         if(got && resume_result==KERN_SUCCESS) {
             extern uint64_t ios_native_rip_from_hostpc_budget(uint64_t,uint64_t);
+            extern void *ios_jit_rx_base_global;extern size_t ios_jit_pool_size_global;
+            extern int ios_jit_low_contains(uintptr_t);
             struct ios_evidence_record resolved={{0}};
             uint64_t begin=ios_evidence_now(),block=0,rip=pe,rva=0;const char *module=NULL;
             resolved.w[16]=pe ? 2 : 3;
             /* Same native FEX metadata as the existing resolver. No guest stack
              * or payload reads. A changed block that no longer contains PC fails. */
-            if(!rip && ios_ts_read(st.__x[28],&block,sizeof(block))) {
+            uintptr_t rx=(uintptr_t)ios_jit_rx_base_global;
+            int generatedPC=(pc>=rx && pc-rx<ios_jit_pool_size_global) || ios_jit_low_contains(pc);
+            if(!rip && generatedPC && ios_ts_read(st.__x[28],&block,sizeof(block)) &&
+               ((block>=rx && block-rx<ios_jit_pool_size_global) || ios_jit_low_contains(block))) {
                 rip=ios_native_rip_from_hostpc_budget(block,pc);
                 if(rip)resolved.w[16]=1;
             }

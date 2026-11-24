@@ -68,6 +68,8 @@ static void wine_log_write(const char *format, ...)
 uint64_t ios_evidence_now(void) { return 123000; }
 void ios_evidence_emit(struct ios_evidence_record *r) { assert(!held); (void)r; }
 void ios_evidence_access(struct ios_evidence_record *r) { assert(!held); (void)r; }
+void *ios_jit_rx_base_global=(void*)0x700000;size_t ios_jit_pool_size_global=0x10000;
+int ios_jit_low_contains(uintptr_t pc){(void)pc;return 0;}
 static void ios_runtime_snapshot(uint64_t native,uint64_t owner,uint64_t lease,uint64_t capture)
 {assert(!held);(void)native;(void)owner;(void)lease;(void)capture;}
 uint64_t ios_native_rip_from_hostpc_budget(uint64_t block,uint64_t pc)

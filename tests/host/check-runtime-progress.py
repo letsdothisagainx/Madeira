@@ -43,6 +43,7 @@ int main(void){
 n=(root/'build/ntdll-unix/cs2_stall_watch_native.h').read_text()
 held=n[n.index('suspend_result = thread_suspend(port);'):n.index('ios_stuck_clock_us(&held_end);')]
 assert 'ios_runtime_' not in held and 'ios_native_rip_' not in held
+assert 'if(!rip && generatedPC && ios_ts_read(st.__x[28]' in n
 assert n.index('thread_resume(port)')<n.index('ios_runtime_snapshot(')<n.index('ios_native_rip_from_hostpc_budget(block,pc)')
 server=(root/'build/ntdll-unix/server_ios.c').read_text()
 assert 'mutex_lock( mutex );\n    ios_runtime_end(1,runtime);' in server
