@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: publish-ipa-482ac26f
+  group: publish-ipa-06a93b3c
   cancel-in-progress: false
 
 jobs:
@@ -22,10 +22,10 @@ jobs:
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
-      SOURCE_REVISION: 482ac26ffb81a2985310d64c697c61616f5134ed
-      SOURCE_RUN: '45334065747'
-      SOURCE_UUID: BE56EF9B-A68E-3BA6-9549-B06809C49E7D
-      RELEASE_TAG: ipa-482ac26f
+      SOURCE_REVISION: 06a93b3c81460e63c3da7d9b7b1e39b088318fec
+      SOURCE_RUN: '45371400389'
+      SOURCE_UUID: 1E19AE26-0CEE-3E28-AF0F-35A1267D838B
+      RELEASE_TAG: ipa-06a93b3c
     steps:
       - name: Require the exact successful build and artifact
         run: |
@@ -55,7 +55,7 @@ jobs:
           PY
       - uses: actions/checkout@v4
         with:
-          ref: 482ac26ffb81a2985310d64c697c61616f5134ed
+          ref: 06a93b3c81460e63c3da7d9b7b1e39b088318fec
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
@@ -88,40 +88,40 @@ jobs:
       - name: Publish the same IPA as a stable prerelease asset
         run: |
           cat > "$RUNNER_TEMP/ipa-release-notes.txt" <<'NOTES'
-          Installable Madeira Run19 candidate: bounded real texture-upload growth and trustworthy resource/guest-exit evidence.
+          Installable Madeira Run20 candidate: bounded controller delivery, less repeated initializer work, and retained failed-resource evidence.
 
-          App source: 482ac26ffb81a2985310d64c697c61616f5134ed
-          Native UUID: BE56EF9B-A68E-3BA6-9549-B06809C49E7D
-          IPA SHA256: bf11835640f7a010e46476df50d9e1b92a7fd1f246bb0e5fc0bfd4982ceaec60
-          IPA build: https://github.com/letsdothisagainx/Madeira/actions/runs/45334065747
-          Normal Linux/macOS/iPhone SDK checks: https://github.com/letsdothisagainx/Madeira/actions/runs/45333022325
-          Matching symbols: Madeira-native-symbols:45334065747
+          App source: 06a93b3c81460e63c3da7d9b7b1e39b088318fec
+          Native UUID: 1E19AE26-0CEE-3E28-AF0F-35A1267D838B
+          IPA SHA256: 8074054e5524abc865aa6785e5518a7a7fe8a7c68f05f71764cfbb172dfa47ba
+          IPA build: https://github.com/letsdothisagainx/Madeira/actions/runs/45371400389
+          Normal Linux/macOS/iPhone SDK checks: https://github.com/letsdothisagainx/Madeira/actions/runs/45371405404
+          Matching symbols: Madeira-native-symbols:45371400389
 
-          The production fix changes real DXMT allocation, not just its forecast. The old compact-upload policy allocated an entire batch when that batch was smaller than 32 MiB. Under pressure, this candidate selects a bounded allocation class from the genuine native headroom and outstanding credits. Oversized subresources transfer through format-block/row/depth chunks, including mips, arrays and cube faces. Reuse requires the actual GPU event; the same physical safety floor and full destination-plus-growth admission remain enforced. Waiting and CPU command retries remain bounded. Existing completed blocks may be reused without charging nonexistent additional growth.
+          The actual old input queue silently rejected an incoming key release after 255 motion entries. The replacement retains the same capacity, coalesces only adjacent compatible pure motion, preserves transition ordering, limits motion history, and bounds each drain turn. Overflow is explicit and counted: motion is discarded first; an edge-only overflow schedules neutralization of bridge-submitted holds and discards stale pending history. Producers never wait for the consumer. Per-motion logging and flushes on the Wine event thread are removed.
 
-          A normal owned-byte fixture compiled the actual staged forecast, ring and initializer. Its controlled BC7 case changes real staging from the baseline forecast of 22,373,120 bytes to one allocated/reused 8,388,608-byte block, making that controlled creation fit. Every byte is checked across BC7 mips, odd BC1 sRGB cube faces, padded 3D slices, rows larger than the window, 1D arrays and existing completed 32-MiB reuse. This is not the recovered Run19 descriptor, an iPhone memory measurement or a gameplay speedup.
+          The old keyboard/mouse pad translator posted buttons and key-stick presses even with focused=false. The corrected path gates all output, releases held controls, requires neutral controls after focus/lifecycle loss, preserves custom bindings, and resynchronizes current valid states after queue resets. App/library/session changes invalidate stale queued input. Existing foreground restoration and dialog protections remain; no indiscriminate focus stealing is added. Queue saturation or a wrong foreground recipient was not established in Run20, so these are corrections of reproduced source weaknesses, not proof of the phone failure's complete cause.
 
-          Important limits: later Run19 failures had destinations that could not fit even without new uploads. This candidate does not establish a sufficient safe reduction for those requests and still refuses unsafe allocations honestly. It does not claim to fix all texture errors. Resource failures preceded the renderer assertion/null read and guest C0000005 exit, but the specific failed texture producing that null object remains unproven. No exception, initialization, SRV error or GPU completion is suppressed.
+          The real texture credit handoff now supplies its already observed initializer fence to the diagnostic observer. An actual staged helper fixture reproduces two baseline fence queries versus one corrected query, with the same handoff frontier. Genuine GPU-completion ownership, upload bytes/layout/window, allocation credits and reserve remain unchanged. This removes repeated initializer maintenance, but does not establish a fix for the earlier kernel-heavy stall.
 
-          The kernel-heavy main-thread mechanism is also unresolved. The 51 contained Run19 intervals reproduce 3.041013 seconds user and 21.687596 seconds kernel CPU; writable/present external pages observed after resume are not kernel stacks. Existing backing policy, STLR/TSO settings and recovery eligibility remain unchanged. A bounded supported task-events query adds whole-host fault/page-in/COW/syscall counters, with query times and explicit scope, without touching guest pages or suspending threads.
+          Export Run records physical/controller mode/binding state, translation/enqueue/coalesce/drop/age/drain counters, injection results, actual wineserver route target and available process lease, plus limited input-window-procedure-return evidence. No typed text or passwords are captured. Accepted injection and a procedure return do not prove a game action or responsive input. Busy/recycled identities stay unavailable. No extra diagnostic Windows query/IPC, guest payload read or suspension loop is added.
 
-          Export Run now receives direct shared-native request IDs, typed descriptors, upload window/charges, permit outcomes, returned HRESULTs, resource pointer values and genuine upload event/frontier where available. Rolling failures and exact app-session counters remain active after the first burst; accepted/dropped/overwritten detail stays explicit. Console occurrences, native text reports and direct requests are separate counts. The actual Run19 parsing fixture preserves 81 console OOM occurrences, eight native reports and 299 old structured rows separately. Duplicate parsing of the same source occurrence is suppressed without merging distinct repeated failures.
+          Native recording reserves first 32 + latest 96 failed request details, separately from routine traffic, with dropped/overwritten counts. Swift reserves a rolling failure journal and first-detail file; routine successes/reclamation are aggregated. A first important incident and recent/terminal incident have independent bounded budgets, so later ordinary frame stalls cannot erase resource-failure evidence. The real ZIP includes the new failure/input files and separately identified preceding run. Structured capture cutoffs remain distinct from raw logs that continued during export. The exact vote-kick reason is preserved rather than relabelled as a timeout.
 
-          Guest CS2 exit is explicit with native status and available owner/lease/PID/TID. Actual retire-v1, quarantine peb and signed/hex exit schemas are recognized, while Madeira's surviving host/unknown host termination remains separate. Existing exception/module evidence is retained without asserting a proven resource-to-null chain. Matching startup provenance survives skipped tail ingestion. Previous incomplete runs, privacy filtering, bounded journals, recorder costs, streaming ZIP/cancellation and the existing share sheet remain intact.
+          Normal fixtures reproduce the old lost-release and unfocused-button defects, and pass corrected input ordering/coalescing/overflow/age/lifecycle/custom-binding checks, actual server routing/lease metadata, and fixed storage bounds. The native failure lane retains first 32 + latest 96 of 222 requests under 6216 routine records and counts 94 overwritten details. Swift preserves 222 distinct requests through 11119 routine observations and later stalls; the 6119 reclamations plus 5000 successes cause zero individual logical writes before aggregate checkpoint. Run20 console occurrences, native text reports and old successful structured results remain separate. Existing upload owned-byte/completion, reserve, retirement, recovery/TSO, recorder bounds/redaction/prior-run, streaming ZIP/cancellation/share and iPhone SDK/native/Metal/PE/package checks passed. These are host/build results. Device overhead, thermal benefits and actual gameplay performance are unmeasured. No deliberate crash/fault/protected-memory/page-revocation experiment or captured instruction execution is used.
 
-          Validation: normal native receipt/owner/reserve tests, actual staged upload layout/completion-adapter tests, native C/Swift recorder and Run19 parsing fixtures, incomplete recording/rotation/bounds/redaction, streaming ZIP and share behavior, TSO/recovery/retirement checks, actual iPhone SDK/native/Metal/PE/app compilation and final package checks passed. Actual iPhone recorder physical overhead and runtime thermal/CPU benefits remain unmeasured. A prior automatic legacy workflow started captured-store cases before cancellation; that violated the requested test restriction and its results are excluded. Historical fault workflows are now explicitly gated and skipped on pushes/default dispatches.
+          Important limits: Run20's early slowdown precedes the allocation burst and controller connection. The calibrated 91 complete main intervals reproduce 3.733065 seconds user and 38.491615 seconds kernel CPU (91.159% of consumed CPU), but existing observations do not identify the expensive kernel operation. Destination-only texture shortages remain: the example 1-MiB destination exceeds the available 869912-byte window even before upload storage. The live-owner/capacity evidence does not establish sufficient safely reclaimable physical storage. This candidate does not claim those shortages, visual corruption, sustained FPS or usable remote gameplay are repaired. It does not remove the reserve or force-free live/quarantined mappings.
 
-          Preserved: existing bundle com.willfaust.madeora, Steam session, installation/prefix/game/account/configuration, JIT entitlement setup, full 1152-MiB pool with 768/384 partition, code-buffer reuse, recovery/QoS correction, TSO/half-barrier, memory reserve, correct resource/GPU lifetimes, graphics/network settings, input and Export Run. No game binary/authentication/VAC change, global backing disable, MAP_PRIVATE migration, anonymous-memory expansion or graphics-settings workaround is included. Install over the existing app with the established signing workflow; do not uninstall or delete data.
+          Preserved: bundle com.willfaust.madeora, installation/prefix/game/account/configuration, Steam session, JIT entitlement setup, 1152-MiB pool with 768/384 partition, code-buffer reuse, recovery/QoS, STLR/TSO/half-barrier, memory safeguards and GPU resource lifetimes. Graphics/network timeout settings, genuine authentication and Valve binaries are unchanged. Install over the existing app using the established signing workflow; do not uninstall or delete data.
 
-          Device acceptance remains unverified: a real remote join, responsive team selection, sustained playable round, intact textures and correct return/changelevel. A build or richer ZIP is not repaired gameplay. Destination-only memory shortage and the kernel stall remain open.
+          Device acceptance remains unverified: responsive controller movement/aim/buttons through a sustained remote round, no prolonged frame stalls or resource-failure termination, intact textures and a correct return/changelevel. Reaching a live view or publishing this IPA is not that acceptance.
 
-          Details: https://github.com/letsdothisagainx/Madeira/blob/482ac26ffb81a2985310d64c697c61616f5134ed/docs/cs2-run19-upload-window-and-resource-evidence.md
+          Details: https://github.com/letsdothisagainx/Madeira/blob/06a93b3c81460e63c3da7d9b7b1e39b088318fec/docs/cs2-run20-input-and-failure-retention.md
           Normal workflow: Run CS2, encounter the problem, tap Export Run, share one ZIP. Relaunch preserves the preceding run's available evidence separately. Download Madeira.ipa below; SHA256SUMS verifies it.
           NOTES
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title 'Madeira 482ac26f - Run19 bounded texture upload candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt"
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title 'Madeira 06a93b3c - Run20 input and resource evidence candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt"
           else
-            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title 'Madeira 482ac26f - Run19 bounded texture upload candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title 'Madeira 06a93b3c - Run20 input and resource evidence candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
           fi
           gh release upload "$RELEASE_TAG" release-output/Madeira.ipa release-output/SHA256SUMS release-output/recovery-package.json release-output/run-evidence-package.json --repo "$GITHUB_REPOSITORY" --clobber
           gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
