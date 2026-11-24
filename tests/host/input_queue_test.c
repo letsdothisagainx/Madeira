@@ -17,6 +17,11 @@ static void turn(uint64_t ns){
     }
 }
 int main(void){
+    /* The first unfocused observation is significant even when a UI property
+     * began false; repeated identical observations must not reset the queue. */
+    iq_context(&q,4,1);assert(atomic_load(&q.blocked)==4);
+    uint64_t focus_epoch=atomic_load(&q.generation);iq_context(&q,4,1);
+    assert(atomic_load(&q.generation)==focus_epoch);iq_context(&q,4,0);
     /* Actual old push rejects the incoming release at 255 entries. */
     for(unsigned i=0;i<255;++i)baseline_push(WINIOS_EV_MOUSE,1,1,1,0);
     baseline_push(WINIOS_EV_KEY,0x57,0,2,0);

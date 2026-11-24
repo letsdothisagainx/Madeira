@@ -85,6 +85,9 @@ structured coverage. Visual corruption is reported independently of counters.
   neutral after focus/lifecycle loss. Overflow epochs resynchronize current valid
   controller and hardware state. Custom binding releases use the original action.
   No dialog protection is removed and no extra foreground-stealing call is added.
+  Native focus publication includes the initial unfocused state, even when
+  Swift's cached Boolean already began false; identical observations do not
+  repeatedly reset the queue.
 * The staged `TextureInitializationCredit` now exposes the fence already captured
   by its real credit handoff. The diagnostic factory previously invoked
   `initializationFence()` separately, triggering initializer maintenance twice.

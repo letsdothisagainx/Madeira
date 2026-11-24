@@ -1012,7 +1012,9 @@ final class HardwareInput: ObservableObject {
         let keyboard = base && !typingElsewhere()
         let over = hoverSeen ? pointerOver : clickFocus.onGame
         let mouse = base && (!Self.focusEnabled || pointerLocked || over || !gameButtons.isEmpty)
-        if baseFocused != base {winios_input_context(4,base ? 0 : 1)}
+        // Publish the initial false state too. The native bridge cannot infer
+        // it from this Swift property's unchanged default value.
+        winios_input_context(4,base ? 0 : 1)
         baseFocused = base
         updateButtonPolling(active: Self.mouseRoutingEnabled && appActive && mouseConnected)
         if keyboard != keyboardFocused {
