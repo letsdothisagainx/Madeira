@@ -29,9 +29,12 @@ with tempfile.TemporaryDirectory() as d:
   (t/'module.modulemap').write_text('module zlib [system] { header "/usr/include/zlib.h" link "z" export * }\n')
  library=(r/'app/Madeira/Library.swift').read_text()
  predicate=library[library.index('    func ownsSteamResponseTouch('):].split('\n',1)[0]
- (t/'Touch.swift').write_text('import Foundation\nstruct BannerFixture {var steamResponseBannerVisible=false;var steamResponseRect=CGRect.zero;\n'+predicate+'\n}\n')
+ (t/'Touch.swift').write_text('import Foundation\n#if canImport(CoreGraphics)\nimport CoreGraphics\n#endif\nstruct BannerFixture {var steamResponseBannerVisible=false;var steamResponseRect=CGRect.zero;\n'+predicate+'\n}\n')
  assert 'library.ownsSteamResponseTouch(point)' in (r/'app/Madeira/ContentView.swift').read_text()
  (t/'Check.swift').write_text(r'''import Foundation
+#if canImport(CoreGraphics)
+import CoreGraphics
+#endif
 @main struct Check {
  static func main() throws {
  var banner=BannerFixture();banner.steamResponseRect=CGRect(x:10,y:20,width:100,height:40)
