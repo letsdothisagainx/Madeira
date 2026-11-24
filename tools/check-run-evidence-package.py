@@ -6,7 +6,7 @@ with zipfile.ZipFile(a.ipa) as z:
     info=plistlib.loads(z.read('Payload/Madeira.app/Info.plist'))
     image=z.read('Payload/Madeira.app/Madeira.debug.dylib')
     assert info['CFBundleIdentifier']=='com.willfaust.madeora'
-    for marker in [b'[run-evidence-v1]',b'_madeira_evidence_poll',b'_ios_evidence_access',b'_madeira_evidence_frame',b'_madeira_evidence_host_io',b'madeira-evidence-v1',b'_mach_vm_page_query',b'external-retire-no-killpages-v1',b'recorder-persistence',b'sampled-host-page-metadata']:
+    for marker in [b'[run-evidence-v1]',b'_madeira_evidence_poll',b'_ios_evidence_access',b'_madeira_evidence_frame',b'_madeira_evidence_host_io',b'_madeira_evidence_host_vm_events',b'_madeira_evidence_resource',b'resource-request-result',b'guest-process-exit',b'madeira-evidence-v1',b'_mach_vm_page_query',b'external-retire-no-killpages-v1',b'recorder-persistence',b'sampled-host-page-metadata']:
         assert marker in image, 'missing linked evidence producer/consumer: '+repr(marker)
     components=info['MadeiraEvidenceComponents'];assert components['schema']=='madeira-evidence-v1'
     assert len(components['FEX'])==len(components['wine'])==len(components['dxmt'])==40

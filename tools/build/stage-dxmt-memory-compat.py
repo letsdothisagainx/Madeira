@@ -85,6 +85,7 @@ def prepare(root, state):
         ('initializer-failure', 'stage-dxmt-initializer-failure.py', INITIALIZER_FAILURE),
         ('texture-accounting', 'stage-dxmt-texture-accounting.py', TEXTURE_ACCOUNTING),
         ('texture-admission', 'stage-dxmt-texture-admission.py', TEXTURE_ADMISSION),
+        ('upload-window', 'stage-dxmt-upload-window.py', ('src/dxmt/dxmt_resource_initializer.hpp','src/dxmt/dxmt_resource_initializer.cpp','src/d3d11/d3d11_texture_device.cpp','src/d3d11/d3d11_device.cpp')),
     ):
         destination = generated / kind
         subprocess.run([sys.executable, str(root / 'tools/build' / recipe),

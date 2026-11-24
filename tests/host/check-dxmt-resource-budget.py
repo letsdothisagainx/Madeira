@@ -120,6 +120,7 @@ void MadeiraCtl(madeira_ctl_args*args){
  else if(args->op==41){++acquire_calls;md_resource_growth_acquire(args);}
  else if(args->op==42){++release_calls;md_resource_growth_release(args);}
  else if(args->op==43)md_resource_growth_handoff(args);
+ else if(args->op==46)md_resource_growth_snapshot(args);
  else std::abort();
 }
 static void sample(uint64_t remaining){available=remaining;footprint=6144*MiB-remaining;}
@@ -390,6 +391,12 @@ int main() {
  sample(1024*MiB); auto a=acquire(2798672);
  assert(a.ptr && a.ret==1 && md_resource_growth_held==2798672);
  assert(release(a.ptr) && !md_resource_growth_held);
+ // Read-only forecasting may exclude only this owner's CPU creation receipt.
+ auto held=acquire(16*MiB);assert(held.ptr);
+ auto snapshot=dxmt::resourceGrowthBudgetSnapshot();assert(snapshot.valid && snapshot.pending==16*MiB);
+ auto own=dxmt::resourceGrowthBudgetSnapshot(held.ptr);assert(own.valid && own.pending==0 && own.floor==192*MiB);
+ caller=(void*)0x20000;auto foreign=dxmt::resourceGrowthBudgetSnapshot(held.ptr);assert(foreign.valid && foreign.pending==16*MiB);
+ caller=(void*)0x10000;assert(md_resource_growth_held==16*MiB && release(held.ptr));
  // Ordinary parallel creators, no injected native errors or inaccessible pages.
  std::vector<std::thread> workers;
  for(unsigned i=0;i<4;++i) workers.emplace_back([]{

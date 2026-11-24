@@ -53,6 +53,28 @@ func verify(_ ok:@autoclosure ()->Bool,_ file:StaticString=#file,_ line:Int=#lin
   try Data(recent.lastPathComponent.utf8).write(to:retention.appendingPathComponent("last-session"))
   try verify(RunEvidenceStore.retainPreceding(in:retention)==recent.lastPathComponent)
   try fm.removeItem(at:retention)
+  let fixturePath=CommandLine.arguments[2]
+  let fixture=try JSONSerialization.jsonObject(with:Data(contentsOf:URL(fileURLWithPath:fixturePath))) as! [String:Any]
+  RunEvidenceRecorder.start(documents:root.appendingPathComponent("parser-fixture"),bundle:[:])
+  let recorder=RunEvidenceRecorder.shared!
+  try recorder.queue.sync {
+    let console=fixture["console"] as! [String],native=fixture["native"] as! [String]
+    for (i,line) in console.enumerated(){recorder.observe(line,console:true,occurrence:"console-\(i)")}
+    recorder.observe(console.last!,console:true,occurrence:"console-\(console.count-1)")
+    for (i,line) in native.enumerated(){recorder.observe(line,console:false,occurrence:"native-\(i)")}
+    for line in fixture["termination"] as! [String] {recorder.observe(line,console:false)}
+    try recorder.store.checkpoint()
+    let summary=try JSONSerialization.jsonObject(with:Data(contentsOf:recorder.store.directory.appendingPathComponent("graphics-summary.json"))) as! [String:Any]
+    let rows=summary["errors"] as! [[String:Any]]
+    func count(_ source:String)->Int {rows.filter{($0["fields"] as! [String:String])["sourceKind"]==source}.reduce(0){$0+($1["count"] as! NSNumber).intValue}}
+    try verify(count("console-occurrence")==81 && count("native-admission-occurrence")==8)
+    try verify((fixture["originalStructuredGraphicsRows"] as! NSNumber).intValue==299)
+    let termination=try JSONSerialization.jsonObject(with:Data(contentsOf:recorder.store.directory.appendingPathComponent("termination.json"))) as! [String:Any]
+    let exits=termination["observedGuestExits"] as! [[String:Any]]
+    try verify(exits.contains{($0["exitStatus"] as? String)=="0xc0000005" && ($0["signedExitStatus"] as? Int64) == -1073741819})
+    try verify(termination["hostRunningAtCheckpoint"] as? Bool == true && termination["reason"] as? String == "unknown")
+    print("Run19 actual parser: 81 console occurrences + eight native reports, distinct from 299 old structured rows; repeated same occurrence suppressed; guest C0000005 with host running PASS")
+  }
   let store=try RunEvidenceStore(root:root)
   store.calibration("fixture")
   var w=[UInt64](repeating:0,count:48);w[0]=1;w[1]=3;w[2]=19;w[3]=100;w[4]=0x100;w[5]=34;w[9]=80;w[10]=0x7c3531d840;w[11]=0xc89ffcd3;w[12]=0x7a58142b58;w[13]=8;w[35]=1;w[37]=90;w[38]=3
@@ -95,6 +117,18 @@ func verify(_ ok:@autoclosure ()->Bool,_ file:StaticString=#file,_ line:Int=#lin
   try verify(installed["buildid"]=="1234567" && installed["LastUpdated"]=="12345" && installed["username"]==nil)
   let other=RunEvidenceRecorder.correlate(["owner":"0x100","lease":"35"],current:"0x100-34",attempt:1,kind:"remote",phase:"active")
   try verify(other["processLifetimeID"] as? String == "0x100-35" && other["attemptID"] is NSNull && other["phase"] as? String == "unclassified-other-lifetime")
+  var request=[UInt64](repeating:0,count:48);request[0]=1;request[1]=13;request[8]=99;request[9]=2;request[15]=(1<<32)|3;request[16]=22543008;request[17]=23003648;request[18]=45546656;request[19]=8388608;request[20]=239208200;request[23]=201326592;request[24]=(3<<32)|1;request[25]=0x8007000e
+  let (_,denied)=RunEvidenceSchema.native(request)!
+  try verify(denied["requestID"] as? String == "99" && denied["HRESULT"] as? String == "0x8007000e" && denied["chargedBytes"] as? UInt64 == 45546656 && denied["nativeThreadLifetimeID"] is NSNull)
+  let unresolved=RunEvidenceRecorder.correlate(denied,current:"0x100-34",attempt:1,kind:"remote",phase:"active")
+  try verify(unresolved["attemptID"] is NSNull && unresolved["processLifetimeID"] is NSNull)
+  request[9]=6;request[15]=(2<<32);request[24]=0;request[25]=0x80070057
+  let (_,view)=RunEvidenceSchema.native(request)!;try verify(view["width"] is NSNull && view["availableBytes"] is NSNull && view["HRESULT"] as? String == "0x80070057")
+  request[1]=15;request[9]=0xc0000005;let (_,guest)=RunEvidenceSchema.native(request)!
+  try verify(guest["exitStatus"] as? String == "0xc0000005" && guest["signedExitStatus"] as? Int64 == -1073741819)
+  try verify(RunEvidenceRecorder.guestTermination("unrelated NtTerminateProcess text") == nil)
+  let retired=RunEvidenceRecorder.guestTermination("[process-retire-v1] owner=0x100 known=1 native-threads=4 ready=0 reclaimed=0")!
+  try verify(retired["owner"] as? String == "0x100" && retired["event"] as? String == "guest-retirement-or-quarantine")
   store.setConfig("effective",technical)
   store.graphic(["API":"CreateTexture2D","HRESULT":"E_OUTOFMEMORY"],category:"allocation")
   store.graphic(["API":"CreateTexture2D","HRESULT":"E_OUTOFMEMORY"],category:"allocation")
@@ -126,4 +160,4 @@ func verify(_ ok:@autoclosure ()->Bool,_ file:StaticString=#file,_ line:Int=#lin
  }
 }''')
     subprocess.run([swift,'-swift-version','5',str(r/'app/Madeira/RunEvidence.swift'),str(t/'Stubs.swift'),str(t/'Check.swift'),'-o',str(t/'check')],check=True)
-    subprocess.run([str(t/'check'),str(t/'fixture')],check=True)
+    subprocess.run([str(t/'check'),str(t/'fixture'),str(r/'tests/fixtures/run19-resource-failure.json')],check=True)

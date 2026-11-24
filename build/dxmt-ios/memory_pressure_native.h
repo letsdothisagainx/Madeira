@@ -81,6 +81,22 @@ void madeira_resource_growth_retire(void *, unsigned long long) __attribute__((v
 #ifdef __cplusplus
 }
 #endif
+#ifdef __cplusplus
+extern "C" {
+#endif
+extern uint64_t madeira_evidence_resource(unsigned,uint64_t,uint64_t,const uint64_t *,uint64_t *) __attribute__((weak));
+#ifdef __cplusplus
+}
+#endif
+static inline void md_resource_evidence(struct madeira_ctl_args *a) {
+  const int saved=errno;uint64_t metadata[20],stamp=a->len,request=a->ptr;
+  memcpy(metadata,a->name,sizeof(metadata));a->ret=0;a->ptr=a->len=0;
+  if (madeira_evidence_resource) {
+    a->ptr=madeira_evidence_resource(a->op,request,stamp,metadata,&a->len);
+    if(a->ptr)a->ret=1;
+  }
+  errno=saved;
+}
 static const volatile char md_resource_growth_contract[] = "[texture-growth-budget-v1]";
 static const volatile char md_resource_live_contract[] = "[texture-live-budget-v2]";
 static pthread_mutex_t md_resource_growth_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -115,6 +131,35 @@ static inline uint64_t md_resource_growth_floor(uint64_t reserve) {
   const uint64_t minimum = UINT64_C(128) << 20, maximum = UINT64_C(256) << 20;
   uint64_t floor = reserve / 4;
   return floor < minimum ? minimum : floor > maximum ? maximum : floor;
+}
+
+/* op46 is a read-only budget view, not an allocation grant. Unknown/busy
+ * observations cannot invent spare capacity. No receipt is retired here. */
+static inline void md_resource_growth_snapshot(struct madeira_ctl_args *args) {
+  const int saved_errno=errno;
+  const uint64_t exclude=args->ptr;
+  struct madeira_ctl_args measurement;
+  memset(&measurement,0,sizeof(measurement));
+  uint64_t held, floor, lease=0;void *owner=NULL;
+  args->ret=0;args->ptr=args->len=0;memset(args->name,0,sizeof(args->name));
+  if (pthread_mutex_trylock(&md_resource_growth_mutex)) goto done;
+  held=md_resource_growth_held;
+  if (exclude && md_resource_growth_identity(&owner,&lease,0)==1) {
+    for (unsigned i=0;i<MD_RESOURCE_GROWTH_RECEIPTS;++i) {
+      if (md_resource_growth_receipts[i].token==exclude && md_resource_growth_receipts[i].phase==1 &&
+          md_resource_growth_receipts[i].owner==owner && md_resource_growth_receipts[i].lease==lease) {
+        held-=md_resource_growth_receipts[i].bytes;break;
+      }
+    }
+  }
+  md_memory_pressure_query(&measurement);
+  if (measurement.ret==1) {
+    floor=md_resource_growth_floor(md_resource_growth_reserve(measurement.ptr+measurement.len));
+    const uint64_t details[3]={held,floor,1};
+    args->ptr=measurement.ptr;args->len=measurement.len;memcpy(args->name,details,sizeof(details));args->ret=1;
+  }
+  pthread_mutex_unlock(&md_resource_growth_mutex);
+ done:errno=saved_errno;
 }
 
 /* The first 32 bytes of the existing pointer-free name payload contain the exact

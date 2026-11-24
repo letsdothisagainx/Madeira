@@ -5743,7 +5743,13 @@ void process_exit_wrapper( int status )
     extern void ios_retire_own_fixed_base_image(void *owner);
     void *caller_peb = ios_jit_current_peb();
     extern void madeira_child_process_exited(void *, unsigned, int);
+    { struct ios_evidence_record ev={{0}};ev.w[1]=15;ev.w[4]=(uintptr_t)caller_peb;
+      ev.w[6]=(unsigned)(ULONG_PTR)NtCurrentTeb()->ClientId.UniqueProcess;
+      ev.w[7]=(unsigned)(ULONG_PTR)NtCurrentTeb()->ClientId.UniqueThread;
+      ev.w[5]=ios_thread_process_try_observation_lease(caller_peb,ev.w[6]);
+      ev.w[9]=(uint32_t)status;ios_evidence_emit(&ev); }
     madeira_child_process_exited(caller_peb, (unsigned)(ULONG_PTR)NtCurrentTeb()->ClientId.UniqueProcess, status);
+
     int memory_ready = ios_thread_process_exit_ready(caller_peb);
     int i = ios_proc_socket_index();
     if (i >= 0)
@@ -7429,12 +7435,69 @@ void madeira_evidence_frame(uint64_t *out)
     out[0]=found ? __atomic_load_n(&ios_ev_frame_count[selected],__ATOMIC_RELAXED) : 0; out[1]=latest; out[2]=ios_evidence_now();
     out[3]=found ? ios_cs2_stall_watches[selected].owner : 0;out[4]=found ? ios_cs2_stall_watches[selected].lease : 0;
 }
+// Called by the local pointer-free Metal control ABI. No payload/stack
+// read, allocation, formatting, filesystem I/O or blocking registry access.
+__attribute__((visibility("default")))
+uint64_t madeira_evidence_resource(unsigned op,uint64_t id,uint64_t start,const uint64_t *words,uint64_t *stamp)
+{
+    struct ios_evidence_record r={{0}};
+    uint64_t now=ios_evidence_now();int saved=errno;
+    if (op==44) {
+        id=__atomic_add_fetch(&ios_ev_resource_next,1,__ATOMIC_RELAXED);
+        __atomic_fetch_add(&ios_ev_resource_stats[0],1,__ATOMIC_RELAXED);*stamp=now;
+        errno=saved;return id;
+    }
+    if(op!=45 || !id){errno=saved;return 0;}
+    const unsigned stage=words[0];const uint32_t hr=words[16];
+    if(stage==8) __atomic_fetch_add(&ios_ev_resource_stats[13],1,__ATOMIC_RELAXED);
+    else if(stage==9) __atomic_fetch_add(&ios_ev_resource_stats[9],1,__ATOMIC_RELAXED);
+    else {
+        unsigned index=!(hr&0x80000000u) ? 1 : hr==0x8007000eu ? 2 : hr==0x80070057u ? 3 : 4;
+        __atomic_fetch_add(&ios_ev_resource_stats[index],1,__ATOMIC_RELAXED);
+        if(hr&0x80000000u) {
+            if(stage>=2 && stage<=4)__atomic_fetch_add(&ios_ev_resource_stats[3+stage],1,__ATOMIC_RELAXED);
+            if(stage==6)__atomic_fetch_add(&ios_ev_resource_stats[8],1,__ATOMIC_RELAXED);
+            uint64_t zero=0;__atomic_compare_exchange_n(&ios_ev_resource_stats[14],&zero,now,0,__ATOMIC_RELAXED,__ATOMIC_RELAXED);
+            __atomic_store_n(&ios_ev_resource_stats[15],now,__ATOMIC_RELAXED);
+        }
+    }
+    // Failures/reclaim details roll indefinitely; healthy success detail is
+    // sampled, while its exact result count above never consumes that budget.
+    if(stage!=8 && stage!=9 && !(hr&0x80000000u) && (id&63)) {errno=saved;return id;}
+    r.w[1]=13;r.w[3]=now;r.w[8]=id;r.w[29]=start;
+    memcpy(r.w+9,words,20*sizeof(uint64_t));
+    uintptr_t owner=(uintptr_t)ios_jit_current_peb();r.w[4]=owner;
+    for(unsigned i=0;i<IOS_CS2_STALL_PROCESSES;++i) {
+        if(owner && __atomic_load_n(&ios_cs2_stall_watches[i].owner,__ATOMIC_ACQUIRE)==owner) {
+            const uint64_t lease=ios_thread_process_try_observation_lease((void *)owner,ios_cs2_stall_watches[i].pid);
+            if(lease && lease==ios_cs2_stall_watches[i].lease){r.w[5]=lease;r.w[6]=ios_cs2_stall_watches[i].pid;break;}
+        }
+    }
+    unsigned counter=ios_evidence_emit_checked(&r) ? 10 : 11;
+    __atomic_fetch_add(&ios_ev_resource_stats[counter],1,__ATOMIC_RELAXED);
+    *stamp=now;errno=saved;return id;
+}
+
 void madeira_evidence_host_io(uint64_t *out)
 {
     struct rusage_info_v6 ru; int saved=errno, rc;
     memset(&ru,0,sizeof(ru)); rc=proc_pid_rusage(getpid(),6,&ru);
     out[0]=(int64_t)rc; out[1]=rc ? errno : 0;
     if (!rc) {out[2]=ru.ri_pageins;out[3]=ru.ri_diskio_bytesread;out[4]=ru.ri_diskio_byteswritten;}
+    errno=saved;
+}
+/* Task-owned counters only. No page access, fault generation or per-thread
+ * attribution; supports comparing VM-fault progress with existing app I/O. */
+void madeira_evidence_host_vm_events(uint64_t *out)
+{
+    task_events_info_data_t info;
+    mach_msg_type_number_t count=TASK_EVENTS_INFO_COUNT;
+    const int saved=errno;
+    memset(&info,0,sizeof(info));memset(out,0,7*sizeof(uint64_t));
+    out[1]=ios_evidence_now();
+    kern_return_t kr=task_info(mach_task_self(),TASK_EVENTS_INFO,(task_info_t)&info,&count);
+    out[0]=kr;out[2]=ios_evidence_now();
+    if(kr==KERN_SUCCESS){out[3]=info.faults;out[4]=info.pageins;out[5]=info.cow_faults;out[6]=info.syscalls_unix;}
     errno=saved;
 }
 #endif

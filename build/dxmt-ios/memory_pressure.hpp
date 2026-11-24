@@ -133,6 +133,19 @@ inline MemoryPressureSnapshot memoryPressureSnapshot(bool refresh = false) {
   return cache.snapshot;
 }
 
+// Read-only, versioned admission view. Excluding a receipt is valid only for
+// this owner/lease's CPU-only creation credit; the native side validates it.
+struct ResourceGrowthBudgetSnapshot {
+  uint64_t footprint=0, available=0, pending=0, floor=0;
+  bool valid=false;
+};
+inline ResourceGrowthBudgetSnapshot resourceGrowthBudgetSnapshot(uint64_t own_receipt=0) {
+  struct madeira_ctl_args args={};args.op=46;args.ptr=own_receipt;MadeiraCtl(&args);
+  uint64_t details[3]={};std::memcpy(details,args.name,sizeof(details));
+  if (args.ret!=1 || details[2]!=1) return {};
+  return {args.ptr,args.len,details[0],details[1],true};
+}
+
 // A shared-native reservation for prospective backing and upload growth. The
 // initializer transfers it to its real GPU event before recording work; CPU
 // return cannot refund uncompleted GPU commitments. Resident resources are
@@ -216,6 +229,7 @@ public:
   uint64_t floor() const { return floor_; }
   uint64_t reason() const { return reason_; }
   uint64_t requestedBytes() const { return requested_bytes_; }
+  uint64_t receiptToken() const { return token_; }
 
   // Mark GPU intent BEFORE any initializer command can be recorded. A forced
   // CPU-thread exit must never return prospective GPU backing as free credit.
@@ -242,6 +256,51 @@ public:
     token_ = 0; gpu_initialization_ = false; gpu_event_ = 0;
     return true;
   }
+};
+
+// Pointer-free request metadata; no descriptor payload, account data or
+// caller stack is read. Native IDs are app-session unique across PE modules.
+class ResourceRequestEvidence {
+  uint64_t id_=0,start_=0,words_[20]{};
+  bool reported_=false;
+  void emit() noexcept {
+    if (!id_) return;
+    struct madeira_ctl_args a={};a.op=45;a.ptr=id_;a.len=start_;
+    static_assert(sizeof(words_)<=sizeof(a.name),"resource metadata must fit the versioned pointer-free control ABI");
+    std::memcpy(a.name,words_,sizeof(words_));MadeiraCtl(&a);
+  }
+public:
+  explicit ResourceRequestEvidence(bool initial=false,uint32_t kind=1) {
+    words_[0]=1;words_[6]=uint64_t(kind)<<32|uint64_t(initial);
+    struct madeira_ctl_args a={};a.op=44;MadeiraCtl(&a);
+    if(a.ret==1){id_=a.ptr;start_=a.len;}
+  }
+  template<class Descriptor> void describe(const Descriptor &i,uint64_t bytes) {
+    words_[6]|=2; // descriptor copied, not an unavailable all-zero descriptor
+    words_[1]=uint64_t(i.width)|(uint64_t(i.height)<<32);
+    words_[2]=uint64_t(i.depth)|(uint64_t(i.mipmap_level_count)<<32);
+    words_[3]=uint64_t(i.array_length)|(uint64_t(i.sample_count)<<32);
+    words_[4]=uint64_t(uint32_t(i.pixel_format))|(uint64_t(i.type)<<32);
+    words_[5]=uint64_t(i.usage)|(uint64_t(uint32_t(i.options))<<32);words_[7]=bytes;
+  }
+  void stage(uint64_t stage) {words_[0]=stage;}
+  void resource(uintptr_t pointer) {words_[17]=pointer;}
+  void gpu(uint64_t event,uint64_t fence){words_[18]=event;words_[19]=fence;}
+  void budget(const ResourceGrowthPermit &p,size_t window) {
+    words_[8]=p.requestedBytes()>=words_[7] ? p.requestedBytes()-words_[7] : 0;
+    words_[9]=p.requestedBytes();words_[10]=window;words_[11]=p.available();words_[12]=p.footprint();
+    words_[13]=p.pending();words_[14]=p.floor();words_[15]=p.reason()|(p.nativeStatus()<<32);
+  }
+  void reclaim(uint64_t before,uint64_t released,uint64_t after,uint64_t before_ns,uint64_t after_ns) {
+    uint64_t saved[20];std::memcpy(saved,words_,sizeof(saved));
+    words_[0]=8;words_[1]=before;words_[2]=released;words_[3]=after;words_[4]=before_ns;words_[5]=after_ns;
+    emit();std::memcpy(words_,saved,sizeof(saved));
+  }
+  int32_t result(int32_t hr) noexcept {
+    if(hr>=0 && words_[6]>>32==1) words_[0]=5;
+    words_[16]=uint32_t(hr);reported_=true;emit();return hr;
+  }
+  ~ResourceRequestEvidence(){if(!reported_){words_[0]=9;words_[16]=UINT32_MAX;emit();}}
 };
 
 } // namespace dxmt

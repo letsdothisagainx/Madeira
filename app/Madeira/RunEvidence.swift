@@ -11,6 +11,7 @@ import MetricKit
 @_silgen_name("madeira_evidence_poll") private func nativeEvidencePoll(_ out: UnsafeMutablePointer<UInt64>, _ count: UInt32, _ stats: UnsafeMutablePointer<UInt64>) -> UInt32
 @_silgen_name("madeira_evidence_frame") private func nativeEvidenceFrame(_ out: UnsafeMutablePointer<UInt64>)
 @_silgen_name("madeira_evidence_host_io") private func nativeEvidenceIO(_ out: UnsafeMutablePointer<UInt64>)
+@_silgen_name("madeira_evidence_host_vm_events") private func nativeEvidenceVMEvents(_ out: UnsafeMutablePointer<UInt64>)
 @_silgen_name("madeira_evidence_backing") private func nativeEvidenceBacking()
 #endif
 
@@ -42,7 +43,7 @@ enum RunEvidenceSchema {
             let pair = token.split(separator: "=", maxSplits: 1)
             guard pair.count == 2 else { continue }
             let k = String(pair[0]), v = String(pair[1])
-            let numeric = v.range(of:"^(?:0x[0-9a-fA-F]{1,16}|[0-9a-fA-F]{8,64}|[0-9]+(?:\\.[0-9]+)?(?:MB|KB|ms|us)?|[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12})$",options:.regularExpression) != nil
+            let numeric = v.range(of:"^(?:0x[0-9a-fA-F]{1,16}|[0-9a-fA-F]{8,64}|-?[0-9]+(?:\\.[0-9]+)?(?:MB|KB|ms|us)?|[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12})$",options:.regularExpression) != nil
             if keys.contains(k), safeAtom(v), numeric || allowedValues.contains(v) { result[k] = v }
         }
         return result
@@ -67,6 +68,46 @@ enum RunEvidenceSchema {
             "owner": w[4]>0 ? hex(w[4]) : NSNull(), "lease": w[5]>0 ? String(w[5]) : NSNull(), "pid": w[6]>0 ? hex(w[6]) : NSNull(), "tid": w[7]>0 ? hex(w[7]) : NSNull(), "nativeThreadLifetimeID": w[8]>0 ? String(w[8]) : NSNull()]
         if ![UInt64(1),2,3,10,11].contains(w[1]) {r["nativeThreadLifetimeID"]=NSNull()}
         switch w[1] {
+        case 13:
+            r["event"] = w[9]==8 ? "resource-reclamation-observation" : "resource-request-result"
+            r["requestID"] = String(w[8]); r["requestIdentityScope"]="runID-and-native-requestID; distinct-from-console-occurrences"
+            r["requireNativeLifetime"]=true
+            r["requestBeginNS"]=String(w[29]);r["stage"]=[1:"descriptor",2:"admission-refused",3:"native-allocation",4:"initialization",5:"creation-success",6:"dependent-SRV",7:"GPU-credit-handoff",8:"reclamation",9:"unwound-without-result"][w[9]] ?? "unknown"
+            r["source"]="direct-pointer-free-DXMT-creation-boundary"
+            if w[9]==8 {
+                r["beforeFootprintBytes"]=w[10]>0 ? w[10] : NSNull();r["releasedCapacityBytes"]=w[11]
+                r["afterFootprintBytes"]=w[12]>0 ? w[12] : NSNull()
+                r["observedFootprintDropBytes"]=w[10]>0 && w[12]>0 ? (w[10]>=w[12] ? w[10]-w[12] : 0) : NSNull()
+                r["beforeSnapshotPESteadyNS"]=String(w[13]);r["afterSnapshotPESteadyNS"]=String(w[14])
+                r["eligibleCapacityBytes"]=NSNull();r["scope"]="completed-owner-capacity-release-not-physical-guarantee; whole-host-footprint-observed-separately; PE-steady-clock-not-calibrated-to-native"
+            } else {
+                r["kind"]=w[15]>>32==2 ? "shader-resource-view" : "texture"
+                for (index,lo,hi) in [(10,"width","height"),(11,"depth","mipCount"),(12,"arrayCount","sampleCount"),(13,"format","textureType"),(14,"usageFlags","storageOptions")] {
+                    r[lo]=w[15]&2 != 0 ? w[index]&0xffffffff : NSNull();r[hi]=w[15]&2 != 0 ? w[index]>>32 : NSNull()
+                }
+                r["initialDataPresent"]=w[15]&1 != 0
+                r["destinationEstimateBytes"]=w[15]&2 != 0 ? w[16] : NSNull()
+                for (index,key) in [(17,"temporaryGrowthBytes"),(18,"chargedBytes"),(19,"uploadWindowBytes"),(20,"availableBytes"),(21,"footprintBytes"),(22,"pendingCreditsBytes"),(23,"safetyFloorBytes")] {r[key]=w[24]>>32>0 ? w[index] : NSNull()}
+                r["budgetReason"]=w[24]>>32>0 ? w[24]&0xffffffff : NSNull();r["nativePermitStatus"]=w[24]>>32>0 ? w[24]>>32 : NSNull()
+                r["HRESULT"]=w[9]==9 ? NSNull() : hex(w[25]&0xffffffff)
+                r["resourceIdentity"]=w[26]>0 ? hex(w[26]) : NSNull();r["resourceIdentityScope"]="local-COM-pointer-value; join-with-request-lifetime; no-payload-read"
+                r["uploadEventIdentity"]=w[27]>0 ? hex(w[27]) : NSNull();r["uploadCompletionTarget"]=w[28]>0 ? String(w[28]) : NSNull()
+                r["uploadPolicy"]=w[19]>0 ? "bounded-format-block-window-v1" : "ordinary-allocator"
+                r["layoutStatus"]="Metal-descriptor-and-policy; source-payload-and-caller-pitches-not-recorded"
+                r["nativeErrorDetail"]="unavailable-if-not-returned-by-native-API; HRESULT-is-preserved"
+                r["detailRetention"]="all-failures-until-ring-overwrite-or-try-lock-drop; successful-detail-one-in-64; aggregate-counts-separate"
+            }
+            return ("graphics-errors",r)
+        case 14:
+            r["event"]="resource-request-counters";r["requireNativeLifetime"]=true
+            for (i,k) in ["started","nonFailureResults","outOfMemoryResults","invalidArgumentResults","otherFailureResults","admissionRefusals","nativeAllocationFailures","initializationFailures","viewFailures","unwoundWithoutResult","detailsAccepted","detailsTryLockDropped","reserved","reclamationObservations","firstFailureNS","lastFailureNS"].enumerated() {r[k]=w[9+i]}
+            r["scope"]="host-app-session; direct-request-results-not-console-occurrences; stage-subcounts-overlap-results"
+            return ("graphics-errors",r)
+        case 15:
+            r["event"]="guest-process-exit";r["requireNativeLifetime"]=true;r["exitStatus"]=hex(w[9]&0xffffffff)
+            r["signedExitStatus"]=Int64(Int32(bitPattern:UInt32(truncatingIfNeeded:w[9])))
+            r["source"]="native-process-exit-wrapper";r["confidence"]="observed-guest-exit-status; not-host-termination"
+            return ("timeline",r)
         case 1:
             r["event"] = "cs2-start-observed"; r["teb"] = hex(w[9]); r["source"] = "validated-initial-thread"; return ("timeline", r)
         case 2:
@@ -223,6 +264,9 @@ final class RunEvidenceStore {
     private var logicalBytes:UInt64=0, metadataWrites:UInt64=0, checkpointCount:UInt64=0, checkpointNS:UInt64=0, flushCount:UInt64=0, flushNS:UInt64=0, fsyncCount:UInt64=0, fsyncNS:UInt64=0, rotationNS:UInt64=0, incidentCount:UInt64=0, incidentBytes:UInt64=0, incidentNS:UInt64=0, writeFailures:UInt64=0
     private var lastMemorySequence:UInt64=0
     private var anchors:[(mono:UInt64,wall:Double)]=[]
+    private var graphicOccurrences:[String]=[], graphicsDuplicates:UInt64=0
+    private var guestExits:[[String:Any]]=[]
+    private var lastExceptionContext:[String:Any]?
     let startWallUnix=Date().timeIntervalSince1970
     func persistenceCounters() -> [String:Any] {
         ["logicalBytesWritten":logicalBytes,"metadataWrites":metadataWrites,"checkpointCount":checkpointCount,"checkpointDurationNS":checkpointNS,"flushCount":flushCount,"flushDurationNS":flushNS,"fsyncCount":fsyncCount,"fsyncDurationNS":fsyncNS,"fsyncFailures":syncErrors,"rotationCount":overwritten,"rotationDurationNS":rotationNS,"incidentCopies":incidentCount,"incidentCopyBytes":incidentBytes,"incidentCopyDurationNS":incidentNS,"writeFailures":writeFailures,"scope":"recorder-owned-logical-writes-and-copies; not-physical-device-IO; excludes-export-copy-and-filesystem-metadata","selfMeasurement":"completed-work-before-this-snapshot; counters-may-lag-current-checkpoint","maximumSummaryLagSeconds":5,"unflushedTail":"unknown-after-abrupt-termination"]
@@ -251,7 +295,7 @@ final class RunEvidenceStore {
         guard let slots = Self.slots[channel] else { dropped += 1; return }
         sequence += 1
         let now = RunEvidenceSchema.mono()
-        var row = values; row["schema"] = RunEvidenceSchema.version; row["runID"] = runID; row["sequence"] = String(sequence)
+        var row = values; if channel=="graphics-errors" {row["memorySnapshotSequence"]=lastMemorySequence>0 ? String(lastMemorySequence) : NSNull();row["memoryReference"]="latest-utility-queue-host-app-sample; not-atomic-with-request"}; row["schema"] = RunEvidenceSchema.version; row["runID"] = runID; row["sequence"] = String(sequence)
         row["receivedMonotonicNS"] = String(now); row["clock"] = "CLOCK_MONOTONIC"; row["receivedUTC"] = ISO8601DateFormatter().string(from: Date())
         guard var data = try? RunEvidenceSchema.json(row), data.count < 16 << 10 else { dropped += 1; return }
         data.append(10)
@@ -284,14 +328,35 @@ final class RunEvidenceStore {
     }
     func setConfig(_ tag: String, _ fields: [String:String]) { if (config.count<32 || config[tag] != nil) && config[tag] as? [String:String] != fields { config[tag]=fields;configDirty=true } }
     func module(_ fields: [String:String]) { if modules.count>=256 { modules.removeFirst();dropped+=1 }; modules.append(fields);modulesDirty=true }
-    func graphic(_ fields: [String:String], category: String) {
+    func guestExit(_ fields:[String:Any]) {
+        var fields=fields;fields["lastObservedExceptionContext"]=lastExceptionContext as Any? ?? NSNull()
+        fields["exceptionAssociation"]="preceding-observation-only; not-proven-producer-or-exact-unwind"
+        guestExits.append(fields);if guestExits.count>8 {guestExits.removeFirst()}
+        fact("observedGuestExits",guestExits)
+    }
+    func exceptionContext(_ fields:[String:String]) {
+        var value:[String:Any]=["fields":fields,"observedNS":String(RunEvidenceSchema.mono()),"source":"existing-guest-exact-exception-diagnostic; original-native-log-retained"]
+        if let address=fields["rip"],let pc=UInt64(address.replacingOccurrences(of:"0x",with:""),radix:16) {
+            for module in modules.reversed() {
+                if let base=module["PEBase"].flatMap({UInt64($0.replacingOccurrences(of:"0x",with:""),radix:16)}),let size=module["mappedBytesHex"].flatMap({UInt64($0.replacingOccurrences(of:"0x",with:""),radix:16)}),pc>=base,pc-base<size {
+                    value["module"]=module["module"];value["RVA"]=RunEvidenceSchema.hex(pc-base);value["mappingConfidence"]="recorded-module-load-range; current-lifetime-and-unload-status-not-atomic";break
+                }
+            }
+        }
+        lastExceptionContext=value;record("timeline",["event":"guest-exception-context-observed","context":value])
+    }
+    func graphic(_ fields: [String:String], category: String, occurrence:String?=nil) {
+        if let occurrence {
+            if graphicOccurrences.contains(occurrence) {graphicsDuplicates+=1;return}
+            graphicOccurrences.append(occurrence);if graphicOccurrences.count>128 {graphicOccurrences.removeFirst()}
+        }
         guard let keyData=try? RunEvidenceSchema.json(fields), let key=String(data:keyData,encoding:.utf8) else { return }
         let now=String(RunEvidenceSchema.mono())
         if var old=graphics[key] { old["count"]=(old["count"] as? UInt64 ?? 1)+1; old["lastNS"]=now; graphics[key]=old }
         else if graphics.count<64 { graphics[key]=["fields":fields,"category":category,"count":UInt64(1),"firstNS":now,"lastNS":now] }
         else { dropped += 1 }
         graphicsDirty=true
-        record("graphics-errors",["memorySnapshotSequence":lastMemorySequence>0 ? String(lastMemorySequence) : NSNull(),"event":"graphics-error","category":category,"fields":fields,"memoryReference":"latest-host-app-memory-sample; not-atomic-with-error"])
+        record("graphics-errors",["memorySnapshotSequence":lastMemorySequence>0 ? String(lastMemorySequence) : NSNull(),"event":"graphics-error","category":category,"fields":fields,"sourceOccurrenceID":occurrence as Any? ?? NSNull(),"countScope":"one-source-line-occurrence; native-direct-requests-and-console-rows-not-added","memoryReference":"latest-host-app-memory-sample; not-atomic-with-error"])
     }
     /// Pin the newest incident (at most 3 MiB); no source payload, only typed
     /// journals. Replaced on the next terminal/postactivation incident.
@@ -359,8 +424,8 @@ final class RunEvidenceStore {
         try persist(coverage,"run-summary.json")
         if configDirty {try persist(["schema":RunEvidenceSchema.version,"runID":runID,"effectiveFromInitializedRows":config,"unobserved":"unavailable; requested-is-not-effective"],"runtime-config.json");configDirty=false}
         if modulesDirty {try persist(["schema":RunEvidenceSchema.version,"runID":runID,"modules":modules,"limit":256,"scope":"observed-load-events-not-exhaustive-live-inventory","unloadTracking":"unavailable; entries-not-proof-still-loaded"],"modules.json");modulesDirty=false}
-        if graphicsDirty {try persist(["schema":RunEvidenceSchema.version,"runID":runID,"errors":Array(graphics.values),"observerCoverage":"bounded-known-native-tags-and-console-errors; zero-entries-not-proof-of-zero-errors"],"graphics-summary.json");graphicsDirty=false}
-        try persist(["schema":RunEvidenceSchema.version,"runID":runID,"reason":"unknown","captureState":"live-session-recording; no-crash-inference","hostRunningAtCheckpoint":true,"cleanHostExitObserved":false,"latestPersistedSequence":String(persisted),"lastPersistedNS":String(lastNS),"unflushedTail":"unknown","authoritativeReports":"see-system-directory-if-delivered"],"termination.json")
+        if graphicsDirty {try persist(["schema":RunEvidenceSchema.version,"runID":runID,"errors":Array(graphics.values),"duplicateSourceOccurrencesSuppressed":graphicsDuplicates,"observerCoverage":"bounded-known-native-tags-and-console-errors; source-occurrences-not-unique-resource-requests; direct-native-counters-in-graphics-journal; zero-entries-not-proof-of-zero-errors"],"graphics-summary.json");graphicsDirty=false}
+        try persist(["schema":RunEvidenceSchema.version,"runID":runID,"reason":"unknown","captureState":"live-session-recording; no-crash-inference","hostRunningAtCheckpoint":true,"cleanHostExitObserved":false,"observedGuestExits":guestExits,"latestPersistedSequence":String(persisted),"lastPersistedNS":String(lastNS),"unflushedTail":"unknown","authoritativeReports":"see-system-directory-if-delivered"],"termination.json")
     }
     static func writeJSON(_ values: [String:Any], to url: URL) throws {
         let data=try RunEvidenceSchema.json(values); guard data.count<=256<<10 else { throw CocoaError(.fileWriteOutOfSpace) }
@@ -449,7 +514,8 @@ final class RunEvidenceRecorder {
     private var connectSecond:Int?, mainUserUS:UInt64=0, mainKernelUS:UInt64=0, maxGapNS:UInt64=0, peakFootprint:UInt64=0
     private var mainIntervals:[[String:Any]]=[], backgroundSpans:[(UInt64,UInt64)]=[], backgroundBegin:UInt64?, activationNS:UInt64?, closeReason:String?, closeReports=0
     private var pendingTextureAPI:String?, consoleLineNumber:UInt64=0, pendingTextureLine:UInt64=0
-    private var nativeSourceRead:UInt64=0, consoleSourceRead:UInt64=0
+    private var nativeSourceRead:UInt64=0, consoleSourceRead:UInt64=0, sourceOccurrence:UInt64=0
+    private var lastConnectionObservation:String?
     #if os(iOS)
     private var metricSubscriber: RunEvidenceMetrics?
     #endif
@@ -497,7 +563,9 @@ final class RunEvidenceRecorder {
         var row=values
         let pair: String?
         if let owner=values["owner"] as? String,let lease=values["lease"] as? String {pair=owner+"-"+lease} else {pair=nil}
-        let identity=pair ?? current, matches=identity==current
+        let partialOwner=values["owner"] as? String
+        let contextAllowed=values["requireNativeLifetime"] as? Bool != true && (partialOwner==nil || current?.hasPrefix((partialOwner ?? "")+"-")==true)
+        let identity=pair ?? (contextAllowed ? current : nil), matches=identity != nil && identity==current
         row["processLifetimeID"]=identity as Any? ?? NSNull()
         row["identitySource"]=pair != nil ? "native-owner-and-lease" : "current-correlation-context; observer-scope-remains-authoritative"
         row["attemptID"]=matches && attempt>0 ? "\(current ?? "unknown")-\(attempt)" : NSNull()
@@ -526,7 +594,11 @@ final class RunEvidenceRecorder {
                     store.module(entry)
                 }
                 if r["event"] as? String == "main-progress" {
-                    mainIntervals.append(r);if mainIntervals.count>192 {mainIntervals.removeFirst()}
+                    mainIntervals.append(r.filter{["owner","lease","registerCaptureBeginNS","intervalUS","userCPUUS","kernelCPUUS"].contains($0.key)});if mainIntervals.count>192 {mainIntervals.removeFirst()}
+                }
+                if r["event"] as? String == "guest-process-exit" {
+                    let row=stamp(r);store.guestExit(row)
+                    if row["processLifetimeID"] as? String == process {activated=false;phase="guest-exited"}
                 }
                 if r["event"] as? String == "backing-progress",let initialized=r["initialized"] as? Bool,initialized {
                     let base=i*48
@@ -563,6 +635,10 @@ final class RunEvidenceRecorder {
             previousIO=io
         }
         store.record("thread-frame-memory",ioRow)
+        var vm=[UInt64](repeating:0,count:7);nativeEvidenceVMEvents(&vm)
+        var vmRow:[String:Any]=["event":"host-task-VM-events","scope":"whole-host-app-task-events; includes-all-native-and-guest-threads; not-main-thread-or-backing-file-attribution","queryResult":vm[0],"queryBeginNS":String(vm[1]),"queryEndNS":String(vm[2]),"counterSemantics":"Mach-natural_t-cumulative-may-wrap; no-deltas-invented; faults-not-necessarily-disk-reads-or-user-signal-handler-invocations"]
+        if vm[0]==0 {vmRow["faultsCumulative"]=vm[3];vmRow["pageInsCumulative"]=vm[4];vmRow["copyOnWriteFaultsCumulative"]=vm[5];vmRow["unixSyscallsCumulative"]=vm[6]}
+        store.record("thread-frame-memory",vmRow)
         #endif
         tail("madeira-log.txt",console:false)
         for install in ["Program Files (x86)/Steam","Program Files/Steam"] {
@@ -630,42 +706,69 @@ final class RunEvidenceRecorder {
         let size=UInt64(info.st_size), inode=UInt64(info.st_ino)
         var old=offsets[relative] ?? (inode,console ? size : 0)
         if old.inode != inode || old.offset>size { old=(inode,0); store.record("timeline",["event":"input-rotated-or-truncated","source":console ? "cs2-console" : "native-log"]) }
+        // A startup burst may skip the ordinary tail. Preserve just the typed
+        // loaded/package provenance from a bounded prefix, without replaying
+        // historical process, failure or console events into this session.
+        if !console && old.offset==0 && size>256<<10 {
+            var prefix=[UInt8](repeating:0,count:64<<10)
+            let n=prefix.withUnsafeMutableBytes{pread(fd,$0.baseAddress,64<<10,0)}
+            if n>0,let text=String(bytes:prefix.prefix(n),encoding:.utf8) {
+                nativeSourceRead+=UInt64(n)
+                let expected=store.reportReceiverIdentity()
+                for line in text.split(separator:"\n") where line.contains("[native-build-provenance-v1]") {
+                    let fields=RunEvidenceSchema.fields(String(line),keys:["package-source","native-uuid"])
+                    if fields["package-source"]==expected["packageSourceRevision"],fields["native-uuid"]==expected["nativeImageUUID"] {observe(String(line),console:false)}
+                }
+            }
+        }
         let limit:UInt64=256<<10
         var offset=old.offset, partial=false
         if size-offset>limit { fileDroppedBytes+=size-offset-limit; offset=size-limit; partial=true }
-        var data=Data(), buffer=[UInt8](repeating:0,count:16<<10)
+        var data=Data(), buffer=[UInt8](repeating:0,count:16<<10), lineOffset=offset
         while offset<size {
             let amount=min(buffer.count,Int(size-offset))
             let n=buffer.withUnsafeMutableBytes { pread(fd,$0.baseAddress,amount,off_t(offset)) }; if n<=0 { break }; offset+=UInt64(n)
             if console { consoleSourceRead+=UInt64(n) } else { nativeSourceRead+=UInt64(n) }
             data.append(contentsOf:buffer.prefix(n))
             while let end=data.firstIndex(of:10) {
-                let bytes=data.prefix(end); data.removeSubrange(...end)
+                let bytes=data.prefix(end), start=lineOffset;lineOffset+=UInt64(bytes.count)+1;data.removeSubrange(...end)
                 if partial { partial=false; continue }
-                if bytes.count<=16<<10, let line=String(data:bytes,encoding:.utf8) { observe(line,console:console) }
+                if bytes.count<=16<<10, let line=String(data:bytes,encoding:.utf8) { observe(line,console:console,occurrence:"\(console ? "console" : "native")-\(inode)-\(start)") }
             }
-            if data.count>16<<10 { fileDroppedBytes+=UInt64(data.count); data.removeAll(keepingCapacity:false); partial=true }
+            if data.count>16<<10 { fileDroppedBytes+=UInt64(data.count); data.removeAll(keepingCapacity:false); lineOffset=offset; partial=true }
         }
         // Leave the incomplete final line for the next tick, rather than join
         // bytes from different files. Rotation/inode changes are explicit.
         offsets[relative]=(inode,offset-UInt64(data.count))
     }
-    func observe(_ line:String, console:Bool) {
-        if let failure=Self.graphicsFailure(line) {store.graphic(failure.fields,category:failure.category)}
+    func observe(_ line:String, console:Bool, occurrence:String?=nil) {
+        sourceOccurrence+=1
+        let occurrence=occurrence ?? "fixture-or-prefix-\(sourceOccurrence)"
+        var failure=Self.graphicsFailure(line)
+        if console, failure != nil {
+            failure!.fields["sourceKind"]="console-occurrence"
+            if let timestamp=Self.consoleStamp(line) {failure!.fields["consoleTimestamp"]=timestamp}
+            if line.contains("E_OUTOFMEMORY"),let api=pendingTextureAPI,consoleLineNumber+1-pendingTextureLine<=4 {
+                failure!.fields["API"]=api;failure!.fields["association"]="preceding-creation-row-within-four-lines";pendingTextureAPI=nil
+            }
+        }
+        if !console {failure?.fields["sourceKind"]="native-text-occurrence"}
+        // Admission has its own closed operands; do not count this same native
+        // source occurrence once generically and again as an admission report.
+        if let failure,!line.contains("[texture-admission-v1]") {store.graphic(failure.fields,category:failure.category,occurrence:occurrence)}
         if console {
             consoleLineNumber+=1
             if line.contains("D3D11Device()->CreateTexture") {
                 pendingTextureAPI=line.contains("Texture3D") ? "CreateTexture3D" : "CreateTexture2D";pendingTextureLine=consoleLineNumber
-            }
-            if line.contains("E_OUTOFMEMORY"),let api=pendingTextureAPI,consoleLineNumber-pendingTextureLine<=4 {
-                store.graphic(["API":api,"HRESULT":"E_OUTOFMEMORY","association":"preceding-creation-row-within-four-lines"],category:"allocation")
-                pendingTextureAPI=nil
             }
             guard var event=Self.consoleEvent(line) else { return }
             let originalStamp=Self.consoleStamp(line)
             if event=="remote-connected",originalStamp != nil,originalStamp==lastLoopbackConsoleStamp {event="loopback-connection-confirmation"}
             if event=="loopback-connected" {lastLoopbackConsoleStamp=originalStamp}
             if event == "remote-connected" || event == "loopback-connected" {
+                let identity="\(process ?? "unknown")-\(event)-\(originalStamp ?? "unavailable")"
+                if originalStamp != nil && lastConnectionObservation==identity {return}
+                lastConnectionObservation=identity
                 let next=Self.attemptAfter(event,attempt:attempt,kind:attemptKind);attempt=next.0;attemptKind=next.1;activated=false;activationNS=nil;closeReason=nil;closeReports=0
             }
             let stampSeconds=Self.consoleStamp(line).flatMap { t -> Int? in
@@ -698,7 +801,6 @@ final class RunEvidenceRecorder {
             let timestamp=Self.consoleStamp(line)
             store.record("timeline",stamp(["event":event,"source":"CS2-console-line","confidence":"observed-message; not-playability-or-packet-arrival","consoleTimestamp":timestamp as Any? ?? NSNull(),"consoleClock":"original-console-wall; year-and-timezone-unverified","consoleArrival":"this-read-tick; not-original-packet-time"]))
             if event.hasPrefix("disconnect") || event == "texture-allocation-failed" { incident(event) }
-            if event == "texture-allocation-failed" { store.graphic(["API":line.contains("Texture3D") ? "CreateTexture3D" : "CreateTexture2D","HRESULT":"E_OUTOFMEMORY"],category:"allocation") }
             return
         }
         if line.contains("[cs2-tso-profile-v1]") {
@@ -709,7 +811,7 @@ final class RunEvidenceRecorder {
             store.setConfig("initialized-runtime-settings",RunEvidenceSchema.fields(line,keys:["width","height","resolution","memory-limit","swap-mode","swap-min","swap-cap","recovery","diagnostic-mode"]))
         } else if line.contains("[texture-admission-v1]") {
             let fields=RunEvidenceSchema.fields(line,keys:["result","reason","bytes","available","charged-bytes","temporary-growth","footprint","pending","safety-floor","budget-reason"])
-            store.graphic(fields,category:"allocation-admission"); if activated { incident("texture-admission-failure") }
+            store.graphic(fields.merging(["sourceKind":"native-admission-occurrence"]){a,_ in a},category:"allocation-admission",occurrence:occurrence); if activated { incident("texture-admission-failure") }
         } else if line.contains("[jit-pool] image "),line.contains(" -> pool ") {
             let pattern="image (0x[0-9a-fA-F]+)\\+(0x[0-9a-fA-F]+) \\(([A-Za-z0-9_.-]{1,96})\\) -> pool (0x[0-9a-fA-F]+)"
             if let regex=try? NSRegularExpression(pattern:pattern),let match=regex.firstMatch(in:line,range:NSRange(line.startIndex...,in:line)) {
@@ -729,6 +831,9 @@ final class RunEvidenceRecorder {
         } else if line.contains("[cs2-store-progress-v1]") {
             let f=RunEvidenceSchema.fields(line,keys:["pid","tid","native","slot","sample","interval-us","user-us","kernel-us","captures","completed","unhandled","refused","partial","publication-failed","last-held-us","last-age-us","last-pc","last-ea","last-insn","last-bytes","last-result","phase-capture-us","phase-validation-us","phase-write0-us","phase-write1-us","phase-publication-us","phase-resume-us","recovery-worker","base-qos","held-qos","qos-changed"])
             store.record("thread-frame-memory",stamp(["event":"existing-recovery-progress","fields":f,"source":"existing-native-log; received-time-not-capture-time"]))
+        } else if line.contains("[guest-exact]") {
+            let fields=RunEvidenceSchema.fields(line,keys:["rip","block","pc","host-pc","code","status"])
+            if !fields.isEmpty {store.exceptionContext(fields)}
         } else if line.contains("[gpu-perf]") {
             let pattern="([0-9]+) frames in ([0-9]+) ms.*GPU busy ([0-9]+) ms = ([0-9]+)%"
             if let regex=try? NSRegularExpression(pattern:pattern),let m=regex.firstMatch(in:line,range:NSRange(line.startIndex...,in:line)) {
@@ -739,9 +844,9 @@ final class RunEvidenceRecorder {
         } else if line.contains("[PRESENT_GAP]") || line.contains("[FRAME_STATS]") || line.contains("[frame]") || line.contains("[gpu]") || line.contains("[mem-census]") {
             let f=RunEvidenceSchema.fields(line,keys:["frames","gap_max","gap_max_ms","inside_avg","inside_max","currentAllocatedSize","LIVE","gpu_ms","encoding_ms","submit_ms","readback-waits","commit_avg","sync_cnt","sync_avg","event_stall_max","latency_avg","enc_prep","enc_flush","drawable_block","cmdbufs"])
             if !f.isEmpty { store.record("thread-frame-memory",stamp(["event":"existing-render-counters","fields":f,"source":"native-log","scope":"DXMT-accounting-not-additive-with-footprint"])) }
-        } else if line.contains("[process-retire]") || line.contains("[process-quarantine]") || line.contains("NtTerminateProcess") {
-            let f=RunEvidenceSchema.fields(line,keys:["pid","owner","lease","status","exit","threads","native","ready","reclaimed"])
-            store.record("timeline",stamp(["event":"guest-exit-or-retirement-observed","fields":f,"source":"native-log; quarantine-not-clean-host-exit"]))
+        } else if let observation=Self.guestTermination(line) {
+            let row=stamp(observation);store.record("timeline",row)
+            if observation["event"] as? String == "guest-process-exit" {store.guestExit(row)}
         } else if line.contains("[cs2-texture-memory-v1]") || line.contains("[cs2-video-profile-v1]") || line.contains("[swap-config") || line.contains("[runtime-provenance") {
             store.setConfig(String(line.prefix(64).split(separator:"]").first ?? "observed"),RunEvidenceSchema.fields(line,keys:["selected","applied","deferred","mode","min","cap","source","virtual-sha256","jit-sha256","uuid","width","height","policy"]))
         }
@@ -749,6 +854,25 @@ final class RunEvidenceRecorder {
     static func attemptAfter(_ event:String,attempt:Int,kind:String) -> (Int,String) {
         if event=="remote-connected" || event=="loopback-connected" {return (attempt+1,event=="remote-connected" ? "remote" : "loopback")}
         return (attempt,kind)
+    }
+    static func guestTermination(_ line:String) -> [String:Any]? {
+        let retire=line.contains("[process-retire-v1]") || line.contains("[process-retire]") || line.contains("[process-quarantine]")
+        let exit=line.contains("event=abort-request phase=cs2") || line.contains("process_exit_wrapper(") || line.contains("exit_code=")
+        guard retire || exit else{return nil}
+        let fields=RunEvidenceSchema.fields(line,keys:["pid","owner","peb","lease","status","exit","exit_code","threads","native","native-threads","known","ready","reclaimed"])
+        var row:[String:Any]=["event":exit ? "guest-process-exit" : "guest-retirement-or-quarantine","requireNativeLifetime":true,"fields":fields,"source":"native-log-existing-producer","confidence":exit ? "observed-status; guest-not-host-exit; identity-limited-to-producer-fields" : "retirement-request-not-proof-of-quiescence-or-exit","consoleTimestamp":consoleStamp(line) as Any? ?? NSNull()]
+        if let owner=fields["owner"] ?? fields["peb"] {row["owner"]=owner}
+        if let pid=fields["pid"] {row["pid"]=pid};if let lease=fields["lease"] {row["lease"]=lease}
+        let status:UInt32?
+        if let value=fields["exit_code"] ?? fields["status"] ?? fields["exit"] {
+            if value.hasPrefix("0x") {status=UInt32(value.dropFirst(2),radix:16)}
+            else if value.count==8 {status=UInt32(value,radix:16)}
+            else if let n=Int64(value) {status=UInt32(truncatingIfNeeded:n)} else {status=nil}
+        } else if let r=line.range(of:"process_exit_wrapper\\((-?[0-9]{1,12})\\)",options:.regularExpression),let n=Int64(line[r].dropFirst("process_exit_wrapper(".count).dropLast()) {status=UInt32(truncatingIfNeeded:n)}
+        else {status=nil}
+        if let status {row["exitStatus"]=RunEvidenceSchema.hex(UInt64(status));row["signedExitStatus"]=Int64(Int32(bitPattern:status))}
+        // Do not publish an empty termination event from unrelated API text.
+        return !fields.isEmpty || status != nil ? row : nil
     }
     static func consoleDate(_ text:String,arrival:Date) -> Date? {
         guard let stamp=consoleStamp(text) else{return nil}

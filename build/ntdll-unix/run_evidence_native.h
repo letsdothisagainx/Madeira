@@ -9,6 +9,7 @@ static unsigned ios_ev_lock;
 static uint64_t ios_ev_head, ios_ev_tail, ios_ev_dropped, ios_ev_overwritten, ios_ev_sequence, ios_ev_ticket;
 uint64_t ios_evidence_backing_file;
 static uint64_t ios_ev_by_op[8][4][4], ios_ev_aggregate_ns;
+static uint64_t ios_ev_resource_next, ios_ev_resource_stats[16];
 static uint64_t ios_ev_operations, ios_ev_op_bytes, ios_ev_op_errors, ios_ev_op_ns;
 uint64_t ios_evidence_now(void)
 {
@@ -16,17 +17,18 @@ uint64_t ios_evidence_now(void)
     uint64_t value=clock_gettime(CLOCK_MONOTONIC, &ts) ? 0 : (uint64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
     errno=saved; return value;
 }
-void ios_evidence_emit(struct ios_evidence_record *r)
+int ios_evidence_emit_checked(struct ios_evidence_record *r)
 {
     unsigned expected = 0;
     if (!__atomic_compare_exchange_n(&ios_ev_lock,&expected,1,0,__ATOMIC_ACQUIRE,__ATOMIC_RELAXED))
-    { __atomic_fetch_add(&ios_ev_dropped,1,__ATOMIC_RELAXED); return; }
+    { __atomic_fetch_add(&ios_ev_dropped,1,__ATOMIC_RELAXED); return 0; }
     r->w[0] = 1; r->w[2] = ++ios_ev_sequence;
     if (!r->w[3]) r->w[3] = ios_evidence_now();
     if (ios_ev_head - ios_ev_tail == IOS_EVIDENCE_RECORDS) { ++ios_ev_tail; ++ios_ev_overwritten; }
     ios_ev_ring[ios_ev_head++ % IOS_EVIDENCE_RECORDS] = *r;
-    __atomic_store_n(&ios_ev_lock,0,__ATOMIC_RELEASE);
+    __atomic_store_n(&ios_ev_lock,0,__ATOMIC_RELEASE); return 1;
 }
+void ios_evidence_emit(struct ios_evidence_record *r) { (void)ios_evidence_emit_checked(r); }
 uint64_t ios_evidence_begin_extent(unsigned op, uintptr_t address, uint64_t bytes, uint64_t generation, unsigned lock_scope, uint64_t extent)
 {
     uint64_t token = __atomic_add_fetch(&ios_ev_ticket,1,__ATOMIC_RELAXED), empty = 0;
@@ -107,6 +109,11 @@ unsigned madeira_evidence_poll(uint64_t *out, unsigned records, uint64_t *stats)
             if (!s[0]) continue;
             struct ios_evidence_record r={{0}};r.w[0]=1;r.w[1]=12;r.w[3]=ios_evidence_now();
             r.w[9]=i;r.w[10]=mode;r.w[11]=s[0];r.w[12]=s[1];r.w[13]=s[2];r.w[14]=s[3];
+            memcpy(out+n++*IOS_EVIDENCE_WORDS,&r,sizeof(r));
+        }
+        if (n<records && __atomic_load_n(&ios_ev_resource_next,__ATOMIC_RELAXED)) {
+            struct ios_evidence_record r={{0}};r.w[0]=1;r.w[1]=14;r.w[3]=ios_evidence_now();
+            for(unsigned j=0;j<16;++j)r.w[9+j]=__atomic_load_n(&ios_ev_resource_stats[j],__ATOMIC_RELAXED);
             memcpy(out+n++*IOS_EVIDENCE_WORDS,&r,sizeof(r));
         }
         ios_ev_aggregate_ns=ios_evidence_now();
