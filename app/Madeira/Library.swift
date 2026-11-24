@@ -1838,8 +1838,9 @@ final class LibraryModel: ObservableObject {
         withTransaction(transaction) { launchLogs = false; launching = false }
     }
     /// User-directed handoff to the real session. No CEF query or dialog answer.
+    var steamLaunchNeedsView:Bool {steamLaunch != nil && steamLaunch?.cs2Lifetime==nil}
     func openSteamSession() {
-        guard steamLaunch != nil,current != nil else{return}
+        guard steamLaunchNeedsView,current != nil else{return}
         LibraryKeyboard.hide();menu=false
         LibraryController.shared.configure(enabled:enabled,ownsInput:false)
         MetalHostView.shared.isHidden=false
@@ -5421,7 +5422,7 @@ struct LibraryHUD: View {
                     launchGlyph(showLogs ? "Hide live log" : "Show live log", "text.alignleft", on: showLogs) {
                         model.toggleLaunchLogs()
                     }
-                    if model.steamLaunch != nil {Button("Open Steam"){model.openSteamSession()}.frame(minHeight:44)}
+                    if model.steamLaunchNeedsView {Button("Open Steam"){model.openSteamSession()}.frame(minHeight:44)}
                     if dockStart.holding {
                         launchGlyph("Show desktop", "macwindow") { dockStart.showDesktop(model) }
                             .accessibilityHint("Shows the Windows desktop")
@@ -5473,7 +5474,7 @@ struct LibraryHUD: View {
                     launchGlyph(showLogs ? "Hide live log" : "Show live log", "text.alignleft", on: showLogs) {
                         model.toggleLaunchLogs()
                     }
-                    if model.steamLaunch != nil {Button("Open Steam"){model.openSteamSession()}.frame(minHeight:44)}
+                    if model.steamLaunchNeedsView {Button("Open Steam"){model.openSteamSession()}.frame(minHeight:44)}
                     if dockStart.holding {
                         launchGlyph("Show desktop", "macwindow") { dockStart.showDesktop(model) }
                             .accessibilityHint("Shows the Windows desktop")
@@ -5604,7 +5605,7 @@ struct LibraryHUD: View {
     private var menu: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-            if model.steamLaunch != nil {Button("Open Steam"){model.openSteamSession()}.frame(minHeight:44)}
+            if model.steamLaunchNeedsView {Button("Open Steam"){model.openSteamSession()}.frame(minHeight:44)}
                 HStack { Label("Session", systemImage: "gamecontroller.fill").font(.title2.bold()); Spacer(); Button("Done") { model.menu = false }.buttonStyle(.bordered) }
                 // The controls come first, the easiest to reach; the overlay settings last.
                 Toggle("Touch controls", isOn: $controls.visible)
