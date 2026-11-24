@@ -163,8 +163,10 @@ enum RunEvidenceSchema {
         r["samplerInvocations"]=w[23];r["controllerStateSnapshotNS"]=w[47]>0 ? String(w[47]) : NSNull();r["controllerStateAgeNS"]=age(w[47])
         r["controllerObservation"]=w[47]>0 ? "cached-physical-profile-and-mode-observed; input-changes-and-data-samples-counted-separately" : "physical-profile-observer-unavailable; zero-samples-does-not-prove-disconnection"
         r["physicalSamplingState"]=w[50]>0 ? "slot-zero-data-samples-observed" : "no-slot-zero-data-samples-observed; not-a-connection-status"
-        if w[47]>0 {r["effectiveSourceFlags"]=w[48]}
-        r["sourceFlagMeaning"]="1=physical-enabled 2=KBM 4=slot0-connected 8=app-active 16=library-owns 32=native-UI-focus-allows 64=physical-input-active; last-sample-not-current-device-query"
+        if w[47]>0 {r["effectiveSourceFlags"]=w[48]&63}
+        r["lastPhysicalActivity"]=w[50]>0 && w[55]>=w[47] ? w[48]&64 != 0 : NSNull()
+        r["physicalActivityCurrency"]="last slot-zero data sample only; unavailable when newer sampler-state overwrote flags"
+        r["sourceFlagMeaning"]="1=physical-enabled 2=KBM 4=slot0-connected 8=app-active 16=library-owns 32=native-UI-focus-allows physical activity is separate lastPhysicalActivity; last-sample-not-current-device-query"
         return r
     }
     static func native(_ w: [UInt64]) -> (String, [String: Any])? {
