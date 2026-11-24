@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: publish-ipa-6367a156
+  group: publish-ipa-482ac26f
   cancel-in-progress: false
 
 jobs:
@@ -22,10 +22,10 @@ jobs:
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
-      SOURCE_REVISION: 6367a1566aad52eb5ec23af973b93db402cd3885
-      SOURCE_RUN: '45307261599'
-      SOURCE_UUID: EA48680B-97E9-3102-A69D-CF790363851B
-      RELEASE_TAG: ipa-6367a156
+      SOURCE_REVISION: 482ac26ffb81a2985310d64c697c61616f5134ed
+      SOURCE_RUN: '45334065747'
+      SOURCE_UUID: BE56EF9B-A68E-3BA6-9549-B06809C49E7D
+      RELEASE_TAG: ipa-482ac26f
     steps:
       - name: Require the exact successful build and artifact
         run: |
@@ -55,7 +55,7 @@ jobs:
           PY
       - uses: actions/checkout@v4
         with:
-          ref: 6367a1566aad52eb5ec23af973b93db402cd3885
+          ref: 482ac26ffb81a2985310d64c697c61616f5134ed
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
@@ -88,39 +88,40 @@ jobs:
       - name: Publish the same IPA as a stable prerelease asset
         run: |
           cat > "$RUNNER_TEMP/ipa-release-notes.txt" <<'NOTES'
-          Installable Madeira candidate addressing Run18 external-backing retirement and export gaps.
+          Installable Madeira Run19 candidate: bounded real texture-upload growth and trustworthy resource/guest-exit evidence.
 
-          App source: 6367a1566aad52eb5ec23af973b93db402cd3885
-          Native UUID: EA48680B-97E9-3102-A69D-CF790363851B
-          IPA SHA256: 9f9c98cb513f14c119b2952e44f5651805a312455f0cda88b2145a41f6c3fdcc
-          IPA build: https://github.com/letsdothisagainx/Madeira/actions/runs/45307261599
-          Focused normal Linux/macOS/iPhone SDK checks: https://github.com/letsdothisagainx/Madeira/actions/runs/45307257943
+          App source: 482ac26ffb81a2985310d64c697c61616f5134ed
+          Native UUID: BE56EF9B-A68E-3BA6-9549-B06809C49E7D
+          IPA SHA256: bf11835640f7a010e46476df50d9e1b92a7fd1f246bb0e5fc0bfd4982ceaec60
+          IPA build: https://github.com/letsdothisagainx/Madeira/actions/runs/45334065747
+          Normal Linux/macOS/iPhone SDK checks: https://github.com/letsdothisagainx/Madeira/actions/runs/45333022325
+          Matching symbols: Madeira-native-symbols:45334065747
 
-          Run18 was a failed remote Mirage session. Reproduced current-run records remove 1121 incident duplicates and select 54 main intervals wholly inside activation-to-explicit-timeout using native capture timestamps and measured clock calibration. They contain 2.854868 seconds user CPU and 30.366529 seconds kernel CPU, 91.4065% of consumed CPU. The STLR fallback actually ran. Most sampled stores observe RW external-pager backing after resume; this is not a kernel stack or an atomic observation.
+          The production fix changes real DXMT allocation, not just its forecast. The old compact-upload policy allocated an entire batch when that batch was smaller than 32 MiB. Under pressure, this candidate selects a bounded allocation class from the genuine native headroom and outstanding credits. Oversized subresources transfer through format-block/row/depth chunks, including mips, arrays and cube faces. Reuse requires the actual GPU event; the same physical safety floor and full destination-plus-growth admission remain enforced. Waiting and CPU command retries remain bounded. Existing completed blocks may be reused without charging nonexistent additional growth.
 
-          Published XNU clears KILLPAGES dirty state only for internal objects. Madeira incorrectly treated it as dirty-page disposal for its shared external backing and gated fresh decommit on its success. This candidate removes those external retirement scans/deactivation calls and the unsupported gate. Fresh zero offsets and successful hole punching still control zero-on-reuse; retired offsets remain quarantined, contents-preserving copyback and guest/host protection contracts remain intact. No live allocation is migrated or force-freed. This corrects an established release/decommit assumption; induced pager pressure is plausible, but its role in the dominant live-store stall and actual gameplay improvement remain unproven.
+          A normal owned-byte fixture compiled the actual staged forecast, ring and initializer. Its controlled BC7 case changes real staging from the baseline forecast of 22,373,120 bytes to one allocated/reused 8,388,608-byte block, making that controlled creation fit. Every byte is checked across BC7 mips, odd BC1 sRGB cube faces, padded 3D slices, rows larger than the window, 1D arrays and existing completed 32-MiB reuse. This is not the recovered Run19 descriptor, an iPhone memory measurement or a gameplay speedup.
 
-          Export Run now records bounded exact-host-page Mach metadata separately from region metadata, including the second page for crossing accesses, result/timestamps and generation consistency. Punch records include synchronous fallback, file-open and retired-extent identities, deferred/synchronous and lock scope, plus separate per-operation aggregates. All observation stays after existing target resume, with no guest payload reads, warming, extra suspension or protection changes.
+          Important limits: later Run19 failures had destinations that could not fit even without new uploads. This candidate does not establish a sufficient safe reduction for those requests and still refuses unsafe allocations honestly. It does not claim to fix all texture errors. Resource failures preceded the renderer assertion/null read and guest C0000005 exit, but the specific failed texture producing that null object remains unproven. No exception, initialization, SRV error or GPU completion is suppressed.
 
-          Stable config/module/error summaries are coalesced, automatic checkpoints run every five ticks, and only dirty journals need fsync. Recorder logical writes, checkpoint/flush/fsync, rotation and incident-copy work are separate from host-app IO. A normal host fixture measured 200 metadata writes for 100 unchanged checkpoints; the baseline method wrote 500. This is not an iPhone performance benchmark. Actual recorder physical/CPU overhead on iPhone remains unmeasured.
+          The kernel-heavy main-thread mechanism is also unresolved. The 51 contained Run19 intervals reproduce 3.041013 seconds user and 21.687596 seconds kernel CPU; writable/present external pages observed after resume are not kernel stacks. Existing backing policy, STLR/TSO settings and recovery eligibility remain unchanged. A bounded supported task-events query adds whole-host fault/page-in/COW/syscall counters, with query times and explicit scope, without touching guest pages or suspending threads.
 
-          Loopback activation remains within its connection attempt. Original explicit close reasons and repeated reports stay separate from cleanup. CPU summaries use wholly contained capture intervals and calibrated original console boundaries with boundary/background exclusions. Typed graphics failures cover allocation, invalid arguments, missing resources/materials and shader/pipeline messages without broad text disclosure. Crash-report file identity/time and live-versus-prior-session capture status preserve uncertainty. Only actually delivered system diagnostics are included, with honest build/time matching.
+          Export Run now receives direct shared-native request IDs, typed descriptors, upload window/charges, permit outcomes, returned HRESULTs, resource pointer values and genuine upload event/frontier where available. Rolling failures and exact app-session counters remain active after the first burst; accepted/dropped/overwritten detail stays explicit. Console occurrences, native text reports and direct requests are separate counts. The actual Run19 parsing fixture preserves 81 console OOM occurrences, eight native reports and 299 old structured rows separately. Duplicate parsing of the same source occurrence is suppressed without merging distinct repeated failures.
 
-          Normal metadata fixtures cover the actual baseline/corrected retirement functions, split extents, quarantine/reuse, synchronous fallback, ordinary Mach page queries, per-operation counters, serialization, clock/attempt boundaries, redaction, rotation, incomplete recordings and the existing streaming ZIP/share/cancellation path. Actual iPhone SDK/native/app builds and final package checks pass. No deliberate crash, protected-memory, page-revocation, forced-fault or execution of captured instruction bytes is used.
+          Guest CS2 exit is explicit with native status and available owner/lease/PID/TID. Actual retire-v1, quarantine peb and signed/hex exit schemas are recognized, while Madeira's surviving host/unknown host termination remains separate. Existing exception/module evidence is retained without asserting a proven resource-to-null chain. Matching startup provenance survives skipped tail ingestion. Previous incomplete runs, privacy filtering, bounded journals, recorder costs, streaming ZIP/cancellation and the existing share sheet remain intact.
 
-          The full 1152-MiB JIT pool and 768/384 partition, TSO/STLR settings, prior recovery/QoS correction, physical reserve, GPU lifetimes, backing cap, Steam/network settings, input, bundle identity, prefix, installation, account and user configuration are preserved. No global backing disable, MAP_PRIVATE replacement, anonymous-gigabyte migration or graphics-setting change is made. Install over the existing app using the established signing workflow; do not uninstall or delete data.
+          Validation: normal native receipt/owner/reserve tests, actual staged upload layout/completion-adapter tests, native C/Swift recorder and Run19 parsing fixtures, incomplete recording/rotation/bounds/redaction, streaming ZIP and share behavior, TSO/recovery/retirement checks, actual iPhone SDK/native/Metal/PE/app compilation and final package checks passed. Actual iPhone recorder physical overhead and runtime thermal/CPU benefits remain unmeasured. A prior automatic legacy workflow started captured-store cases before cancellation; that violated the requested test restriction and its results are excluded. Historical fault workflows are now explicitly gated and skipped on pushes/default dispatches.
 
-          Publication verifies exact successful build/source, immutable artifact bytes, actual native UUID/components, linked page-query/recorder/retirement policy, bundle identity and recovery/pressure/TSO producers. Matching symbols: Madeira-native-symbols:45307261599. The public unauthenticated download is compared byte for byte with the built IPA.
+          Preserved: existing bundle com.willfaust.madeora, Steam session, installation/prefix/game/account/configuration, JIT entitlement setup, full 1152-MiB pool with 768/384 partition, code-buffer reuse, recovery/QoS correction, TSO/half-barrier, memory reserve, correct resource/GPU lifetimes, graphics/network settings, input and Export Run. No game binary/authentication/VAC change, global backing disable, MAP_PRIVATE migration, anonymous-memory expansion or graphics-settings workaround is included. Install over the existing app with the established signing workflow; do not uninstall or delete data.
 
-          Device acceptance remains unverified: use the same remote Mirage sequence, responsive team selection, sustained gameplay through a round, continuing main/render progress without timeout, intact textures and a clean return/changelevel. A build, menu FPS or a richer ZIP is not gameplay acceptance. An empty graphics error file does not certify textures.
+          Device acceptance remains unverified: a real remote join, responsive team selection, sustained playable round, intact textures and correct return/changelevel. A build or richer ZIP is not repaired gameplay. Destination-only memory shortage and the kernel stall remain open.
 
-          Details: https://github.com/letsdothisagainx/Madeira/blob/6367a1566aad52eb5ec23af973b93db402cd3885/docs/cs2-run18-external-backing-retirement.md
-          Normal workflow: Run CS2, encounter the problem, tap Export Run, share one ZIP. After app closure/relaunch, the available prior run remains separately identified. Download Madeira.ipa below; SHA256SUMS verifies it.
+          Details: https://github.com/letsdothisagainx/Madeira/blob/482ac26ffb81a2985310d64c697c61616f5134ed/docs/cs2-run19-upload-window-and-resource-evidence.md
+          Normal workflow: Run CS2, encounter the problem, tap Export Run, share one ZIP. Relaunch preserves the preceding run's available evidence separately. Download Madeira.ipa below; SHA256SUMS verifies it.
           NOTES
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title 'Madeira 6367a156 - Run18 external backing retirement candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt"
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title 'Madeira 482ac26f - Run19 bounded texture upload candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt"
           else
-            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title 'Madeira 6367a156 - Run18 external backing retirement candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title 'Madeira 482ac26f - Run19 bounded texture upload candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
           fi
           gh release upload "$RELEASE_TAG" release-output/Madeira.ipa release-output/SHA256SUMS release-output/recovery-package.json release-output/run-evidence-package.json --repo "$GITHUB_REPOSITORY" --clobber
           gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
