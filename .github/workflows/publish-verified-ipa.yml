@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: publish-ipa-8a360afe
+  group: publish-ipa-949e7332
   cancel-in-progress: false
 
 jobs:
@@ -22,10 +22,10 @@ jobs:
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
-      SOURCE_REVISION: 8a360afef38b82a3b84a1eaca73826d583b0d52e
-      SOURCE_RUN: '45430544515'
-      SOURCE_UUID: F816138C-82A2-3D2F-B9D6-75D26F5FE9A4
-      RELEASE_TAG: ipa-8a360afe
+      SOURCE_REVISION: 949e7332e015d712f9408230ebb66dce4d3f12c0
+      SOURCE_RUN: '45485893297'
+      SOURCE_UUID: 2CEE3A9D-A765-329B-8F7C-CF10DB6FDE94
+      RELEASE_TAG: ipa-949e7332
     steps:
       - name: Require the exact successful build and artifact
         run: |
@@ -55,7 +55,7 @@ jobs:
           PY
       - uses: actions/checkout@v4
         with:
-          ref: 8a360afef38b82a3b84a1eaca73826d583b0d52e
+          ref: 949e7332e015d712f9408230ebb66dce4d3f12c0
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
@@ -88,36 +88,34 @@ jobs:
       - name: Publish the same IPA as a stable prerelease asset
         run: |
           cat > "$RUNNER_TEMP/ipa-release-notes.txt" <<'NOTES'
-          Installable Madeira Run21 candidate: reveal Steam's pending interaction and distinguish current launch evidence from historical gameplay logs.
+          Madeira Run22 attribution candidate. The reproduced kernel-heavy remote gameplay stall is NOT established as repaired.
 
-          App source: 8a360afef38b82a3b84a1eaca73826d583b0d52e
-          Native UUID: F816138C-82A2-3D2F-B9D6-75D26F5FE9A4
-          IPA SHA256: 49273b0f72186283b8a64f6abccb98446c7031acdeb8aa30880154c071fcc9cd
-          IPA build: https://github.com/letsdothisagainx/Madeira/actions/runs/45430544515
-          Normal Linux/macOS/iPhone SDK checks: https://github.com/letsdothisagainx/Madeira/actions/runs/45430615827
-          Matching symbols: Madeira-native-symbols:45430544515
+          App source: 949e7332e015d712f9408230ebb66dce4d3f12c0
+          Native UUID: 2CEE3A9D-A765-329B-8F7C-CF10DB6FDE94
+          IPA SHA256: d2459ce0395410714510b2b2f4b45483cf91da2a283b721344fc01f545bcdab5
+          IPA build: https://github.com/letsdothisagainx/Madeira/actions/runs/45485893297
+          Normal Linux/macOS/iPhone SDK checks: https://github.com/letsdothisagainx/Madeira/actions/runs/45485898586
+          Matching symbols: Madeira-native-symbols:45485893297
 
-          The current Steam action explicitly waits for a user response to ShowInterstitials. Its prompt subtype is unknown. Madeira now retains the requested AppID separately from the transient Steam entry, displays the response wait and provides Open Steam during startup and from the session menu. It reveals the existing real session and releases the library cover/menu/keyboard/input ownership without waiting for CEF, answering the prompt, stealing Windows focus or launching CS2 directly. Actual prompt visibility/usability still requires the iPhone check.
+          Run22 successfully cleared Steam's response and launched CS2, then reproduced a failed remote session with 65 complete main-thread intervals: 76.915693 seconds elapsed, 2.961694 user CPU and 30.587423 kernel CPU. Direct resource counters had 27996 non-failure results without an allocation-failure burst. Post-resume external mappings and host-wide paging/I/O still do not identify the expensive kernel operation.
 
-          Export Run adds bounded typed launch transitions, request/action identity, stage begin/observation ages, optional CEF status, passive window generation/owner/visibility/GDI-presentation metadata and explicit view handoffs. Swapchain existence is separate from actual presentation. The observer has a global 24 UI-query allowance with eight reserved for relevant waits; its existing timeout/lifetime and privacy protections remain.
+          This candidate adds passive per-main lifetime counters for Wine server calls, select waits, uninterrupted-mutex acquisition and explicit VM operations. Inclusive elapsed times are separate from CPU and cannot be summed across nested classes. Existing one-second samples resolve generated PCs through a 256-entry bounded checked metadata lookup after resume; cached module/RVA age and unavailable outcomes are explicit. No additional suspension, guest payload read, instruction change, protection change or new recovery eligibility is introduced.
 
-          Source freshness records app-start file identity/byte boundaries, current observations, truncation/rotation, unavailable sources and original selected timestamp ranges. Raw appends after the structured cutoff are labeled. The 03:xx historical CS2 console cannot populate the current 09:xx session. No observed CS2 process means gameplay metrics unavailable, not zero FPS/errors. Frame gaps require a live CS2 identity.
+          Export Run retains a separate 256-KiB first post-activation stall window alongside the existing failure lanes and recent incidents, within the existing 16-MiB run cap. Controller discovery/lifecycle records distinguish framework enumeration, supported profiles, cached state and actual timer activation; no input bindings, focus gate or queue policy is changed. Known graphics-loader errors can retain an opaque resource-path identifier and error class without disclosing private paths or claiming required-resource status.
 
-          Input snapshots retain sampler activity and cached controller state separately from physical changes, bindings, translation and Wine route/injection, with last-known ages. Source activity is not a game-action acknowledgment. The Run20 bounded queue/coalescing/ordering/overflow-neutralization, lifecycle/focus protection and first/recent failed-resource retention are preserved. The same Export Run button and one-ZIP share include separately identified preceding evidence after relaunch.
+          Ordinary host fixtures pass counter identity/lease/nesting/concurrency/errno, exact resolver metadata and budget exhaustion, first-window durability, failure retention, privacy, clock handling, prior-run separation, source freshness, actual ZIP/cancellation/share behavior, input ordering/lifecycle and upload/fence/reserve contracts. CI verifies iPhone SDK source, native/Metal/PE packaging and linked producers/consumers. No deliberate crash, fault injection, protected-memory experiment or captured instruction execution was performed. Local counter cost is approximately 4 ns disabled and 61 ns registered per pair on Linux; iPhone overhead is unmeasured and lookup duration is recorded per sample.
 
-          Normal fixtures pass the exact public ShowInterstitials/old ActionID replay, source generations/rotation/truncation/cutoff, input ages, serialization/privacy, actual ZIP/cancellation/share behavior, durable resource failures, input ordering/lifecycle/custom bindings, GPU-completion/credit and reserve contracts. CI also checks the real iPhone SDK/Objective-C bridge, native/Metal/PE packaging, linked markers and source/components. No deliberate fault/crash/protected-memory/page-revocation experiment or captured instruction execution is used. Device overhead is unmeasured.
+          Remaining: the exact main-thread kernel operation is unresolved. No source-backed large safe memory reclamation was established for the older destination-only shortage. Controller movement/aim/buttons and visual correctness remain unverified. Build/test success does not establish responsive team selection or a sustained playable remote round. This is an attribution candidate, not a gameplay-success claim.
 
-          Important limits: the primary kernel-heavy Run20 gameplay stall remains unresolved. Existing post-resume writable external mappings and whole-host I/O counters do not identify its expensive kernel operation. The destination-only texture shortage also remains: a 1-MiB destination cannot fit an 869912-byte usable window before staging. No sufficiently large safe reclamation was established; the memory reserve is preserved. These launch/export corrections are not a repaired-gameplay claim. Controller movement/aim/buttons, visual corruption, comparable remote frame pacing and sustained play through a round remain unverified on the iPhone.
+          Preserved: bundle com.willfaust.madeora, installation/prefix/game/account/configuration, Steam session and launch handoff, source freshness, bounded input queue, failure retention, JIT entitlements, 1152-MiB pool with 768/384 partition, code-buffer reuse, recovery/QoS, STLR/TSO/half-barrier, memory safeguards and GPU lifetimes. No backing policy, graphics setting or network timeout change. Install over the existing app using the established signing workflow; do not uninstall or delete data.
 
-          Preserved: bundle com.willfaust.madeora, installation/prefix/game/account/configuration, Steam session, JIT entitlement setup, 1152-MiB pool with 768/384 partition, code-buffer reuse, recovery/QoS, STLR/TSO/half-barrier, memory safeguards and GPU lifetimes. No unrelated graphics/network timeout/backing/JIT policy changes. Install over the existing app through the established signing workflow; do not uninstall or delete data.
-
-          Details: https://github.com/letsdothisagainx/Madeira/blob/8a360afef38b82a3b84a1eaca73826d583b0d52e/docs/cs2-run21-steam-response-and-source-freshness.md
+          Details: https://github.com/letsdothisagainx/Madeira/blob/949e7332e015d712f9408230ebb66dce4d3f12c0/docs/cs2-run22-main-runtime-attribution.md
           Normal workflow: Run CS2, encounter the problem, tap Export Run, share one ZIP. Download Madeira.ipa below; SHA256SUMS verifies it.
           NOTES
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title 'Madeira 8a360afe - Run21 Steam response and fresh evidence candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt"
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title 'Madeira 949e7332 - Run22 main-thread attribution candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt"
           else
-            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title 'Madeira 8a360afe - Run21 Steam response and fresh evidence candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title 'Madeira 949e7332 - Run22 main-thread attribution candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
           fi
           gh release upload "$RELEASE_TAG" release-output/Madeira.ipa release-output/SHA256SUMS release-output/recovery-package.json release-output/run-evidence-package.json --repo "$GITHUB_REPOSITORY" --clobber
           gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
