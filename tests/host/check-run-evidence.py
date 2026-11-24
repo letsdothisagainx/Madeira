@@ -38,6 +38,21 @@ func verify(_ ok:@autoclosure ()->Bool,_ file:StaticString=#file,_ line:Int=#lin
  static func main() { do { try run() } catch { print("FAIL recorder fixture: \(error)"); exit(1) } }
  static func run() throws {
   let root=URL(fileURLWithPath:CommandLine.arguments[1]); let fm=FileManager.default
+  let retention=root.appendingPathComponent("retention-fixture")
+  try fm.createDirectory(at:retention,withIntermediateDirectories:true)
+  let older=retention.appendingPathComponent(UUID().uuidString),recent=retention.appendingPathComponent(UUID().uuidString)
+  try fm.createDirectory(at:older,withIntermediateDirectories:true);try fm.createDirectory(at:recent,withIntermediateDirectories:true)
+  try Data("old incident".utf8).write(to:older.appendingPathComponent("incident.jsonl"))
+  try Data("new incomplete journal".utf8).write(to:recent.appendingPathComponent("thread-frame-memory.0.jsonl"))
+  try fm.setAttributes([.modificationDate:Date(timeIntervalSince1970:100)],ofItemAtPath:older.path)
+  try fm.setAttributes([.modificationDate:Date(timeIntervalSince1970:200)],ofItemAtPath:recent.path)
+  try verify(RunEvidenceStore.retainPreceding(in:retention)==recent.lastPathComponent)
+  try verify(fm.fileExists(atPath:recent.appendingPathComponent("thread-frame-memory.0.jsonl").path) && !fm.fileExists(atPath:older.path))
+  try fm.createDirectory(at:older,withIntermediateDirectories:true)
+  try fm.setAttributes([.modificationDate:Date(timeIntervalSince1970:900)],ofItemAtPath:older.path)
+  try Data(recent.lastPathComponent.utf8).write(to:retention.appendingPathComponent("last-session"))
+  try verify(RunEvidenceStore.retainPreceding(in:retention)==recent.lastPathComponent)
+  try fm.removeItem(at:retention)
   let store=try RunEvidenceStore(root:root)
   store.calibration("fixture")
   var w=[UInt64](repeating:0,count:48);w[0]=1;w[1]=3;w[2]=19;w[3]=100;w[4]=0x100;w[5]=34;w[9]=80;w[10]=0x7c3531d840;w[11]=0xc89ffcd3;w[12]=0x7a58142b58;w[13]=8;w[35]=1;w[37]=90;w[38]=3

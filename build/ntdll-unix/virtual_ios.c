@@ -39475,7 +39475,10 @@ void ios_evidence_access(struct ios_evidence_record *r)
             p.w[at+5]=ios_evidence_now()-p.w[at+1];
         }
         p.w[19]=__atomic_load_n(&ios_ev_vm_generation,__ATOMIC_ACQUIRE);
-        p.w[36]=r->w[42] ? 2 : 1;p.w[37]=r->w[47];p.w[38]=host_page_size;
+        p.w[36]=r->w[42] ? 2 : 1;p.w[38]=host_page_size;
+        { extern unsigned long long ios_thread_process_try_observation_lease(void *,unsigned);
+          uint64_t lease=ios_thread_process_try_observation_lease((void *)(uintptr_t)r->w[4],r->w[6]);
+          p.w[37]=!lease ? 0 : lease==r->w[5] ? 1 : 2;p.w[41]=ios_evidence_now(); }
         p.w[39]=r->w[17];p.w[40]=r->w[18];
         ios_evidence_emit(&p);
     }

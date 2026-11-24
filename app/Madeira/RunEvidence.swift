@@ -165,6 +165,7 @@ enum RunEvidenceSchema {
             r["vmEpochBeforePages"]=String(w[18]);r["vmEpochAfterPages"]=String(w[19]);r["accessEpochBefore"]=String(w[39]);r["accessEpochAfter"]=String(w[40])
             r["metadataConsistency"]=w[18]==w[19] && w[39]==w[40] && w[40]==w[18] ? "epochs-unchanged; post-resume-not-atomic-with-registers" : "VM-changed-between-observations"
             r["samplingLeaseRecheck"]=[0:"busy-or-unavailable",1:"matched",2:"changed"][w[37]] ?? "unknown"
+            r["samplingLeaseCheckNS"]=String(w[41])
             var pages:[[String:Any]]=[]
             for i in 0..<min(2,Int(w[36])) {
                 let at=20+i*8
@@ -233,7 +234,7 @@ final class RunEvidenceStore {
     }
     private func persist(_ values:[String:Any],_ name:String) throws {
         let data=try RunEvidenceSchema.json(values);guard data.count<=256<<10 else {throw CocoaError(.fileWriteOutOfSpace)}
-        do {try data.write(to:directory.appendingPathComponent(name),options:.atomic);try fm.setAttributes([.posixPermissions:0o600],ofItemAtPath:directory.appendingPathComponent(name).path);logicalBytes+=UInt64(data.count);metadataWrites+=1}
+        do {try data.write(to:directory.appendingPathComponent(name),options:.atomic);logicalBytes+=UInt64(data.count);metadataWrites+=1;try fm.setAttributes([.posixPermissions:0o600],ofItemAtPath:directory.appendingPathComponent(name).path)}
         catch {writeFailures+=1;throw error}
     }
     private var facts: [String:Any] = [:]
@@ -365,6 +366,28 @@ final class RunEvidenceStore {
         let data=try RunEvidenceSchema.json(values); guard data.count<=256<<10 else { throw CocoaError(.fileWriteOutOfSpace) }
         try data.write(to:url,options:.atomic); try FileManager.default.setAttributes([.posixPermissions:0o600],ofItemAtPath:url.path)
     }
+    /// Preserve the immediate preceding session, including an incomplete one.
+    /// Older incidents must not displace a more recent abrupt-ending journal.
+    static func retainPreceding(in root:URL) -> String? {
+        let runs=(try? FileManager.default.contentsOfDirectory(at:root,includingPropertiesForKeys:[.contentModificationDateKey])) ?? []
+        let valid=runs.filter { var st=stat();return UUID(uuidString:$0.lastPathComponent) != nil && lstat($0.path,&st)==0 && st.st_uid==getuid() && st.st_mode & mode_t(S_IFMT)==mode_t(S_IFDIR) }.sorted {
+            ((try? $0.resourceValues(forKeys:[.contentModificationDateKey]).contentModificationDate) ?? .distantPast) > ((try? $1.resourceValues(forKeys:[.contentModificationDateKey]).contentModificationDate) ?? .distantPast)
+        }
+        var previous=valid.first?.lastPathComponent
+        // The write-acknowledged app-session pointer survives wall-clock changes.
+        // If missing/corrupt, only then fall back to directory timestamps.
+        let fd=open(root.appendingPathComponent("last-session").path,O_RDONLY|O_NOFOLLOW|O_CLOEXEC)
+        if fd>=0 {
+            var st=stat();var data=[UInt8](repeating:0,count:64)
+            if fstat(fd,&st)==0,st.st_uid==getuid(),st.st_mode & mode_t(S_IFMT)==mode_t(S_IFREG),st.st_size==36 {
+                let n=data.withUnsafeMutableBytes{read(fd,$0.baseAddress,36)}
+                if n==36,let id=String(bytes:data.prefix(n),encoding:.utf8),UUID(uuidString:id) != nil,valid.contains(where:{$0.lastPathComponent==id}) {previous=id}
+            }
+            close(fd)
+        }
+        for old in valid where old.lastPathComponent != previous {try? FileManager.default.removeItem(at:old)}
+        return previous
+    }
     /// Snapshot on the recorder queue. The ZIP writer streams these private
     /// files later and never reads mutable recording files concurrently.
     static func snapshotRun(_ source: URL, destination: URL, hostRunning:Bool?=nil) throws -> [String:URL] {
@@ -435,15 +458,15 @@ final class RunEvidenceRecorder {
         try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
         var rootInfo=stat()
         guard lstat(root.path,&rootInfo)==0,rootInfo.st_uid==getuid(),rootInfo.st_mode & mode_t(S_IFMT)==mode_t(S_IFDIR) else {throw CocoaError(.fileReadNoPermission)}
-        let runs=(try? FileManager.default.contentsOfDirectory(at:root,includingPropertiesForKeys:[.contentModificationDateKey])) ?? []
-        let valid=runs.filter { var st=stat();return UUID(uuidString:$0.lastPathComponent) != nil && lstat($0.path,&st)==0 && st.st_uid==getuid() && st.st_mode & mode_t(S_IFMT)==mode_t(S_IFDIR) }.sorted {
-            ((try? $0.resourceValues(forKeys:[.contentModificationDateKey]).contentModificationDate) ?? .distantPast) > ((try? $1.resourceValues(forKeys:[.contentModificationDateKey]).contentModificationDate) ?? .distantPast)
-        }
-        previous=valid.first?.lastPathComponent
-        let retained=valid.first(where:{FileManager.default.fileExists(atPath:$0.appendingPathComponent("incident.jsonl").path)}) ?? valid.first
-        previous=retained?.lastPathComponent
-        for old in valid where old.lastPathComponent != previous { try? FileManager.default.removeItem(at:old) }
+        previous=RunEvidenceStore.retainPreceding(in:root)
         store=try RunEvidenceStore(root:root)
+        do {
+            let marker=root.appendingPathComponent("last-session")
+            try Data(store.runID.utf8).write(to:marker,options:.atomic)
+            try FileManager.default.setAttributes([.posixPermissions:0o600],ofItemAtPath:marker.path)
+            store.fact("sessionPointerPersistence","write-acknowledged; not-fsynced; timestamp-fallback-if-unavailable")
+        } catch {store.fact("sessionPointerPersistence","failed; timestamp-fallback; exact-order-after-clock-change-unavailable")}
+
         var provenance:[String:String]=[:]
         for key in ["CFBundleIdentifier","CFBundleShortVersionString","CFBundleVersion","MadeiraSourceRevision","MadeiraNativeUUID","MadeiraVirtualSourceSHA256","MadeiraJITSourceSHA256"] {
             if let value=bundle[key] as? String,RunEvidenceSchema.safeAtom(value) { provenance[key]=value }
