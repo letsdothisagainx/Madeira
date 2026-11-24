@@ -23793,7 +23793,7 @@ static const char ios_swap_private_pager_policy[] __attribute__((used)) = "cs2-p
 static void ios_swap_private_pager_advice(void *base,size_t size)
 {
 #ifdef MADV_RANDOM
-    struct file_view *view=find_view(base);
+    struct file_view *view=find_view(base,size);
     int saved=errno,rc;
     if(!view || !is_view_valloc(view) || (uintptr_t)base<(uintptr_t)view->base ||
        size>view->size || (uintptr_t)base-(uintptr_t)view->base>view->size-size ||

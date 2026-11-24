@@ -41,7 +41,7 @@ static TEB teb;static TEB *current=&teb;
 static struct madeira_native_thread ios_native_current;static int ios_native_finishing;
 struct file_view{void *base;size_t size;unsigned protect;uintptr_t ios_evidence_owner;uint64_t ios_evidence_id;};
 static struct file_view view;
-static struct file_view *find_view(void *base){return (uintptr_t)base>=(uintptr_t)view.base && (uintptr_t)base-(uintptr_t)view.base<view.size ? &view:NULL;}
+static struct file_view *find_view(const void *base,size_t size){return (uintptr_t)base>=(uintptr_t)view.base && size<=view.size && (uintptr_t)base-(uintptr_t)view.base<=view.size-size ? &view:NULL;}
 static int fixture_private_view=1;
 static int is_view_valloc(struct file_view *v){(void)v;return fixture_private_view;}
 enum{SEC_FILE=1<<8,SEC_IMAGE=1<<9,SEC_RESERVE=1<<10,VPROT_SYSTEM=1<<11,VPROT_ARM64EC=1<<12,VPROT_WRITEWATCH=1<<13,VPROT_EXEC=4,VPROT_GUARD=1<<14,VPROT_WRITECOPY=1<<15,VPROT_PLACEHOLDER=1<<16,VPROT_FREE_PLACEHOLDER=1<<17};
