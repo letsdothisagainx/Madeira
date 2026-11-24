@@ -26,12 +26,18 @@ on:
       - tools/build/stage-dxmt-memory-compat.py
       - .github/workflows/loading-compat.yml
   workflow_dispatch:
+    inputs:
+      allow_legacy_fault_cases:
+        description: Historical mapping/protection cases; requires separate explicit authorization
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
   actual-loading-paths:
+    if: github.event_name == 'workflow_dispatch' && inputs.allow_legacy_fault_cases
     strategy:
       fail-fast: false
       matrix:

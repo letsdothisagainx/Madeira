@@ -2,6 +2,11 @@ name: Verify cross-page vector store execution
 
 on:
   workflow_dispatch:
+    inputs:
+      allow_legacy_fault_cases:
+        description: Historical captured-code/fault experiments; requires separate explicit authorization
+        type: boolean
+        default: false
   push:
     paths:
       - 'build/ntdll-unix/server_ios.c'
@@ -20,6 +25,8 @@ permissions:
 
 jobs:
   native-store:
+    # Foreground normal-input sessions must never trigger these via a push.
+    if: github.event_name == 'workflow_dispatch' && inputs.allow_legacy_fault_cases
     runs-on: xcode-27
     timeout-minutes: 10
     steps:

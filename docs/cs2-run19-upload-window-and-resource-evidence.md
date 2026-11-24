@@ -4,8 +4,14 @@ Evidence source `6367a1566aad52eb5ec23af973b93db402cd3885`, native UUID
 `EA48680B-97E9-3102-A69D-CF790363851B`, run
 `8ACF83DD-5795-47FB-A446-9093A938D6B9`, ZIP SHA256
 `221af2242a8ef9aec416cb19a6cffa6d7f52272c7bae2bead45bdd7ad720400c`.
-The later workflow-only head is preserved. No agents, captured instruction
-execution, deliberate crash/fault/protection/page-revocation tests are used.
+The later workflow-only head is preserved. Work and the explicitly selected
+checks use no agents or deliberate fault experiments. Delivery exposed an old
+automatic push workflow that executed captured-store/protection cases before
+cancellation (run 45330388073). This violated the requested constraint; its
+results are excluded from this candidate's validation. Both historical fault
+workflows now require a separate explicit manual opt-in and cannot execute on
+push or ordinary dispatch. The normal-input checks remain in the focused and
+IPA workflows. No further legacy experiments are run.
 
 ## Established mechanism and production change
 
@@ -175,7 +181,8 @@ unknown/busy/recycled identities, serialization/nulls, redaction, source dedup,
 guest-versus-host exit, rotation, incident/previous incomplete data and disk caps.
 Run19 fixture preserves **81 console OOM occurrences, eight native reports,
 299 prior structured rows** as separate facts. Existing ZIP/share/cancellation,
-retirement, TSO and cache-key checks remain. No legacy fault cases are executed.
+retirement, TSO and cache-key checks remain. The canceled automatic legacy run
+above is not included as passing verification.
 
 CI must compile the actual Metal/PE/native/iPhone paths and validate final IPA
 source/component/native UUID and matching symbol artifact. A build is packaging
