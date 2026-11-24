@@ -1866,7 +1866,7 @@ final class LibraryModel: ObservableObject {
                 "hostFlags":w.native_flags,"hostMetadataAvailable":w.native_flags&1 != 0,"hostLayerAttached":w.native_flags&2 != 0,"hostLayerVisible":w.native_flags&4 != 0,"compositorVisible":w.native_flags&16 != 0,
                 "association":"Steam-client-window-candidate; prompt-window-association-unknown","reachability":"host-layer-and-session-view-observations; Windows-focus-and-input-consumption-separate"])
         }
-        RunEvidenceRecorder.launchView(["event":revealed ? "steam-view-revealed" : "steam-launch-window-summary","requestID":launch.requestID,"appID":launch.appID,
+        RunEvidenceRecorder.launchView(["event":revealed ? "steam-view-handoff-request" : "steam-launch-window-summary","requestID":launch.requestID,"appID":launch.appID,
             "captureNS":String(now),"clockDomain":"CLOCK_MONOTONIC","windows":windows,"windowQuery":count<0 ? "busy-or-unavailable" : "snapshot",
             "sessionViewVisible":!launching && !menu,"nativeSessionRevealed":steamViewRevealed,"nativeRevealResult":steamRevealResult as Any? ?? NSNull(),"revealRequested":revealed,"revealed":revealed && steamViewRevealed,"reason":revealed ? "explicit-user-open-Steam" : "bounded-prelaunch-observation",
             "promptIdentified":NSNull(),"promptIdentificationReason":"public-GameAction-does-not-name-a-window-or-prompt-subtype"])

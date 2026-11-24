@@ -886,16 +886,17 @@ final class RunEvidenceRecorder {
         store.record("thread-frame-memory",["event":"native-recorder-coverage","latestNativeSequence":String(stats[1]),"tryLockDrops":stats[2],"overwrittenNativeRecords":stats[3],"VMOperations":stats[5],"VMBytesCumulative":stats[6],"VMErrors":stats[7],"VMDurationNSCumulative":stats[8],"scope":"host-app-instrumented-operations","status":stats[0]==1 ? "drained" : "drain-busy-or-unavailable"])
         var frame=[UInt64](repeating:0,count:5); nativeEvidenceFrame(&frame)
         let framePair=frame[3]>0 && frame[4]>0 ? RunEvidenceSchema.hex(frame[3])+"-"+String(frame[4]) : nil
-        let gap=framePair==process && frame[1]>0 && frame[2]>=frame[1] ? frame[2]-frame[1] : nil
-        store.record("thread-frame-memory",stamp(["event":"frame-progress","scope":"validated-CS2-owner-DXMT-pacing-hook-not-GPU-completion","count":frame[3]>0 ? frame[0] : NSNull(),"owner":frame[3]>0 ? RunEvidenceSchema.hex(frame[3]) : NSNull(),"lease":frame[4]>0 ? String(frame[4]) : NSNull(),"frameIdentityStatus":framePair==process && framePair != nil ? "current-lease-matched" : framePair != nil ? "other-live-lifetime" : "identity-busy-or-no-active-observer","lastHookNS":frame[1]>0 ? String(frame[1]) : NSNull(),"gapNS":gap as Any? ?? NSNull(),"foreground":foreground,"foregroundBeganNS":String(foregroundBegan),"GPUCompletion":"available-only-in-existing-frame-logs","intentionalPause":"unknown-unless-observed"] ))
-        let activeGap=foreground && framePair==process && frame[2]>=max(frame[1],foregroundBegan) ? frame[2]-max(frame[1],foregroundBegan) : nil
+        let frameMatches=process != nil && framePair==process
+        let gap=frameMatches && frame[1]>0 && frame[2]>=frame[1] ? frame[2]-frame[1] : nil
+        store.record("thread-frame-memory",stamp(["event":"frame-progress","scope":"validated-CS2-owner-DXMT-pacing-hook-not-GPU-completion","count":frame[3]>0 ? frame[0] : NSNull(),"owner":frame[3]>0 ? RunEvidenceSchema.hex(frame[3]) : NSNull(),"lease":frame[4]>0 ? String(frame[4]) : NSNull(),"frameIdentityStatus":frameMatches ? "current-lease-matched" : framePair != nil ? "other-live-lifetime" : "identity-busy-or-no-active-observer","lastHookNS":frame[1]>0 ? String(frame[1]) : NSNull(),"gapNS":gap as Any? ?? NSNull(),"foreground":foreground,"foregroundBeganNS":String(foregroundBegan),"GPUCompletion":"available-only-in-existing-frame-logs","intentionalPause":"unknown-unless-observed"] ))
+        let activeGap=foreground && frameMatches && frame[2]>=max(frame[1],foregroundBegan) ? frame[2]-max(frame[1],foregroundBegan) : nil
         if let gap=activeGap, gap>3_000_000_000, process != nil, !stall {
             stall=true; store.record("timeline",stamp(["event":"frame-stall-observed","gapNS":gap,"source":"DXMT-pacing-hook","confidence":"no-hook-progress; intentional-pause-not-excluded"]))
             if activated { incident("post-activation-frame-stall") }
-        } else if stall, framePair==process, frame[0] != lastFrame {
+        } else if stall, frameMatches, frame[0] != lastFrame {
             stall=false; store.record("timeline",stamp(["event":"frame-progress-recovered","source":"DXMT-pacing-hook"]))
         }
-        if framePair==process,frame[0]>0,var current=launch,current.cs2Lifetime==process,current.firstPresentationNS==nil {current.firstPresentationNS=frame[1];launch=current;publishLaunch()}
+        if frameMatches,frame[0]>0,var current=launch,current.cs2Lifetime==process,current.firstPresentationNS==nil {current.firstPresentationNS=frame[1];launch=current;publishLaunch()}
         lastFrame=frame[0]
         if let gap=activeGap { maxGapNS=max(maxGapNS,gap);store.fact("maxForegroundObservedPacingHookGap",["NS":maxGapNS,"scope":"whole-app foreground portions; includes startup/local; not remote-gameplay benchmark"]) }
         var info=task_vm_info_data_t(); var count=mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size/MemoryLayout<integer_t>.size)
