@@ -76,7 +76,7 @@ uint64_t ios_native_rip_from_hostpc_budget(uint64_t block,uint64_t pc)
 {assert(!held);(void)block;(void)pc;return 0;}
 struct ios_ts_mod { uint64_t base,size;char name[40]; };
 struct ios_ts_map {uint64_t peb,lease,observed_ns;int n;struct ios_ts_mod m[160];};
-static struct ios_ts_map ios_ts_maps[6];static int ios_ts_nmaps;
+static struct ios_ts_map ios_ts_maps[6];static int ios_ts_nmaps;static unsigned ios_ts_map_lock;
 static const char *ios_ts_mod_for(struct ios_ts_map *map,uint64_t pc,uint64_t *rva)
 {assert(!held);(void)map;(void)pc;(void)rva;return NULL;}
 #include "cs2_stall_watch_native.h"

@@ -50,3 +50,37 @@ assert 'mutex_lock( mutex );\n    ios_runtime_end(1,runtime);' in server
 assert 'ret = server_select( select_op, size, flags, abs_timeout, NULL, &apc );\n        ios_runtime_end(2,runtime);' in server
 assert 'if(ios_cs2_stall_find((uintptr_t)owner,pid,lease))\n        ios_runtime_register' in server
 print('passive placement: known initial thread only, original wait/lock statuses, no added suspension/loader walk/payload reads PASS')
+# Execute the actual try-only cache wrapper on ordinary metadata. The retained
+# view must survive a different observer publishing another map.
+def function(text,signature):
+ b=text.index(signature);e=text.index('{',b)+1;depth=1
+ while depth:depth+=(text[e]=='{')-(text[e]=='}');e+=1
+ return text[b:e]
+wrapper=function(server,'static struct ios_ts_map *ios_ts_map_for_teb(uint64_t teb)')
+with tempfile.TemporaryDirectory() as d:
+ p=Path(d)
+ (p/'cache.c').write_text(r'''
+#include <stdint.h>
+#include <assert.h>
+#include <stdio.h>
+#include <pthread.h>
+struct ios_ts_mod {uint64_t base,size;char name[40];};
+struct ios_ts_map {uint64_t peb,lease,observed_ns;int n;struct ios_ts_mod m[160];};
+static struct ios_ts_map backing,ios_ts_borrows[4];
+static uintptr_t ios_ts_borrow_owner[4];static unsigned ios_ts_map_lock;
+static struct ios_ts_map *ios_ts_map_for_teb_impl(uint64_t teb){backing.peb=teb;backing.n=1;backing.m[0].base=teb;return &backing;}
+'''+wrapper+r'''
+static void *other(void *unused){(void)unused;struct ios_ts_map *p=ios_ts_map_for_teb(2);assert(p && p->peb==2);return NULL;}
+int main(void){
+ struct ios_ts_map *one=ios_ts_map_for_teb(1);assert(one && one!=&backing && one->peb==1);
+ pthread_t t;assert(!pthread_create(&t,NULL,other,NULL));pthread_join(t,NULL);
+ assert(backing.peb==2 && one->peb==1 && one->m[0].base==1);
+ ios_ts_map_lock=1;assert(!ios_ts_map_for_teb(3));ios_ts_map_lock=0;
+ assert(one->peb==1);_Static_assert(sizeof(ios_ts_borrows)<36*1024,"fixed cache budget");
+ puts("actual module cache wrapper: retained observer view survives concurrent publication; busy returns unavailable; four fixed copies below 36KiB PASS");
+}
+''')
+ subprocess.run([os.getenv('CC','cc'),'-std=c11','-Wall','-Wextra','-Werror','-O2','-pthread',str(p/'cache.c'),'-o',str(p/'cache')],check=True)
+ subprocess.run([str(p/'cache')],check=True)
+assert server.index('ios_ts_nmaps=0; /* reset before acquiring task_threads rights */') < server.index('if (task_threads(mach_task_self(), &tlist, &tcount) != KERN_SUCCESS) return;',server.index('static void ios_thread_sampler_pass('))
+assert n.index('memcpy(resolved.w+20,module,n);')<n.index('__atomic_store_n(&ios_ts_map_lock,0,__ATOMIC_RELEASE);')

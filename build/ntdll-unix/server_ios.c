@@ -841,6 +841,9 @@ struct ios_ts_mod { uint64_t base, size; char name[40]; };
 struct ios_ts_map { uint64_t peb, lease, observed_ns; int n; struct ios_ts_mod m[160]; };
 static struct ios_ts_map ios_ts_maps[6];
 static int ios_ts_nmaps;
+static unsigned ios_ts_map_lock;
+static struct ios_ts_map ios_ts_borrows[4];
+static uintptr_t ios_ts_borrow_owner[4];
 
 static int ios_ts_read(uint64_t a, void *o, size_t n)
 {
@@ -878,7 +881,7 @@ static uint64_t ios_ts_teb(pthread_t pt)
     return (v & 0xfff) ? 0 : v;
 }
 
-static struct ios_ts_map *ios_ts_map_for_teb(uint64_t teb)
+static struct ios_ts_map *ios_ts_map_for_teb_impl(uint64_t teb)
 {
     uint64_t peb = 0, ldr = 0, head, cur; int i, guard = 0; struct ios_ts_map *mp;
     if (!teb || (teb & 0xfff) || !ios_ts_read(teb + 0x60, &peb, 8) || !peb) return NULL;
@@ -908,6 +911,22 @@ static struct ios_ts_map *ios_ts_map_for_teb(uint64_t teb)
     wine_log_write("[thread-sample] ml876 modmap peb=0x%llx modules=%d first=%s@0x%llx", (unsigned long long)peb, mp->n,
                    mp->n ? mp->m[0].name : "-", (unsigned long long)(mp->n ? mp->m[0].base : 0));
     return mp;
+}
+
+/* Diagnostic cache only. Never block a sampler or a guest on another observer. */
+static struct ios_ts_map *ios_ts_map_for_teb(uint64_t teb)
+{
+    unsigned empty=0;struct ios_ts_map *result,*borrow=NULL;
+    uintptr_t self=(uintptr_t)pthread_self();
+    if(!__atomic_compare_exchange_n(&ios_ts_map_lock,&empty,1,0,__ATOMIC_ACQUIRE,__ATOMIC_RELAXED))return NULL;
+    result=ios_ts_map_for_teb_impl(teb);
+    if(result) for(unsigned i=0;i<4;++i) {
+        if(!ios_ts_borrow_owner[i])ios_ts_borrow_owner[i]=self;
+        if(ios_ts_borrow_owner[i]==self) {ios_ts_borrows[i]=*result;borrow=ios_ts_borrows+i;break;}
+    }
+    /* Legacy callers retain a per-observer copy, never a mutable global map.
+     * Four fixed observers; exhaustion is unavailable, not an allocation. */
+    __atomic_store_n(&ios_ts_map_lock,0,__ATOMIC_RELEASE);return borrow;
 }
 
 static const char *ios_ts_mod_for(struct ios_ts_map *mp, uint64_t va, uint64_t *rva)
@@ -1122,8 +1141,11 @@ static void ios_thread_sampler_pass(int burst)
     extern uint64_t ios_native_rip_from_hostpc( uint64_t, uint64_t, const char ** );
     mach_port_t self_port = pthread_mach_thread_np(pthread_self());
     thread_act_array_t tlist; mach_msg_type_number_t tcount; unsigned k, printed = 0, hot_captures = 0;
+    { unsigned empty=0;
+      if(!__atomic_compare_exchange_n(&ios_ts_map_lock,&empty,1,0,__ATOMIC_ACQUIRE,__ATOMIC_RELAXED))return;
+      ios_ts_nmaps=0; /* reset before acquiring task_threads rights */
+      __atomic_store_n(&ios_ts_map_lock,0,__ATOMIC_RELEASE); }
     if (task_threads(mach_task_self(), &tlist, &tcount) != KERN_SUCCESS) return;
-    ios_ts_nmaps = 0;                                   /* fresh maps every pass */
     for (k = 0; k < tcount && printed < 64; k++) {
         thread_basic_info_data_t bi; mach_msg_type_number_t bic = THREAD_BASIC_INFO_COUNT;
         arm_thread_state64_t st; mach_msg_type_number_t cnt = ARM_THREAD_STATE64_COUNT;

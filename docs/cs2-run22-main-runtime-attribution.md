@@ -93,7 +93,11 @@ PC-to-guest resolution was not retained continuously for this main lifetime.
   existing native block pointer and does not use a saved guest RIP as execution.
   All new lookup work is after resume: at most approximately 4.7 KiB and 12 checked
   metadata reads per main sample. Module/RVA uses only an already cached loader
-  map with matching owner/lease, plus its observation age; no new loader/stack
+  map with matching owner/lease, plus its observation age. A try-only guard
+  serializes cache publication/reset with the bounded copied lookup; busy means
+  unavailable, never waiting or reading a partial map. Legacy readers receive
+  a fixed per-observer copy (four slots) so cache resets cannot mutate their
+  borrowed view. Slot exhaustion is unavailable. No new loader/stack
   walk. Concurrent code/module changes remain possible and are labelled.
 * Controller records at discovery/lifecycle transitions distinguish framework
   controller, extended/micro-profile counts, enumeration time, cached profiles,
@@ -114,8 +118,8 @@ The same recorder, first/recent failures, preceding-run separation, sanitized
 logs and one-button streaming ZIP remain. A separate 256-KiB first post-activation
 stall excerpt survives later incidents without taking the resource-failure lane.
 There is no new rolling journal; the excerpt brings allocated disk budgets to
-15.5 MiB, still below the existing 16-MiB per-run cap. Added fixed native payload is below 4 KiB (four lifetime
-slots and issuer fields in 64 in-flight slots), inside existing <1-MiB payload
+15.5 MiB, still below the existing 16-MiB per-run cap. Added fixed native payload is below 40 KiB (four lifetime
+slots, issuer fields in 64 in-flight slots and four fixed module-cache copies), inside existing <1-MiB payload
 and <16-MiB-per-run persistence budgets; allocator overhead remains unmeasured.
 Resolution uses bounded local stack buffers. Added observations share existing
 rolling capacity, so overwritten detail remains counted. All persistence stays

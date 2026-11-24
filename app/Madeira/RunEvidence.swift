@@ -229,6 +229,7 @@ enum RunEvidenceSchema {
             let name=String(bytes:bytes,encoding:.ascii) ?? ""
             r["module"]=w[15]>0 && safeAtom(name) ? name : "unavailable"
             r["status"]=[0:"unavailable",1:"bounded-generated-block-lookup",2:"image-mapping",3:"no-generated-mapping-within-budget"][w[16]] ?? "unknown"
+            r["moduleCacheQueryStatus"]=w[19]==1 ? "try-guard-copied" : w[19]==2 ? "cache-busy-unavailable" : "unavailable"
             r["moduleStatus"]=w[15]>0 ? "cached-loader-map-matching-owner-and-lease" : "cached-module-unavailable"
             r["confidence"]="post-resume-JIT-metadata; not-atomic-with-register-capture; no-saved-guest-RIP-substitution"
             r["moduleCacheObservedNS"]=w[17]>0 ? String(w[17]) : NSNull()

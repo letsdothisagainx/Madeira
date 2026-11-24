@@ -85,15 +85,22 @@ static void ios_cs2_stall_main_sample(mach_port_t port, uint64_t native_id)
                 rip=ios_native_rip_from_hostpc_budget(block,pc);
                 if(rip)resolved.w[16]=1;
             }
-            for(int m=0;m<ios_ts_nmaps && m<6;++m)
-                if(ios_ts_maps[m].peb==watch->owner && ios_ts_maps[m].lease==watch->lease) {
-                    module=ios_ts_mod_for(ios_ts_maps+m,rip,&rva);resolved.w[17]=ios_ts_maps[m].observed_ns;break;
-                }
+            { unsigned empty=0;
+              if(__atomic_compare_exchange_n(&ios_ts_map_lock,&empty,1,0,__ATOMIC_ACQUIRE,__ATOMIC_RELAXED)) {
+                resolved.w[19]=1;
+                for(int m=0;m<ios_ts_nmaps && m<6;++m)
+                    if(ios_ts_maps[m].peb==watch->owner && ios_ts_maps[m].lease==watch->lease) {
+                        module=ios_ts_mod_for(ios_ts_maps+m,rip,&rva);resolved.w[17]=ios_ts_maps[m].observed_ns;break;
+                    }
+                /* Copy the fixed basename before releasing the cache guard. */
+                if(module) {unsigned n=0;while(n<39 && module[n])++n;resolved.w[15]=1;memcpy(resolved.w+20,module,n);}
+                __atomic_store_n(&ios_ts_map_lock,0,__ATOMIC_RELEASE);
+              } else resolved.w[19]=2;
+            }
             resolved.w[1]=17;resolved.w[4]=watch->owner;resolved.w[5]=watch->lease;
             resolved.w[6]=watch->pid;resolved.w[7]=watch->main.tid;resolved.w[8]=native_id;
             resolved.w[9]=capture_ns;resolved.w[10]=pc;resolved.w[11]=begin;
             resolved.w[12]=ios_evidence_now()-begin;resolved.w[13]=rip;resolved.w[14]=rva;
-            if(module) {unsigned n=0;while(n<39 && module[n])++n;resolved.w[15]=1;memcpy(resolved.w+20,module,n);}
             ios_evidence_emit(&resolved);
         }
         /* The only suspension above is already balanced. Metadata queries do
