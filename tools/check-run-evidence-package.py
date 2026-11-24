@@ -6,7 +6,7 @@ with zipfile.ZipFile(a.ipa) as z:
     info=plistlib.loads(z.read('Payload/Madeira.app/Info.plist'))
     image=z.read('Payload/Madeira.app/Madeira.debug.dylib')
     assert info['CFBundleIdentifier']=='com.willfaust.madeora'
-    for marker in [b'[run-evidence-v1]',b'_madeira_evidence_poll',b'_ios_evidence_access',b'_madeira_evidence_frame',b'_madeira_evidence_host_io',b'_madeira_evidence_host_vm_events',b'_madeira_evidence_resource',b'resource-request-result',b'guest-process-exit',b'madeira-evidence-v1',b'_mach_vm_page_query',b'external-retire-no-killpages-v1',b'recorder-persistence',b'sampled-host-page-metadata',b'main-runtime-operations',b'main-PC-resolution',b'_ios_runtime_begin',b'_ios_native_rip_from_hostpc_budget',b'controller-discovery']:
+    for marker in [b'[run-evidence-v1]',b'_madeira_evidence_poll',b'_ios_evidence_access',b'_madeira_evidence_frame',b'_madeira_evidence_host_io',b'_madeira_evidence_host_vm_events',b'_madeira_evidence_resource',b'resource-request-result',b'guest-process-exit',b'madeira-evidence-v1',b'_mach_vm_page_query',b'external-retire-no-killpages-v1',b'recorder-persistence',b'sampled-host-page-metadata',b'main-runtime-operations',b'main-PC-resolution',b'_ios_runtime_begin',b'_ios_native_rip_from_hostpc_budget',b'controller-discovery',b'cs2-private-random-pager-v1',b'_ios_cs2_current_private_owner',b'_ios_native_current_process_identity']:
         assert marker in image, 'missing linked evidence producer/consumer: '+repr(marker)
     for marker in [b'_winios_input_snapshot',b'_ios_thread_process_try_pid_identity',b'input-path-progress',b'resource-failures-first.jsonl',b'incident-first.jsonl']:
         assert marker in image, 'missing Run20 linked input/retention component: '+repr(marker)

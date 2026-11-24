@@ -40,6 +40,7 @@ static uintptr_t host_page_mask=P-1;
 static int ios_swap_fd=7,ios_swap_v2=1,ios_swap_broad,ios_swap_nchurny;
 static unsigned long long ios_swap_merges,ios_swap_bump_back,ios_swap_free_drop,ios_swap_punch_leaks,ios_swap_holes,ios_swap_decommit_remaps,ios_swap_decommit_fallbacks,ios_swap_bytes,ios_swap_img_bytes,ios_swap_releases,ios_swap_unbacks;
 static unsigned discarded,remapped,punched,deferred_enabled=1;
+static void ios_swap_private_pager_advice(void *a,size_t n){(void)a;(void)n;}
 static int dirty=1;
 static uint64_t ios_swap_now_ns(void){return 100;}
 static void ios_swap_churn_note(size_t key,uint64_t age){(void)key;(void)age;}

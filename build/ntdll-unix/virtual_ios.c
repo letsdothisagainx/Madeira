@@ -23779,6 +23779,36 @@ static int ios_swap_pq_state;   /* 0 not started, 1 running, -1 off */
 static unsigned long long ios_swap_pq_done, ios_swap_punch_slow, ios_swap_punch_max_ms;
 static unsigned long long ios_swap_decommit_remaps, ios_swap_decommit_fallbacks;
 
+static uint64_t ios_swap_random_attempts,ios_swap_random_success,ios_swap_random_failures,ios_swap_random_bytes;
+static int ios_swap_random_last_error;
+static const char ios_swap_private_pager_policy[] __attribute__((used)) = "cs2-private-random-pager-v1";
+/* File backing is an implementation detail of private guest data. The external
+ * pager's default speculative clustering treats it like a file access stream.
+ * MADV_RANDOM changes future clustering only: no touch/discard, new residency,
+ * copy, permission or ordering change. Apply only to an established fresh map
+ * while its existing VM lifetime lock excludes unmap/protection changes. */
+static void ios_swap_private_pager_advice(void *base,size_t size)
+{
+#ifdef MADV_RANDOM
+    struct file_view *view=find_view(base);
+    int saved=errno,rc;
+    if(!view || !is_view_valloc(view) || (uintptr_t)base<(uintptr_t)view->base ||
+       size>view->size || (uintptr_t)base-(uintptr_t)view->base>view->size-size ||
+       (view->protect & (SEC_FILE|SEC_IMAGE|SEC_RESERVE|VPROT_SYSTEM|VPROT_ARM64EC|VPROT_WRITEWATCH|
+                         VPROT_EXEC|VPROT_GUARD|VPROT_WRITECOPY|VPROT_PLACEHOLDER|VPROT_FREE_PLACEHOLDER)) ||
+       !ios_cs2_current_private_owner(view->ios_evidence_owner))return;
+    ++ios_swap_random_attempts;
+    uint64_t runtime=ios_runtime_begin(3,7);
+    uint64_t event=ios_evidence_begin(7,(uintptr_t)base,size,view->ios_evidence_id,1);
+    rc=madvise(base,size,MADV_RANDOM);
+    int advice_error=rc ? errno : 0;
+    ios_runtime_end(3,runtime);ios_evidence_end(event,rc,advice_error);
+    if(!rc) {++ios_swap_random_success;ios_swap_random_bytes+=size;__atomic_add_fetch(&ios_ev_vm_generation,1,__ATOMIC_RELEASE);}
+    else {++ios_swap_random_failures;ios_swap_random_last_error=errno;}
+    /* Advice failure never turns a valid mapping into a failed allocation. */
+    errno=saved;
+#endif
+}
 static void *ios_ev_swap_map(void *base, size_t size, int prot, uint64_t off)
 {
     uint64_t runtime=ios_runtime_begin(3,1);
@@ -24004,6 +24034,7 @@ static int ios_swap_map( void *base, size_t size, int unix_prot )
         ios_swap_give( off, len );
         return IOS_SW_MAPFAIL;
     }
+    ios_swap_private_pager_advice(hs,len);
     ios_swap_ext[ios_swap_n].evidence_id = ++ios_ev_extent_id;
     __atomic_add_fetch(&ios_ev_vm_generation,1,__ATOMIC_RELEASE);
     ios_swap_ext[ios_swap_n].va = hs; ios_swap_ext[ios_swap_n].len = len; ios_swap_ext[ios_swap_n].off = off;
@@ -24230,6 +24261,7 @@ static int ios_swap_punch_resv( char *lo, size_t len )
          * Retired dirty offsets remain quarantined until their punch completes. */
         if (ios_ev_swap_map( lo, len, PROT_READ | PROT_WRITE, fresh ) != MAP_FAILED)
         {
+            ios_swap_private_pager_advice(lo,len);
             for (i = 0; i < original_n; i++)
             {
                 struct ios_swap_extent old = ios_swap_ext[i];
@@ -39496,6 +39528,12 @@ void madeira_evidence_backing(void)
     if (pthread_mutex_trylock(&virtual_mutex)) { r.w[9]=1; ios_evidence_emit(&r); errno=saved; return; }
     r.w[9]=2; r.w[10]=ios_swap_bytes; r.w[11]=ios_swap_n; r.w[12]=ios_swap_nfree;
     r.w[13]=ios_swap_bump; r.w[14]=ios_swap_cap; r.w[15]=ios_swap_refused;
+    r.w[28]=0;
+#ifdef MADV_RANDOM
+    r.w[28]=1;
+#endif
+    r.w[29]=ios_swap_random_attempts;r.w[30]=ios_swap_random_success;r.w[31]=ios_swap_random_failures;
+    r.w[32]=ios_swap_random_bytes;r.w[33]=ios_swap_random_last_error;
     r.w[26]=__atomic_load_n(&ios_evidence_backing_file,__ATOMIC_ACQUIRE);r.w[27]=1; /* external-retire-no-killpages-v1 */
     r.w[22]=ios_swap_min;r.w[23]=ios_swap_resv_max;r.w[24]=ios_swap_broad ? 3 : ios_swap_wide ? 2 : ios_swap_v2 ? 1 : 0;r.w[25]=ios_swap_fd>=0;
     r.w[16]=ios_swap_punch_leaks; r.w[17]=ios_ev_vm_generation; r.w[18]=host_page_size;

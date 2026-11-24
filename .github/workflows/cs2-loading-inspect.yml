@@ -29,7 +29,7 @@ jobs:
       matrix:
         runner: [ubuntu-24.04, "${{ inputs.macos_runner || 'xcode-27' }}"]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
       - name: Type-check the actual observer against the iPhone SDK
@@ -39,6 +39,8 @@ jobs:
         run: |
           python3 tests/host/check-swap-external-retire.py
           python3 tests/host/check-steam-launch-progress.py ${{ runner.os == 'macOS' && '--require-swift' || '' }}
+          python3 tests/host/check-run23-first-stall.py ${{ runner.os == 'macOS' && '--require-swift' || '' }}
+          python3 tests/host/check-cs2-private-pager.py
           python3 tests/host/check-runtime-progress.py
           python3 tests/host/check-run-evidence.py ${{ runner.os == 'macOS' && '--require-swift' || '' }}
           python3 tests/host/check-run-diagnostics.py ${{ runner.os == 'macOS' && '--require-swift' || '' }}

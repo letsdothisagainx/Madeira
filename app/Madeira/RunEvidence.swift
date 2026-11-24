@@ -320,7 +320,7 @@ enum RunEvidenceSchema {
             return ("memory-access", r)
         case 4, 7:
             r["event"] = w[1] == 4 ? "VM-slow-or-error" : "VM-in-flight"
-            r["operation"] = [1:"map-shared-fixed",2:"set-guest-protection-or-commit",3:"protect",4:"discard-MS_KILLPAGES",5:"hole-punch",6:"decommit"][w[10]] ?? "unknown"
+            r["operation"] = [1:"map-shared-fixed",2:"set-guest-protection-or-commit",3:"protect",4:"discard-MS_KILLPAGES",5:"hole-punch",6:"decommit",7:"private-data-paging-advice-RANDOM"][w[10]] ?? "unknown"
             r["operationToken"] = String(w[8]); r["beginNS"] = String(w[9]); r["address"] = hex(w[11]); r["bytes"] = w[12]
             r["generationOrPunchFileOffset"] = String(w[13]); r["VM-lock-held"] = w[14] & 1 != 0
             r["execution"] = w[14] & 2 != 0 ? "deferred" : "synchronous"
@@ -350,7 +350,7 @@ enum RunEvidenceSchema {
             r["pages"]=pages;r["hostPageBytes"]=w[38];r["scope"]="actual-EA-host-pages; mach_vm_page_query; raw-disposition-not-region-counts; no-payload-read"
             return ("memory-access",r)
         case 12:
-            r["event"]="VM-operation-aggregate";r["operation"]=[1:"map-shared-fixed",2:"set-guest-protection-or-commit",3:"protect",4:"discard-MS_KILLPAGES",5:"hole-punch",6:"decommit"][w[9]] ?? "unknown"
+            r["event"]="VM-operation-aggregate";r["operation"]=[1:"map-shared-fixed",2:"set-guest-protection-or-commit",3:"protect",4:"discard-MS_KILLPAGES",5:"hole-punch",6:"decommit",7:"private-data-paging-advice-RANDOM"][w[9]] ?? "unknown"
             r["VM-lock-held"]=w[10]&1 != 0;r["execution"]=w[10]&2 != 0 ? "deferred" : "synchronous"
             r["countCumulative"]=w[11];r["bytesCumulative"]=w[12];r["errorsCumulative"]=w[13];r["durationNSCumulative"]=w[14]
             r["scope"]="host-app-instrumented-operations; nested-or-overlapping-elapsed-totals-not-main-CPU; try-lock-drops-separate"
@@ -371,6 +371,8 @@ enum RunEvidenceSchema {
             r["initialized"] = w[9] == 2 && w[25] == 1
             r["backingFileOpenLifetime"]=w[26]>0 ? String(w[26]) : NSNull()
             r["retirementPolicy"]=w[27]==1 ? "external-retire-no-killpages-v1" : "unobserved"
+            r["privatePagingPolicy"]=w[28]==1 ? "cs2-private-random-pager-v1" : "unavailable"
+            if w[28]==1 {r["pagingAdviceAttempts"]=w[29];r["pagingAdviceAccepted"]=w[30];r["pagingAdviceFailures"]=w[31];r["pagingAdviceBytesCumulative"]=w[32];r["lastPagingAdviceErrno"]=w[31]>0 ? w[33] : NSNull();r["pagingAdviceScope"]="host-session; validated-current-CS2-private-fresh-maps; cumulative-replacements-not-live-bytes; accepted-syscall-not-proof-of-pagein-or-FPS-improvement"}
             if w[9] == 2 {
                 for (i,k) in [(10,"liveBytes"),(11,"extentCount"),(12,"freeRangeCount"),(13,"fileBumpBytes"),(14,"fileCapBytes"),(15,"refusals"),(16,"quarantinedPunchFailures"),(17,"vmEpoch"),(18,"hostPageBytes"),(21,"freeBytes")] { r[k] = w[i] }
                 r["punchQueueDepth"] = w[19] == 1 ? w[20] : NSNull()
@@ -412,7 +414,7 @@ final class RunEvidenceStore {
     private var lastExceptionContext:[String:Any]?
     private var routineResource:[String:UInt64]=[:],failureOccurrences:[String]=[]
     private var failureDuplicates:UInt64=0,firstFailureBytes=0,firstFailureRecords:UInt64=0,firstFailureDropped:UInt64=0
-    private var incidentPriority=0,firstIncidentSaved=false,firstPostActivationStallSaved=false,lastIncidentNS:UInt64=0,suppressedIncidents:UInt64=0
+    private var incidentPriority=0,firstIncidentSaved=false,firstPostActivationStallSaved=false,firstPostActivationCaptureFailures:UInt64=0,lastIncidentNS:UInt64=0,suppressedIncidents:UInt64=0
     static func failedRequest(_ row:[String:Any])->Bool {
         guard row["event"] as? String == "resource-request-result" else{return false}
         if row["stage"] as? String == "unwound-without-result" {return true}
@@ -427,7 +429,7 @@ final class RunEvidenceStore {
 
     let startWallUnix=Date().timeIntervalSince1970
     func persistenceCounters() -> [String:Any] {
-        ["logicalBytesWritten":logicalBytes,"metadataWrites":metadataWrites,"checkpointCount":checkpointCount,"checkpointDurationNS":checkpointNS,"flushCount":flushCount,"flushDurationNS":flushNS,"fsyncCount":fsyncCount,"fsyncDurationNS":fsyncNS,"fsyncFailures":syncErrors,"rotationCount":overwritten,"rotationDurationNS":rotationNS,"incidentCopies":incidentCount,"incidentCopyBytes":incidentBytes,"incidentCopyDurationNS":incidentNS,"writeFailures":writeFailures,"scope":"recorder-owned-logical-writes-and-copies; not-physical-device-IO; excludes-export-copy-and-filesystem-metadata","selfMeasurement":"completed-work-before-this-snapshot; counters-may-lag-current-checkpoint","maximumSummaryLagSeconds":5,"unflushedTail":"unknown-after-abrupt-termination"]
+        ["logicalBytesWritten":logicalBytes,"metadataWrites":metadataWrites,"checkpointCount":checkpointCount,"checkpointDurationNS":checkpointNS,"flushCount":flushCount,"flushDurationNS":flushNS,"fsyncCount":fsyncCount,"fsyncDurationNS":fsyncNS,"fsyncFailures":syncErrors,"rotationCount":overwritten,"rotationDurationNS":rotationNS,"incidentCopies":incidentCount,"firstPostActivationCaptureFailures":firstPostActivationCaptureFailures,"firstPostActivationCaptureSaved":firstPostActivationStallSaved,"incidentCopyBytes":incidentBytes,"incidentCopyDurationNS":incidentNS,"writeFailures":writeFailures,"scope":"recorder-owned-logical-writes-and-copies; not-physical-device-IO; excludes-export-copy-and-filesystem-metadata","selfMeasurement":"completed-work-before-this-snapshot; counters-may-lag-current-checkpoint","maximumSummaryLagSeconds":5,"unflushedTail":"unknown-after-abrupt-termination"]
     }
     func monotonic(for wall:Double) -> UInt64? {
         guard let a=anchors.min(by:{abs($0.wall-wall)<abs($1.wall-wall)}) else{return nil}
@@ -548,41 +550,56 @@ final class RunEvidenceStore {
     func beginAttempt() { incidentPriority=0;lastIncidentNS=0 }
     func incident(_ reason:String) {
         let priority=reason.contains("disconnect") || reason.contains("guest-process-exit") ? 4 : reason.contains("texture") || reason.contains("resource") ? 3 : 1
-        let now=RunEvidenceSchema.mono()
-        if priority<incidentPriority || (priority==incidentPriority && lastIncidentNS>0 && now>=lastIncidentNS && now-lastIncidentNS<10_000_000_000) {suppressedIncidents+=1;return}
-        incidentPriority=priority;lastIncidentNS=now
-        let begin=now;incidentCount+=1;defer{incidentNS+=RunEvidenceSchema.mono()-begin}
-        record("timeline",["event":"incident-window","reason":reason,"priority":priority])
-        func capture(_ name:String,focused:Bool=false) {
+        let now=RunEvidenceSchema.mono(),begin=RunEvidenceSchema.mono()
+        defer {incidentNS+=RunEvidenceSchema.mono()-begin}
+        func capture(_ name:String,focused:Bool=false) -> Bool {
+            incidentCount+=1
             let url=directory.appendingPathComponent(name);try? fm.removeItem(at:url)
             let fd=open(url.path,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0o600)
-            guard fd>=0 else{writeFailures+=1;return};defer{close(fd)}
+            guard fd>=0 else{writeFailures+=1;return false}
+            var failed=false,total=0
             let ordinary=[("resource-failures",192<<10),("input-path",64<<10),("timeline",128<<10),("thread-frame-memory",256<<10),("memory-access",256<<10),("vm-operations",64<<10),("graphics-errors",64<<10)]
             let budgets=focused ? [("timeline",32<<10),("thread-frame-memory",128<<10),("memory-access",64<<10),("vm-operations",16<<10),("input-path",16<<10)] : ordinary
             for(channel,maximum) in budgets {
                 guard let f=files[channel] else{continue}
-                let copied=Self.copy(directory.appendingPathComponent("\(channel).\(f.slot).jsonl"),to:fd,maximum:maximum,tail:true)
-                logicalBytes+=UInt64(copied);incidentBytes+=UInt64(copied)
+                let copied=Self.copy(directory.appendingPathComponent("\(channel).\(f.slot).jsonl"),to:fd,maximum:maximum,tail:true,onError:{_ in failed=true})
+                total+=copied;logicalBytes+=UInt64(copied);incidentBytes+=UInt64(copied)
             }
+            if close(fd) != 0 {failed=true}
+            if failed {writeFailures+=1}
+            if failed || total==0 {try? fm.removeItem(at:url);return false}
+            return true // completed write/close, not an fsync durability guarantee
         }
-        if reason=="post-activation-frame-stall" && !firstPostActivationStallSaved {capture("incident-post-activation-first.jsonl",focused:true);firstPostActivationStallSaved=true}
-        if priority>=3 && !firstIncidentSaved {capture("incident-first.jsonl");firstIncidentSaved=true}
-        capture("incident.jsonl")
+        // Independent lane: resource priority protects ordinary incidents, but
+        // cannot suppress the first remote post-activation stall window.
+        if reason=="post-activation-frame-stall" && !firstPostActivationStallSaved {
+            firstPostActivationStallSaved=capture("incident-post-activation-first.jsonl",focused:true)
+            if !firstPostActivationStallSaved {firstPostActivationCaptureFailures+=1}
+        }
+        if priority<incidentPriority || (priority==incidentPriority && lastIncidentNS>0 && now>=lastIncidentNS && now-lastIncidentNS<10_000_000_000) {suppressedIncidents+=1;return}
+        incidentPriority=priority;lastIncidentNS=now
+        record("timeline",["event":"incident-window","reason":reason,"priority":priority])
+        if priority>=3 && !firstIncidentSaved {firstIncidentSaved=capture("incident-first.jsonl")}
+        _=capture("incident.jsonl")
     }
-    @discardableResult static func copy(_ source: URL, to destination: Int32, maximum: Int, tail:Bool=false) -> Int {
-        let fd=open(source.path,O_RDONLY|O_NOFOLLOW|O_CLOEXEC); guard fd>=0 else { return 0 }; defer { close(fd) }
-        var info=stat(); guard fstat(fd,&info)==0,info.st_uid==getuid(), info.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG) else { return 0 }
-        var buffer=[UInt8](repeating:0,count:16<<10), total=0
-        var partial=false
-        if tail && info.st_size>maximum {guard lseek(fd,info.st_size-off_t(maximum),SEEK_SET)>=0 else{return 0};partial=true}
+    @discardableResult static func copy(_ source: URL, to destination: Int32, maximum: Int, tail:Bool=false,onError:((Int32)->Void)?=nil) -> Int {
+        let fd=open(source.path,O_RDONLY|O_NOFOLLOW|O_CLOEXEC);guard fd>=0 else{onError?(errno);return 0};defer{close(fd)}
+        var info=stat();guard fstat(fd,&info)==0 else{onError?(errno);return 0}
+        guard info.st_uid==getuid(),info.st_mode & mode_t(S_IFMT)==mode_t(S_IFREG) else{onError?(EACCES);return 0}
+        var buffer=[UInt8](repeating:0,count:16<<10),total=0,partial=false
+        if tail && info.st_size>maximum {guard lseek(fd,info.st_size-off_t(maximum),SEEK_SET)>=0 else{onError?(errno);return 0};partial=true}
         while total<maximum {
             let amount=min(buffer.count,maximum-total)
-            let n=buffer.withUnsafeMutableBytes { read(fd,$0.baseAddress,amount) }
-            guard n>0 else { break }
+            let n=buffer.withUnsafeMutableBytes{read(fd,$0.baseAddress,amount)}
+            if n<0 {if errno==EINTR {continue};onError?(errno);break};if n==0 {break}
             var start=0
             if partial {if let newline=buffer.prefix(n).firstIndex(of:10){start=newline+1;partial=false}else{continue}}
-            let outputCount=n-start
-            let written=buffer.withUnsafeBytes { write(destination,$0.baseAddress!.advanced(by:start),outputCount) }; guard written==outputCount else { break }; total += outputCount
+            while start<n {
+                let written=buffer.withUnsafeBytes{write(destination,$0.baseAddress!.advanced(by:start),n-start)}
+                if written<0 && errno==EINTR {continue}
+                guard written>0 else{onError?(written<0 ? errno : EIO);return total}
+                total+=written;start+=written
+            }
         }
         return total
     }
@@ -914,6 +931,7 @@ final class RunEvidenceRecorder {
                 }
                 if r["event"] as? String == "backing-progress",let initialized=r["initialized"] as? Bool,initialized {
                     let base=i*48
+                    store.setConfig("effective-private-data-pager",["policy":words[base+28]==1 ? "cs2-private-random-pager-v1" : "unsupported-or-unavailable","scope":"validated-current-CS2-private-fresh-maps-only","receipt":"counts-in-backing-progress; syscall-acceptance-not-performance-proof"])
                     store.setConfig("effective-native-backing",["capBytes":String(words[base+14]),"minBytes":String(words[base+22]),"reservationMaxBytes":String(words[base+23]),"retirementPolicy":words[base+27]==1 ? "external-retire-no-killpages-v1" : "unobserved","fileOpenLifetime":String(words[base+26]),"coverage":["classic","blocks","wide","broad"][min(3,Int(words[base+24]))]])
                 }
                 store.record(channel,stamp(r))

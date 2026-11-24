@@ -78,12 +78,34 @@ func verify(_ ok:@autoclosure ()->Bool,_ file:StaticString=#file,_ line:Int=#lin
     print("Run19 actual parser: 81 console occurrences + eight native reports, distinct from 299 old structured rows; repeated same occurrence suppressed; guest C0000005 with host running PASS")
   }
   let stallRetention=try RunEvidenceStore(root:root.appendingPathComponent("first-play-stall"))
+  stallRetention.record("timeline",["event":"resource-failure-before-activation"])
+  stallRetention.incident("resource-admission-failure")
+  let failureFirst=try Data(contentsOf:stallRetention.directory.appendingPathComponent("incident-first.jsonl"))
+  stallRetention.record("timeline",["event":"remote-activated"])
   stallRetention.record("thread-frame-memory",["event":"main-progress","fixture":"first-post-activation-window"])
   stallRetention.incident("post-activation-frame-stall")
   let originalStall=try Data(contentsOf:stallRetention.directory.appendingPathComponent("incident-post-activation-first.jsonl"))
-  for i in 0..<300 {stallRetention.record("thread-frame-memory",["event":"frame-progress","fixture":i]);stallRetention.beginAttempt();stallRetention.incident("post-activation-frame-stall")}
+  for i in 0..<300 {stallRetention.record("thread-frame-memory",["event":"frame-progress","fixture":i]);stallRetention.incident("post-activation-frame-stall")}
+  stallRetention.record("timeline",["event":"disconnect-timeout"]);stallRetention.incident("disconnect-timeout")
   let retainedStall=try Data(contentsOf:stallRetention.directory.appendingPathComponent("incident-post-activation-first.jsonl"))
-  try verify(originalStall == retainedStall && originalStall.count<=256<<10)
+  let retainedFailure=try Data(contentsOf:stallRetention.directory.appendingPathComponent("incident-first.jsonl"))
+  try verify(originalStall == retainedStall && failureFirst==retainedFailure && originalStall.count<=256<<10)
+  try stallRetention.checkpoint()
+  let exported=try RunEvidenceStore.snapshotRun(stallRetention.directory,destination:root.appendingPathComponent("stall-export"),hostRunning:true)
+  let exportedStall=try Data(contentsOf:exported["incident-post-activation-first.jsonl"]!)
+  try verify(exportedStall == originalStall)
+  // An empty recording is data, not a simulated IO failure. It must leave the
+  // independent first-window lane available for later real progress records.
+  let emptyStall=try RunEvidenceStore(root:root.appendingPathComponent("empty-stall"))
+  emptyStall.incident("post-activation-frame-stall")
+  emptyStall.record("thread-frame-memory",["event":"main-progress","fixture":"retry-after-empty-input"])
+  emptyStall.incident("post-activation-frame-stall")
+  let retryStall=try String(contentsOf:emptyStall.directory.appendingPathComponent("incident-post-activation-first.jsonl"))
+  try verify(retryStall.contains("retry-after-empty-input"))
+  print("Run23 resource-before-activation -> stall -> disconnect: independent first stall + resource windows survive; exported byte equality; empty-input retry PASS")
+  var pager=[UInt64](repeating:0,count:48);pager[0]=1;pager[1]=6;pager[9]=2;pager[28]=1;pager[29]=2;pager[30]=2;pager[32]=8388608
+  let (_,paging)=RunEvidenceSchema.native(pager)!
+  try verify(paging["privatePagingPolicy"] as? String == "cs2-private-random-pager-v1" && paging["pagingAdviceAccepted"] as? UInt64 == 2)
   var runtime=[UInt64](repeating:0,count:48);runtime[0]=1;runtime[1]=16;runtime[4]=0x1000;runtime[5]=34;runtime[8]=98;runtime[9]=10;runtime[10]=40;runtime[11]=2;runtime[12]=3;runtime[16]=4;runtime[20]=30;runtime[24]=20;runtime[32]=1
   let (_,runtimeRow)=RunEvidenceSchema.native(runtime)!
   try verify(runtimeRow["event"] as? String == "main-runtime-operations" && runtimeRow["nativeThreadLifetimeID"] as? String == "98")

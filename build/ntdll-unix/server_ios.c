@@ -148,6 +148,16 @@ static void wine_log_write(const char *fmt, ...)
 #include "run_evidence_native.h"
 extern unsigned long long ios_thread_process_try_observation_lease(void *, unsigned);
 static void ios_cs2_stall_main_sample(mach_port_t, uint64_t);
+/* Called inside the VM lifetime lock: TLS + immutable published identities only.
+ * The current thread keeps its own native registration alive. No registry lock,
+ * sampled identity, guest payload read or saved address authorizes this policy. */
+int ios_cs2_current_private_owner(uintptr_t recorded_owner)
+{
+    extern int ios_native_current_process_identity(uintptr_t *,uint64_t *,unsigned *);
+    uintptr_t owner;uint64_t lease;unsigned pid;
+    return recorded_owner && ios_native_current_process_identity(&owner,&lease,&pid) &&
+           owner==recorded_owner && ios_cs2_stall_find(owner,pid,lease)!=NULL;
+}
 
 /* Called from the already validated cs2.exe initial-thread observation. It
  * never guesses the main TID from PID arithmetic or thread creation order. */

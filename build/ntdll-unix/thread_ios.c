@@ -154,6 +154,17 @@ static void ios_native_link_current_locked(struct ios_thread_group *group)
         if (group->exiting) { ios_native_current.exit_status=group->exit_status; __atomic_store_n(&ios_native_current.cancelled,1,__ATOMIC_RELEASE); }
     }
 }
+int ios_native_current_process_identity(uintptr_t *owner,uint64_t *lease,unsigned *pid)
+{
+    TEB *teb=NtCurrentTeb();
+    *owner=0;*lease=0;*pid=0;
+    if(!teb || ios_native_finishing || __atomic_load_n(&ios_native_current.cancelled,__ATOMIC_ACQUIRE) ||
+       ios_native_current.teb!=teb || ios_native_current.owner!=teb->Peb || !ios_native_current.lease ||
+       ios_native_current.pid!=(unsigned)(ULONG_PTR)teb->ClientId.UniqueProcess ||
+       ios_native_current.tid!=(unsigned)(ULONG_PTR)teb->ClientId.UniqueThread) return 0;
+    *owner=(uintptr_t)ios_native_current.owner;*lease=ios_native_current.lease;*pid=ios_native_current.pid;
+    return 1;
+}
 int ios_native_thread_cancelled(void)
 {
     return !ios_native_finishing && __atomic_load_n(&ios_native_current.cancelled,__ATOMIC_ACQUIRE);
