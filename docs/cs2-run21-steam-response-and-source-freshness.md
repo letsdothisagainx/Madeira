@@ -30,6 +30,10 @@ it dismisses the native cover/menu/keyboard, releases library input ownership,
 and reveals the existing real compositor. It does not answer a prompt, issue a
 CEF request, change Windows foreground focus, or bypass Steam's launch process.
 A native reveal request is distinguished from an attached visible session.
+The wait banner participates in the existing passthrough-window hit test only
+inside its measured rectangle while visible; otherwise its button would pass
+touches into Wine after the generic cover dismissed. Stale/hidden rectangles
+cannot intercept gameplay. Once CS2 starts, the prelaunch handoff is withdrawn.
 
 The archive does not establish the specific prompt window at 09:00:46. New
 pre-CS2 observations use a bounded passive census mode (64 windows, at most

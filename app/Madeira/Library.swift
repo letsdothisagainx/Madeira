@@ -1185,6 +1185,9 @@ final class LibraryModel: ObservableObject {
     private var launchDismissLogged = false
     var menuButtonRect = CGRect.zero
     var performanceRect = CGRect.zero
+    var steamResponseRect = CGRect.zero
+    var steamResponseBannerVisible:Bool {steamLaunchNeedsView && steamLaunch?.waiting==true && !steamViewRevealed && !startingScreen && !menu}
+    func ownsSteamResponseTouch(_ point:CGPoint)->Bool {steamResponseBannerVisible && steamResponseRect.contains(point)}
     /// The in-game menu and the starting screen take every touch.
     var blocksGameplayTouch: Bool { preparing != nil || (current != nil && (menu || launching)) }
     private var timer: Timer?
@@ -5301,9 +5304,12 @@ struct LibraryHUD: View {
                 if model.liveLogs && !model.startingScreen { LibraryLiveLogs().frame(maxWidth: 550, maxHeight: 140).padding(.top, Self.topInset(geo) + 60).padding(.horizontal, 12).allowsHitTesting(false) }
                 if !model.sessionMessage.isEmpty && !model.startingScreen { Text(model.sessionMessage).font(.caption).padding(10).background(.regularMaterial, in: Capsule()).frame(maxWidth: .infinity).padding(.top, Self.topInset(geo) + 12).allowsHitTesting(false) }
                 if !model.startingScreen { LibraryFloatingItem(isMenu: true, viewport: geo.size, insets: geo.safeAreaInsets) }
-                if let launch=model.steamLaunch,launch.waiting,!model.steamViewRevealed,!model.startingScreen,!model.menu {
+                if let launch=model.steamLaunch,model.steamResponseBannerVisible {
                     VStack {Spacer();HStack {VStack(alignment:.leading){Text("Steam needs your response").font(.callout);if let wall=launch.sourceWall {Text("Last reported \(Date(timeIntervalSince1970:wall),style:.relative) ago").font(.caption)}};Button("Open Steam"){model.openSteamSession()}}
-                        .padding(12).background(.regularMaterial,in:RoundedRectangle(cornerRadius:14)).padding(.bottom,geo.safeAreaInsets.bottom+12)}
+                        .padding(12).background(.regularMaterial,in:RoundedRectangle(cornerRadius:14))
+                        .onGeometryChange(for:CGRect.self){$0.frame(in:.global)} action:{model.steamResponseRect=$0}
+                        .onDisappear{model.steamResponseRect = .zero}
+                        .padding(.bottom,geo.safeAreaInsets.bottom+12)}
                 }
                 if model.menu {
                     Color.black.opacity(0.5).ignoresSafeArea().onTapGesture { model.menu = false }.transition(.opacity)

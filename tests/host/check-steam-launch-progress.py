@@ -29,9 +29,17 @@ with tempfile.TemporaryDirectory() as d:
  if os.uname().sysname=='Darwin':
   sdk=subprocess.check_output(['xcrun','--sdk','macosx','--show-sdk-path'],text=True).strip()
   (t/'module.modulemap').write_text(f'module zlib [system] {{ header "{sdk}/usr/include/zlib.h" link "z" export * }}\n')
+ library=(r/'app/Madeira/Library.swift').read_text()
+ predicate=library[library.index('    func ownsSteamResponseTouch('):].split('\n',1)[0]
+ (t/'Touch.swift').write_text('import Foundation\nstruct BannerFixture {var steamResponseBannerVisible=false;var steamResponseRect=CGRect.zero;\n'+predicate+'\n}\n')
+ assert 'library.ownsSteamResponseTouch(point)' in (r/'app/Madeira/ContentView.swift').read_text()
  (t/'Check.swift').write_text(r'''import Foundation
 @main struct Check {
  static func main() throws {
+ var banner=BannerFixture();banner.steamResponseRect=CGRect(x:10,y:20,width:100,height:40)
+ assert(!banner.ownsSteamResponseTouch(CGPoint(x:15,y:25)));banner.steamResponseBannerVisible=true
+ assert(banner.ownsSteamResponseTouch(CGPoint(x:15,y:25)) && !banner.ownsSteamResponseTouch(CGPoint(x:150,y:25)))
+ banner.steamResponseBannerVisible=false;assert(!banner.ownsSteamResponseTouch(CGPoint(x:15,y:25)))
  let root=URL(fileURLWithPath:CommandLine.arguments[1]);let fm=FileManager.default
  let fixture=try JSONSerialization.jsonObject(with:Data(contentsOf:URL(fileURLWithPath:CommandLine.arguments[2]))) as! [String:Any]
  let tz=TimeZone(secondsFromGMT:-5*3600)!,start=SteamLaunchObservation.date("2026-11-24 09:00:10",timeZone:tz)!.timeIntervalSince1970
@@ -81,7 +89,7 @@ with tempfile.TemporaryDirectory() as d:
  }
 }
 ''')
- subprocess.run([swift,'-swift-version','5','-I',str(t),str(r/'app/Madeira/CS2VACMarkers.swift'),str(r/'app/Madeira/SteamGameDiagnostics.swift'),str(r/'app/Madeira/RunDiagnostics.swift'),str(r/'app/Madeira/RunEvidence.swift'),str(t/'Stubs.swift'),str(t/'Writer.swift'),str(t/'Check.swift'),'-o',str(t/'check')],check=True)
+ subprocess.run([swift,'-swift-version','5','-I',str(t),str(r/'app/Madeira/CS2VACMarkers.swift'),str(r/'app/Madeira/SteamGameDiagnostics.swift'),str(r/'app/Madeira/RunDiagnostics.swift'),str(r/'app/Madeira/RunEvidence.swift'),str(t/'Stubs.swift'),str(t/'Touch.swift'),str(t/'Writer.swift'),str(t/'Check.swift'),'-o',str(t/'check')],check=True)
  subprocess.run([str(t/'check'),str(t),str(r/'tests/fixtures/run21-steam-wait.json')],check=True)
  import zipfile
  with zipfile.ZipFile((t/'zip-path').read_text()) as z:

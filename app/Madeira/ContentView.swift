@@ -4482,7 +4482,7 @@ final class ControlsWindow: UIWindow {
         // The library itself, between sessions (a start that did not happen): nothing here.
         if library.enabled && library.current == nil { return nil }
         if library.current != nil {
-            if library.menu || library.launching || library.menuButtonRect.contains(point) ||
+            if library.menu || library.launching || library.menuButtonRect.contains(point) || library.ownsSteamResponseTouch(point) ||
                 (library.performance && library.performanceRect.contains(point)) {
                 return super.hitTest(point, with: event)
             }
