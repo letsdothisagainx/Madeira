@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Actual translation and routing helpers; normal in-memory input/identity only."""
 from pathlib import Path
-import argparse,os,shutil,subprocess,tempfile
+import argparse,os,shutil,subprocess,tempfile,hashlib
 r=Path(__file__).resolve().parents[2]
 p=argparse.ArgumentParser();p.add_argument('--require-swift',action='store_true');a=p.parse_args()
 def body(s,sig):
@@ -52,8 +52,9 @@ int main(void){uintptr_t o=99;unsigned long long l=99;errno=EDOM;
  pad=(r/'app/Madeira/PadKeyboardMouse.swift').read_text().replace('import UIKit','')
  hw=(r/'app/Madeira/HardwareInput.swift').read_text()
  helpers='\n'.join(body(hw,s) for s in ['struct MotionCarry {','enum StickVelocity {'])
- baseline=subprocess.check_output(['git','show','482ac26f:app/Madeira/PadKeyboardMouse.swift'],cwd=r,text=True)
- baseline=baseline[baseline.index('final class PadKeyboardMouse {'):].replace('PadKeyboardMouse','BaselinePadKeyboardMouse')
+ baseline=(r/'tests/fixtures/pad-kbm-482ac26f.swift').read_bytes()
+ assert hashlib.sha256(baseline).hexdigest()=='ca04bb0d6500da38a2e1b9169f26814cd07c471d87784bfc15b491581f2cf883'
+ baseline=baseline.decode().replace('PadKeyboardMouse','BaselinePadKeyboardMouse')
  (t/'Pad.swift').write_text(pad+'\n'+helpers+'\n'+baseline)
  (t/'Stubs.swift').write_text('''import Foundation
 var epoch:UInt64=1, ticks:UInt64=1000000
