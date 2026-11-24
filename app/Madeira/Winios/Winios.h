@@ -42,6 +42,15 @@ void winios_post_touch_up(int x, int y);
 /* Key press bridge (VK codes: RETURN=0x0D SPACE=0x20 ESCAPE=0x1B).
  * down=1 press, down=0 release. */
 void winios_post_key(int vk, int down);
+/* Lifecycle bits: 1 app inactive, 2 library owns input, 4 native UI focus away.
+ * Resets release only controls this bridge previously submitted. */
+uint64_t winios_input_generation(void);
+int winios_input_accepting(void);
+void winios_input_context(unsigned bit,int blocked);
+void winios_input_new_session(void);
+void winios_input_source(unsigned kind,uint64_t value);
+void winios_input_snapshot(uint64_t *out);
+
 
 /* Text-only paste: one Unicode scalar, optionally represented by a US-layout
  * virtual key. Returns 0 when the queue is busy; retry without advancing.

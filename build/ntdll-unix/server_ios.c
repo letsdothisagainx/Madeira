@@ -7464,6 +7464,9 @@ uint64_t madeira_evidence_resource(unsigned op,uint64_t id,uint64_t start,const 
     // Failures/reclaim details roll indefinitely; healthy success detail is
     // sampled, while its exact result count above never consumes that budget.
     if(stage!=8 && stage!=9 && !(hr&0x80000000u) && (id&63)) {errno=saved;return id;}
+    /* Every reclamation remains counted; zero-release routine detail is
+     * sampled before copying/identity lookup. It cannot crowd failure slots. */
+    if(stage==8 && !words[2] && (id&63)){errno=saved;return id;}
     r.w[1]=13;r.w[3]=now;r.w[8]=id;r.w[29]=start;
     memcpy(r.w+9,words,20*sizeof(uint64_t));
     uintptr_t owner=(uintptr_t)ios_jit_current_peb();r.w[4]=owner;

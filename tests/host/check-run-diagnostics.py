@@ -212,7 +212,15 @@ import Glibc
         let clocks = try json(entries, "clocks-and-markers.json")
         assert(!(clocks["markers"] as! [[String: Any]]).isEmpty)
         checkpoint("export broad/default")
-        let archive = try RunDiagnostics.export(documents: documents, temporaryDirectory: output, bundleInfo: info)
+        var structured:[String:URL]=[:]
+        for name in ["resource-failures.jsonl","resource-failures-first.jsonl","input-path.jsonl","incident-first.jsonl"] {
+            for prefix in ["evidence/","evidence/previous/00112233-4455-6677-8899-AABBCCDDEEFF/"] {
+                let input=base.appendingPathComponent(UUID().uuidString+".jsonl")
+                try Data(("{\"schema\":\"fixture\",\"source\":\""+prefix+name+"\"}\n").utf8).write(to:input)
+                structured[prefix+name]=input
+            }
+        }
+        let archive = try RunDiagnostics.export(documents: documents, temporaryDirectory: output, bundleInfo: info, evidenceFiles:structured)
         // Small line/byte quotas must retain both provenance/start and the
         // recent failure end, with explicit omissions in the manifest.
         let boundedDocs = base.appendingPathComponent("BoundedDocuments", isDirectory: true)
@@ -323,6 +331,10 @@ with tempfile.TemporaryDirectory(prefix='madeira-run-export-') as temporary:
         assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
         with zipfile.ZipFile(path) as archive:
             assert archive.testzip() is None
+            if filename == 'archive':
+                for prefix in ['evidence/','evidence/previous/00112233-4455-6677-8899-AABBCCDDEEFF/']:
+                    for name in ['resource-failures.jsonl','resource-failures-first.jsonl','input-path.jsonl','incident-first.jsonl']:
+                        assert json.loads(archive.read(prefix+name))['source']==prefix+name
             assert all(item.compress_type == zipfile.ZIP_DEFLATED for item in archive.infolist())
             assert all(not name.startswith('/') and '..' not in name.split('/') for name in archive.namelist())
             body = b'\n'.join(archive.read(name) for name in archive.namelist()).decode()

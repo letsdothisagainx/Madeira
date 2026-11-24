@@ -75,6 +75,48 @@ func verify(_ ok:@autoclosure ()->Bool,_ file:StaticString=#file,_ line:Int=#lin
     try verify(termination["hostRunningAtCheckpoint"] as? Bool == true && termination["reason"] as? String == "unknown")
     print("Run19 actual parser: 81 console occurrences + eight native reports, distinct from 299 old structured rows; repeated same occurrence suppressed; guest C0000005 with host running PASS")
   }
+  let run20=try JSONSerialization.jsonObject(with:Data(contentsOf:URL(fileURLWithPath:CommandLine.arguments[3]))) as! [String:Any]
+  try verify((run20["console"] as! [String]).count==222 && (run20["native"] as! [String]).count==8)
+  try verify(RunEvidenceRecorder.consoleEvent(run20["close"] as! String)=="disconnect-kicked-votedoff")
+  try verify(run20["originalRetainedRequestResults"] as? Int == 7 && run20["originalRetainedFailedRequestResults"] as? Int == 0)
+  let retained=try RunEvidenceStore(root:root.appendingPathComponent("failure-retention"))
+  var deniedWord=[UInt64](repeating:0,count:48);deniedWord[0]=1;deniedWord[1]=13;deniedWord[9]=2;deniedWord[15]=3;deniedWord[16]=1048576;deniedWord[17]=65536;deniedWord[18]=1114112;deniedWord[20]=202196504;deniedWord[23]=201326592;deniedWord[24]=(3<<32)|1;deniedWord[25]=0x8007000e
+  for id in 1...222 {
+    deniedWord[2]=UInt64(id);deniedWord[8]=UInt64(id)
+    let (_,detail)=RunEvidenceSchema.native(deniedWord)!
+    retained.record("graphics-errors",detail);retained.record("graphics-errors",detail)
+  }
+  let firstWindow=try Data(contentsOf:retained.directory.appendingPathComponent("incident-first.jsonl"))
+  let recentWindow=try Data(contentsOf:retained.directory.appendingPathComponent("incident.jsonl"))
+  let beforeRoutine=retained.persistenceCounters()["logicalBytesWritten"] as! UInt64
+  for _ in 0..<6119 {retained.record("graphics-errors",["event":"resource-reclamation-observation","releasedCapacityBytes":UInt64(0)])}
+  for id in 0..<5000 {retained.record("graphics-errors",["event":"resource-request-result","HRESULT":"0x0","requestID":"success-\(id)"])}
+  try verify(retained.persistenceCounters()["logicalBytesWritten"] as! UInt64 == beforeRoutine)
+  for _ in 0..<100 {retained.incident("foreground-frame-stall")}
+  let firstAfterStalls=try Data(contentsOf:retained.directory.appendingPathComponent("incident-first.jsonl"));try verify(firstAfterStalls==firstWindow)
+  let recentAfterStalls=try Data(contentsOf:retained.directory.appendingPathComponent("incident.jsonl"));try verify(recentAfterStalls==recentWindow)
+  for i in 0..<5000 {retained.record("graphics-errors",["event":"resource-request-counters","counter":i])}
+  retained.incident("disconnect-kicked-votedoff");try retained.checkpoint();retained.flush()
+  let snapshot=try RunEvidenceStore.snapshotRun(retained.directory,destination:root.appendingPathComponent("failure-export"),hostRunning:true)
+  func jsonRows(_ name:String)throws->[[String:Any]]{try String(contentsOf:snapshot[name]!).split(separator:"\n").map {try JSONSerialization.jsonObject(with:Data($0.utf8)) as! [String:Any]}}
+  let details=try jsonRows("resource-failures.jsonl")
+  try verify(details.count==222 && Set(details.compactMap{$0["requestID"] as? String}).count==222)
+  try verify(details.allSatisfy{$0["destinationEstimateBytes"] as? UInt64 == 1048576 && $0["temporaryGrowthBytes"] as? UInt64 == 65536 && $0["safetyFloorBytes"] as? UInt64 == 201326592})
+  let firstDetails=try jsonRows("resource-failures-first.jsonl");try verify(firstDetails.first?["requestID"] as? String == "1")
+  let exportedFirstWindow=try Data(contentsOf:snapshot["incident-first.jsonl"]!);try verify(exportedFirstWindow==firstWindow)
+  let coverage=try JSONSerialization.jsonObject(with:Data(contentsOf:snapshot["run-summary.json"]!)) as! [String:Any]
+  try verify((coverage["failureDetailRetention"] as! [String:Any])["duplicateDetailsSuppressed"] as? Int == 222)
+  let bytes=try fm.contentsOfDirectory(at:retained.directory,includingPropertiesForKeys:[.fileSizeKey]).reduce(0){$0+((try $1.resourceValues(forKeys:[.fileSizeKey]).fileSize) ?? 0)}
+  try verify(bytes<16<<20)
+  var input=[UInt64](repeating:0,count:64);input[0]=1;input[2]=7;input[4]=3;input[5]=0x100;input[6]=34;input[7]=17;input[31]=1;input[32]=0x10;input[33]=0x20;input[34]=17;input[35]=18;input[36]=0x100;input[37]=34;input[39]=1;input[50]=1;input[48]=47;input[63]=1
+  let route=RunEvidenceSchema.input(input)!
+  try verify(route["targetMatchesWatchedCS2"] as? Bool == true && route["targetLifetimeID"] as? String == "0x100-34" && route["routeTargetTID"] as? String == "0x12")
+  input[37]=35;try verify(RunEvidenceSchema.input(input)!["targetMatchesWatchedCS2"] as? Bool == false)
+  input[37]=0;try verify(RunEvidenceSchema.input(input)!["targetMatchesWatchedCS2"] is NSNull)
+  retained.record("input-path",route)
+  try verify(RunEvidenceSchema.input([UInt64](repeating:0,count:63))==nil)
+  print("Run20: 222 console vs 8 native reports vs 7 old successful results remain distinct; 222 unique failure details survive 11119 routine records and later stalls; first + terminal incidents, input identity and fixed disk bound PASS; routine logical writes=0 before aggregate checkpoint")
+
   let store=try RunEvidenceStore(root:root)
   store.calibration("fixture")
   var w=[UInt64](repeating:0,count:48);w[0]=1;w[1]=3;w[2]=19;w[3]=100;w[4]=0x100;w[5]=34;w[9]=80;w[10]=0x7c3531d840;w[11]=0xc89ffcd3;w[12]=0x7a58142b58;w[13]=8;w[35]=1;w[37]=90;w[38]=3
@@ -160,4 +202,4 @@ func verify(_ ok:@autoclosure ()->Bool,_ file:StaticString=#file,_ line:Int=#lin
  }
 }''')
     subprocess.run([swift,'-swift-version','5',str(r/'app/Madeira/RunEvidence.swift'),str(t/'Stubs.swift'),str(t/'Check.swift'),'-o',str(t/'check')],check=True)
-    subprocess.run([str(t/'check'),str(t/'fixture'),str(r/'tests/fixtures/run19-resource-failure.json')],check=True)
+    subprocess.run([str(t/'check'),str(t/'fixture'),str(r/'tests/fixtures/run19-resource-failure.json'),str(r/'tests/fixtures/run20-failure-retention.json')],check=True)

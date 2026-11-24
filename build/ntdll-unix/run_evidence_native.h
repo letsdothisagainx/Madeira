@@ -1,9 +1,15 @@
-/* Included once by server_ios.c. Fixed ring payload: 393,216 bytes; 4,608 bytes of in-flight metadata; 1,024 bytes per-operation aggregates.
+/* Included once by server_ios.c. Fixed ring payload: 393,216 bytes; 49,152 bytes
+ * of priority failure records; 4,608 bytes of in-flight metadata; 1,024 bytes of operation aggregates.
  * The app drains it on a utility queue, not on a guest or VM critical path. */
 #include "run_evidence.h"
 #include <string.h>
 #include <errno.h>
 static struct ios_evidence_record ios_ev_ring[IOS_EVIDENCE_RECORDS];
+/* 48 KiB reserved for failed request details: first 32 plus rolling 96.
+ * Routine records cannot replace them before the utility consumer drains. */
+static struct ios_evidence_record ios_ev_fail_first[32],ios_ev_fail_recent[96];
+static unsigned ios_ev_fail_first_count,ios_ev_fail_first_read;
+static uint64_t ios_ev_fail_head,ios_ev_fail_tail;
 static struct { uint64_t token, start, address, bytes, generation, op, lock_scope, file_lifetime, extent; } ios_ev_flight[64];
 static unsigned ios_ev_lock;
 static uint64_t ios_ev_head, ios_ev_tail, ios_ev_dropped, ios_ev_overwritten, ios_ev_sequence, ios_ev_ticket;
@@ -24,6 +30,14 @@ int ios_evidence_emit_checked(struct ios_evidence_record *r)
     { __atomic_fetch_add(&ios_ev_dropped,1,__ATOMIC_RELAXED); return 0; }
     r->w[0] = 1; r->w[2] = ++ios_ev_sequence;
     if (!r->w[3]) r->w[3] = ios_evidence_now();
+    if(r->w[1]==13 && r->w[9]!=8 && (r->w[9]==9 || (r->w[25]&UINT64_C(0x80000000)))) {
+        if(ios_ev_fail_first_count<32)ios_ev_fail_first[ios_ev_fail_first_count++]=*r;
+        else {
+            if(ios_ev_fail_head-ios_ev_fail_tail==96){++ios_ev_fail_tail;++ios_ev_overwritten;__atomic_fetch_add(&ios_ev_resource_stats[12],1,__ATOMIC_RELAXED);}
+            ios_ev_fail_recent[ios_ev_fail_head++%96]=*r;
+        }
+        __atomic_store_n(&ios_ev_lock,0,__ATOMIC_RELEASE);return 1;
+    }
     if (ios_ev_head - ios_ev_tail == IOS_EVIDENCE_RECORDS) { ++ios_ev_tail; ++ios_ev_overwritten; }
     ios_ev_ring[ios_ev_head++ % IOS_EVIDENCE_RECORDS] = *r;
     __atomic_store_n(&ios_ev_lock,0,__ATOMIC_RELEASE); return 1;
@@ -85,6 +99,10 @@ unsigned madeira_evidence_poll(uint64_t *out, unsigned records, uint64_t *stats)
     if (!records || !out || !stats) return 0;
     stats[0]=0;
     if (!__atomic_compare_exchange_n(&ios_ev_lock,&expected,1,0,__ATOMIC_ACQUIRE,__ATOMIC_RELAXED)) return 0;
+    while(n<records && ios_ev_fail_first_read<ios_ev_fail_first_count)
+        memcpy(out+n++*IOS_EVIDENCE_WORDS,&ios_ev_fail_first[ios_ev_fail_first_read++],sizeof(struct ios_evidence_record));
+    while(n<records && ios_ev_fail_tail<ios_ev_fail_head)
+        memcpy(out+n++*IOS_EVIDENCE_WORDS,&ios_ev_fail_recent[ios_ev_fail_tail++%96],sizeof(struct ios_evidence_record));
     while (n < records && ios_ev_tail < ios_ev_head)
     { memcpy(out + n++ * IOS_EVIDENCE_WORDS, &ios_ev_ring[ios_ev_tail++ % IOS_EVIDENCE_RECORDS], sizeof(struct ios_evidence_record)); }
     /* In-flight records have no event sequence; token is their identity. */

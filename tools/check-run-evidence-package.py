@@ -8,6 +8,8 @@ with zipfile.ZipFile(a.ipa) as z:
     assert info['CFBundleIdentifier']=='com.willfaust.madeora'
     for marker in [b'[run-evidence-v1]',b'_madeira_evidence_poll',b'_ios_evidence_access',b'_madeira_evidence_frame',b'_madeira_evidence_host_io',b'_madeira_evidence_host_vm_events',b'_madeira_evidence_resource',b'resource-request-result',b'guest-process-exit',b'madeira-evidence-v1',b'_mach_vm_page_query',b'external-retire-no-killpages-v1',b'recorder-persistence',b'sampled-host-page-metadata']:
         assert marker in image, 'missing linked evidence producer/consumer: '+repr(marker)
+    for marker in [b'_winios_input_snapshot',b'_ios_thread_process_try_pid_identity',b'input-path-progress',b'resource-failures-first.jsonl',b'incident-first.jsonl']:
+        assert marker in image, 'missing Run20 linked input/retention component: '+repr(marker)
     components=info['MadeiraEvidenceComponents'];assert components['schema']=='madeira-evidence-v1'
     assert len(components['FEX'])==len(components['wine'])==len(components['dxmt'])==40
     assert info['MadeiraEvidenceSymbolArtifact'].startswith('Madeira-native-symbols:')

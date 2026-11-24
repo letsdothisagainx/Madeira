@@ -100,6 +100,25 @@ struct PadBindings: Equatable {
     }
 
     var usesMouseStick: Bool { rightStick.stickKeys == nil }
+
+    /// Effective configuration, never live key values or user-authored labels.
+    var evidence: [String:String] {
+        func action(_ a:ControlAction)->String {
+            switch a {
+            case .key(let key):return "vk:"+String(UInt32(bitPattern:key),radix:16)
+            case .mouseLeft:return "mouse-left"
+            case .mouseRight:return "mouse-right"
+            case .joystickWASD:return "wasd"
+            case .joystickArrows:return "arrows"
+            case .keyboardToggle:return "keyboard-toggle"
+            case .none:return "none-or-mouse-stick"
+            case .pad:return "native-pad"
+            }
+        }
+        var fields=["LS":action(leftStick),"RS":action(rightStick),"mouseVertical":String(mouseVertical),"source":"initialized-per-game-bindings"]
+        for name in Self.buttonNames {fields[name]=action(buttons[name] ?? .none)}
+        return fields
+    }
 }
 
 /// Turns pad samples into key and mouse events. Fed from GamepadInput's sampling
@@ -124,18 +143,37 @@ final class PadKeyboardMouse {
     private var carry = MotionCarry()
     private var mouseMoving = false
     private var logged = 0
+    private var queueGeneration:UInt64=0
+    private var blocked:Set<String>=[]
+    private var awaitingNeutral=false, leftNeutral=false, rightNeutral=false
 
     /// One pad sample while the mode is on. `dt` comes from the sample clock.
     func feed(buttons: UInt16, lt: UInt8, rt: UInt8, lx: Int16, ly: Int16, rx: Int16, ry: Int16,
               bindings: PadBindings, focused: Bool) {
-        let now = mach_absolute_time()
-        let dt = lastSample == 0 ? 1.0 / 250.0 : Self.seconds(now - lastSample)
-        lastSample = now
-
         var down: Set<String> = []
         for (name, mask) in Self.masks where buttons & mask != 0 { down.insert(name) }
         if lt >= Self.triggerThreshold { down.insert("LT") }
         if rt >= Self.triggerThreshold { down.insert("RT") }
+        let generation=winios_input_generation()
+        if queueGeneration != generation {
+            // The consumer neutralizes controls actually submitted in the old
+            // epoch. Rebuild current state, without replaying its queued history.
+            pressedWith.removeAll();held.removeAll();leftKeys.removeAll();rightKeys.removeAll()
+            leftDir = -1;rightDir = -1;lastSample=0;carry.reset();mouseMoving=false
+            queueGeneration=generation
+        }
+        if awaitingNeutral {blocked.formUnion(down);leftNeutral=true;rightNeutral=true;awaitingNeutral=false}
+        blocked.formIntersection(down)
+        guard focused else {
+            if holding {releaseAll("focus lost")}
+            blocked.formUnion(down);leftNeutral=true;rightNeutral=true;lastSample=0;carry.reset()
+            winios_input_source(6,1)
+            return
+        }
+        down.subtract(blocked)
+        let now = mach_absolute_time()
+        let dt = lastSample == 0 ? 1.0 / 250.0 : Self.seconds(now - lastSample)
+        lastSample = now
         for name in held.subtracting(down) {
             if let a = pressedWith.removeValue(forKey: name) { act(a, down: false) }
         }
@@ -145,12 +183,14 @@ final class PadKeyboardMouse {
         held = down
 
         let l = Self.unit(lx, ly), r = Self.unit(rx, ry)
+        let ls=Self.sector(l.x,l.y),rs=Self.sector(r.x,r.y)
+        if ls == -1 {leftNeutral=false};if rs == -1 {rightNeutral=false}
         if let keys = bindings.leftStick.stickKeys {
-            leftDir = Self.applyStick(from: leftDir, to: Self.sector(l.x, l.y), keys: keys, heldKeys: &leftKeys)
+            leftDir = Self.applyStick(from: leftDir, to: leftNeutral ? -1 : ls, keys: keys, heldKeys: &leftKeys)
         }
         if let keys = bindings.rightStick.stickKeys {
-            rightDir = Self.applyStick(from: rightDir, to: Self.sector(r.x, r.y), keys: keys, heldKeys: &rightKeys)
-        } else if focused {
+            rightDir = Self.applyStick(from: rightDir, to: rightNeutral ? -1 : rs, keys: keys, heldKeys: &rightKeys)
+        } else if !rightNeutral {
             // Motion by the time since the last sample, unfloored: samples come from
             // the 4 ms timer and from every controller change, so StickVelocity.frame's
             // 1/240 s floor would make the cursor faster the more often the pad reports.
@@ -165,6 +205,7 @@ final class PadKeyboardMouse {
                         DispatchQueue.main.async { HardwareInput.shared.stickMoved() }
                     }
                     HardwareInput.shared.postRelative(d.dx, d.dy)
+                    winios_input_source(4,1)
                 }
             } else if mouseMoving {
                 mouseMoving = false
@@ -190,6 +231,7 @@ final class PadKeyboardMouse {
         lastSample = 0
         carry.reset()
         mouseMoving = false
+        awaitingNeutral=true
         if logged < 32 { logged += 1; fputs("[pad-kbm] released (\(why))\n", stderr) }
     }
 
@@ -197,6 +239,7 @@ final class PadKeyboardMouse {
     /// edit during a hold cannot leave a key down.
     private var pressedWith: [String: ControlAction] = [:]
     private func act(_ action: ControlAction, down: Bool) {
+        winios_input_source(3,1)
         switch action {
         case .key(let vk):
             winios_post_key(vk, down ? 1 : 0)

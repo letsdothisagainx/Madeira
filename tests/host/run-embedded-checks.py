@@ -307,6 +307,9 @@ if args.profile == 'recovery-normal':
         ['python3', 'tests/host/check-pressure-boundary-observation.py', '--require-swift'],
         ['python3', 'tests/host/check-dxmt-resource-budget.py', '--run14-normal-only'],
         ['python3', 'tests/host/check-dxmt-upload-window.py'],
+        ['python3', 'tests/host/check-dxmt-credit-fence-snapshot.py'],
+        ['python3', 'tests/host/check-input-queue.py'],
+        ['python3', 'tests/host/check-controller-delivery.py', '--require-swift'],
     ]
     print('Selected recovery-normal profile: no deliberate fault cases; full historical suite not executed', flush=True)
 # These kernel/protocol checks are mandatory preflight for this placement

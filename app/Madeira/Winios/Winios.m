@@ -928,24 +928,64 @@ static void winios_request_game_size(void *hwnd, int cw, int ch, struct madeira_
     }
 }
 
-#define WINIOS_RING_SIZE 256
-#define WINIOS_EV_MOUSE 0
-#define WINIOS_EV_KEY   1
-#define WINIOS_EV_TEXT  2
-#define KEYEVENTF_KEYUP 0x0002
-typedef struct {
-    unsigned int type;       /* WINIOS_EV_MOUSE / WINIOS_EV_KEY */
-    int x, y;                /* mouse: coords; key: x = virtual-key code */
-    unsigned int flags;      /* mouse: MOUSEEVENTF_*; key: KEYEVENTF_* */
-    unsigned int data;       /* mouse: mouseData (wheel delta) */
-} winios_input_event_t;
-
-static struct {
-    winios_input_event_t buf[WINIOS_RING_SIZE];
-    unsigned int head;       /* producer cursor (Swift side) */
-    unsigned int tail;       /* consumer cursor (Wine drain) */
-    pthread_mutex_t lock;
-} g_input_q = { .lock = PTHREAD_MUTEX_INITIALIZER };
+#include "InputQueue.h"
+static struct winios_input_queue g_input_q=WINIOS_INPUT_QUEUE_INIT;
+static struct winios_input_holds g_input_holds;
+static _Atomic uint64_t g_input_observation[64];
+static atomic_flag g_input_route_lock=ATOMIC_FLAG_INIT;
+static uint64_t winios_input_now(void) {
+    struct timespec t;return clock_gettime(CLOCK_MONOTONIC,&t)?0:(uint64_t)t.tv_sec*1000000000ull+t.tv_nsec;
+}
+int winios_input_accepting(void){return !atomic_load(&g_input_q.blocked);}
+uint64_t winios_input_generation(void){return atomic_load(&g_input_q.generation);}
+void winios_input_context(unsigned bit,int blocked){unsigned before=atomic_load(&g_input_q.blocked);iq_context(&g_input_q,bit,blocked);if(before!=atomic_load(&g_input_q.blocked))atomic_store(&g_input_observation[56],winios_input_now());}
+void winios_input_new_session(void){iq_reset(&g_input_q);}
+void winios_input_source(unsigned kind,uint64_t value){
+    if(kind==1)atomic_fetch_add(&g_input_observation[49],1);
+    else if(kind==2){atomic_fetch_add(&g_input_observation[50],1);atomic_store(&g_input_observation[48],value);atomic_store(&g_input_observation[55],winios_input_now());}
+    else if(kind==3)atomic_fetch_add(&g_input_observation[51],1);
+    else if(kind==4)atomic_fetch_add(&g_input_observation[52],1);
+    else if(kind==5)atomic_store(&g_input_observation[53],value);
+    else if(kind==6)atomic_fetch_add(&g_input_observation[54],1);
+}
+void winios_input_injection(unsigned kind,unsigned status){
+    atomic_fetch_add(&g_input_observation[kind==1?26:27],1);
+    if(status)atomic_fetch_add(&g_input_observation[28],1);
+    atomic_store(&g_input_observation[29],status);
+}
+void winios_input_route(uint64_t fg,uint64_t focus,unsigned pid,unsigned tid,uint64_t owner,uint64_t lease,unsigned result){
+    if(atomic_flag_test_and_set(&g_input_route_lock))return;
+    atomic_fetch_add(&g_input_observation[62],1);
+    atomic_store(&g_input_observation[32],fg);atomic_store(&g_input_observation[33],focus);
+    atomic_store(&g_input_observation[34],pid);atomic_store(&g_input_observation[35],tid);
+    atomic_store(&g_input_observation[36],owner);atomic_store(&g_input_observation[37],lease);
+    atomic_store(&g_input_observation[38],winios_input_now());atomic_store(&g_input_observation[39],result);
+    atomic_fetch_add(&g_input_observation[62],1);atomic_flag_clear(&g_input_route_lock);
+}
+void winios_input_watch(uint64_t owner,uint64_t lease,unsigned pid){
+    atomic_fetch_add(&g_input_observation[30],1);
+    atomic_store(&g_input_observation[5],0);atomic_store(&g_input_observation[6],lease);atomic_store(&g_input_observation[7],pid);
+    for(unsigned i=57;i<=60;++i)atomic_store(&g_input_observation[i],0);
+    atomic_store(&g_input_observation[5],owner);atomic_fetch_add(&g_input_observation[30],1);
+}
+void winios_input_consumed(unsigned pid,unsigned tid,uint64_t hwnd,uint64_t owner,uint64_t lease){
+    uint64_t now=winios_input_now();
+    atomic_fetch_add(&g_input_observation[40],1);atomic_store(&g_input_observation[41],pid);
+    atomic_store(&g_input_observation[42],tid);atomic_store(&g_input_observation[43],hwnd);
+    atomic_store(&g_input_observation[44],now);atomic_store(&g_input_observation[45],lease);atomic_store(&g_input_observation[46],owner);
+    if(!lease)atomic_fetch_add(&g_input_observation[61],1);
+    else if(owner && owner==atomic_load(&g_input_observation[5]) && lease==atomic_load(&g_input_observation[6]) && pid==atomic_load(&g_input_observation[7])) {
+        atomic_store(&g_input_observation[57],tid);atomic_fetch_add(&g_input_observation[58],1);atomic_store(&g_input_observation[59],now);atomic_store(&g_input_observation[60],hwnd);
+    }
+}
+void winios_input_snapshot(uint64_t*out){
+    const uint64_t before=atomic_load(&g_input_observation[62]),watch_before=atomic_load(&g_input_observation[30]);
+    for(unsigned i=0;i<64;++i)out[i]=atomic_load(&g_input_observation[i]);
+    out[0]=1;out[1]=winios_input_now();out[2]=atomic_load(&g_input_q.generation);out[3]=atomic_load(&g_input_q.blocked);out[4]=atomic_load(&g_input_q.depth);
+    for(unsigned i=0;i<IQ_COUNT;++i)out[8+i]=atomic_load(&g_input_q.counts[i]);
+    out[31]=!(watch_before&1) && watch_before==atomic_load(&g_input_observation[30]);
+    out[63]=!(before&1) && before==atomic_load(&g_input_observation[62]);
+}
 
 static _Atomic unsigned int g_text_generation;
 /* One consumer owns delivery order across concurrent Wine event pumps. */
@@ -957,18 +997,9 @@ int winios_try_post_text(unsigned int scalar, int vk, int shift, int interval_ms
     if (interval_ms < 5) interval_ms = 5;
     if (interval_ms > 100) interval_ms = 100;
     int accepted = 0;
-    pthread_mutex_lock(&g_input_q.lock);
-    unsigned int used = (g_input_q.head + WINIOS_RING_SIZE - g_input_q.tail) % WINIOS_RING_SIZE;
-    /* Leave room for physical key/button releases while the game is busy. */
-    if (used < WINIOS_RING_SIZE - 16) {
-        g_input_q.buf[g_input_q.head] = (winios_input_event_t){
-            WINIOS_EV_TEXT, (int)scalar, vk, ((unsigned int)interval_ms << 8) | (shift != 0),
-            atomic_load(&g_text_generation)
-        };
-        g_input_q.head = (g_input_q.head + 1) % WINIOS_RING_SIZE;
-        accepted = 1;
-    }
-    pthread_mutex_unlock(&g_input_q.lock);
+    winios_input_event_t e={.type=WINIOS_EV_TEXT,.x=(int)scalar,.y=vk,
+        .flags=((unsigned)interval_ms<<8)|(shift!=0),.data=atomic_load(&g_text_generation)};
+    accepted=iq_push(&g_input_q,e,winios_input_now());
     return accepted;
 }
 
@@ -984,15 +1015,8 @@ static int winios_drain_text(const winios_input_event_t *e) {
 }
 
 static void winios_q_push_ev(unsigned int type, int x, int y, unsigned int flags, unsigned int data) {
-    pthread_mutex_lock(&g_input_q.lock);
-    unsigned int next = (g_input_q.head + 1) % WINIOS_RING_SIZE;
-    if (next != g_input_q.tail) {
-        g_input_q.buf[g_input_q.head] = (winios_input_event_t){type, x, y, flags, data};
-        g_input_q.head = next;
-    }
-    /* If buffer is full we drop the oldest event by simply not advancing —
-     * better than blocking the UI thread on a Wine event drain. */
-    pthread_mutex_unlock(&g_input_q.lock);
+    winios_input_event_t e={.type=type,.x=x,.y=y,.flags=flags,.data=data};
+    (void)iq_push(&g_input_q,e,winios_input_now());
 }
 
 static void winios_game_cursor_touch(int x, int y);   /* cursor section, below */
@@ -1008,10 +1032,6 @@ void winios_post_touch_down(int x, int y) {
 }
 
 void winios_post_touch_move(int x, int y) {
-    static unsigned cnt;
-    if ((cnt++ % 30) == 0) {
-        fprintf(stderr, "[winios] post_touch_move x=%d y=%d (n=%u)\n", x, y, cnt); fflush(stderr);
-    }
     winios_q_push_ev(WINIOS_EV_MOUSE, x, y, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, 0);
     winios_game_cursor_touch(x, y);
 }
@@ -1033,22 +1053,17 @@ void winios_post_key(int vk, int down) {
 static BOOL winios_drain_input(void) {
     if (pthread_mutex_trylock(&g_input_drain_lock)) return FALSE;
     BOOL drained = FALSE;
-    for (;;) {
+    iq_add(&g_input_q,IQ_DRAIN_TURNS,1);
+    atomic_store(&g_input_observation[24],winios_input_now());
+    for (unsigned budget=0;budget<WINIOS_INPUT_DRAIN_LIMIT;++budget) {
         winios_input_event_t e;
-        pthread_mutex_lock(&g_input_q.lock);
-        if (g_input_q.tail == g_input_q.head) {
-            pthread_mutex_unlock(&g_input_q.lock);
-            break;
+        int neutral=iq_neutral(&g_input_q,&g_input_holds,&e);
+        if(!neutral){
+            int result=iq_pop(&g_input_q,&e,winios_input_now(),atomic_load(&g_text_generation),g_text_paced_generation,CACurrentMediaTime()>=g_text_ready_at);
+            if(!result)break;
+            if(result<0)continue;
+            if(e.generation!=atomic_load(&g_input_q.generation))continue;
         }
-        e = g_input_q.buf[g_input_q.tail];
-        if (e.type == WINIOS_EV_TEXT && e.data == atomic_load(&g_text_generation)
-            && e.data == g_text_paced_generation && CACurrentMediaTime() < g_text_ready_at) {
-            pthread_mutex_unlock(&g_input_q.lock);
-            break; /* Never catch up a delayed queue as a burst of keystrokes. */
-        }
-        g_input_q.tail = (g_input_q.tail + 1) % WINIOS_RING_SIZE;
-        pthread_mutex_unlock(&g_input_q.lock);
-
         if (winios_drain_text(&e)) {
             if (e.data == atomic_load(&g_text_generation)) {
                 g_text_paced_generation = e.data;
@@ -1057,13 +1072,11 @@ static BOOL winios_drain_input(void) {
             drained = TRUE;
             continue; /* Clipboard contents must not enter the input log. */
         }
-        if (e.type != WINIOS_EV_KEY) {
-            fprintf(stderr, "[winios] drain type=%u x=%d y=%d flags=0x%x\n", e.type, e.x, e.y, e.flags); fflush(stderr);
-        }
         if (e.type == WINIOS_EV_KEY)
             winios_drv_post_key((unsigned short)e.x, e.flags);
         else
             winios_drv_post_mouse(e.x, e.y, e.flags, e.data, NULL);
+        iq_submitted(&g_input_holds,&e);
         drained = TRUE;
     }
     pthread_mutex_unlock(&g_input_drain_lock);

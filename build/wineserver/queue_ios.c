@@ -27,6 +27,9 @@
 #include <unistd.h>
 #include <poll.h>
 #include <limits.h>
+#include <stdint.h>
+#include <time.h>
+#include <errno.h>
 
 #include "ntstatus.h"
 #include "windef.h"
@@ -2070,6 +2073,31 @@ static struct thread *get_foreground_thread( struct desktop *desktop, user_handl
     return NULL;
 }
 
+/* Reuse the actual server routing decision and shared GUI bookkeeping.
+ * No extra client/server query, payload read, formatting or filesystem work. */
+static void ios_input_target_note(struct desktop *desktop,struct thread *target)
+{
+#ifdef WINE_IOS
+    extern void winios_input_route(uint64_t,uint64_t,unsigned,unsigned,uint64_t,uint64_t,unsigned) __attribute__((weak));
+    extern int ios_thread_process_try_pid_identity(unsigned,uintptr_t*,unsigned long long*) __attribute__((weak));
+    static uint64_t next,last_active,last_focus;static unsigned last_pid,last_tid;
+    const input_shm_t *input=desktop->foreground_input?desktop->foreground_input->shared:NULL;
+    const uint64_t active=input?input->active:0,focus=input?input->focus:0;
+    const unsigned pid=target?target->process->id:0,tid=target?target->id:0;
+    int saved=errno;struct timespec t;
+    if(winios_input_route && !clock_gettime(CLOCK_MONOTONIC,&t)) {
+        uint64_t now=(uint64_t)t.tv_sec*1000000000ull+t.tv_nsec;
+        if(now>=next || active!=last_active || focus!=last_focus || pid!=last_pid || tid!=last_tid) {
+            uintptr_t owner=0;unsigned long long lease=0;
+            next=now+250000000ull;last_active=active;last_focus=focus;last_pid=pid;last_tid=tid;
+            if(ios_thread_process_try_pid_identity)ios_thread_process_try_pid_identity(pid,&owner,&lease);
+            winios_input_route(active,focus,pid,tid,owner,lease,1);
+        }
+    }
+    errno=saved;
+#endif
+}
+
 static int is_current_process_foreground( struct desktop *desktop )
 {
     return !desktop->foreground_pid || desktop->foreground_pid == current->process->id ||
@@ -2332,7 +2360,9 @@ static int queue_mouse_message( struct desktop *desktop, user_handle_t win, cons
         y = desktop_shm->cursor.y;
     }
 
-    if ((foreground = get_foreground_thread( desktop, win )))
+    foreground = get_foreground_thread( desktop, win );
+    ios_input_target_note(desktop,foreground);
+    if (foreground)
     {
         memset( &raw_msg, 0, sizeof(raw_msg) );
         raw_msg.foreground = foreground;
@@ -2520,7 +2550,9 @@ static int queue_keyboard_message( struct desktop *desktop, user_handle_t win, c
         }
     }
 
-    if (!unicode && (foreground = get_foreground_thread( desktop, win )))
+    foreground = !unicode ? get_foreground_thread( desktop, win ) : NULL;
+    if(!unicode)ios_input_target_note(desktop,foreground);
+    if (foreground)
     {
         struct rawinput_message raw_msg = {0};
         raw_msg.foreground = foreground;

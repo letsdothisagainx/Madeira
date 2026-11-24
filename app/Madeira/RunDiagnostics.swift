@@ -508,7 +508,7 @@ enum RunDiagnostics {
         for (name, url) in evidenceFiles.sorted(by: { $0.key < $1.key }) {
             try check()
             let parts = name.split(separator: "/").map(String.init)
-            let allowed = ["run-summary.json", "timeline.jsonl", "thread-frame-memory.jsonl", "memory-access.jsonl", "vm-operations.jsonl", "graphics-errors.jsonl", "graphics-summary.json", "runtime-config.json", "modules.json", "termination.json", "incident.jsonl", "system.json"]
+            let allowed = ["run-summary.json", "timeline.jsonl", "thread-frame-memory.jsonl", "memory-access.jsonl", "vm-operations.jsonl", "graphics-errors.jsonl", "resource-failures.jsonl", "resource-failures-first.jsonl", "input-path.jsonl", "graphics-summary.json", "runtime-config.json", "modules.json", "termination.json", "incident.jsonl", "incident-first.jsonl", "system.json"]
             guard parts.first == "evidence", allowed.contains(parts.last ?? ""),
                   parts.count == 2 || (parts.count == 4 && parts[1] == "previous" && UUID(uuidString: parts[2]) != nil) else { continue }
             let input = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)

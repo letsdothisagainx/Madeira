@@ -243,6 +243,24 @@ unsigned long long ios_thread_process_snapshot(void *owner, unsigned *threads, i
     return lease;
 }
 
+/* Read-only input-routing identity. Ambiguous/recycled/exiting identities stay
+ * unavailable. Never adopt a thread or wait on the process registry. */
+int ios_thread_process_try_pid_identity(unsigned pid, uintptr_t *owner, unsigned long long *lease)
+{
+    unsigned matches=0;int saved=errno;
+    *owner=0;*lease=0;
+    if(pid && !pthread_mutex_trylock(&ios_thread_group_mutex)) {
+        for(unsigned i=0;i<ARRAY_SIZE(ios_thread_groups);++i) {
+            const struct ios_thread_group *g=&ios_thread_groups[i];
+            if(g->pid==pid && g->owner && g->count && !g->exiting && !g->reclaimed) {
+                ++matches;*owner=(uintptr_t)g->owner;*lease=g->lease;
+            }
+        }
+        pthread_mutex_unlock(&ios_thread_group_mutex);
+    }
+    if(matches!=1){*owner=0;*lease=0;}errno=saved;return matches==1;
+}
+
 /* Passive loader observation: no waiting, allocation, ownership adoption or
  * native-thread linking, including when called after an image-map operation. */
 unsigned long long ios_thread_process_try_observation_lease(void *owner, unsigned pid)

@@ -44,6 +44,9 @@ jobs:
           python3 tests/host/check-pressure-boundary-observation.py ${{ runner.os == 'macOS' && '--require-swift' || '' }}
           python3 tests/host/check-dxmt-resource-budget.py --run14-normal-only
           python3 tests/host/check-dxmt-upload-window.py
+          python3 tests/host/check-dxmt-credit-fence-snapshot.py
+          python3 tests/host/check-input-queue.py
+          python3 tests/host/check-controller-delivery.py
           python3 tests/host/check-ci-component-keys.py
       - name: Select process-local CS2 features and emit actual ARM64 TSO instructions
         run: python3 tests/host/check-cs2-tso-profile.py

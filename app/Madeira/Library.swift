@@ -103,7 +103,8 @@ final class LibraryController: ObservableObject, @unchecked Sendable {
     private let allowed = MadeiraConfig.flag("MADEIRA_FRONTEND_CONTROLLER")
     var ownsInput: Bool { lock.lock(); defer { lock.unlock() }; return enabled && owns }
     func configure(enabled: Bool, ownsInput: Bool) {
-        lock.lock(); self.enabled = enabled && allowed; owns = ownsInput; lock.unlock()
+        lock.lock(); self.enabled = enabled && allowed; owns = ownsInput; let blocks = self.enabled && owns; lock.unlock()
+        winios_input_context(2,blocks ? 1 : 0)
     }
     /// One sample of player 1's pad, in XInput button bits and stick units.
     func sample(buttons raw: UInt16, lx: Int16, ly: Int16) {

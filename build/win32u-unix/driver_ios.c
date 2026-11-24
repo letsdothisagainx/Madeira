@@ -126,6 +126,16 @@ static BOOL winios_drv_set_cursor_pos( INT x, INT y )
 static void ios_steam_handoff_foreground(void);
 static void ios_foreground_if_none( const char *why );   /* madeira-bcd, MADEIRA_INPUT_FOREGROUND, below */
 
+/* Pointer-free input observations; never inspect typed values or payloads. */
+extern void winios_input_injection(unsigned,unsigned) __attribute__((weak));
+extern void winios_input_route(uint64_t,uint64_t,unsigned,unsigned,uint64_t,uint64_t,unsigned) __attribute__((weak));
+extern void winios_input_consumed(unsigned,unsigned,uint64_t,uint64_t,uint64_t) __attribute__((weak));
+extern int ios_thread_process_try_pid_identity(unsigned,uintptr_t*,unsigned long long*) __attribute__((weak));
+static void ios_input_route_observe(unsigned kind, NTSTATUS status)
+{
+    if(winios_input_injection)winios_input_injection(kind,status);
+}
+
 /* C bridge for Winios.m to inject mouse input without pulling in Wine
  * headers into Obj-C (where INPUT/HWND/etc. would conflict with UIKit
  * types). Call this from pProcessEvents drain or directly from a
@@ -151,12 +161,7 @@ void winios_drv_post_mouse(int x, int y, unsigned int flags, unsigned int mouse_
      * a dispatch layer that can fail for its own reasons. */
     ios_foreground_if_none( "an injected mouse event" );
     NTSTATUS st = send_hardware_message( NULL, 0, &input, 0 );
-    {
-        static unsigned cnt;
-        if (cnt++ < 40)
-            dprintf(2, "[winios] drv_post_mouse hwnd=%p flags=0x%x x=%d y=%d -> status=0x%x\n",
-                    hwnd, flags, x, y, (unsigned)st);
-    }
+    ios_input_route_observe(0,st);
     /* The server has already moved (and clipped) its cursor for a MOVE. */
     if ((flags & MOUSEEVENTF_MOVE) && winios_direct_cursor_on()) winios_report_cursor_pos();
 }
@@ -235,6 +240,7 @@ void winios_drv_post_key(unsigned short vk, unsigned int flags)
 
     ios_foreground_if_none( "an injected key" );
     st = send_hardware_message( NULL, 0, &input, 0 );
+    ios_input_route_observe(1,st);
     {
         /* ml647: COUNT EVENTS, and never let a cap masquerade as absence. The
          * old "first 40 lines" cap was exhausted by arrow keys early in the
@@ -839,6 +845,14 @@ void winios_ui_progress_event(unsigned kind,unsigned message,uintptr_t hwnd)
     RTL_USER_PROCESS_PARAMETERS *params=teb&&teb->Peb?teb->Peb->ProcessParameters:NULL;
     static __thread DWORD cached_pid;
     static __thread int cached_steam;
+    if(kind==MADEIRA_UI_DISPATCH_RETURN && madeira_ui_input_message(message) && teb && winios_input_consumed) {
+        int saved=errno;DWORD error=teb->LastErrorValue;
+        unsigned pid=(DWORD)(ULONG_PTR)teb->ClientId.UniqueProcess;
+        uintptr_t owner=0;unsigned long long lease=0;
+        if(ios_thread_process_try_pid_identity)ios_thread_process_try_pid_identity(pid,&owner,&lease);
+        winios_input_consumed(pid,(DWORD)(ULONG_PTR)teb->ClientId.UniqueThread,hwnd,owner,lease);
+        teb->LastErrorValue=error;errno=saved;
+    }
     if(!params)return;
     DWORD pid=(DWORD)(ULONG_PTR)teb->ClientId.UniqueProcess;
     if(cached_pid!=pid)

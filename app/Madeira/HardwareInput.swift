@@ -767,6 +767,7 @@ final class HardwareInput: ObservableObject {
 
     private var keys = FocusGate<Int32>()
     private var keysPosted = HeldEdges<Int32>()
+    private var keyQueueGeneration:UInt64=0,buttonQueueGeneration:UInt64=0
     // Defer Command until its partner is known: Command-V must not open the
     // guest Start menu. A Command tap or another chord still reaches Windows.
     private var deferredCommands: Set<Int32> = []
@@ -1011,6 +1012,7 @@ final class HardwareInput: ObservableObject {
         let keyboard = base && !typingElsewhere()
         let over = hoverSeen ? pointerOver : clickFocus.onGame
         let mouse = base && (!Self.focusEnabled || pointerLocked || over || !gameButtons.isEmpty)
+        if baseFocused != base {winios_input_context(4,base ? 0 : 1)}
         baseFocused = base
         updateButtonPolling(active: Self.mouseRoutingEnabled && appActive && mouseConnected)
         if keyboard != keyboardFocused {
@@ -1030,6 +1032,8 @@ final class HardwareInput: ObservableObject {
             if diagnostics || !base { log("mouse focus: \(mouse ? "program" : "elsewhere") (\(why))") }
         }
         updateRoute()
+        if keyQueueGeneration != winios_input_generation() {syncKeys()}
+        if buttonQueueGeneration != winios_input_generation() {syncButtons()}
         updateAutoLock()
         renderCursor()
         updateFocusTimer()
@@ -1178,6 +1182,8 @@ final class HardwareInput: ObservableObject {
     }
 
     private func syncKeys() {
+        let generation=winios_input_generation()
+        if generation != keyQueueGeneration {keysPosted=HeldEdges<Int32>();keyQueueGeneration=generation}
         let edges = keysPosted.update(keys.wanted(focused: keyboardFocused).subtracting(deferredCommands))
         for vk in edges.up { winios_post_key(vk, 0) }
         for vk in edges.down { winios_post_key(vk, 1) }
@@ -1601,6 +1607,8 @@ final class HardwareInput: ObservableObject {
     }
 
     private func syncButtons() {
+        let generation=winios_input_generation()
+        if generation != buttonQueueGeneration {buttonsPosted=HeldEdges<MouseButton>();buttonQueueGeneration=generation}
         let edges = buttonsPosted.update(gameButtons)
         for b in edges.up { let e = b.event(down: false); winios_pointer(0, 0, e.flags, e.data) }
         for b in edges.down { let e = b.event(down: true); winios_pointer(0, 0, e.flags, e.data) }

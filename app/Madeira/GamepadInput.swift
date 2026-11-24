@@ -98,6 +98,7 @@ final class GamepadInput: @unchecked Sendable {
     /// the first Wine process read MADEIRA_HIDPAD to create the device and its
     /// registry entries. In XInput mode it only unsets that and logs.
     @MainActor func beginPadSession() {
+        winios_input_new_session()
         let mode = Self.configuredPadMode()
         let output = Self.configuredPadOutput()
         unsetenv("MADEIRA_HIDPAD"); unsetenv("MADEIRA_HIDPAD_NAME")
@@ -206,6 +207,12 @@ final class GamepadInput: @unchecked Sendable {
             let was = keyboardMouse != nil
             if keyboardMouse != nil && bindings == nil { PadKeyboardMouse.shared.releaseAll("mode off") }
             keyboardMouse = bindings
+            if let bindings {
+                RunEvidenceRecorder.inputBindings(bindings.evidence)
+                let bytes=bindings.evidence.sorted{$0.key<$1.key}.map{$0.key+"="+$0.value}.joined(separator:";").utf8
+                let signature=bytes.reduce(UInt64(14695981039346656037)){($0 ^ UInt64($1)) &* 1099511628211}
+                winios_input_source(5,signature)
+            }
             if was != (bindings != nil) {
                 LogStore.shared.log("[pad-kbm] physical controller as keyboard and mouse: \(bindings != nil ? "on" : "off")")
             }
@@ -301,6 +308,7 @@ final class GamepadInput: @unchecked Sendable {
                 profile.valueChangedHandler = { [weak self] _, _ in
                     // Explicit queue hop also serializes callbacks already in flight
                     // when a controller is disconnected or the app resigns active.
+                    winios_input_source(1,1)
                     self?.queue.async { [weak self] in self?.sample() }
                 }
                 fputs("[xinput] ml1920 slot=\(i) connected\n", stderr)
@@ -336,6 +344,7 @@ final class GamepadInput: @unchecked Sendable {
     }
 
     private func setActive(_ value: Bool) {
+        winios_input_context(1,value ? 0 : 1)
         // ml2106: motors stop and adaptive triggers go off while the app is
         // inactive; the game's last state comes back with it.
         madeira_pad_output_set_active(value ? 1 : 0)
@@ -423,6 +432,9 @@ final class GamepadInput: @unchecked Sendable {
                 if i == 0 {
                     let library = LibraryController.shared
                     library.sample(buttons: state.buttons, lx: state.lx, ly: state.ly)
+                    let rawLive = state.buttons != 0 || state.left_trigger != 0 || state.right_trigger != 0 || abs(Int(state.lx))>7849 || abs(Int(state.ly))>7849 || abs(Int(state.rx))>8689 || abs(Int(state.ry))>8689
+                    let flags: UInt64 = (Self.enabled ? 1 : 0) | (keyboardMouse != nil ? 2 : 0) | 4 | (active ? 8 : 0) | (library.ownsInput ? 16 : 0) | (winios_input_accepting() != 0 ? 32 : 0) | (rawLive ? 64 : 0)
+                    winios_input_source(2,flags)
                     if library.ownsInput {
                         state = winios_gamepad()
                         state.connected = 1
@@ -435,7 +447,7 @@ final class GamepadInput: @unchecked Sendable {
                         // stays but gets none of the physical pad's input.
                         PadKeyboardMouse.shared.feed(buttons: state.buttons, lt: state.left_trigger, rt: state.right_trigger,
                                                      lx: state.lx, ly: state.ly, rx: state.rx, ry: state.ry,
-                                                     bindings: kbm, focused: HardwareInput.shared.baseFocused)
+                                                     bindings: kbm, focused: winios_input_accepting() != 0)
                         hidLive = nil
                         guard touchConnected else {
                             winios_gamepad_set_state(Int32(i), nil)

@@ -120,6 +120,11 @@ def stage_file(name,s):
       upload_bytes_since_flush_ + total_bytes_needed > kResourceInitializerFlushThreshold)'''
   return once(s,marker,CHUNKS+'\n'+marker)
  if name==FILES[2]:
+  # Observe the fence already required by credit handoff. Querying it again
+  # for diagnostics otherwise flushes/scans the initializer a second time.
+  s=once(s,'  bool started_ = false, finished_ = false;','  bool started_ = false, finished_ = false;\n  uint64_t observed_fence_ = 0;')
+  s=once(s,'  bool valid() const { return started_; }','  bool valid() const { return started_; }\n  uint64_t observedFence() const { return observed_fence_; }')
+  s=once(s,'    finished_ = permit_.finishGpuInitialization(initializer_.initializationFence());','    static const volatile char observation_contract[]="[texture-fence-observe-v1]";(void)observation_contract[0];\n    observed_fence_=initializer_.initializationFence();\n    finished_ = permit_.finishGpuInitialization(observed_fence_);')
   # This helper is before the factory and accepts its metadata scope.
   s=once(s,'bool allocation_denied = false) {','bool allocation_denied = false, ResourceRequestEvidence *request = nullptr) {')
   s=once(s,'  const auto pressure = memoryPressureSnapshot(true);','  const auto pressure = memoryPressureSnapshot(true);\n  uint64_t released=0;')
@@ -137,7 +142,7 @@ def stage_file(name,s):
   s=once(s,'    ReportTextureFailure(creation_permit.nativeStatus()', '    request.stage(2);request.budget(creation_permit,creation_initializer.textureUploadWindow());\n    ReportTextureFailure(creation_permit.nativeStatus()')
   s=once(s,'  bool single_subresource =', '  request.budget(creation_permit,creation_initializer.textureUploadWindow());request.stage(3);\n  bool single_subresource =')
   s=once(s,'    TextureInitializationCredit gpu_credit(', '    request.stage(4);\n    TextureInitializationCredit gpu_credit(')
-  s=once(s,'    return gpu_credit.finish();','    request.gpu(initializer.event().handle,initializer.initializationFence());\n    const bool finished=gpu_credit.finish();if(!finished)request.stage(7);return finished;')
+  s=once(s,'    return gpu_credit.finish();','    const bool finished=gpu_credit.finish();\n    request.gpu(initializer.event().handle,gpu_credit.observedFence());if(!finished)request.stage(7);return finished;')
   # Explicit failure stages preserve the native nil versus admission distinction.
   s=s.replace('      ReportTextureFailure("native-nil",','      request.stage(3);\n      ReportTextureFailure("native-nil",').replace('          ReportTextureFailure("initial-upload-failed",','          request.stage(4);\n          ReportTextureFailure("initial-upload-failed",')
   s=s.replace('    *ppTexture = reinterpret_cast<typename tag::COM_IMPL *>(tex);','    request.resource(reinterpret_cast<uintptr_t>(tex));\n    *ppTexture = reinterpret_cast<typename tag::COM_IMPL *>(tex);')

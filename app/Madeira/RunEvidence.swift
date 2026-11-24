@@ -12,6 +12,8 @@ import MetricKit
 @_silgen_name("madeira_evidence_frame") private func nativeEvidenceFrame(_ out: UnsafeMutablePointer<UInt64>)
 @_silgen_name("madeira_evidence_host_io") private func nativeEvidenceIO(_ out: UnsafeMutablePointer<UInt64>)
 @_silgen_name("madeira_evidence_host_vm_events") private func nativeEvidenceVMEvents(_ out: UnsafeMutablePointer<UInt64>)
+@_silgen_name("winios_input_watch") private func nativeInputWatch(_ owner:UInt64,_ lease:UInt64,_ pid:UInt32)
+@_silgen_name("winios_input_snapshot") private func nativeInputSnapshot(_ out: UnsafeMutablePointer<UInt64>)
 @_silgen_name("madeira_evidence_backing") private func nativeEvidenceBacking()
 #endif
 
@@ -22,7 +24,7 @@ enum RunEvidenceSchema {
     static let version = "madeira-evidence-v1"
     static let recordBytes = 48 * 8
     static let perRunLimit = 16 << 20
-    static let channels = ["timeline", "thread-frame-memory", "memory-access", "vm-operations", "graphics-errors"]
+    static let channels = ["timeline", "thread-frame-memory", "memory-access", "vm-operations", "graphics-errors", "resource-failures", "input-path"]
     static func mono() -> UInt64 {
         var t = timespec(); guard clock_gettime(CLOCK_MONOTONIC, &t) == 0 else { return 0 }
         return UInt64(t.tv_sec) * 1_000_000_000 + UInt64(t.tv_nsec)
@@ -62,6 +64,31 @@ enum RunEvidenceSchema {
         if insn & 0x3a000000 == 0x28000000 {return insn & (1<<22) != 0 ? "load-pair" : "store-pair"}
         return "unclassified-memory-family; consult-encoding"
     }
+    static func input(_ w:[UInt64])->[String:Any]? {
+        guard w.count==64,w[0]==1 else{return nil}
+        var r:[String:Any]=["event":"input-path-progress","captureNS":String(w[1]),"clockDomain":"CLOCK_MONOTONIC","scope":"whole-host-input-bridge; target-lifetime-is-separate-from-draining-thread","generation":String(w[2]),"blockedReasonsBits":w[3],"queueCapacity":255,"queueDepth":w[4]==UInt64.max ? NSNull() : w[4],"motionRetentionNS":100000000,"drainLimitPerTurn":64]
+        let counters=["enqueued","coalesced","motionDropped","edgeOverflowResets","producerLockBusy","dequeued","agedEventsDropped","contextResets","neutralizingReleases","maxQueueDepth","maxQueueAgeNS","contextRejected","textRejected","clippedMotion","drainTurns"]
+        for(i,k) in counters.enumerated(){r[k]=w[8+i]}
+        r["lastDrainNS"]=w[24]>0 ? String(w[24]) : NSNull()
+        r["keyInjectionCalls"]=w[26];r["mouseInjectionCalls"]=w[27];r["injectionFailures"]=w[28];r["lastInjectionStatus"]=w[26]+w[27]>0 ? hex(w[29]) : NSNull()
+        r["foregroundHWND"]=w[32]>0 ? hex(w[32]) : NSNull();r["focusHWND"]=w[39]==1 && w[33]>0 ? hex(w[33]) : NSNull()
+        r["routeTargetPID"]=w[34]>0 ? hex(w[34]) : NSNull();r["routeTargetTID"]=w[35]>0 ? hex(w[35]) : NSNull()
+        r["targetOwner"]=w[36]>0 ? hex(w[36]) : NSNull();r["targetLease"]=w[37]>0 ? String(w[37]) : NSNull()
+        r["targetLifetimeID"]=w[36]>0 && w[37]>0 ? hex(w[36])+"-"+String(w[37]) : NSNull()
+        r["routeCaptureNS"]=w[38]>0 ? String(w[38]) : NSNull();r["focusQueryStatus"]=w[39]==1 ? "observed" : "not-observed-or-unavailable"
+        r["routeSnapshotConsistency"]=w[63]==1 ? "route-sequence-stable; counters-individually-atomic" : "route-changed-during-snapshot"
+        r["messageProcedureReturns"]=w[40];r["lastMessageReturnPID"]=w[40]>0 ? hex(w[41]) : NSNull();r["lastMessageReturnTID"]=w[40]>0 ? hex(w[42]) : NSNull();r["lastMessageReturnHWND"]=w[40]>0 ? hex(w[43]) : NSNull();r["lastMessageReturnNS"]=w[40]>0 ? String(w[44]) : NSNull()
+        r["lastMessageReturnLifetime"]=w[45]>0 && w[46]>0 ? hex(w[46])+"-"+String(w[45]) : NSNull()
+        r["consumptionEvidence"]="successful-observed-input-window-procedure-return-only; no-proof-of-game-action-or-polled-raw-input-consumption"
+        r["routingSource"]="existing-wineserver-get_foreground_thread-decision; active-and-focus-window-snapshot; registered-raw-input-sinks-may-also-receive"
+        r["watchedCS2LifetimeID"]=w[5]>0 && w[6]>0 ? hex(w[5])+"-"+String(w[6]) : NSNull();r["watchedCS2PID"]=w[7]>0 ? hex(w[7]) : NSNull()
+        r["watchedCS2ProcedureReturns"]=w[5]>0 ? w[58] : NSNull();r["lastWatchedCS2ReturnNS"]=w[58]>0 ? String(w[59]) : NSNull();r["lastWatchedCS2ReturnHWND"]=w[58]>0 ? hex(w[60]) : NSNull();r["lastWatchedCS2ReturnTID"]=w[58]>0 ? hex(w[57]) : NSNull()
+        r["consumptionLeaseUnavailable"]=w[61];r["watchedIdentityConsistency"]=w[31]==1 ? "watch-sequence-stable; counters-individually-atomic" : "watch-changed-during-query"
+        r["targetMatchesWatchedCS2"]=w[36]>0 && w[37]>0 && w[5]>0 && w[6]>0 ? (w[36]==w[5] && w[37]==w[6]) : NSNull()
+        r["effectiveSourceFlags"]=w[50]>0 ? w[48] : NSNull();r["sourceSnapshotNS"]=w[55]>0 ? String(w[55]) : NSNull();r["lastContextChangeNS"]=w[56]>0 ? String(w[56]) : NSNull();r["physicalChangeCallbacks"]=w[49];r["physicalSlot0Samples"]=w[50];r["translatedDigitalActions"]=w[51];r["translatedMotionEvents"]=w[52];r["bindingSignature"]=w[53]>0 ? hex(w[53]) : NSNull();r["focusBlockedSamples"]=w[54]
+        r["sourceFlagMeaning"]="1=physical-enabled 2=KBM 4=slot0-connected 8=app-active 16=library-owns 32=native-UI-focus-allows 64=physical-input-active; last-sample-not-current-device-query"
+        return r
+    }
     static func native(_ w: [UInt64]) -> (String, [String: Any])? {
         guard w.count == 48, w[0] == 1 else { return nil }
         var r: [String: Any] = ["nativeSequence": String(w[2]), "nativeMonotonicNS": String(w[3]), "nativeClock": "CLOCK_MONOTONIC",
@@ -95,12 +122,12 @@ enum RunEvidenceSchema {
                 r["uploadPolicy"]=w[19]>0 ? "bounded-format-block-window-v1" : "ordinary-allocator"
                 r["layoutStatus"]="Metal-descriptor-and-policy; source-payload-and-caller-pitches-not-recorded"
                 r["nativeErrorDetail"]="unavailable-if-not-returned-by-native-API; HRESULT-is-preserved"
-                r["detailRetention"]="all-failures-until-ring-overwrite-or-try-lock-drop; successful-detail-one-in-64; aggregate-counts-separate"
+                r["detailRetention"]="first-32-and-recent-96-native-failure-lane; try-lock-drops-and-overwrites-counted; successful-detail-one-in-64; aggregate-counts-separate"
             }
             return ("graphics-errors",r)
         case 14:
             r["event"]="resource-request-counters";r["requireNativeLifetime"]=true
-            for (i,k) in ["started","nonFailureResults","outOfMemoryResults","invalidArgumentResults","otherFailureResults","admissionRefusals","nativeAllocationFailures","initializationFailures","viewFailures","unwoundWithoutResult","detailsAccepted","detailsTryLockDropped","reserved","reclamationObservations","firstFailureNS","lastFailureNS"].enumerated() {r[k]=w[9+i]}
+            for (i,k) in ["started","nonFailureResults","outOfMemoryResults","invalidArgumentResults","otherFailureResults","admissionRefusals","nativeAllocationFailures","initializationFailures","viewFailures","unwoundWithoutResult","detailsAccepted","detailsTryLockDropped","failureDetailLaneOverwritten","reclamationObservations","firstFailureNS","lastFailureNS"].enumerated() {r[k]=w[9+i]}
             r["scope"]="host-app-session; direct-request-results-not-console-occurrences; stage-subcounts-overlap-results"
             return ("graphics-errors",r)
         case 15:
@@ -246,6 +273,14 @@ enum RunEvidenceSchema {
     }
 }
 
+struct RunMainInterval {
+    let owner:UInt64,lease:UInt64,finishNS:UInt64,intervalUS:UInt64,userUS:UInt64,kernelUS:UInt64
+    init?(_ r:[String:Any]) {
+        guard let o=r["owner"] as? String,let owner=UInt64(o.replacingOccurrences(of:"0x",with:""),radix:16),let l=r["lease"] as? String,let lease=UInt64(l),let f=r["registerCaptureBeginNS"] as? String,let finish=UInt64(f),let interval=r["intervalUS"] as? UInt64,let u=r["userCPUUS"] as? UInt64,let k=r["kernelCPUUS"] as? UInt64 else{return nil}
+        self.owner=owner;self.lease=lease;finishNS=finish;intervalUS=interval;userUS=u;kernelUS=k
+    }
+}
+
 /// On-disk caps include rolling and pinned incident data. No fixed lifetime
 /// sample limit: old ordinary records rotate; the last incident survives it.
 final class RunEvidenceStore {
@@ -267,6 +302,21 @@ final class RunEvidenceStore {
     private var graphicOccurrences:[String]=[], graphicsDuplicates:UInt64=0
     private var guestExits:[[String:Any]]=[]
     private var lastExceptionContext:[String:Any]?
+    private var routineResource:[String:UInt64]=[:],failureOccurrences:[String]=[]
+    private var failureDuplicates:UInt64=0,firstFailureBytes=0,firstFailureRecords:UInt64=0,firstFailureDropped:UInt64=0
+    private var incidentPriority=0,firstIncidentSaved=false,lastIncidentNS:UInt64=0,suppressedIncidents:UInt64=0
+    static func failedRequest(_ row:[String:Any])->Bool {
+        guard row["event"] as? String == "resource-request-result" else{return false}
+        if row["stage"] as? String == "unwound-without-result" {return true}
+        guard let hr=row["HRESULT"] as? String,let code=UInt32(hr.replacingOccurrences(of:"0x",with:""),radix:16) else{return false}
+        return code & 0x80000000 != 0
+    }
+    private func flushRoutineResources() {
+        guard !routineResource.isEmpty else{return}
+        let value=routineResource;routineResource.removeAll(keepingCapacity:true)
+        record("thread-frame-memory",["event":"resource-routine-detail-summary","counts":value,"scope":"retained-native-details-only; exact-host-session-counter-record-is-separate; released-capacity-not-physical-savings"])
+    }
+
     let startWallUnix=Date().timeIntervalSince1970
     func persistenceCounters() -> [String:Any] {
         ["logicalBytesWritten":logicalBytes,"metadataWrites":metadataWrites,"checkpointCount":checkpointCount,"checkpointDurationNS":checkpointNS,"flushCount":flushCount,"flushDurationNS":flushNS,"fsyncCount":fsyncCount,"fsyncDurationNS":fsyncNS,"fsyncFailures":syncErrors,"rotationCount":overwritten,"rotationDurationNS":rotationNS,"incidentCopies":incidentCount,"incidentCopyBytes":incidentBytes,"incidentCopyDurationNS":incidentNS,"writeFailures":writeFailures,"scope":"recorder-owned-logical-writes-and-copies; not-physical-device-IO; excludes-export-copy-and-filesystem-metadata","selfMeasurement":"completed-work-before-this-snapshot; counters-may-lag-current-checkpoint","maximumSummaryLagSeconds":5,"unflushedTail":"unknown-after-abrupt-termination"]
@@ -284,7 +334,7 @@ final class RunEvidenceStore {
     private var facts: [String:Any] = [:]
     func fact(_ key:String,_ value:Any) { if facts.count<32 || facts[key] != nil { facts[key]=value } }
     static let segmentBytes = 256 << 10
-    static let slots = ["timeline":4,"thread-frame-memory":12,"memory-access":12,"vm-operations":4,"graphics-errors":2]
+    static let slots = ["timeline":4,"thread-frame-memory":12,"memory-access":12,"vm-operations":4,"graphics-errors":2,"resource-failures":4,"input-path":2]
     init(root: URL, runID: String = UUID().uuidString) throws {
         guard UUID(uuidString:runID) != nil else { throw CocoaError(.fileWriteInvalidFileName) }
         self.runID=runID; directory=root.appendingPathComponent(runID,isDirectory:true)
@@ -292,10 +342,23 @@ final class RunEvidenceStore {
         try checkpoint()
     }
     func record(_ channel: String, _ values: [String: Any]) {
+        var channel=channel
+        let failed=Self.failedRequest(values)
+        if failed {
+            if let native=values["nativeSequence"] as? String,native != "0" {
+                if failureOccurrences.contains(native){failureDuplicates+=1;return}
+                failureOccurrences.append(native);if failureOccurrences.count>128{failureOccurrences.removeFirst()}
+            }
+            channel="resource-failures"
+        } else if let event=values["event"] as? String,event=="resource-reclamation-observation" || event=="resource-request-result" {
+            routineResource[event,default:0]+=1
+            if let released=values["releasedCapacityBytes"] as? UInt64 {routineResource["releasedCapacityBytes",default:0]+=released}
+            return
+        }
         guard let slots = Self.slots[channel] else { dropped += 1; return }
         sequence += 1
         let now = RunEvidenceSchema.mono()
-        var row = values; if channel=="graphics-errors" {row["memorySnapshotSequence"]=lastMemorySequence>0 ? String(lastMemorySequence) : NSNull();row["memoryReference"]="latest-utility-queue-host-app-sample; not-atomic-with-request"}; row["schema"] = RunEvidenceSchema.version; row["runID"] = runID; row["sequence"] = String(sequence)
+        var row = values; if channel=="graphics-errors" || channel=="resource-failures" {row["memorySnapshotSequence"]=lastMemorySequence>0 ? String(lastMemorySequence) : NSNull();row["memoryReference"]="latest-utility-queue-host-app-sample; not-atomic-with-request"}; row["schema"] = RunEvidenceSchema.version; row["runID"] = runID; row["sequence"] = String(sequence)
         row["receivedMonotonicNS"] = String(now); row["clock"] = "CLOCK_MONOTONIC"; row["receivedUTC"] = ISO8601DateFormatter().string(from: Date())
         guard var data = try? RunEvidenceSchema.json(row), data.count < 16 << 10 else { dropped += 1; return }
         data.append(10)
@@ -317,6 +380,15 @@ final class RunEvidenceStore {
         if row["event"] as? String == "memory-progress" {lastMemorySequence=sequence}
         dirtyJournals.insert(channel)
         f.bytes += data.count; files[channel]=f; counts[channel,default:0] += 1; segmentRecords["\(channel).\(f.slot)",default:0]+=1; persisted=sequence; lastNS=now
+        if failed {
+            if firstFailureBytes+data.count<=256<<10 {
+                let first=open(directory.appendingPathComponent("resource-failures-first.jsonl").path,O_WRONLY|O_APPEND|O_CREAT|O_NOFOLLOW|O_CLOEXEC,0o600)
+                if first>=0 {let wrote=data.withUnsafeBytes{write(first,$0.baseAddress,data.count)};if wrote != data.count {_ = ftruncate(first,off_t(firstFailureBytes))};close(first)
+                    if wrote==data.count {firstFailureBytes+=wrote;firstFailureRecords+=1;logicalBytes+=UInt64(wrote);dirtyJournals.insert("resource-failures-first")} else {firstFailureDropped+=1;writeFailures+=1}}
+                else {firstFailureDropped+=1;writeFailures+=1}
+            } else {firstFailureDropped+=1}
+            incident("resource-request-failure")
+        }
     }
     func calibration(_ reason: String) {
         let a=RunEvidenceSchema.mono(), wall=Date(), b=RunEvidenceSchema.mono()
@@ -358,34 +430,44 @@ final class RunEvidenceStore {
         graphicsDirty=true
         record("graphics-errors",["memorySnapshotSequence":lastMemorySequence>0 ? String(lastMemorySequence) : NSNull(),"event":"graphics-error","category":category,"fields":fields,"sourceOccurrenceID":occurrence as Any? ?? NSNull(),"countScope":"one-source-line-occurrence; native-direct-requests-and-console-rows-not-added","memoryReference":"latest-host-app-memory-sample; not-atomic-with-error"])
     }
-    /// Pin the newest incident (at most 3 MiB); no source payload, only typed
-    /// journals. Replaced on the next terminal/postactivation incident.
-    func incident(_ reason: String) {
-        let incidentBegin=RunEvidenceSchema.mono();incidentCount+=1
-        defer {incidentNS+=RunEvidenceSchema.mono()-incidentBegin}
-        record("timeline",["event":"incident-window","reason":reason])
-        let url=directory.appendingPathComponent("incident.jsonl")
-        try? fm.removeItem(at:url)
-        let fd=open(url.path,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0o600)
-        guard fd>=0 else { dropped += 1; writeFailures+=1; return }; defer { close(fd) }
-        var budget=3<<20
-        for channel in ["memory-access","thread-frame-memory","timeline","vm-operations","graphics-errors"] {
-            guard let f=files[channel] else { continue }
-            for slot in [(f.slot+Self.slots[channel]!-1)%Self.slots[channel]!,f.slot] {
-                let source=directory.appendingPathComponent("\(channel).\(slot).jsonl")
-                let copied=Self.copy(source,to:fd,maximum:budget);budget-=copied;incidentBytes+=UInt64(copied);logicalBytes+=UInt64(copied)
+    /// First important window and recent/terminal window have separate fixed
+    /// budgets. Routine stalls cannot replace a higher-priority resource event.
+    func beginAttempt() { incidentPriority=0;lastIncidentNS=0 }
+    func incident(_ reason:String) {
+        let priority=reason.contains("disconnect") || reason.contains("guest-process-exit") ? 4 : reason.contains("texture") || reason.contains("resource") ? 3 : 1
+        let now=RunEvidenceSchema.mono()
+        if priority<incidentPriority || (priority==incidentPriority && lastIncidentNS>0 && now>=lastIncidentNS && now-lastIncidentNS<10_000_000_000) {suppressedIncidents+=1;return}
+        incidentPriority=priority;lastIncidentNS=now
+        let begin=now;incidentCount+=1;defer{incidentNS+=RunEvidenceSchema.mono()-begin}
+        record("timeline",["event":"incident-window","reason":reason,"priority":priority])
+        func capture(_ name:String) {
+            let url=directory.appendingPathComponent(name);try? fm.removeItem(at:url)
+            let fd=open(url.path,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0o600)
+            guard fd>=0 else{writeFailures+=1;return};defer{close(fd)}
+            let budgets=[("resource-failures",192<<10),("input-path",64<<10),("timeline",128<<10),("thread-frame-memory",256<<10),("memory-access",256<<10),("vm-operations",64<<10),("graphics-errors",64<<10)]
+            for(channel,maximum) in budgets {
+                guard let f=files[channel] else{continue}
+                let copied=Self.copy(directory.appendingPathComponent("\(channel).\(f.slot).jsonl"),to:fd,maximum:maximum,tail:true)
+                logicalBytes+=UInt64(copied);incidentBytes+=UInt64(copied)
             }
         }
+        if priority>=3 && !firstIncidentSaved {capture("incident-first.jsonl");firstIncidentSaved=true}
+        capture("incident.jsonl")
     }
-    @discardableResult static func copy(_ source: URL, to destination: Int32, maximum: Int) -> Int {
+    @discardableResult static func copy(_ source: URL, to destination: Int32, maximum: Int, tail:Bool=false) -> Int {
         let fd=open(source.path,O_RDONLY|O_NOFOLLOW|O_CLOEXEC); guard fd>=0 else { return 0 }; defer { close(fd) }
         var info=stat(); guard fstat(fd,&info)==0,info.st_uid==getuid(), info.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG) else { return 0 }
         var buffer=[UInt8](repeating:0,count:16<<10), total=0
+        var partial=false
+        if tail && info.st_size>maximum {guard lseek(fd,info.st_size-off_t(maximum),SEEK_SET)>=0 else{return 0};partial=true}
         while total<maximum {
             let amount=min(buffer.count,maximum-total)
             let n=buffer.withUnsafeMutableBytes { read(fd,$0.baseAddress,amount) }
             guard n>0 else { break }
-            let written=buffer.withUnsafeBytes { write(destination,$0.baseAddress,n) }; guard written==n else { break }; total += n
+            var start=0
+            if partial {if let newline=buffer.prefix(n).firstIndex(of:10){start=newline+1;partial=false}else{continue}}
+            let outputCount=n-start
+            let written=buffer.withUnsafeBytes { write(destination,$0.baseAddress!.advanced(by:start),outputCount) }; guard written==outputCount else { break }; total += outputCount
         }
         return total
     }
@@ -397,6 +479,10 @@ final class RunEvidenceStore {
             let fd=open(directory.appendingPathComponent("\(channel).\(f.slot).jsonl").path,O_WRONLY|O_NOFOLLOW|O_CLOEXEC)
             if fd<0 { failed=true;continue };let start=RunEvidenceSchema.mono();fsyncCount+=1;if fsync(fd) != 0 {failed=true} else {dirtyJournals.remove(channel)};fsyncNS+=RunEvidenceSchema.mono()-start;close(fd)
         }
+        if dirtyJournals.contains("resource-failures-first") {
+            let fd=open(directory.appendingPathComponent("resource-failures-first.jsonl").path,O_WRONLY|O_NOFOLLOW|O_CLOEXEC)
+            if fd>=0 {let begin=RunEvidenceSchema.mono();fsyncCount+=1;if fsync(fd)==0 {dirtyJournals.remove("resource-failures-first")} else{failed=true};fsyncNS+=RunEvidenceSchema.mono()-begin;close(fd)} else{failed=true}
+        }
         if failed {syncErrors+=1} else {syncSequence=persisted;syncNS=RunEvidenceSchema.mono()}
     }
     func reportReceiverIdentity() -> [String:String] {
@@ -405,6 +491,7 @@ final class RunEvidenceStore {
     }
     func systemSummary(_ report:[String:Any]) {try? persist(report,"system.json")}
     func checkpoint() throws {
+        flushRoutineResources()
         let checkpointBegin=RunEvidenceSchema.mono();checkpointCount+=1
         defer {checkpointNS+=RunEvidenceSchema.mono()-checkpointBegin}
         let coverage: [String:Any] = ["schema":RunEvidenceSchema.version,"runID":runID,"startNS":String(startedNS),"latestCapturedSequence":String(sequence),
@@ -412,13 +499,14 @@ final class RunEvidenceStore {
             "lastFsyncedSequence":String(syncSequence),"lastFsyncNS":String(syncNS),"fsyncFailures":syncErrors,"persistence":"write-acknowledged-every-tick; fsync-five-seconds-and-export; final-unflushed-tail-unknown",
             "recorderPersistence":persistenceCounters(),"recordsCollectedByChannel":counts,"observedFacts":facts,"samplingSeconds":1,"units":"NS unless suffixed US/Bytes/Pages",
             "perRunDiskCapBytes":RunEvidenceSchema.perRunLimit,"rollingSegmentCapBytes":Self.segmentBytes,"rollingSlots":Self.slots,
-            "limits":"rolling-journals-8.5MiB; incident-3MiB; system-1MiB; metadata-1MiB; total-less-than-16MiB",
-            "payloadRAM":"native-ring-393216; native-inflight-4608; Swift-native-batch-24576; input-65536; copy-16384; record-max-16384; bounded-metadata",
+            "limits":"rolling-journals-10MiB; incidents-2MiB; first-failures-256KiB; system-1MiB; metadata-1MiB; total-less-than-16MiB",
+            "failureDetailRetention":["firstBytes":firstFailureBytes,"firstRecords":firstFailureRecords,"firstDetailNotRetained":firstFailureDropped,"duplicateDetailsSuppressed":failureDuplicates,"firstByteLimit":256<<10,"recentByteLimit":1<<20,"nativePriorityBytes":49152],"suppressedLowerPriorityOrRepeatedIncidents":suppressedIncidents,
+            "payloadRAM":"native-ring-393216; native-inflight-4608; Swift-native-batch-24576; native-failure-lane-49152; fixed-CPU-history-9216; input-log-window-262144; prefix-65536; copy-16384; record-max-16384; bounded-metadata",
             "allocatorOverhead":"not-measured; payload-bounds-are-not-a-physical-footprint-guarantee",
             "terminationReason":"unknown-unless-authoritative-report; no-clean-host-exit-record",
             "unflushedTail":"unknown-at-abrupt-termination; native-ring-and-log-tail-may-not-be-persisted",
             "nativeObserverIdentityCaps":["CS2LifetimesPerAppSession":4,"workersPerCS2Lifetime":2],
-            "observerCoverage":"native-samples-rolling; console-and-text-bounded-polling; unavailable-is-not-zero",
+            "observerCoverage":"native-samples-rolling; input-route-and-counters-on-utility-tick; console-and-text-bounded-polling; unavailable-is-not-zero",
             "systemReports":"only-reports-actually-delivered; export-does-not-wait",
             "guestCrashReports":"app-owned-report-metadata-only; no-memory-minidumps-or-kernel-stacks"]
         try persist(coverage,"run-summary.json")
@@ -470,10 +558,10 @@ final class RunEvidenceStore {
             for file in selected { budget -= copy(source.appendingPathComponent(file),to:fd,maximum:max(0,budget)) }
             close(fd); result[channel+".jsonl"]=path
         }
-        for name in ["run-summary.json","runtime-config.json","modules.json","graphics-summary.json","termination.json","incident.jsonl","system.json"] {
+        for name in ["run-summary.json","runtime-config.json","modules.json","graphics-summary.json","termination.json","incident.jsonl","incident-first.jsonl","resource-failures-first.jsonl","system.json"] {
             let path=destination.appendingPathComponent(name)
             let fd=open(path.path,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0o600); guard fd>=0 else { continue }
-            let bytes=copy(source.appendingPathComponent(name),to:fd,maximum:min(max(0,budget),name=="incident.jsonl" ? 3<<20 : 1<<20)); close(fd)
+            let bytes=copy(source.appendingPathComponent(name),to:fd,maximum:min(max(0,budget),name=="resource-failures-first.jsonl" ? 256<<10 : 1<<20)); close(fd)
             if bytes>0 { budget-=bytes; result[name]=path } else { try? fm.removeItem(at:path) }
         }
         if let hostRunning,let termination=result["termination.json"],let bytes=try? Data(contentsOf:termination),bytes.count<256<<10,var value=(try? JSONSerialization.jsonObject(with:bytes)) as? [String:Any] {
@@ -489,6 +577,20 @@ final class RunEvidenceStore {
 /// is hidden. No per-log-line queue of closures and no guest/VM lock dependency.
 final class RunEvidenceRecorder {
     static private(set) var shared: RunEvidenceRecorder?
+    private static let inputConfigLock=NSLock()
+    private static var pendingInputConfig:[String:String]=[:]
+    static func inputBindings(_ fields:[String:String]) {
+        // Called only when initialized bindings change, not for typed inputs.
+        let allowed:Set<String>=["LS","RS","A","B","X","Y","LB","RB","LT","RT","L3","R3","Menu","View","D↑","D↓","D←","D→","mouseVertical","source"]
+        let values=fields.filter{key,value in
+            guard allowed.contains(key),value.utf8.count<=80 else{return false}
+            if key=="mouseVertical" {return Double(value).map{$0.isFinite && $0>=0.25 && $0<=2} ?? false}
+            return ["mouse-left","mouse-right","wasd","arrows","keyboard-toggle","none-or-mouse-stick","native-pad","initialized-per-game-bindings"].contains(value) || value.range(of:"^vk:[0-9a-f]{1,8}$",options:.regularExpression) != nil
+        }
+        inputConfigLock.lock();pendingInputConfig=values;inputConfigLock.unlock()
+        if let shared {shared.queue.async{shared.store.setConfig("effective-controller-bindings",values);shared.store.record("input-path",["event":"controller-bindings-initialized","source":"per-game-PadBindings.build; custom-overrides-preserved"])}}
+    }
+
     static func start(documents: URL, bundle: [String:Any]) {
         guard shared==nil else { return }; shared=try? RunEvidenceRecorder(documents:documents,bundle:bundle)
     }
@@ -512,10 +614,11 @@ final class RunEvidenceRecorder {
     private var previous:String?
     private var phase="startup", lastLoopbackConsoleStamp:String?
     private var connectSecond:Int?, mainUserUS:UInt64=0, mainKernelUS:UInt64=0, maxGapNS:UInt64=0, peakFootprint:UInt64=0
-    private var mainIntervals:[[String:Any]]=[], backgroundSpans:[(UInt64,UInt64)]=[], backgroundBegin:UInt64?, activationNS:UInt64?, closeReason:String?, closeReports=0
+    private var mainIntervals:[RunMainInterval]=[], backgroundSpans:[(UInt64,UInt64)]=[], backgroundBegin:UInt64?, activationNS:UInt64?, closeReason:String?, closeReports=0
     private var pendingTextureAPI:String?, consoleLineNumber:UInt64=0, pendingTextureLine:UInt64=0
     private var nativeSourceRead:UInt64=0, consoleSourceRead:UInt64=0, sourceOccurrence:UInt64=0
     private var lastConnectionObservation:String?
+    private var lastInputRoute:String?
     #if os(iOS)
     private var metricSubscriber: RunEvidenceMetrics?
     #endif
@@ -547,6 +650,8 @@ final class RunEvidenceRecorder {
             store.setConfig("packaged-components",components.filter { RunEvidenceSchema.safeAtom($0.key) && RunEvidenceSchema.safeAtom($0.value) })
         }
         store.setConfig("package-provenance",provenance); store.calibration("app-session-start")
+        Self.inputConfigLock.lock();let inputConfig=Self.pendingInputConfig;Self.inputConfigLock.unlock()
+        if !inputConfig.isEmpty{store.setConfig("effective-controller-bindings",inputConfig)}
         store.record("timeline",["event":"app-session-start","previousRun":previous as Any? ?? NSNull(),"source":"app-recorder"])
         #if os(iOS)
         for (name,event,active) in [(UIApplication.didEnterBackgroundNotification,"app-background",false),(UIApplication.didBecomeActiveNotification,"app-foreground",true)] {
@@ -581,12 +686,19 @@ final class RunEvidenceRecorder {
         let begin=RunEvidenceSchema.mono(); ticks+=1
         #if os(iOS)
         nativeEvidenceBacking()
+        var input=[UInt64](repeating:0,count:64);nativeInputSnapshot(&input)
+        if let row=RunEvidenceSchema.input(input) {
+            store.record("input-path",row)
+            let signature=[input[2],input[3],input[32],input[33],input[34],input[36],input[37],input[48]&63].map(String.init).joined(separator:":")
+            if signature != lastInputRoute {lastInputRoute=signature;store.record("input-path",["event":"input-routing-state-observed","state":row,"confidence":"observed-in-utility-tick; intervening-transitions-available-only-as-cumulative-counters"])}
+        }
         var stats=[UInt64](repeating:0,count:9), words=[UInt64](repeating:0,count:48*64)
         for _ in 0..<4 {
             let n=Int(nativeEvidencePoll(&words,64,&stats)); if n==0 { break }
             for i in 0..<n {
                 guard let (channel,r)=RunEvidenceSchema.native(Array(words[i*48..<(i+1)*48])) else { continue }
                 if r["event"] as? String == "cs2-start-observed" {
+                    nativeInputWatch(words[i*48+4],words[i*48+5],UInt32(truncatingIfNeeded:words[i*48+6]))
                     process="\(r["owner"] ?? "unknown")-\(r["lease"] ?? "unknown")"; attempt=0; activated=false;phase="CS2-started-unclassified"
                 }
                 if r["event"] as? String == "executable-copy-mapping-load" {
@@ -594,7 +706,7 @@ final class RunEvidenceRecorder {
                     store.module(entry)
                 }
                 if r["event"] as? String == "main-progress" {
-                    mainIntervals.append(r.filter{["owner","lease","registerCaptureBeginNS","intervalUS","userCPUUS","kernelCPUUS"].contains($0.key)});if mainIntervals.count>192 {mainIntervals.removeFirst()}
+                    if let interval=RunMainInterval(r){mainIntervals.append(interval);if mainIntervals.count>192 {mainIntervals.removeFirst()}}
                 }
                 if r["event"] as? String == "guest-process-exit" {
                     let row=stamp(r);store.guestExit(row)
@@ -695,9 +807,7 @@ final class RunEvidenceRecorder {
         }
     }
     private func incident(_ reason:String) {
-        let now=RunEvidenceSchema.mono()
-        guard now>=lastIncident,now-lastIncident>10_000_000_000 else { return }
-        lastIncident=now; store.incident(reason)
+        store.incident(reason)
     }
     private func tail(_ relative:String,console:Bool) {
         let rootfd=open(documents.path,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC); guard rootfd>=0 else { return }; defer { close(rootfd) }
@@ -769,6 +879,7 @@ final class RunEvidenceRecorder {
                 let identity="\(process ?? "unknown")-\(event)-\(originalStamp ?? "unavailable")"
                 if originalStamp != nil && lastConnectionObservation==identity {return}
                 lastConnectionObservation=identity
+                store.beginAttempt()
                 let next=Self.attemptAfter(event,attempt:attempt,kind:attemptKind);attempt=next.0;attemptKind=next.1;activated=false;activationNS=nil;closeReason=nil;closeReports=0
             }
             let stampSeconds=Self.consoleStamp(line).flatMap { t -> Int? in
@@ -785,10 +896,10 @@ final class RunEvidenceRecorder {
                     store.fact("lastRemoteConnectionToActivation",["seconds":end-start,"clock":"same-console-wall-second; no-packet-arrival-inference","uncertainty":"at-least-timestamp-granularity; console-buffering-unmeasured"])
                 }
             }
-            if event=="disconnect-network-timeout" {
+            if event=="disconnect-network-timeout" || event=="disconnect-kicked-votedoff" {
                 closeReports+=1
                 if closeReason==nil {
-                    closeReason="NETWORK_DISCONNECT_TIMEDOUT"
+                    closeReason=event=="disconnect-network-timeout" ? "NETWORK_DISCONNECT_TIMEDOUT" : "NETWORK_DISCONNECT_KICKED_VOTEDOFF"
                     store.fact("firstExplicitNetworkClose",["reason":closeReason!,"consoleTimestamp":originalStamp as Any? ?? NSNull(),"source":"explicit-console-token; reporting-time-not-packet-arrival"])
                     if let start=activationNS,let date=Self.consoleDate(line,arrival:Date()),let end=store.monotonic(for:date.timeIntervalSince1970) {
                         var spans=backgroundSpans;if let b=backgroundBegin {spans.append((b,RunEvidenceSchema.mono()))}
@@ -884,15 +995,18 @@ final class RunEvidenceRecorder {
         return [-1,0,1].compactMap{cal.date(byAdding:.day,value:$0,to:date)}.min(by:{abs($0.timeIntervalSince(arrival))<abs($1.timeIntervalSince(arrival))})
     }
     static func cpuSummary(_ rows:[[String:Any]],start:UInt64,end:UInt64,lifetime:String?,background:[(UInt64,UInt64)]) -> [String:Any] {
+        cpuSummary(rows.compactMap(RunMainInterval.init),start:start,end:end,lifetime:lifetime,background:background)
+    }
+    static func cpuSummary(_ rows:[RunMainInterval],start:UInt64,end:UInt64,lifetime:String?,background:[(UInt64,UInt64)]) -> [String:Any] {
         var user:UInt64=0,kernel:UInt64=0,elapsed:UInt64=0,count=0,boundary=0,bg=0
         for r in rows {
-            guard let owner=r["owner"] as? String,let lease=r["lease"] as? String,owner+"-"+lease==lifetime,let t=r["registerCaptureBeginNS"] as? String,let finish=UInt64(t),let us=r["intervalUS"] as? UInt64,us>0,us<=finish/1000 else {continue}
+            let finish=r.finishNS,us=r.intervalUS
+            guard RunEvidenceSchema.hex(r.owner)+"-"+String(r.lease)==lifetime,us>0,us<=finish/1000 else{continue}
             let begin=finish-us*1000
             guard finish>start && begin<end else {continue}
             guard begin>=start && finish<=end else {boundary+=1;continue}
             guard !background.contains(where:{$0.0<finish && $0.1>begin}) else {bg+=1;continue}
-            guard let u=r["userCPUUS"] as? UInt64,let k=r["kernelCPUUS"] as? UInt64 else {continue}
-            user+=u;kernel+=k;elapsed+=us;count+=1
+            user+=r.userUS;kernel+=r.kernelUS;elapsed+=us;count+=1
         }
         return ["userUS":user,"kernelUS":kernel,"intervalUS":elapsed,"includedIntervals":count,"boundaryIntervalsExcluded":boundary,"backgroundIntervalsExcluded":bg,"windowBeginNS":String(start),"windowEndNS":String(end),"clockMapping":"original-console-wall mapped through measured nearest app calibration; device-timezone assumption; >=1-second console resolution; not-packet-arrival","intervalRule":"capture-time interval wholly inside activation-to-first-explicit-close; boundary/background overlaps excluded; bounded-192-interval history","kernelShareOfConsumedCPU":user+kernel>0 ? Double(kernel)/Double(user+kernel) : NSNull(),"rule":"whole-capture-interval-contained-in-console-derived-window; no-proration; background-overlaps-excluded","clockConfidence":"measured-app-wall-monotonic-calibration; console-second-resolution-and-device-timezone-assumption; console-buffering-unmeasured","retention":"last-192-main-intervals; missing-intervals-not-zero; not-exhaustive-process-CPU"]
     }
@@ -921,6 +1035,7 @@ final class RunEvidenceRecorder {
         // Event names are enum values; no quoted text, endpoint, ID, account or
         // chat payload is copied from console lines.
         let l=s.lowercased(); if l.contains("chat") || l.contains("say ") { return nil }
+        if s.contains("NETWORK_DISCONNECT_KICKED_VOTEDOFF") {return "disconnect-kicked-votedoff"}
         if s.contains("NETWORK_DISCONNECT_TIMEDOUT") { return "disconnect-network-timeout" }
         if s.contains("SIGNONSTATE_FULL") && l.contains("disconnect") { return "disconnect-full-signon" }
         if (s.contains("CreateTexture2D") || s.contains("CreateTexture3D")) && s.contains("E_OUTOFMEMORY") { return "texture-allocation-failed" }

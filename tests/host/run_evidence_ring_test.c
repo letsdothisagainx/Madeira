@@ -39,6 +39,17 @@ int main(void) {
     for(unsigned i=0;i<4;++i) pthread_join(threads[i],0);
     while(madeira_evidence_poll(out,64,stats));
     assert(stats[2]>0 || stats[3]>476);
-    _Static_assert(sizeof(ios_ev_ring)+sizeof(ios_ev_flight)<400000,"native payload budget");
+    /* Exact production failure lane survives traffic that overwrites the
+     * ordinary ring. Distinct requests remain distinct even with one descriptor. */
+    unsigned failures=0;uint64_t first_ids=0,recent_min=UINT64_MAX,recent_max=0;
+    for(unsigned id=1;id<=222;++id) {
+        struct ios_evidence_record r={{0}};r.w[1]=13;r.w[8]=id;r.w[9]=2;r.w[25]=0x8007000e;ios_evidence_emit(&r);
+        for(unsigned j=0;j<28;++j){struct ios_evidence_record routine={{0}};routine.w[1]=IOS_EV_MAIN;ios_evidence_emit(&routine);}
+    }
+    do {n=madeira_evidence_poll(out,64,stats);for(unsigned i=0;i<n;++i)if(out[i*48+1]==13){uint64_t id=out[i*48+8];failures++;if(id<=32)first_ids|=UINT64_C(1)<<(id-1);else{if(id<recent_min)recent_min=id;if(id>recent_max)recent_max=id;}}}while(n);
+    assert(failures==128 && first_ids==UINT64_C(0xffffffff) && recent_min==127 && recent_max==222);
+    assert(ios_ev_resource_stats[12]==94);
+    _Static_assert(sizeof(ios_ev_ring)+sizeof(ios_ev_flight)+sizeof(ios_ev_fail_first)+sizeof(ios_ev_fail_recent)+sizeof(ios_ev_by_op)<512*1024,"native payload budget");
+    puts("priority failure lane: 222 requests amid 6216 routine records retains first 32 + last 96; 94 overwritten details counted PASS");
     puts("native recorder: rotation, monotonic sequencing, try-only contention, in-flight snapshots, errno and metadata-only concurrent producers PASS");
 }
