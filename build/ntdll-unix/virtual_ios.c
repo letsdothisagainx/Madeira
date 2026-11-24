@@ -23779,6 +23779,9 @@ static int ios_swap_pq_state;   /* 0 not started, 1 running, -1 off */
 static unsigned long long ios_swap_pq_done, ios_swap_punch_slow, ios_swap_punch_max_ms;
 static unsigned long long ios_swap_decommit_remaps, ios_swap_decommit_fallbacks;
 
+#if defined(WINE_IOS) && defined(__APPLE__) && !defined(MADV_RANDOM)
+#error "CS2 private-data paging policy requires Darwin MADV_RANDOM declarations"
+#endif
 static uint64_t ios_swap_random_attempts,ios_swap_random_success,ios_swap_random_failures,ios_swap_random_bytes;
 static int ios_swap_random_last_error;
 static const char ios_swap_private_pager_policy[] __attribute__((used)) = "cs2-private-random-pager-v1";

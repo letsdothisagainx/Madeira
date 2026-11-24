@@ -16,6 +16,7 @@ with tempfile.TemporaryDirectory() as d:
  (p/'test.c').write_text(r'''
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE
+#define _DARWIN_C_SOURCE
 #include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
