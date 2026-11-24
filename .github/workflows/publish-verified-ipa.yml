@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: publish-ipa-fed11839
+  group: publish-ipa-6367a156
   cancel-in-progress: false
 
 jobs:
@@ -22,10 +22,10 @@ jobs:
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
-      SOURCE_REVISION: fed1183934f481c617562e66ecbb6a75315a7553
-      SOURCE_RUN: '45262074228'
-      SOURCE_UUID: 9F3C8A5B-A16D-3195-955C-4AAC1268B3C6
-      RELEASE_TAG: ipa-fed11839
+      SOURCE_REVISION: 6367a1566aad52eb5ec23af973b93db402cd3885
+      SOURCE_RUN: '45307261599'
+      SOURCE_UUID: EA48680B-97E9-3102-A69D-CF790363851B
+      RELEASE_TAG: ipa-6367a156
     steps:
       - name: Require the exact successful build and artifact
         run: |
@@ -55,7 +55,7 @@ jobs:
           PY
       - uses: actions/checkout@v4
         with:
-          ref: fed1183934f481c617562e66ecbb6a75315a7553
+          ref: 6367a1566aad52eb5ec23af973b93db402cd3885
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
@@ -88,36 +88,39 @@ jobs:
       - name: Publish the same IPA as a stable prerelease asset
         run: |
           cat > "$RUNNER_TEMP/ipa-release-notes.txt" <<'NOTES'
-          Installable Madeira Run17 live-mapping/evidence candidate from source fed1183934f481c617562e66ecbb6a75315a7553.
+          Installable Madeira candidate addressing Run18 external-backing retirement and export gaps.
 
-          IPA build: https://github.com/letsdothisagainx/Madeira/actions/runs/45262074228
-          Focused normal Linux/macOS and actual iPhone SDK checks: https://github.com/letsdothisagainx/Madeira/actions/runs/45262069313
-          Native UUID: 9F3C8A5B-A16D-3195-955C-4AAC1268B3C6
+          App source: 6367a1566aad52eb5ec23af973b93db402cd3885
+          Native UUID: EA48680B-97E9-3102-A69D-CF790363851B
+          IPA SHA256: 9f9c98cb513f14c119b2952e44f5651805a312455f0cda88b2145a41f6c3fdcc
+          IPA build: https://github.com/letsdothisagainx/Madeira/actions/runs/45307261599
+          Focused normal Linux/macOS/iPhone SDK checks: https://github.com/letsdothisagainx/Madeira/actions/runs/45307257943
 
-          Run17 confirms the earlier CS2 STLR fallback was active and did not remove the kernel-heavy stall. All five highlighted effective addresses overlap one historical shared-file mapping; the export cannot establish its later live backing/protection state. No kernel diagnosis or repaired gameplay is claimed, and no backing policy, instruction selection, recovery eligibility, reserve, renderer/network setting or JIT partition is changed.
+          Run18 was a failed remote Mirage session. Reproduced current-run records remove 1121 incident duplicates and select 54 main intervals wholly inside activation-to-explicit-timeout using native capture timestamps and measured clock calibration. They contain 2.854868 seconds user CPU and 30.366529 seconds kernel CPU, 91.4065% of consumed CPU. The STLR fallback actually ran. Most sampled stores observe RW external-pager backing after resume; this is not a kernel stack or an atomic observation.
 
-          This candidate keeps existing main/watched-worker observations rolling after the old 1200-sample limit. After the existing target resume, a nonblocking bookkeeping snapshot and bounded Mach region query preserve current allocation/extent identities, owner, guest/host protection and disposition metadata with separate timestamps and inconsistency/availability states. Fixed native records expose slow/error/in-flight map, protection, decommit, discard and punch operations without formatting or filesystem work in VM critical sections. Operation tokens are distinct from native thread lifetime IDs.
+          Published XNU clears KILLPAGES dirty state only for internal objects. Madeira incorrectly treated it as dirty-page disposal for its shared external backing and gated fresh decommit on its success. This candidate removes those external retirement scans/deactivation calls and the unsupported gate. Fresh zero offsets and successful hole punching still control zero-on-reuse; retired offsets remain quarantined, contents-preserving copyback and guest/host protection contracts remain intact. No live allocation is migrated or force-freed. This corrects an established release/decommit assumption; induced pager pressure is plausible, but its role in the dominant live-store stall and actual gameplay improvement remain unproven.
 
-          The existing Export Run button automatically packages typed rolling history, live access metadata, frame/paging/CPU/memory/recovery progress, console-derived attempts/transitions, bounded resource-error summaries, runtime/component/module metadata and available MetricKit summaries. A previous incident run and the separately identified immediately preceding native log are preserved. Unknown termination stays unknown; console timestamps are separate from parsing time. Data missing from an observer is not synthesized as zero.
+          Export Run now records bounded exact-host-page Mach metadata separately from region metadata, including the second page for crossing accesses, result/timestamps and generation consistency. Punch records include synchronous fallback, file-open and retired-extent identities, deferred/synchronous and lock scope, plus separate per-operation aggregates. All observation stays after existing target resume, with no guest payload reads, warming, extra suspension or protection changes.
 
-          Recording has bounded native buffers and less than 16 MiB persisted evidence per retained run. Native/Swift allocator overhead and iPhone recording cost remain unmeasured. No guest payload reads, extra capture suspension, forced faults, protection changes or kernel-stack collection are introduced. Matching symbols are a separate Madeira-native-symbols Actions artifact, referenced in package metadata. Export does not wait for system-report delivery, GPU completion or guest memory scans.
+          Stable config/module/error summaries are coalesced, automatic checkpoints run every five ticks, and only dirty journals need fsync. Recorder logical writes, checkpoint/flush/fsync, rotation and incident-copy work are separate from host-app IO. A normal host fixture measured 200 metadata writes for 100 unchanged checkpoints; the baseline method wrote 500. This is not an iPhone performance benchmark. Actual recorder physical/CPU overhead on iPhone remains unmeasured.
 
-          Normal C/Swift fixtures cover actual after-resume mapping observation, busy locks/lease changes, nonblocking producer contention, rotation, identities/nulls, redaction, clocks, deduplication, incomplete-run retention, disk limits and the existing streaming ZIP/share/cancellation path. The actual iPhone SDK API type-check and final native/app packaging checks pass. No deliberate crash, protected-memory, page-revocation, fault-injection or execution of captured instructions is used.
+          Loopback activation remains within its connection attempt. Original explicit close reasons and repeated reports stay separate from cleanup. CPU summaries use wholly contained capture intervals and calibrated original console boundaries with boundary/background exclusions. Typed graphics failures cover allocation, invalid arguments, missing resources/materials and shader/pipeline messages without broad text disclosure. Crash-report file identity/time and live-versus-prior-session capture status preserve uncertainty. Only actually delivered system diagnostics are included, with honest build/time matching.
 
-          The full 1152 MiB JIT pool (768/384), recovery/QoS correction, code-buffer reuse, TSO correctness, memory reserve, GPU lifetimes, installed files, Steam session, prefix, input and bundle identifier are preserved. Install over the existing application using the same signing identity; do not uninstall or delete data.
+          Normal metadata fixtures cover the actual baseline/corrected retirement functions, split extents, quarantine/reuse, synchronous fallback, ordinary Mach page queries, per-operation counters, serialization, clock/attempt boundaries, redaction, rotation, incomplete recordings and the existing streaming ZIP/share/cancellation path. Actual iPhone SDK/native/app builds and final package checks pass. No deliberate crash, protected-memory, page-revocation, forced-fault or execution of captured instruction bytes is used.
 
-          Publication verifies the source, actual native UUID/component provenance, linked recorder/consumer, immutable artifact digest and bundle identity. The unauthenticated public download is compared byte for byte with the built IPA.
+          The full 1152-MiB JIT pool and 768/384 partition, TSO/STLR settings, prior recovery/QoS correction, physical reserve, GPU lifetimes, backing cap, Steam/network settings, input, bundle identity, prefix, installation, account and user configuration are preserved. No global backing disable, MAP_PRIVATE replacement, anonymous-gigabyte migration or graphics-setting change is made. Install over the existing app using the established signing workflow; do not uninstall or delete data.
 
-          Device acceptance remains unverified: use the same remote Mirage sequence; check activation duration, main-thread user/kernel time and live mapping metadata, Present gaps, textures, responsive team selection, sustained gameplay through a round and a clean return/changelevel. Menu FPS, a build, or a richer ZIP does not prove the stall is fixed.
+          Publication verifies exact successful build/source, immutable artifact bytes, actual native UUID/components, linked page-query/recorder/retirement policy, bundle identity and recovery/pressure/TSO producers. Matching symbols: Madeira-native-symbols:45307261599. The public unauthenticated download is compared byte for byte with the built IPA.
 
-          Details: https://github.com/letsdothisagainx/Madeira/blob/fed1183934f481c617562e66ecbb6a75315a7553/docs/cs2-run17-live-mapping-evidence.md
+          Device acceptance remains unverified: use the same remote Mirage sequence, responsive team selection, sustained gameplay through a round, continuing main/render progress without timeout, intact textures and a clean return/changelevel. A build, menu FPS or a richer ZIP is not gameplay acceptance. An empty graphics error file does not certify textures.
 
-          Run CS2, encounter the issue, tap Export Run, share the single ZIP. Download Madeira.ipa below; SHA256SUMS verifies the bytes.
+          Details: https://github.com/letsdothisagainx/Madeira/blob/6367a1566aad52eb5ec23af973b93db402cd3885/docs/cs2-run18-external-backing-retirement.md
+          Normal workflow: Run CS2, encounter the problem, tap Export Run, share one ZIP. After app closure/relaunch, the available prior run remains separately identified. Download Madeira.ipa below; SHA256SUMS verifies it.
           NOTES
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title 'Madeira fed11839 - Run17 live mapping evidence candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt"
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title 'Madeira 6367a156 - Run18 external backing retirement candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt"
           else
-            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title 'Madeira fed11839 - Run17 live mapping evidence candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title 'Madeira 6367a156 - Run18 external backing retirement candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
           fi
           gh release upload "$RELEASE_TAG" release-output/Madeira.ipa release-output/SHA256SUMS release-output/recovery-package.json release-output/run-evidence-package.json --repo "$GITHUB_REPOSITORY" --clobber
           gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
