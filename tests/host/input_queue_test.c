@@ -60,6 +60,14 @@ int main(void){
     assert(atomic_load(&q.counts[IQ_LOCK_BUSY])==1 && atomic_load(&q.counts[IQ_EDGE_OVERFLOW])==2);
     for(unsigned i=0;i<80;++i)push(1,0x32,0,(i&1)?2:0,0,600000000+i);
     delivered=0;turn(600000100);assert(delivered==64);turn(600000101);assert(delivered==80);
+    /* A slow game must still receive a currently held movement key. Drop
+     * only old completed pulses, not a held state on every delayed drain. */
+    push(1,0x57,0,0,0,700000000);delivered=0;turn(2700000000);
+    assert(delivered==1 && events[0].x==0x57 && !events[0].flags && holds.keys[1]);
+    push(1,0x57,0,2,0,2700000001);turn(2700000002);assert(!holds.keys[1]);
+    push(1,0x57,0,0,0,3000000000);push(1,0x57,0,2,0,3000000001);
+    push(0,0,0,2,0,3000000002);push(0,0,0,4,0,3000000003);
+    delivered=0;turn(5000000000);assert(delivered==2 && events[0].flags==2 && events[1].flags==4 && !holds.keys[1] && !holds.buttons);
     _Static_assert(sizeof(q)+sizeof(holds)<16384,"fixed input payload cap");
     puts("PASS actual queue: order, compatible motion, releases, bounded age/drain, lifecycle, overflow/try-lock accounting and <16KiB payload");
 }

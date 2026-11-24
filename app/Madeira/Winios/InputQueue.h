@@ -40,6 +40,16 @@ static inline int iq_motion(const winios_input_event_t*e){return e->type==WINIOS
 static inline int iq_release(const winios_input_event_t*e){
     return e->type==WINIOS_EV_KEY ? !!(e->flags&2) : e->type==WINIOS_EV_MOUSE && !(e->flags&(2|8|0x20|0x80)) && !!(e->flags&(4|0x10|0x40|0x100));
 }
+static inline int iq_matching_release(const winios_input_event_t*press,const winios_input_event_t*after){
+    if(press->type!=after->type || !iq_release(after))return 0;
+    if(press->type==WINIOS_EV_KEY)return press->x==after->x;
+    if(press->type!=WINIOS_EV_MOUSE)return 0;
+    /* Producers emit single-button transitions. Leave unusual combined
+     * button masks intact rather than guessing their partial state. */
+    const unsigned down=press->flags&(2|8|0x20|0x80);
+    return down==2 ? !!(after->flags&4) : down==8 ? !!(after->flags&0x10) :
+           down==0x20 ? !!(after->flags&0x40) : down==0x80 && press->data==after->data && !!(after->flags&0x100);
+}
 static inline uint64_t iq_reset(struct winios_input_queue*q){iq_add(q,IQ_RESETS,1);return atomic_fetch_add_explicit(&q->generation,1,memory_order_acq_rel)+1;}
 static inline void iq_context(struct winios_input_queue*q,unsigned bit,int blocked){
     unsigned before=blocked?atomic_fetch_or(&q->blocked,bit):atomic_fetch_and(&q->blocked,~bit);
@@ -106,14 +116,20 @@ static inline int iq_pop(struct winios_input_queue*q,winios_input_event_t*e,uint
     if(q->head==q->tail){pthread_mutex_unlock(&q->lock);return 0;}
     *e=q->buf[q->tail];
     if(e->type==WINIOS_EV_TEXT && e->data==text_generation && e->data==paced_generation && !text_ready){pthread_mutex_unlock(&q->lock);return 0;}
-    q->tail=(q->tail+1)%WINIOS_RING_SIZE;atomic_store(&q->depth,(q->head+WINIOS_RING_SIZE-q->tail)%WINIOS_RING_SIZE);pthread_mutex_unlock(&q->lock);
+    q->tail=(q->tail+1)%WINIOS_RING_SIZE;
+    int delayed_pair=0;
+    if(e->type!=WINIOS_EV_TEXT && !iq_release(e) && !iq_motion(e) && ns>=e->ns && ns-e->ns>UINT64_C(1000000000)) {
+        for(unsigned at=q->tail;at!=q->head;at=(at+1)%WINIOS_RING_SIZE)
+            if(iq_matching_release(e,&q->buf[at])){delayed_pair=1;break;}
+        /* An old wheel pulse can be dropped, but a still-held key/button
+         * must reach a slow consumer. Resetting it every second would starve
+         * continuous movement at <=1 FPS. Lifecycle epochs remain separate. */
+        if(e->type==WINIOS_EV_MOUSE && (e->flags&(0x800|0x1000)))delayed_pair=1;
+    }
+    atomic_store(&q->depth,(q->head+WINIOS_RING_SIZE-q->tail)%WINIOS_RING_SIZE);pthread_mutex_unlock(&q->lock);
     iq_add(q,IQ_POPPED,1);if(ns>=e->ns)iq_max(q,IQ_MAX_AGE_NS,ns-e->ns);
     if(iq_motion(e) && ns>=e->ns && ns-e->ns>WINIOS_INPUT_MOTION_NS){iq_add(q,IQ_STALE,1);return -1;}
-    if(e->type!=WINIOS_EV_TEXT && !iq_release(e) && ns>=e->ns && ns-e->ns>UINT64_C(1000000000)) {
-        iq_add(q,IQ_STALE,1);
-        if(e->type==WINIOS_EV_KEY || (e->flags&(2|8|0x20|0x80)))iq_reset(q);
-        return -1; /* no delayed press/fire burst after an extended stall */
-    }
+    if(delayed_pair){iq_add(q,IQ_STALE,1);return -1;}
     return 1;
 }
 /* Caller owns the one consumer lock. A reset or stale edge releases only

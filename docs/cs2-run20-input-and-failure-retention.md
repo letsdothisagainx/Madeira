@@ -74,8 +74,9 @@ structured coverage. Visual corruption is reported independently of counters.
   neutralization, not a promise to preserve arbitrary unlimited input history.
   Text has edge headroom and retains its existing generation/pacing semantics.
 * The consumer performs at most 64 event/neutralization steps per pump. Old
-  motion and delayed presses are discarded rather than replayed after a long
-  stall; releases remain valid. Existing IPC can itself take time; the event
+  motion and old completed press/release pulses are discarded rather than
+  replayed after a long stall. A still-held press remains deliverable even
+  below one drain per second; releases remain valid. Existing IPC can itself take time; the event
   budget is not an IPC-latency guarantee. Per-motion logging/flushes are removed.
 * `PadKeyboardMouse` now gates buttons and key sticks as well as mouse motion
   on native UI focus. Old code posted keys/buttons with `focused=false`.
