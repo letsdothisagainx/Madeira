@@ -1045,7 +1045,7 @@ void winios_post_touch_up(int x, int y) {
 /* Key press bridge. vk = Windows virtual-key code, down = 1 for press,
  * 0 for release. Queued like mouse events; drained in pProcessEvents. */
 void winios_post_key(int vk, int down) {
-    winios_q_push_ev(WINIOS_EV_KEY, vk, 0, down ? 0 : KEYEVENTF_KEYUP, 0);
+    winios_q_push_ev(WINIOS_EV_KEY, vk, 0, down ? 0 : WINIOS_KEY_UP, 0);
 }
 
 /* Serial, nonblocking consumer: keys remain FIFO even with several Wine

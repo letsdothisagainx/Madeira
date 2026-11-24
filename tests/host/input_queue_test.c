@@ -9,6 +9,8 @@ static winios_input_event_t events[1024];static unsigned delivered;
 static void push(unsigned type,int x,int y,unsigned flags,unsigned data,uint64_t ns){
     winios_input_event_t e={.type=type,.x=x,.y=y,.flags=flags,.data=data};assert(iq_push(&q,e,ns));
 }
+static void winios_q_push_ev(unsigned type,int x,int y,unsigned flags,unsigned data){push(type,x,y,flags,data,1);}
+#include "actual_post_key.h"
 static void turn(uint64_t ns){
     for(unsigned budget=0;budget<WINIOS_INPUT_DRAIN_LIMIT;++budget){
         winios_input_event_t e;int neutral=iq_neutral(&q,&holds,&e);
@@ -22,6 +24,8 @@ int main(void){
     iq_context(&q,4,1);assert(atomic_load(&q.blocked)==4);
     uint64_t focus_epoch=atomic_load(&q.generation);iq_context(&q,4,1);
     assert(atomic_load(&q.generation)==focus_epoch);iq_context(&q,4,0);
+    winios_post_key(0x41,1);winios_post_key(0x41,0);turn(2);
+    assert(delivered==2 && events[0].flags==0 && events[1].flags==WINIOS_KEY_UP && !holds.keys[1]);delivered=0;
     /* Actual old push rejects the incoming release at 255 entries. */
     for(unsigned i=0;i<255;++i)baseline_push(WINIOS_EV_MOUSE,1,1,1,0);
     baseline_push(WINIOS_EV_KEY,0x57,0,2,0);

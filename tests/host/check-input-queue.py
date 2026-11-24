@@ -8,5 +8,7 @@ assert hashlib.sha256(baseline).hexdigest()=='6ac282f097fba6d84cacf3ae426dfed168
 old=baseline.decode().replace('winios_input_event_t','baseline_event_t').replace('g_input_q','baseline_queue').replace('winios_q_push_ev','baseline_push')
 with tempfile.TemporaryDirectory() as d:
  p=Path(d);(p/'input_queue_baseline.h').write_text(old)
+ source=(r/'app/Madeira/Winios/Winios.m').read_text();begin=source.index('void winios_post_key(int vk, int down) {');end=source.index('\n}',begin)+2
+ (p/'actual_post_key.h').write_text(source[begin:end])
  subprocess.run([os.getenv('CC','cc'),'-std=c11','-O2','-Wall','-Wextra','-Werror','-Wno-missing-field-initializers','-pthread','-I'+str(p),'-I'+str(r/'app/Madeira/Winios'),str(r/'tests/host/input_queue_test.c'),'-o',str(p/'check')],check=True)
  subprocess.run([str(p/'check')],check=True,timeout=10)
