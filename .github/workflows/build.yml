@@ -498,8 +498,15 @@ jobs:
           python3 tools/check-security-compat-package.py --root scm-ipa/Payload/Madeira.app --source-root wine --repo-root "$GITHUB_WORKSPACE" --ipa scm-ipa/Madeira.ipa
           unzip -oq scm-ipa/Madeira.ipa 'Payload/Madeira.app/*-windows/advapi32.dll' 'Payload/Madeira.app/arm64ec-windows/madeira-registry-security.json' -d scm-ipa
           python3 tools/check-registry-security-package.py --root scm-ipa/Payload/Madeira.app --source-root wine --repo-root "$GITHUB_WORKSPACE" --ipa scm-ipa/Madeira.ipa
-          "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-x18-loads.py --emulate
-          "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-fex-native-callback.py --emulate
+          if [[ '${{ inputs.normal_recovery_checks }}' == 'true' ]]; then
+            # Keep static/generated-code and ordinary callback-layout checks.
+            # The historical emulator matrix deliberately nulls x18 and faults.
+            "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-x18-loads.py
+            "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-fex-native-callback.py
+          else
+            "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-x18-loads.py --emulate
+            "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-fex-native-callback.py --emulate
+          fi
           unzip -oq scm-ipa/Madeira.ipa 'Payload/Madeira.app/i386-windows/madeira-wow64-*' 'Payload/Madeira.app/Madeira.debug.dylib' -d scm-ipa
           "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-wow64-probe-image.py scm-ipa/Payload/Madeira.app/i386-windows
           "$RUNNER_TEMP/scm-abi-tools/bin/python" tests/host/check-native-apc-image.py

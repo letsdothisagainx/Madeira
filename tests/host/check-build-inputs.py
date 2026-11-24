@@ -119,6 +119,7 @@ with tempfile.TemporaryDirectory(prefix='madeira-build-inputs-') as folder:
     key_script = key_step[1].replace('${{ runner.os }}', 'macOS').replace('${{ runner.arch }}', 'ARM64')
     key_script = key_script.replace('${{ steps.sdk.outputs.ipa }}', first['ipa'])
     profile_expression = "${{ inputs.normal_recovery_checks && 'recovery-normal' || 'full' }}"
+    assert "if [[ '${{ inputs.normal_recovery_checks }}' == 'true' ]]; then" in workflow, 'normal-input profile must also gate historical ABI emulator faults'
     assert profile_expression in key_script, 'normal-only validation may not share complete IPA reuse with full validation'
     key_script = key_script.replace(profile_expression, 'full')
     tree = folder / 'repo'

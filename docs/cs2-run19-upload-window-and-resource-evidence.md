@@ -12,6 +12,8 @@ results are excluded from this candidate's validation. Both historical fault
 workflows now require a separate explicit manual opt-in and cannot execute on
 push or ordinary dispatch. The normal-input checks remain in the focused and
 IPA workflows. No further legacy experiments are run.
+The normal-input flag also selects ordinary/static final ABI checks rather than
+the historical emulator matrix that deliberately clears x18 and faults.
 
 ## Established mechanism and production change
 
