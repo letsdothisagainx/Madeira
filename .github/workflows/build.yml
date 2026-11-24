@@ -6,6 +6,11 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      macos_runner:
+        description: Same Xcode 27 image, alternate hosted capacity after acquisition failures
+        type: choice
+        options: [xcode-27, xcode-27-xlarge]
+        default: xcode-27
       normal_recovery_checks:
         description: Use successful-write recovery checks without deliberate crash/fault experiments
         type: boolean
@@ -51,7 +56,7 @@ concurrency:
 jobs:
   plan:
     if: inputs.inspect_native_run_id == '' && inputs.inspect_fex_run_id == '' && inputs.inspect_steam_run_id == '' && inputs.inspect_copy_run_id == ''
-    runs-on: xcode-27
+    runs-on: ${{ inputs.macos_runner || 'xcode-27' }}
     outputs:
       ipa: ${{ steps.key.outputs.ipa }}
       reuse: ${{ steps.ipa.outputs.cache-hit }}
@@ -84,7 +89,7 @@ jobs:
   reuse:
     needs: plan
     if: needs.plan.outputs.reuse == 'true'
-    runs-on: xcode-27
+    runs-on: ${{ inputs.macos_runner || 'xcode-27' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/cache/restore@v4
@@ -114,7 +119,7 @@ jobs:
   llvm:
     needs: plan
     if: needs.plan.outputs.reuse != 'true'
-    runs-on: xcode-27
+    runs-on: ${{ inputs.macos_runner || 'xcode-27' }}
     env:
       MADEIRA_PLANNED_SDK: ${{ needs.plan.outputs.sdk }}
     timeout-minutes: 360
@@ -167,7 +172,7 @@ jobs:
   fex:
     needs: plan
     if: needs.plan.outputs.reuse != 'true'
-    runs-on: xcode-27
+    runs-on: ${{ inputs.macos_runner || 'xcode-27' }}
     env:
       MADEIRA_PLANNED_SDK: ${{ needs.plan.outputs.sdk }}
     timeout-minutes: 360
@@ -208,7 +213,7 @@ jobs:
   i386:
     needs: plan
     if: needs.plan.outputs.reuse != 'true'
-    runs-on: xcode-27
+    runs-on: ${{ inputs.macos_runner || 'xcode-27' }}
     env:
       MADEIRA_PLANNED_SDK: ${{ needs.plan.outputs.sdk }}
     timeout-minutes: 360
@@ -259,7 +264,7 @@ jobs:
   app:
     needs: [plan, llvm, fex, i386]
     if: needs.plan.outputs.reuse != 'true'
-    runs-on: xcode-27
+    runs-on: ${{ inputs.macos_runner || 'xcode-27' }}
     env:
       # An explicitly requested SDK remains strict. Otherwise the compiler
       # worker determines its own coherent cache graph; plan is a reuse probe.
@@ -552,7 +557,7 @@ jobs:
 
   inspect-native:
     if: inputs.inspect_native_run_id != ''
-    runs-on: xcode-27
+    runs-on: ${{ inputs.macos_runner || 'xcode-27' }}
     permissions:
       contents: read
       actions: read
@@ -599,7 +604,7 @@ jobs:
 
   inspect-fex:
     if: inputs.inspect_fex_run_id != ''
-    runs-on: xcode-27
+    runs-on: ${{ inputs.macos_runner || 'xcode-27' }}
     permissions:
       contents: read
       actions: read

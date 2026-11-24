@@ -2,6 +2,11 @@ name: Inspect matching CS2 loading instructions
 on:
   workflow_dispatch:
     inputs:
+      macos_runner:
+        description: Same Xcode 27 image, alternate hosted capacity after acquisition failures
+        type: choice
+        options: [xcode-27, xcode-27-xlarge]
+        default: xcode-27
       inspect_official_images:
         description: Read the matching official game images
         type: boolean
@@ -22,7 +27,7 @@ jobs:
   normal-snapshots:
     strategy:
       matrix:
-        runner: [ubuntu-24.04, xcode-27]
+        runner: [ubuntu-24.04, "${{ inputs.macos_runner || 'xcode-27' }}"]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 5
     steps:
