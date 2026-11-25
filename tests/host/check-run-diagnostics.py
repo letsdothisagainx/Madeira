@@ -220,6 +220,29 @@ import Glibc
                 structured[prefix+name]=input
             }
         }
+        // Exercise recorder -> immutable snapshot -> final ZIP, not merely
+        // snapshotRun's independent filename list. A resource incident must
+        // not suppress this lane, and a later disconnect must not replace it.
+        let firstStallName="incident-post-activation-first.jsonl"
+        let currentRun="10213243-5465-7687-98A9-BACBDCEDFE0F"
+        let priorRun="00112233-4455-6677-8899-AABBCCDDEEFF"
+        for (run,prefix) in [(currentRun,"evidence/"),(priorRun,"evidence/previous/"+priorRun+"/")] {
+            let store=try RunEvidenceStore(root:base.appendingPathComponent("recordings"),runID:run)
+            store.record("timeline",["event":"resource-failure-before-activation"])
+            store.incident("resource-admission-failure")
+            store.record("timeline",["event":"remote-activated"])
+            store.record("thread-frame-memory",["event":"main-progress","fixture":"first-remote-stall"])
+            store.incident("post-activation-frame-stall")
+            let captured=try Data(contentsOf:store.directory.appendingPathComponent(firstStallName))
+            store.record("timeline",["event":"later-disconnect"])
+            store.incident("disconnect-timeout")
+            let afterDisconnect=try Data(contentsOf:store.directory.appendingPathComponent(firstStallName))
+            assert(captured==afterDisconnect,"later disconnect replaced the dedicated first stall")
+            try store.checkpoint()
+            let snapshot=try RunEvidenceStore.snapshotRun(store.directory,destination:base.appendingPathComponent("snapshot-"+run),hostRunning:run==currentRun)
+            guard let file=snapshot[firstStallName] else{fatalError("first stall missing from recorder snapshot")}
+            structured[prefix+firstStallName]=file
+        }
         let archive = try RunDiagnostics.export(documents: documents, temporaryDirectory: output, bundleInfo: info, evidenceFiles:structured)
         // Small line/byte quotas must retain both provenance/start and the
         // recent failure end, with explicit omissions in the manifest.
@@ -316,6 +339,7 @@ with tempfile.TemporaryDirectory(prefix='madeira-run-export-') as temporary:
     executable = p / 'check'
     subprocess.run([swift, '-swift-version', '5', '-parse-as-library', '-I', str(p),
                     str(ROOT / 'app/Madeira/CS2VACMarkers.swift'), str(ROOT / 'app/Madeira/SteamGameDiagnostics.swift'),
+                    str(ROOT / 'app/Madeira/RunEvidence.swift'),
                     str(ROOT / 'app/Madeira/RunDiagnostics.swift'), str(p / 'Writer.swift'), str(p / 'Check.swift'), '-o', str(executable)], check=True)
     subprocess.run([str(executable), str(p)], check=True, timeout=180)
     result = json.loads((p / 'result.json').read_text())
@@ -335,6 +359,19 @@ with tempfile.TemporaryDirectory(prefix='madeira-run-export-') as temporary:
                 for prefix in ['evidence/','evidence/previous/00112233-4455-6677-8899-AABBCCDDEEFF/']:
                     for name in ['resource-failures.jsonl','resource-failures-first.jsonl','input-path.jsonl','incident-first.jsonl']:
                         assert json.loads(archive.read(prefix+name))['source']==prefix+name
+                for run, prefix in [('10213243-5465-7687-98A9-BACBDCEDFE0F', 'evidence/'),
+                                    ('00112233-4455-6677-8899-AABBCCDDEEFF', 'evidence/previous/00112233-4455-6677-8899-AABBCCDDEEFF/')]:
+                    name = prefix + 'incident-post-activation-first.jsonl'
+                    assert name in archive.namelist(), 'dedicated first stall omitted by final ZIP exporter'
+                    records = [json.loads(line) for line in archive.read(name).splitlines()]
+                    assert records and all(row['runID'] == run for row in records)
+                    events = {row['event'] for row in records}
+                    assert {'resource-failure-before-activation', 'remote-activated', 'main-progress'} <= events
+                    assert 'later-disconnect' not in events
+                    sources = json.loads(archive.read('manifest.json'))['sources']
+                    item = next(row for row in sources if row['source'] == name)
+                    assert item['state'] == 'private-typed-recorder-snapshot'
+                    assert item['bytes'] == len(archive.read(name))
             assert all(item.compress_type == zipfile.ZIP_DEFLATED for item in archive.infolist())
             assert all(not name.startswith('/') and '..' not in name.split('/') for name in archive.namelist())
             body = b'\n'.join(archive.read(name) for name in archive.namelist()).decode()
@@ -351,4 +388,5 @@ with tempfile.TemporaryDirectory(prefix='madeira-run-export-') as temporary:
             assert manifest['schema'] == 'madeira-run-diagnostics-v1'
             assert manifest['typedVACSnapshot'] == 'included-separate-bounded-typed-snapshot'
             assert not any('config/' in name or 'ssfn' in name for name in archive.namelist())
+    print('PASS recorder -> snapshot -> final ZIP/manifest: resource-before-activation and later disconnect preserve the dedicated first stall; current/preceding run identities stay separate')
     print('PASS Python run ZIP readback: actual method8 compression, private fixtures absent, broad and typed diagnostics retained, private output permissions and cancellation retry archive valid')
