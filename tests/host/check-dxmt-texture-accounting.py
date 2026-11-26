@@ -111,6 +111,12 @@ def reference(width, height, depth, mips, arrays, samples, kind, block, decoded,
 
 
 cases = []
+# Run25 request 27487: array_length counts cubes, not individual faces.
+# Each BC6H face has 87,376 bytes across its seven mips; 116 * 6 faces
+# require 60,813,696 bytes before staging. This is a capacity fixture, not
+# a claim that a Metal allocation or iPhone gameplay was exercised.
+assert reference(256, 256, 1, 7, 116, 1, 6, 16, 8, True) == 60_813_696
+cases.append((151, 256, 256, 1, 7, 116, 1, 6, True, 60_813_696))
 for fmt, block, decoded in formats + rgba:
     for shape in ((1, 1, 1, 1, 1, 1, 2), (4, 4, 1, 1, 1, 1, 2),
                   (5, 7, 1, 3, 1, 1, 2), (4096, 4096, 1, 13, 1, 1, 2),

@@ -15,7 +15,7 @@ import tempfile
 ROOT=Path(__file__).resolve().parents[2]
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--run14-normal-only', action='store_true',
-                    help='Replay the eight valid Run14 pressure inputs and ordinary admission/release only')
+                    help='Replay recorded Run14/Run25 pressure inputs and ordinary admission/release only')
 args=parser.parse_args()
 
 def function(source, signature):
@@ -377,6 +377,8 @@ int main() {
   {6262798872ull,179619304,2798672,201325568},
   {6264437272ull,177980904,2097408,201325568},
   {6265715224ull,176702952,2097408,201325568},
+  // Run25 request 27487: BC6H cube-array destination + bounded upload.
+  {6200490664ull,241960280,60879232,201326592},
  };
  for (const auto& c:cases) {
   footprint=c.footprint; available=c.available;
@@ -387,7 +389,7 @@ int main() {
   assert(detail(a,2)==c.floor && detail(a,3)==1);
   assert(!md_resource_growth_held && md_resource_growth_next==before);
  }
- assert(pressure_observations==8); // Observer invoked only after unlocking the real receipt mutex.
+ assert(pressure_observations==sizeof(cases)/sizeof(cases[0])); // Observer runs after unlocking the real receipt mutex.
  sample(1024*MiB); auto a=acquire(2798672);
  assert(a.ptr && a.ret==1 && md_resource_growth_held==2798672);
  assert(release(a.ptr) && !md_resource_growth_held);
@@ -404,7 +406,7 @@ int main() {
  });
  for(auto& t:workers)t.join();
  assert(!md_resource_growth_held && !md_resource_growth_waiters);
- std::puts("PASS Run14 normal-only: actual native predicate reproduces all eight budget refusals; healthy admission/release and 400 parallel receipts remain balanced. Controlled measurements, no physical-memory savings asserted.");
+ std::puts("PASS Run14/Run25 normal-only: actual native predicate reproduces all nine budget refusals; healthy admission/release and 400 parallel receipts remain balanced. Controlled measurements, no physical-memory savings asserted.");
 }
 '''
 
