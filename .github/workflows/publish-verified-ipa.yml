@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: publish-ipa-e50f8dfd
+  group: publish-ipa-59eda2a8
   cancel-in-progress: false
 
 jobs:
@@ -22,10 +22,10 @@ jobs:
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
-      SOURCE_REVISION: e50f8dfdcacc68495db607028bb615d0435ec2bd
-      SOURCE_RUN: '45511231989'
-      SOURCE_UUID: A51B832E-AEDE-3C5E-A20B-B9AB964321D9
-      RELEASE_TAG: ipa-e50f8dfd
+      SOURCE_REVISION: 59eda2a89f06cba33bb49a00f9d8f82b904f6a4b
+      SOURCE_RUN: '45869304194'
+      SOURCE_UUID: 0C15FEB4-031D-351C-9581-D6178E9A0439
+      RELEASE_TAG: ipa-59eda2a8
     steps:
       - name: Require the exact successful build and artifact
         run: |
@@ -55,7 +55,7 @@ jobs:
           PY
       - uses: actions/checkout@v4
         with:
-          ref: e50f8dfdcacc68495db607028bb615d0435ec2bd
+          ref: 59eda2a89f06cba33bb49a00f9d8f82b904f6a4b
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
@@ -88,34 +88,30 @@ jobs:
       - name: Publish the same IPA as a stable prerelease asset
         run: |
           cat > "$RUNNER_TEMP/ipa-release-notes.txt" <<'NOTES'
-          Madeira Run23 private-data paging repair candidate.
+          Madeira 59eda2a8 — current source build and Export Run correction.
 
-          App source: e50f8dfdcacc68495db607028bb615d0435ec2bd
-          Native UUID: A51B832E-AEDE-3C5E-A20B-B9AB964321D9
-          IPA SHA256: 0984735daaabf8ff6b2f2a2258f92a412424cd19b91d9a7f150c008e07bdc6da
-          IPA build: https://github.com/letsdothisagainx/Madeira/actions/runs/45511231989
-          Normal Linux/macOS/iPhone SDK checks: https://github.com/letsdothisagainx/Madeira/actions/runs/45511239027
-          Matching symbols: Madeira-native-symbols:45511231989
+          App source: 59eda2a89f06cba33bb49a00f9d8f82b904f6a4b
+          Native UUID: 0C15FEB4-031D-351C-9581-D6178E9A0439
+          IPA SHA256: 07d2ad0563c042a434fd8320d41eaaa39e62dd317ad52456595be2621d37e868
+          IPA build: https://github.com/letsdothisagainx/Madeira/actions/runs/45869304194
+          Normal Linux/macOS/iPhone SDK checks: https://github.com/letsdothisagainx/Madeira/actions/runs/45703334503
+          Matching symbols: Madeira-native-symbols:45869304194
 
-          Normal runtime behavior changed: fresh qualified private CS2 file-backed data mappings request MADV_RANDOM, including fresh-zero decommit replacements. Published XNU uses that persistent hint to limit default speculative page-in clustering. This targets potential working-set/pager amplification in the kernel-heavy normal-store workload. It is a conservative paging optimization, not a confirmed diagnosis of the device kernel or a gameplay-success claim.
+          This build includes the committed Run24 export correction: incident-post-activation-first.jsonl now survives the actual final ZIP exporter for both the current run and the separately identified preceding run. The actual recorder-to-ZIP regression reproduces the old omission and verifies file contents, run identities, manifest byte counts, resource-before-activation capture and preservation through later disconnects.
 
-          The existing native thread registration and validated CS2 process identity qualify the current owner/lease/PID/TID/TEB and private-view creation context without a registry lock or sampled-address rule. Images, executable/ARM64EC/system/write-watch and foreign/stale views retain the prior path. There is no live migration, discard, page warming, protection change, anonymous-memory increase, TSO change, offset-reuse shortcut or reserve reduction. Advice failure preserves the valid allocation and errno. Existing VM/backing records retain bounded policy receipts and timing; accepted advice is not measured FPS improvement.
+          The existing Steam launch handoff, input queue, resource bounds, recovery/QoS, TSO/STLR fallback and private paging policy remain present. No new synchronization or backing repair is claimed. The kernel-heavy loading cost and later select/thread-alert wait dependency remain unresolved. The seven late texture admission failures include a destination that cannot fit above the unchanged reserve. Physical controller delivery remains unverified because the supplied run recorded no upstream physical activity.
 
-          The independent first post-activation stall capture now runs before ordinary incident-priority suppression. It marks saved only after nonempty complete writes/close, removes failed partial output and permits retry. Higher-priority first/recent resource failures remain protected. The actual tested incident method reproduces resource-before-activation suppression; the corrected ordinary replay exports the stall file through activation/stall/disconnect and preserves the resource window. Disk/RAM budgets and the single Export Run ZIP remain.
+          Normal validation passed without deliberate crashes, protected-memory/page-revocation experiments, fault injection or execution of captured instructions. Build and packaging checks do not establish responsive remote gameplay, correct visuals or working controller movement/aim/buttons on the iPhone.
 
-          Ordinary Linux/macOS validation executes the actual identity/policy functions on a small initialized RW shared file mapping, checks every byte, main/worker lifetime exclusions, bounds and errno, and on macOS queries actual RANDOM behavior with unchanged RW protection. Existing upload/fence/reserve, input, retention, privacy, rotation, preceding-run, ZIP/share and native/package checks pass. No deliberate crash, fault injection, protected-memory/page-revocation experiment or captured instruction execution was performed.
+          Preserved: bundle com.willfaust.madeora, installation, Wine prefix, game/account/configuration data, Steam/JIT setup and the 1152-MiB pool with its 768/384 partition. Install over the existing app with the established signing workflow; do not uninstall or delete data.
 
-          Remaining uncertainty: the dominant device kernel operation is not established. Warm host validation does not prove reduced phone page-ins, kernel CPU, loading time or Present gaps; reduced speculative clustering can also reduce useful sequential prefetch. The older destination-only allocation shortage remains unresolved: 673400 usable bytes cannot hold a 699048-byte destination before staging. No live capacity is forcibly reclaimed and no texture-memory improvement is claimed. No actual controller input was observed in the supplied run; no downstream input change was made. Responsive team selection, sustained remote play, movement/aim/buttons and visual correctness require device validation.
-
-          Preserved: bundle com.willfaust.madeora, installation/prefix/game/account/configuration, Steam session and launch handoff, source freshness, bounded input queue, failure retention, JIT entitlements, 1152-MiB pool with 768/384 partition, code-buffer reuse, recovery/QoS, STLR/TSO/half-barrier, memory safeguards, resource contents and GPU lifetimes. No graphics setting or network timeout change. Install over the existing app using the established signing workflow; do not uninstall or delete data.
-
-          Details: https://github.com/letsdothisagainx/Madeira/blob/e50f8dfdcacc68495db607028bb615d0435ec2bd/docs/cs2-run23-private-pager-policy.md
+          Details: https://github.com/letsdothisagainx/Madeira/blob/59eda2a89f06cba33bb49a00f9d8f82b904f6a4b/docs/cs2-run24-waits-and-final-export.md
           Normal workflow: Run CS2, encounter the problem, tap Export Run, share one ZIP. Download Madeira.ipa below; SHA256SUMS verifies it.
           NOTES
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title 'Madeira e50f8dfd - Run23 private-data paging candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt"
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title 'Madeira 59eda2a8 - current source and Export Run update' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt"
           else
-            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title 'Madeira e50f8dfd - Run23 private-data paging candidate' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title 'Madeira 59eda2a8 - current source and Export Run update' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
           fi
           gh release upload "$RELEASE_TAG" release-output/Madeira.ipa release-output/SHA256SUMS release-output/recovery-package.json release-output/run-evidence-package.json --repo "$GITHUB_REPOSITORY" --clobber
           gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
