@@ -145,3 +145,19 @@ pending: zero physical samples/changes are not evidence to modify downstream
 queues, bindings or routing. Existing installation and runtime settings remain
 unchanged. The device acceptance target remains sustained responsive remote
 play, correct visuals and observed movement/aim/button delivery.
+
+## Subsequent explicit IPA delivery request
+
+The user subsequently required a new IPA from the current source despite the
+unresolved runtime finding. Source `ae1a64988e3aca681a4988fd0ebe4ca8e299ac49`
+passed Build IPA run `45980303796`, including its final component/ABI inspection,
+and Linux/macOS normal-input checks run `45980308332`. Native UUID:
+`CDD109BC-FB32-3616-8BEB-4B35169B00F9`; matching symbols:
+`Madeira-native-symbols:45980303796`. The built IPA SHA-256 is
+`ca52048cdebe3fc4836ba4482d85c202879b4c939af98b4bcb5f9a3302d00230`.
+
+The publication workflow pins that exact artifact, checks source/component
+provenance and the preserved bundle identity, and verifies the public download.
+This delivery does not change the investigation's gameplay conclusion. The
+repository instructions now explicitly preserve the user's IPA-at-handoff
+requirement even when no justified new runtime correction was established.

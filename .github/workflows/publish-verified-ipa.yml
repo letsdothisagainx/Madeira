@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: publish-ipa-59eda2a8
+  group: publish-ipa-ae1a6498
   cancel-in-progress: false
 
 jobs:
@@ -22,10 +22,12 @@ jobs:
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
-      SOURCE_REVISION: 59eda2a89f06cba33bb49a00f9d8f82b904f6a4b
-      SOURCE_RUN: '45869304194'
-      SOURCE_UUID: 0C15FEB4-031D-351C-9581-D6178E9A0439
-      RELEASE_TAG: ipa-59eda2a8
+      SOURCE_REVISION: ae1a64988e3aca681a4988fd0ebe4ca8e299ac49
+      SOURCE_RUN: '45980303796'
+      CHECKS_RUN: '45980308332'
+      SOURCE_UUID: CDD109BC-FB32-3616-8BEB-4B35169B00F9
+      SOURCE_IPA_SHA256: ca52048cdebe3fc4836ba4482d85c202879b4c939af98b4bcb5f9a3302d00230
+      RELEASE_TAG: ipa-ae1a6498
     steps:
       - name: Require the exact successful build and artifact
         run: |
@@ -39,6 +41,10 @@ jobs:
           assert run['head_sha'] == os.environ['SOURCE_REVISION']
           assert run['head_repository']['full_name'].lower() == repo.lower()
           assert run['path'] == '.github/workflows/build.yml'
+          checks = api('/actions/runs/' + os.environ['CHECKS_RUN'])
+          assert checks['status'] == 'completed' and checks['conclusion'] == 'success'
+          assert checks['head_sha'] == os.environ['SOURCE_REVISION']
+          assert checks['path'] == '.github/workflows/cs2-loading-inspect.yml'
           artifacts = api('/actions/runs/' + os.environ['SOURCE_RUN'] + '/artifacts?name=Madeira-ipa')['artifacts']
           assert len(artifacts) == 1
           artifact = artifacts[0]
@@ -55,7 +61,7 @@ jobs:
           PY
       - uses: actions/checkout@v4
         with:
-          ref: 59eda2a89f06cba33bb49a00f9d8f82b904f6a4b
+          ref: ae1a64988e3aca681a4988fd0ebe4ca8e299ac49
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
@@ -69,6 +75,7 @@ jobs:
           mkdir release-output
           unzip -q "$RUNNER_TEMP/Madeira-ipa.zip" -d release-output
           test -s release-output/Madeira.ipa
+          printf '%s  %s\n' "$SOURCE_IPA_SHA256" release-output/Madeira.ipa | sha256sum --check --strict
           python3 tools/build/native-provenance.py check --root "$GITHUB_WORKSPACE" --revision "$SOURCE_REVISION" --ipa release-output/Madeira.ipa
           python3 delivery-tools/tests/host/check-store-recovery-package-inspector.py
           python3 delivery-tools/tools/check-store-recovery-package.py --ipa release-output/Madeira.ipa --revision "$SOURCE_REVISION" --require-pressure-boundary --require-recovery-scope --require-cs2-tso-profile > release-output/recovery-package.json
@@ -88,30 +95,28 @@ jobs:
       - name: Publish the same IPA as a stable prerelease asset
         run: |
           cat > "$RUNNER_TEMP/ipa-release-notes.txt" <<'NOTES'
-          Madeira 59eda2a8 — current source build and Export Run correction.
+          Madeira ae1a6498 - current source IPA.
 
-          App source: 59eda2a89f06cba33bb49a00f9d8f82b904f6a4b
-          Native UUID: 0C15FEB4-031D-351C-9581-D6178E9A0439
-          IPA SHA256: 07d2ad0563c042a434fd8320d41eaaa39e62dd317ad52456595be2621d37e868
-          IPA build: https://github.com/letsdothisagainx/Madeira/actions/runs/45869304194
-          Normal Linux/macOS/iPhone SDK checks: https://github.com/letsdothisagainx/Madeira/actions/runs/45703334503
-          Matching symbols: Madeira-native-symbols:45869304194
+          App source: ae1a64988e3aca681a4988fd0ebe4ca8e299ac49
+          Native UUID: CDD109BC-FB32-3616-8BEB-4B35169B00F9
+          IPA SHA256: ca52048cdebe3fc4836ba4482d85c202879b4c939af98b4bcb5f9a3302d00230
+          IPA build: https://github.com/letsdothisagainx/Madeira/actions/runs/45980303796
+          Normal Linux/macOS/iPhone SDK checks: https://github.com/letsdothisagainx/Madeira/actions/runs/45980308332
+          Matching symbols: Madeira-native-symbols:45980303796
 
-          This build includes the committed Run24 export correction: incident-post-activation-first.jsonl now survives the actual final ZIP exporter for both the current run and the separately identified preceding run. The actual recorder-to-ZIP regression reproduces the old omission and verifies file contents, run identities, manifest byte counts, resource-before-activation capture and preservation through later disconnects.
+          Fresh IPA from the current source, published at the user's explicit request. The latest source changes add exact Run25 BC6H cube-array and native admission regressions plus the completed investigation report. They do not establish a new gameplay-runtime correction. The kernel-heavy stall and destination-memory shortage remain unresolved; this release must not be described as confirmed playable gameplay.
 
-          The existing Steam launch handoff, input queue, resource bounds, recovery/QoS, TSO/STLR fallback and private paging policy remain present. No new synchronization or backing repair is claimed. The kernel-heavy loading cost and later select/thread-alert wait dependency remain unresolved. The seven late texture admission failures include a destination that cannot fit above the unchanged reserve. Physical controller delivery remains unverified because the supplied run recorded no upstream physical activity.
-
-          Normal validation passed without deliberate crashes, protected-memory/page-revocation experiments, fault injection or execution of captured instructions. Build and packaging checks do not establish responsive remote gameplay, correct visuals or working controller movement/aim/buttons on the iPhone.
+          The existing final-ZIP first-stall repair, Steam launch handoff, bounded input queue, upload bounds, recovery/QoS, TSO/STLR fallback and private paging policy remain present. Normal-input checks passed without deliberate crashes, protected-memory/page-revocation experiments, fault injection or execution of captured instructions. Build and packaging validation do not establish responsive remote gameplay, correct visuals or physical-controller movement/aim/buttons.
 
           Preserved: bundle com.willfaust.madeora, installation, Wine prefix, game/account/configuration data, Steam/JIT setup and the 1152-MiB pool with its 768/384 partition. Install over the existing app with the established signing workflow; do not uninstall or delete data.
 
-          Details: https://github.com/letsdothisagainx/Madeira/blob/59eda2a89f06cba33bb49a00f9d8f82b904f6a4b/docs/cs2-run24-waits-and-final-export.md
+          Details: https://github.com/letsdothisagainx/Madeira/blob/ae1a64988e3aca681a4988fd0ebe4ca8e299ac49/docs/cs2-run25-backing-and-admission-blockers.md
           Normal workflow: Run CS2, encounter the problem, tap Export Run, share one ZIP. Download Madeira.ipa below; SHA256SUMS verifies it.
           NOTES
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title 'Madeira 59eda2a8 - current source and Export Run update' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt"
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title 'Madeira ae1a6498 - current source IPA' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt"
           else
-            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title 'Madeira 59eda2a8 - current source and Export Run update' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title 'Madeira ae1a6498 - current source IPA' --notes-file "$RUNNER_TEMP/ipa-release-notes.txt" --draft --prerelease
           fi
           gh release upload "$RELEASE_TAG" release-output/Madeira.ipa release-output/SHA256SUMS release-output/recovery-package.json release-output/run-evidence-package.json --repo "$GITHUB_REPOSITORY" --clobber
           gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false

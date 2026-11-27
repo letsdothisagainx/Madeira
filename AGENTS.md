@@ -7,6 +7,11 @@ deliverable with a report or withhold it because gameplay acceptance remains
 unverified. If an actual build or delivery failure blocks publication, identify
 the exact failure and continue working to resolve it.
 
+The user explicitly requires an IPA at each Madeira handoff, including an
+investigation that establishes no justified new runtime correction. Deliver the
+requested current-source build and state that limitation honestly; do not omit
+the IPA or describe the build as verified playable gameplay.
+
 Verify the package's source/component provenance and the unauthenticated public
 download. Preserve the existing bundle identifier, installation, Wine prefix,
 game files, Steam session, JIT setup and user configuration.
