@@ -21,6 +21,9 @@ def function(sig):
     return source[a:e]
 
 code = r'''
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -40,14 +43,14 @@ static size_t host_page_size=MD_CHURN_PAGE;
 static uint64_t ios_swap_churn_skips, now=1, map_calls, query_calls;
 static uintptr_t user_space_limit=UINTPTR_MAX-16384, current_owner=1;
 static uint64_t current_lease=34, native_available=UINT64_C(1024)<<20, native_floor=UINT64_C(192)<<20;
-static int fixture_is_cs2=1,fixture_budget_valid=1;
+static int fixture_is_cs2=1,fixture_budget_valid=1,fixture_alias=0;
 static unsigned last_reason;
 static int ios_swap_eligible(void*a,size_t n,unsigned p,struct file_view*v){(void)a;(void)n;(void)p;(void)v;return 0;}
 static void ios_swap_back(void*a,size_t n,unsigned p){(void)a;(void)n;(void)p;assert(0);}
 static int ios_swap_overlaps(const void*a,size_t n){(void)a;(void)n;return 0;}
 static int ios_swap_churny(size_t n){(void)n;return 0;}
 static int ios_swap_is_fexjit(uintptr_t a,size_t n){return a<0x80000000u && a+n>0x7c000000u;}
-static int ios_jit_anon_alias_overlaps(const void*a,size_t n,uintptr_t*b,uintptr_t*e){(void)a;(void)n;(void)b;(void)e;return 0;}
+static int ios_jit_anon_alias_overlaps(const void*a,size_t n,uintptr_t*b,uintptr_t*e){(void)a;(void)n;(void)b;(void)e;return fixture_alias;}
 static int is_view_valloc(const struct file_view*v){return !(v->protect&(SEC_FILE|SEC_RESERVE|SEC_COMMIT));}
 static int get_unix_prot(unsigned p){return p;}
 static int ios_swap_map(void*a,size_t n,int p){(void)a;(void)n;(void)p;++map_calls;return IOS_SW_BACKED;}
@@ -55,7 +58,7 @@ static void ios_swap_note(int why,size_t n){(void)n;last_reason=why;}
 static uint64_t ios_swap_now_ns(void){return now;}
 int ios_cs2_current_private_owner(uintptr_t p){return fixture_is_cs2 && p==current_owner;}
 int ios_native_current_process_identity(uintptr_t*o,uint64_t*l,unsigned*p){*o=current_owner;*l=current_lease;*p=1;return 1;}
-''' + function('static int ios_swap_why(') + '\n' + function('static void ios_swap_commit(') + r'''
+''' + function('static void ios_churn_unmap_note(') + '\n' + function('static int ios_swap_why(') + '\n' + function('static void ios_swap_commit(') + r'''
 static uint64_t generation;
 static struct file_view commit(uintptr_t base,size_t bytes){
  struct file_view v={(void*)base,bytes,VPROT_READ|VPROT_WRITE|VPROT_COMMITTED,0,current_owner,++generation};
@@ -64,7 +67,7 @@ static struct file_view commit(uintptr_t base,size_t bytes){
 static void reset(void){
  memset(md_churn_classes,0,sizeof(md_churn_classes));memset(md_churn_views,0,sizeof(md_churn_views));
  memset(&md_churn_stats,0,sizeof(md_churn_stats));now=1;map_calls=query_calls=0;
- current_owner=1;current_lease=34;fixture_is_cs2=fixture_budget_valid=1;
+ current_owner=1;current_lease=34;fixture_is_cs2=fixture_budget_valid=1;fixture_alias=0;host_page_size=MD_CHURN_PAGE;
  native_available=UINT64_C(1024)<<20;ios_swap_wide=ios_swap_v2=1;
 }
 static void warm_n(size_t bytes,unsigned count){
@@ -80,7 +83,7 @@ static void *worker(void *arg){
  uintptr_t base=0x10000000+(uintptr_t)arg*(1u<<20);
  for(unsigned i=0;i<1000;++i){
   pthread_mutex_lock(&vm);++now;commit(base,512u<<10);pthread_mutex_unlock(&vm);
-  pthread_mutex_lock(&vm);md_churn_unmapped(base,512u<<10,++now);pthread_mutex_unlock(&vm);
+  pthread_mutex_lock(&vm);++now;ios_churn_unmap_note((void*)base,512u<<10);pthread_mutex_unlock(&vm);
  }
  return NULL;
 }
@@ -108,6 +111,17 @@ int main(void){
  for(unsigned i=0;i<MD_CHURN_CAP/n;++i)md_churn_unmapped(0x1000000+(uintptr_t)i*n,n,++now);
  assert(!MD_CHURN_GET(held));
  puts("PASS full committed-cost aggregate cap; no native budget query once exhausted; actual-unmap release balances all credits");
+
+ reset();warm(MD_CHURN_MAX);v=commit(0x1000000,MD_CHURN_MAX);
+ assert(MD_CHURN_GET(held)==MD_CHURN_MAX);
+ md_churn_unmapped((uintptr_t)v.base+(1u<<20),2u<<20,++now);
+ assert(MD_CHURN_GET(held)==(2u<<20));
+ assert(md_churn_charged_range((uintptr_t)v.base,1u<<20,v.ios_evidence_id));
+ assert(!md_churn_charged_range((uintptr_t)v.base+(1u<<20),2u<<20,v.ios_evidence_id));
+ assert(md_churn_charged_range((uintptr_t)v.base+(3u<<20),1u<<20,v.ios_evidence_id));
+ md_churn_unmapped((uintptr_t)v.base,MD_CHURN_MAX,++now);
+ assert(!MD_CHURN_GET(held) && !MD_CHURN_GET(active));
+ puts("PASS all 256 host-page bits of a maximum-size view, middle release and exact surviving tails");
 
  reset();warm(n);native_available=2*native_floor+n-1;
  commit(0x1000000,n);assert(map_calls==9 && !MD_CHURN_GET(held) && MD_CHURN_GET(pressure_denied)==1);
@@ -140,6 +154,20 @@ int main(void){
  assert(map_calls==9 && !MD_CHURN_GET(held));
  puts("PASS unavailable native budget fails closed to ordinary backing");
 
+ reset();warm(n);fixture_alias=1;commit(0x2000000,n);assert(!MD_CHURN_GET(held) && map_calls==9);
+ fixture_alias=0;host_page_size=4096;commit(0x3000000,n);assert(!MD_CHURN_GET(held) && map_calls==10);
+ puts("PASS existing alias and unsupported host-page geometry take the original backing path");
+
+ reset();warm_n(n,64);v=commit(0x1000000,n);assert(MD_CHURN_GET(held)==n);
+ for(unsigned i=0;i<MD_CHURN_VIEWS;++i)commit(UINT64_C(0x100000000)+(uint64_t)i*(8u<<20),n+MD_CHURN_PAGE);
+ assert(MD_CHURN_GET(learning_evicted)>0 && MD_CHURN_GET(held)==n);
+ assert(md_churn_charged_range((uintptr_t)v.base,n,v.ios_evidence_id));
+ for(unsigned i=0;i<MD_CHURN_VIEWS;++i)md_churn_unmapped(UINT64_C(0x100000000)+(uint64_t)i*(8u<<20),n+MD_CHURN_PAGE,++now);
+ md_churn_unmapped((uintptr_t)v.base,n,++now);
+ assert(!MD_CHURN_GET(held) && !MD_CHURN_GET(active));
+ assert(MD_CHURN_GET(retired)+MD_CHURN_GET(learning_evicted)==MD_CHURN_GET(tracked));
+ puts("PASS bounded learning rotation preserves charged lifetime records and their commitment through table saturation");
+
  reset();warm(n);pthread_t threads[4];
  for(uintptr_t i=0;i<4;++i)assert(!pthread_create(&threads[i],NULL,worker,(void*)i));
  for(unsigned i=0;i<4;++i)assert(!pthread_join(threads[i],NULL));
@@ -166,7 +194,8 @@ for name in ('native_available','native_floor','query_calls','fixture_budget_val
     code = code.replace('static uint64_t current_lease=34, native_available=', 'uint64_t current_lease=34, native_available=') if name=='native_available' else code
 code=code.replace('static uint64_t ios_swap_churn_skips, now=1, map_calls, query_calls;',
                   'static uint64_t ios_swap_churn_skips, now=1, map_calls; uint64_t query_calls;')
-code=code.replace('static int fixture_is_cs2=1,fixture_budget_valid=1;', 'static int fixture_is_cs2=1; int fixture_budget_valid=1;')
+code=code.replace('static int fixture_is_cs2=1,fixture_budget_valid=1,fixture_alias=0;',
+                  'static int fixture_is_cs2=1,fixture_alias=0; int fixture_budget_valid=1;')
 with tempfile.TemporaryDirectory(prefix='madeira-churn-normal-') as tmp:
     p=Path(tmp);(p/'test.c').write_text(code);(p/'budget.c').write_text(budget)
     baseline=(root/'tests/fixtures/run26-swap-commit-baseline.c').read_text()

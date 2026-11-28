@@ -91,6 +91,27 @@ scoped[stroff + strlen:stroff + strlen + len(callback)] = name.ljust(len(callbac
 scoped.extend(b'[store-recovery-scope-v1] advisory=unheld commit=fresh-held held-qos=user-interactive '
               b'write0-us= write1-us= prepare-read-us= suspend-us= recovery-worker=')
 assert module.inspect(bytes(scoped), require_recovery_scope=True)['recoveryScopeRequired']
+# Churn backing needs BOTH the linked native consumer and a defined provider;
+# a log string or an unresolved import alone cannot bless an old package.
+churn = bytearray(pressure)
+provider = b'_madeira_private_commit_budget\0'
+assert len(provider) <= len(callback)
+churn[stroff + strlen:stroff + strlen + len(callback)] = provider.ljust(len(callback), b'\0')
+markers = b'[swap-churn-budget-v1]\0policy=cs2-whole-private-v1\0'
+try:
+    module.inspect(bytes(churn), require_churn_backing=True)
+except ValueError:
+    pass
+else:
+    raise AssertionError('churn provider without compiled consumer accepted')
+churn.extend(markers)
+module.inspect(bytes(churn), require_churn_backing=True)
+try:
+    module.inspect(image() + markers, require_churn_backing=True)
+except ValueError:
+    pass
+else:
+    raise AssertionError('churn markers without a defined native provider accepted')
 try:
     module.inspect(image(), require_recovery_scope=True)
 except ValueError:

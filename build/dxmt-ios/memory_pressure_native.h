@@ -18,6 +18,7 @@ static const volatile char md_memory_pressure_contract[] = "[madeira-memory-pres
 extern "C" {
 #endif
 void madeira_native_memory_relief_request(uint64_t, uint64_t);
+int madeira_private_commit_budget(uint64_t *, uint64_t *);
 /* Optional, read-only pressure-boundary observation. The native Wine worker
  * owns the bounded capture; a rejected creator must never walk VM or wait for
  * it while holding the creation-receipt mutex. */

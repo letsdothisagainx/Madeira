@@ -30,7 +30,8 @@ static struct md_churn_class md_churn_classes[MD_CHURN_CLASSES];
 static struct md_churn_view md_churn_views[MD_CHURN_VIEWS];
 struct md_churn_counters {
     uint64_t tracked, hot, bypasses, bytes, held, peak, cap_denied,
-             pressure_denied, tracking_denied, retired, query_ns, queries, budget_unavailable;
+             pressure_denied, tracking_denied, retired, query_ns, queries, budget_unavailable,
+             active, learning_evicted;
 };
 static struct md_churn_counters md_churn_stats;
 #define MD_CHURN_ADD(field,n) __atomic_add_fetch(&md_churn_stats.field,(uint64_t)(n),__ATOMIC_RELAXED)
@@ -43,13 +44,13 @@ static int md_churn_hot(const struct md_churn_view *v)
 }
 
 /* Called once for an eligible fresh, whole, host-aligned private commit.
- * A full tracking table or any overlapping old lifetime fails closed to the
- * ordinary file policy; a recycled pointer never transfers somebody's credit.
+ * Uncharged old learning records may rotate; charged records never do. A full
+ * charged table or overlapping lifetime fails closed to the file policy.
  */
 static struct md_churn_view *md_churn_begin(uintptr_t owner, uint64_t lease,
     uint64_t generation, uintptr_t base, uint64_t bytes, uint64_t now)
 {
-    unsigned i, ci = MD_CHURN_CLASSES, free_ci = MD_CHURN_CLASSES, vi = MD_CHURN_VIEWS;
+    unsigned i, ci = MD_CHURN_CLASSES, free_ci = MD_CHURN_CLASSES, vi = MD_CHURN_VIEWS, evict = MD_CHURN_VIEWS;
     struct md_churn_view *v;
     if (!owner || !lease || !generation || !now || bytes < MD_CHURN_MIN || bytes > MD_CHURN_MAX ||
         (base & (MD_CHURN_PAGE - 1)) || (bytes & (MD_CHURN_PAGE - 1)) ||
@@ -58,6 +59,7 @@ static struct md_churn_view *md_churn_begin(uintptr_t owner, uint64_t lease,
         v = &md_churn_views[i];
         if (!v->bytes) { if (vi == MD_CHURN_VIEWS) vi = i; continue; }
         if (base < v->base + v->bytes && v->base < base + bytes) return NULL;
+        if (!v->charged && (evict == MD_CHURN_VIEWS || v->born < md_churn_views[evict].born)) evict = i;
     }
     for (i = 0; i < MD_CHURN_CLASSES; ++i) {
         struct md_churn_class *c = &md_churn_classes[i];
@@ -65,7 +67,15 @@ static struct md_churn_view *md_churn_begin(uintptr_t owner, uint64_t lease,
         if (c->owner == owner && c->lease == lease && c->bytes == bytes) { ci = i; break; }
     }
     if (ci == MD_CHURN_CLASSES) ci = free_ci;
-    if (ci == MD_CHURN_CLASSES || vi == MD_CHURN_VIEWS) { MD_CHURN_ADD(tracking_denied,1); return NULL; }
+    if (ci == MD_CHURN_CLASSES || (vi == MD_CHURN_VIEWS && evict == MD_CHURN_VIEWS)) {
+        MD_CHURN_ADD(tracking_denied,1); return NULL;
+    }
+    if (vi == MD_CHURN_VIEWS) {
+        /* This is only an uncharged learning observation. Its real file
+         * ownership remains in the backing ledger. Never evict a charged
+         * commitment, and never count an unknown lifetime as a young death. */
+        vi = evict; MD_CHURN_ADD(learning_evicted,1);
+    } else MD_CHURN_ADD(active,1);
     struct md_churn_class *c = &md_churn_classes[ci];
     c->owner = owner; c->lease = lease; c->bytes = bytes;
     ++c->allocations;
@@ -132,6 +142,7 @@ static void md_churn_unmapped(uintptr_t base, uint64_t bytes, uint64_t now)
             if (v->learned && now >= v->born && now - v->born < MD_CHURN_YOUNG_NS)
                 ++md_churn_classes[v->class_index].young;
             MD_CHURN_ADD(retired,1);
+            __atomic_sub_fetch(&md_churn_stats.active,1,__ATOMIC_RELAXED);
             memset(v,0,sizeof(*v));
         }
     }

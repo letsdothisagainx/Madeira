@@ -9305,7 +9305,7 @@ static uint64_t ios_ev_vm_generation, ios_ev_allocation_id, ios_ev_extent_id;
 static uint64_t ios_swap_now_ns(void);
 static void ios_churn_unmap_note(void *base, size_t size)
 {
-    if (MD_CHURN_GET(tracked) != MD_CHURN_GET(retired))
+    if (MD_CHURN_GET(active))
         md_churn_unmapped((uintptr_t)base,size,ios_swap_now_ns());
 }
 
@@ -24383,14 +24383,15 @@ void ios_swap_stats_line( void )
              __atomic_load_n( &ios_swap_decommit_fallbacks, __ATOMIC_RELAXED ) );
     dprintf(2,"[swap-churn-budget-v1] policy=cs2-whole-private-v1 cap=%llu held=%llu peak=%llu "
               "tracked=%llu retired=%llu hot=%llu bypasses=%llu bypass-bytes=%llu "
-              "cap-denied=%llu pressure-denied=%llu tracking-denied=%llu queries=%llu query-ns=%llu budget-unavailable=%llu\n",
+              "cap-denied=%llu pressure-denied=%llu tracking-denied=%llu queries=%llu query-ns=%llu budget-unavailable=%llu active=%llu learning-evicted=%llu\n",
         (unsigned long long)MD_CHURN_CAP,(unsigned long long)MD_CHURN_GET(held),
         (unsigned long long)MD_CHURN_GET(peak),(unsigned long long)MD_CHURN_GET(tracked),
         (unsigned long long)MD_CHURN_GET(retired),(unsigned long long)MD_CHURN_GET(hot),
         (unsigned long long)MD_CHURN_GET(bypasses),(unsigned long long)MD_CHURN_GET(bytes),
         (unsigned long long)MD_CHURN_GET(cap_denied),(unsigned long long)MD_CHURN_GET(pressure_denied),
         (unsigned long long)MD_CHURN_GET(tracking_denied),(unsigned long long)MD_CHURN_GET(queries),
-        (unsigned long long)MD_CHURN_GET(query_ns),(unsigned long long)MD_CHURN_GET(budget_unavailable));
+        (unsigned long long)MD_CHURN_GET(query_ns),(unsigned long long)MD_CHURN_GET(budget_unavailable),
+        (unsigned long long)MD_CHURN_GET(active),(unsigned long long)MD_CHURN_GET(learning_evicted));
     /* ml1221: the census (bytes by reason) with every stats line, ~10 s, not only
      * after its own 30 s: Ori and the Will of the Wisps was jetsammed at 26 s and never printed one. */
     ios_swap_tick( 1 );

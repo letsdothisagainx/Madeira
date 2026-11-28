@@ -69,11 +69,17 @@ This is **not a proven footprint reduction**. Choosing anonymous backing can
 increase charged footprint, bounded by the full commitment cap. The policy
 stops new bypasses well above the existing floor and only reclaims its allowance
 after actual native unmapping. It does not claim a large reservation is resident
-or count shared JIT aliases twice. Metadata storage is 43,624 bytes, separate
+or count shared JIT aliases twice. Fixed C metadata payload is 43,640 bytes, separate
 from recorder storage. There is no dynamic metadata allocation or per-event
 filesystem output under the VM lock. The existing slow census adds one bounded
 `swap-churn-budget-v1` row with cap, outstanding/peak charge, exercised bypasses,
 refusal counts and measured native-budget query count/time.
+
+Uncharged old learning records rotate when the bounded table fills; their
+authoritative backing ownership stays in the existing extent ledger. Charged
+commitment records never rotate. Eviction is counted and never treated as a
+young death, so old long-lived learning cannot exhaust the entire run's policy
+capacity or refund memory still in use.
 
 ## Separate allocation and controller limitations
 
