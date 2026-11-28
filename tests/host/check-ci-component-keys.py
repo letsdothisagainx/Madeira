@@ -118,6 +118,7 @@ cases = {
     'htmlipc-core-profile-package': ('tools/check-htmlipc-image.py', {'ipa'}),
     'cs2-window-allowlist': ('build/ntdll-unix/cs2_observation.h', {'ipa'}),
     'cs2-exact-stall-scope': ('build/ntdll-unix/cs2_stall_watch.h', {'ipa'}),
+    'cs2-churn-backing': ('build/ntdll-unix/cs2_churn_backing.h', {'ipa'}),
     'cs2-exact-stall-native': ('build/ntdll-unix/cs2_stall_watch_native.h', {'ipa'}),
     'system-programs': ('build/wine-pe/build-system-programs.sh', {'wine-host', 'ipa'}),
     'process-lookup-stage': ('tools/build/stage-process-lookup.py', {'wine-host', 'ipa'}),

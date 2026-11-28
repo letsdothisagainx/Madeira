@@ -379,6 +379,8 @@ int main() {
   {6265715224ull,176702952,2097408,201325568},
   // Run25 request 27487: BC6H cube-array destination + bounded upload.
   {6200490664ull,241960280,60879232,201326592},
+  // Run26 request 26049: destination alone exceeds usable headroom.
+  {6240139800ull,202311144,4259840,201326592},
  };
  for (const auto& c:cases) {
   footprint=c.footprint; available=c.available;
@@ -395,6 +397,17 @@ int main() {
  assert(release(a.ptr) && !md_resource_growth_held);
  // Read-only forecasting may exclude only this owner's CPU creation receipt.
  auto held=acquire(16*MiB);assert(held.ptr);
+ uint64_t commit_available=0,commit_floor=0;int previous_cancel;
+ errno=EDOM;
+ assert(madeira_private_commit_budget(&commit_available,&commit_floor));
+ assert(errno==EDOM);
+ assert(!pthread_setcancelstate(PTHREAD_CANCEL_DISABLE,&previous_cancel) && previous_cancel==PTHREAD_CANCEL_ENABLE);
+ assert(!pthread_setcancelstate(previous_cancel,nullptr));
+ assert(commit_available==available-16*MiB && commit_floor==192*MiB);
+ assert(md_resource_growth_held==16*MiB);
+ pthread_mutex_lock(&md_resource_growth_mutex);
+ assert(!madeira_private_commit_budget(&commit_available,&commit_floor));
+ pthread_mutex_unlock(&md_resource_growth_mutex);
  auto snapshot=dxmt::resourceGrowthBudgetSnapshot();assert(snapshot.valid && snapshot.pending==16*MiB);
  auto own=dxmt::resourceGrowthBudgetSnapshot(held.ptr);assert(own.valid && own.pending==0 && own.floor==192*MiB);
  caller=(void*)0x20000;auto foreign=dxmt::resourceGrowthBudgetSnapshot(held.ptr);assert(foreign.valid && foreign.pending==16*MiB);
@@ -406,7 +419,7 @@ int main() {
  });
  for(auto& t:workers)t.join();
  assert(!md_resource_growth_held && !md_resource_growth_waiters);
- std::puts("PASS Run14/Run25 normal-only: actual native predicate reproduces all nine budget refusals; healthy admission/release and 400 parallel receipts remain balanced. Controlled measurements, no physical-memory savings asserted.");
+ std::puts("PASS Run14/Run25/Run26 normal-only: all ten refusals; fresh private-commit budget respects pending credits, unchanged floor and busy-lock refusal; 400 parallel receipts balance. Controlled measurements, no physical-memory savings asserted.");
 }
 '''
 

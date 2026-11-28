@@ -14,7 +14,7 @@ import struct
 import zipfile
 
 
-def inspect(data, require_pressure_boundary=False, require_recovery_scope=False):
+def inspect(data, require_pressure_boundary=False, require_recovery_scope=False, require_churn_backing=False):
     if struct.unpack_from('<II', data) != (0xfeedfacf, 0x100000c):
         raise ValueError('expected thin ARM64 Mach-O native image')
     sections, symtab, indirect = [], None, None
@@ -57,6 +57,13 @@ def inspect(data, require_pressure_boundary=False, require_recovery_scope=False)
                    kind & 0xe == 0xe and not kind & 0xe0 and section and address
                    for name, kind, section, address in symbols):
             raise ValueError('Run14 native pressure request is not defined in the linked image')
+    if require_churn_backing:
+        if b'[swap-churn-budget-v1]' not in data or b'policy=cs2-whole-private-v1' not in data:
+            raise ValueError('bounded CS2 churn backing consumer missing from native image')
+        if not any(name == '_madeira_private_commit_budget' and
+                   kind & 0xe == 0xe and not kind & 0xe0 and section and address
+                   for name, kind, section, address in symbols):
+            raise ValueError('fresh private-commit budget provider is not defined in native image')
     if require_recovery_scope:
         for marker in (b'[store-recovery-scope-v1]', b'advisory=unheld commit=fresh-held',
                        b'held-qos=user-interactive', b'write0-us=', b'write1-us=',
@@ -171,12 +178,16 @@ def main():
                         help='Require linked advisory/held-scope producer and phase record')
     parser.add_argument('--require-cs2-tso-profile', action='store_true',
                         help='Require the rebuilt CS2-specific ARM64EC feature selector')
+    parser.add_argument('--require-cs2-churn-backing', action='store_true',
+                        help='Require linked bounded churn consumer and fresh native budget provider')
     args = parser.parse_args()
     with zipfile.ZipFile(args.ipa) as ipa:
         info = plistlib.loads(ipa.read('Payload/Madeira.app/Info.plist'))
         if info.get('MadeiraNativeBuildProvenance', {}).get('packageSourceRevision') != args.revision:
             raise ValueError('package source revision mismatch')
-        result = inspect(ipa.read('Payload/Madeira.app/Madeira.debug.dylib'), args.require_pressure_boundary, args.require_recovery_scope)
+        result = inspect(ipa.read('Payload/Madeira.app/Madeira.debug.dylib'), args.require_pressure_boundary,
+                         args.require_recovery_scope, args.require_cs2_churn_backing)
+        result['cs2ChurnBackingRequired'] = args.require_cs2_churn_backing
         if args.require_cs2_tso_profile:
             import hashlib
             cpu = ipa.read('Payload/Madeira.app/arm64ec-windows/xtajit64.dll')

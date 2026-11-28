@@ -27,7 +27,7 @@ void madeira_pressure_boundary_request(void *, unsigned long long, uint64_t, uin
 }
 #endif
 
-static inline void md_memory_pressure_query(struct madeira_ctl_args *args) {
+static inline void md_memory_pressure_query_impl(struct madeira_ctl_args *args, int request_relief) {
   const int saved_errno = errno;
   task_vm_info_data_t info = {0};
   mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
@@ -57,9 +57,12 @@ static inline void md_memory_pressure_query(struct madeira_ctl_args *args) {
   args->ret = 1;
   // Queue only a cheap hint here. The existing background VM monitor performs
   // public native-heap relief after remeasurement and outside graphics locks.
-  madeira_native_memory_relief_request(footprint, available);
+  if (request_relief) madeira_native_memory_relief_request(footprint, available);
 done:
   errno = saved_errno;
+}
+static inline void md_memory_pressure_query(struct madeira_ctl_args *args) {
+  md_memory_pressure_query_impl(args,1);
 }
 
 /* Admission is shared by all PE/native callers of the one in-process Metal
@@ -131,6 +134,32 @@ static inline uint64_t md_resource_growth_floor(uint64_t reserve) {
   const uint64_t minimum = UINT64_C(128) << 20, maximum = UINT64_C(256) << 20;
   uint64_t floor = reserve / 4;
   return floor < minimum ? minimum : floor > maximum ? maximum : floor;
+}
+
+/* Native VM backing choice, not a GPU allocation grant. Never wait for the
+ * graphics receipt mutex while Wine holds virtual_mutex. Include outstanding
+ * creation credits and the exact existing floor in a fresh, read-only view. */
+#ifdef __cplusplus
+extern "C"
+#endif
+__attribute__((visibility("default")))
+int madeira_private_commit_budget(uint64_t *available, uint64_t *floor) {
+  const int saved=errno;
+  int valid=0,cancel_state;
+  struct madeira_ctl_args measurement;
+  memset(&measurement,0,sizeof(measurement));
+  pthread_setcancelstate(PTHREAD_CANCEL_DISABLE,&cancel_state);
+  if (pthread_mutex_trylock(&md_resource_growth_mutex)) goto done;
+  md_memory_pressure_query_impl(&measurement,0);
+  if (measurement.ret==1) {
+    *available=measurement.len>md_resource_growth_held ? measurement.len-md_resource_growth_held : 0;
+    *floor=md_resource_growth_floor(md_resource_growth_reserve(measurement.ptr+measurement.len));
+    valid=1;
+  }
+  pthread_mutex_unlock(&md_resource_growth_mutex);
+done:
+  pthread_setcancelstate(cancel_state,NULL);
+  errno=saved;return valid;
 }
 
 /* op46 is a read-only budget view, not an allocation grant. Unknown/busy

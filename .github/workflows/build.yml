@@ -481,6 +481,7 @@ jobs:
       - name: Check compiled SCM producer and NDR argument frames
         run: |
           python3 tools/build/native-provenance.py check --root "$GITHUB_WORKSPACE" --revision "$GITHUB_SHA" --ipa scm-ipa/Madeira.ipa
+          python3 tools/check-store-recovery-package.py --ipa scm-ipa/Madeira.ipa --revision "$GITHUB_SHA" --require-cs2-churn-backing --require-pressure-boundary --require-recovery-scope --require-cs2-tso-profile
           python3 tools/check-self-suspend-package.py --ipa scm-ipa/Madeira.ipa
           python3 tools/check-apple-cpu-topology-package.py --ipa scm-ipa/Madeira.ipa
           python3 -m venv "$RUNNER_TEMP/scm-abi-tools"

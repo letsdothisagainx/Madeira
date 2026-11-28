@@ -38,6 +38,7 @@ jobs:
       - name: Validate bounded run evidence and existing one-ZIP export
         run: |
           python3 tests/host/check-swap-external-retire.py
+          python3 tests/host/check-cs2-churn-backing.py
           python3 tests/host/check-steam-launch-progress.py ${{ runner.os == 'macOS' && '--require-swift' || '' }}
           python3 tests/host/check-run23-first-stall.py ${{ runner.os == 'macOS' && '--require-swift' || '' }}
           python3 tests/host/check-cs2-private-pager.py

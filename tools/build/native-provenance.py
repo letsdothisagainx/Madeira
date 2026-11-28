@@ -27,6 +27,8 @@ EXTRA_SOURCES = {
     # The immutable ISA proof is part of the virtual-memory implementation.
     # Bind it into the linked compile-input digest, including header-only edits.
     'virtual': ('build/ntdll-unix/pe_x64_write_span.h',
+                'build/ntdll-unix/cs2_churn_backing.h',
+                'build/dxmt-ios/memory_pressure_native.h',
                 'build/ntdll-unix/pread_observation.h',
                 'build/ntdll-unix/run_evidence.h',
                 'build/ntdll-unix/run_evidence_native.h',

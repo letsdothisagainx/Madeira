@@ -9301,6 +9301,13 @@ struct builtin_module
 static struct list builtin_modules = LIST_INIT( builtin_modules );
 
 static uint64_t ios_ev_vm_generation, ios_ev_allocation_id, ios_ev_extent_id;
+#include "cs2_churn_backing.h"
+static uint64_t ios_swap_now_ns(void);
+static void ios_churn_unmap_note(void *base, size_t size)
+{
+    if (MD_CHURN_GET(tracked) != MD_CHURN_GET(retired))
+        md_churn_unmapped((uintptr_t)base,size,ios_swap_now_ns());
+}
 
 struct file_view
 {
@@ -16163,19 +16170,23 @@ static void unmap_area( void *start, size_t size )
         if (area_start > start)
         {
             ios_pool_va_warn( "munmap", start, (char *)area_start - (char *)start );
-            munmap( start, (char *)area_start - (char *)start );
+            if (!munmap( start, (char *)area_start - (char *)start ))
+                ios_churn_unmap_note(start,(char *)area_start - (char *)start);
             start = area_start;
         }
         if (area_end >= end)
         {
-            anon_mmap_fixed( start, (char *)end - (char *)start, PROT_NONE, MAP_NORESERVE );
+            if (anon_mmap_fixed( start, (char *)end - (char *)start, PROT_NONE, MAP_NORESERVE ) != MAP_FAILED)
+                ios_churn_unmap_note(start,(char *)end - (char *)start);
             return;
         }
-        anon_mmap_fixed( start, (char *)area_end - (char *)start, PROT_NONE, MAP_NORESERVE );
+        if (anon_mmap_fixed( start, (char *)area_end - (char *)start, PROT_NONE, MAP_NORESERVE ) != MAP_FAILED)
+            ios_churn_unmap_note(start,(char *)area_end - (char *)start);
         start = area_end;
     }
     ios_pool_va_warn( "munmap", start, (char *)end - (char *)start );
-    munmap( start, (char *)end - (char *)start );
+    if (!munmap( start, (char *)end - (char *)start ))
+        ios_churn_unmap_note(start,(char *)end - (char *)start);
 }
 
 
@@ -21937,6 +21948,8 @@ static void ios_verify_commit_zero( const void *base, SIZE_T size, ULONG protect
      * virtual_mutex: ph-rdr45 sat 90 s in this probe on a 692 MB arena with the
      * whole process waiting on the lock. */
     { extern int ios_swap_overlaps_probe( const void *, size_t ); if (ios_swap_overlaps_probe( base, size )) return; }
+    { struct file_view *v=find_view(base,size);
+      if(v && md_churn_charged_range((uintptr_t)base,size,v->ios_evidence_id)) return; }
 
     hi = ios_is_arena_addr( base );
     seq = hi ? ++ck_hi : ++ck_lo;
@@ -24368,6 +24381,16 @@ void ios_swap_stats_line( void )
     dprintf( 2, "[swap-decommit-remap-v1] remaps=%llu synchronous-fallbacks=%llu\n",
              __atomic_load_n( &ios_swap_decommit_remaps, __ATOMIC_RELAXED ),
              __atomic_load_n( &ios_swap_decommit_fallbacks, __ATOMIC_RELAXED ) );
+    dprintf(2,"[swap-churn-budget-v1] policy=cs2-whole-private-v1 cap=%llu held=%llu peak=%llu "
+              "tracked=%llu retired=%llu hot=%llu bypasses=%llu bypass-bytes=%llu "
+              "cap-denied=%llu pressure-denied=%llu tracking-denied=%llu queries=%llu query-ns=%llu budget-unavailable=%llu\n",
+        (unsigned long long)MD_CHURN_CAP,(unsigned long long)MD_CHURN_GET(held),
+        (unsigned long long)MD_CHURN_GET(peak),(unsigned long long)MD_CHURN_GET(tracked),
+        (unsigned long long)MD_CHURN_GET(retired),(unsigned long long)MD_CHURN_GET(hot),
+        (unsigned long long)MD_CHURN_GET(bypasses),(unsigned long long)MD_CHURN_GET(bytes),
+        (unsigned long long)MD_CHURN_GET(cap_denied),(unsigned long long)MD_CHURN_GET(pressure_denied),
+        (unsigned long long)MD_CHURN_GET(tracking_denied),(unsigned long long)MD_CHURN_GET(queries),
+        (unsigned long long)MD_CHURN_GET(query_ns),(unsigned long long)MD_CHURN_GET(budget_unavailable));
     /* ml1221: the census (bytes by reason) with every stats line, ~10 s, not only
      * after its own 30 s: Ori and the Will of the Wisps was jetsammed at 26 s and never printed one. */
     ios_swap_tick( 1 );
@@ -24456,11 +24479,38 @@ static void ios_swap_note( int why, size_t size )
 static void ios_swap_commit( void *base, size_t size, unsigned int vprot, struct file_view *view )
 {
     int why;
+    struct md_churn_view *churn = NULL;
     if (ios_swap_fd < 0) return;
     if (!ios_swap_v2) { if (ios_swap_eligible( base, size, vprot, view )) ios_swap_back( base, size, vprot ); return; }
     if ((ios_swap_wide || ios_swap_broad) && ios_swap_n && ios_swap_overlaps( base, size )) { ios_swap_note( IOS_SW_PRESENT, size ); return; }
     why = ios_swap_why( base, size, vprot, view );
+    /* This is a backing choice for an already valid fresh anonymous commit,
+     * not a new mapping or a migration. Only whole private views qualify;
+     * reservation subcommits and every existing backing remain unchanged. */
+    if (why == IOS_SW_BACKED && ios_swap_wide && host_page_size == MD_CHURN_PAGE && (vprot & VPROT_COMMITTED) &&
+        size >= MD_CHURN_MIN && size <= MD_CHURN_MAX &&
+        view->base == base && view->size == size && size <= (uintptr_t)user_space_limit &&
+        (uintptr_t)base <= (uintptr_t)user_space_limit - size && !(view->ios_flags & IOS_VIEW_QUARANTINED) &&
+        !ios_jit_anon_alias_overlaps(base,size,NULL,NULL) &&
+        ios_cs2_current_private_owner(view->ios_evidence_owner))
+    {
+        extern int ios_native_current_process_identity(uintptr_t *,uint64_t *,unsigned *);
+        extern int madeira_private_commit_budget(uint64_t *,uint64_t *) __attribute__((weak));
+        uintptr_t owner; uint64_t lease; unsigned pid;
+        if (ios_native_current_process_identity(&owner,&lease,&pid))
+            churn = md_churn_begin(owner,lease,view->ios_evidence_id,(uintptr_t)base,size,ios_swap_now_ns());
+        if (md_churn_needs_budget(churn) && madeira_private_commit_budget)
+        {
+            uint64_t available=0,floor=0,t0=ios_swap_now_ns();
+            int valid=madeira_private_commit_budget(&available,&floor);
+            MD_CHURN_ADD(queries,1); MD_CHURN_ADD(query_ns,ios_swap_now_ns()-t0);
+            if (!valid) MD_CHURN_ADD(budget_unavailable,1);
+            if (valid && md_churn_admit(churn,available,floor))
+            { ios_swap_note(IOS_SW_CHURN,size); return; }
+        }
+    }
     if (why == IOS_SW_BACKED) why = ios_swap_map( base, size, get_unix_prot( vprot | VPROT_COMMITTED ) );   /* ml1082 */
+    if (churn && why == IOS_SW_BACKED) churn->learned = 1;
     ios_swap_note( why, size );
 }
 /* wide: a fresh WRITABLE reservation, mapped from the file PROT_NONE (what
@@ -24855,6 +24905,12 @@ static NTSTATUS decommit_pages_evidence_impl( struct file_view *view, char *base
             int dc_isarena = ios_is_arena_addr( base );
             unsigned long dc_n = dc_isarena ? ++dc_hi : ++dc_lo;
             {
+                if (dc_verify && dc_vsize && md_churn_charged_range((uintptr_t)base,size,view->ios_evidence_id))
+                {
+                    /* Keep demand-zero pages lazy, just as the file-hole
+                     * branch does. No diagnostic payload read on this path. */
+                    dc_verify=NULL; dc_vsize=0; dc_branch="churn-anonymous-zero";
+                }
                 if (dc_verify && dc_vsize)
                 {
                     size_t chk = dc_vsize < 64 ? dc_vsize : 64;
@@ -24882,14 +24938,14 @@ static NTSTATUS decommit_pages_evidence_impl( struct file_view *view, char *base
                                  b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7] );
                     }
                 }
-                else if (!strcmp( dc_branch, "swap-hole" ))
+                else if (!strcmp( dc_branch, "swap-hole" ) || !strcmp(dc_branch,"churn-anonymous-zero"))
                 {
                     /* ml1258: a punched hole reads as zero; it is not read back only
                      * because that would fault file pages in under the lock. Rate-
                      * limited like the OK lines (swap log 1 had one per decommit). */
                     if (dc_n <= 8 || (dc_n % 4096) == 0)
-                        dprintf( 2, "[decommit-zero] #%lu base=%p size=0x%lx branch=swap-hole "
-                                 "(zero by hole, not read back)\n", dc_n, base, (unsigned long)size );
+                        dprintf( 2, "[decommit-zero] #%lu base=%p size=0x%lx branch=%s "
+                                 "(zero by fresh backing, not read back)\n", dc_n, base, (unsigned long)size,dc_branch );
                 }
                 else
                     dprintf( 2, "[decommit-zero] #%lu base=%p size=0x%lx branch=%s "
