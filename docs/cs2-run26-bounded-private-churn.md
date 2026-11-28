@@ -126,3 +126,23 @@ allocation failures and visuals. Fewer maps alone is not gameplay acceptance.
 If bypasses are absent, the candidate was not exercised; if they occur without
 better pacing, this hypothesis has not repaired the stall. Real gameplay and
 physical-controller movement/aim/buttons remain device acceptance work.
+
+## Verified candidate package
+
+Normal Linux and macOS/iPhone-SDK checks passed in
+[46183055300](https://github.com/letsdothisagainx/Madeira/actions/runs/46183055300).
+The IPA build and final ABI/provenance gate passed in
+[46183028897](https://github.com/letsdothisagainx/Madeira/actions/runs/46183028897)
+at source `fb64f16a573aa1858984570d54ed2e1b531c23d4`. Native UUID
+`B6765EB4-F3EA-3FEF-B30D-4796ACE92DE8`, virtual-source SHA256
+`015c41dece0df835a2c0c619c3eb4ab8aa783f74eda5b2801f45d0afac6668fe`,
+raw IPA SHA256 `cdb268933956ccc941c6dd72ebe1bb49cc066c0ab2ea6d7500319c45875bf41a`.
+Matching symbols: `Madeira-native-symbols:46183028897`, artifact
+`15279436321` (archive SHA256
+`88068c4d1a80e8ad1076f7ec06dd5b506adf2008aafa82bbf4d786135781653f`).
+
+Package verification requires the linked churn consumer and defined native
+budget provider, the preserved recovery/pressure/TSO contracts,
+`com.willfaust.madeora`, and the unchanged 768/384-MiB partition.
+These are implementation and packaging results; no iPhone gameplay or physical
+controller session was performed by the coding environment.
